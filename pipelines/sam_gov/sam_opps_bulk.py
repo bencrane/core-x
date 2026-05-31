@@ -49,9 +49,9 @@ FEED = "sam_opps_active"
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # Lower bounds, not exact pins — freeze with `modal shell` once validated.
-    "duckdb>=1.1",
+    "duckdb>=1.5,<2",       # >=1.5 guarantees to_arrow_table / VARIANT; <2 stays below the v2.0 break
     "lancedb>=0.15",
-    "pylance>=0.19",        # provides `import lance`; lancedb does not re-export it
+    "pylance>=7",           # provides `import lance`; lancedb does not re-export it
     "pyarrow>=17",
     "requests>=2.32",
     "psycopg[binary]>=3.2",  # terminal state write to ops.*
@@ -242,7 +242,7 @@ def ingest_sam_opps_bulk(
         con = duckdb.connect(":memory:")
         try:
             con.execute("PRAGMA threads=4;")
-            arrow_table = con.execute(sql).fetch_arrow_table()
+            arrow_table = con.execute(sql).to_arrow_table()
         finally:
             con.close()
 
