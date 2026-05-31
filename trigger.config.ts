@@ -1,4 +1,5 @@
 import { defineConfig } from "@trigger.dev/sdk/v3";
+import { syncEnvVars } from "@trigger.dev/build/extensions/core";
 
 export default defineConfig({
   project: "proj_pakdcffjbeiwcixcoepb",
@@ -19,4 +20,17 @@ export default defineConfig({
     },
   },
   dirs: ["./src/trigger"],
+  build: {
+    // Forward the Universal Dispatcher's proxy-auth credentials into this
+    // project's deployed environment at deploy time. Values are read from the
+    // deploy-time process env (supply them via `doppler run -- npx trigger.dev
+    // deploy`); they are never committed to the repo.
+    extensions: [
+      syncEnvVars(() =>
+        ["MODAL_DISPATCHER_URL", "MODAL_KEY", "MODAL_SECRET"]
+          .filter((k) => process.env[k])
+          .map((k) => ({ name: k, value: process.env[k] as string })),
+      ),
+    ],
+  },
 });
