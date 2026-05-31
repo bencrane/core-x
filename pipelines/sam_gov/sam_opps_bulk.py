@@ -9,7 +9,7 @@ Data plane (unchanged, clean-room — no Iceberg, no Polaris, no legacy code):
       → requests stream      → /tmp/sam_opps_full.csv     (Python: I/O only)
       → DuckDB read_csv        → clean / cast / filter / shape   (100% in SQL)
       → Arrow table
-      → lance.write_dataset(s3://sam-gov-opps/active/, data_storage_version="2.0")
+      → lance.write_dataset(s3://data-sink/sam-gov-opps/active/, data_storage_version="2.0")
 
 Control plane (Trigger v4 durable callback):
     The worker accepts ``trigger_callback_url`` (the pre-signed waitpoint URL
@@ -40,7 +40,7 @@ DEFAULT_SAM_OPPS_CSV_URL = (
 )
 
 # Lance dataset URI — system-of-record tier (NOT the raw landing zone).
-LANCE_BASE_URI = os.environ.get("SAM_OPPS_LANCE_URI", "s3://sam-gov-opps/active/")
+LANCE_BASE_URI = os.environ.get("SAM_OPPS_LANCE_URI", "s3://data-sink/sam-gov-opps/active/")
 
 # Local fast scratchpad on the container's ephemeral NVMe disk.
 SCRATCH_CSV_PATH = "/tmp/sam_opps_full.csv"
