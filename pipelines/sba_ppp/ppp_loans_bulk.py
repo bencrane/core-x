@@ -64,6 +64,25 @@ MAX_BYTES_PER_FILE = 90 * 1024**3
 # Net-new dataset → pin the current Lance default (per 02_lancedb_storage.md §2.3).
 DATA_STORAGE_VERSION = "2.1"
 
+# Scalar index plan — built ONCE, post-backfill, by the `index` entrypoint (per
+# 02_lancedb_storage.md §6). BTREE for high-cardinality load-bearing resolution
+# keys (equality + range predicates); BITMAP for low-cardinality categoricals
+# filtered frequently. Indexing a growing dataset per file is wasteful, so this
+# runs only after all 13 fragments are appended.
+PPP_BTREE_INDEXES = [
+    "loan_number",                    # unique loan identifier
+    "naics_code",                     # 6-digit industry join key
+    "servicing_lender_location_id",   # lender resolution key
+    "originating_lender_location_id",  # lender resolution key
+]
+PPP_BITMAP_INDEXES = [
+    "processing_method",  # PPP / PPS
+    "loan_status",        # Paid in Full / Exemption 4 / Charged Off
+    "borrower_state",
+    "project_state",
+    "business_type",
+]
+
 # CKAN dataset UUID (the directive's resource links are HTML pages; the real
 # download artifacts hang off the dataset UUID, resolved via package_show).
 PPP_DATASET_UUID = "8aa276e2-6cab-4f86-aca4-a7dde42adf24"
@@ -457,6 +476,66 @@ def ingest_ppp_extract(key: str, trigger_callback_url: str | None = None) -> dic
             "loan_bracket": bracket, "status": status}
 
 
+def _list_committed_indices(ds) -> list:
+    """Best-effort read of committed scalar indices (name/type/fields). Tolerant
+    of pylance return-shape drift (dict vs object, list_indices vs list_indexes)."""
+    for attr in ("list_indices", "list_indexes"):
+        fn = getattr(ds, attr, None)
+        if fn is None:
+            continue
+        try:
+            out = []
+            for ix in fn():
+                if isinstance(ix, dict):
+                    out.append({k: ix.get(k) for k in ("name", "type", "fields")})
+                else:
+                    out.append({
+                        "name": getattr(ix, "name", None),
+                        "type": str(getattr(ix, "type", None)),
+                        "fields": getattr(ix, "fields", None),
+                    })
+            return out
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": f"{attr}: {exc}"}]
+    return [{"error": "no list_indices/list_indexes method on dataset"}]
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=60 * 90,
+    memory=16384,
+    cpu=4.0,
+)
+def build_ppp_indexes() -> dict:
+    """Build the BTREE + BITMAP scalar indexes on the active PPP Lance dataset.
+    Run ONCE, after the full backfill. create_scalar_index defaults to
+    replace=True, so re-running rebuilds cleanly (idempotent)."""
+    import lance
+
+    so = _r2_storage_options()
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    rows = ds.count_rows()
+    print(f"Indexing {DATASET_URI} — {rows:,} rows")
+
+    for col in PPP_BTREE_INDEXES:
+        ds.create_scalar_index(col, index_type="BTREE")
+        print(f"  BTREE  ✓ {col}")
+    for col in PPP_BITMAP_INDEXES:
+        ds.create_scalar_index(col, index_type="BITMAP")
+        print(f"  BITMAP ✓ {col}")
+
+    ds = lance.dataset(DATASET_URI, storage_options=so)  # reopen → read committed index set
+    committed = _list_committed_indices(ds)
+    print(f"Committed indices: {committed}")
+    return {
+        "dataset": DATASET_URI,
+        "rows": rows,
+        "btree": PPP_BTREE_INDEXES,
+        "bitmap": PPP_BITMAP_INDEXES,
+        "committed_indices": committed,
+    }
+
+
 @app.local_entrypoint()
 def fetch(only: str = "", dry_run: bool = False) -> None:
     """Phase 1 backfill — land all 13 CSVs to R2 in parallel (independent keys,
@@ -489,3 +568,12 @@ def backfill(only: str = "", dry_run: bool = False) -> None:
     for k in keys:
         print(f"\n=== {k} ===")
         print(ingest_ppp_extract.remote(k, trigger_callback_url=None))
+
+
+@app.local_entrypoint()
+def index() -> None:
+    """Build the PPP scalar indexes on the completed active dataset. Run after the
+    Phase 2 backfill finishes (all 13 fragments appended)."""
+    import json
+
+    print(json.dumps(build_ppp_indexes.remote(), indent=2, default=str))
