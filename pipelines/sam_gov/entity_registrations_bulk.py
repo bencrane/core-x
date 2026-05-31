@@ -1,6 +1,6 @@
 """Compute worker — SAM.gov Entity Registrations historical backfill.
 
-Part of the ``sam-gov-pipelines`` Modal app. Spawned by the Universal Dispatcher
+Part of the ``sam-gov-entity-pipelines`` Modal app. Spawned by the Universal Dispatcher
 (core/modal_dispatcher.py) one invocation per landing ZIP, or driven directly by
 the ``backfill`` local entrypoint. This is a BOUNDED backfill, not a daily feed —
 there is no Trigger cron. The durable control plane lives in
@@ -64,7 +64,11 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "psycopg[binary]>=3.2",  # ops.* terminal state
 )
 
-app = modal.App("sam-gov-pipelines", image=image)
+# Isolated from the opps app ("sam-gov-pipelines") on purpose: these are separate
+# files, and `modal deploy` of a same-named app from a second file would replace
+# the deployment and drop the live opps function. One app per worker file until a
+# shared-app-object module consolidates the sam_gov domain.
+app = modal.App("sam-gov-entity-pipelines", image=image)
 
 # 1-indexed positions within the split pipe array, per layout family. Confirmed
 # from one sampled record per family; positions beyond `dba_name` drift between
@@ -175,7 +179,13 @@ def _build_sql(family: str, scratch_path: str, enc: str, label: str, key: str) -
 
     def strcol(c: str) -> str:
         i = m[c]
-        return f"CAST(NULL AS VARCHAR) AS {c}" if i is None else f"nullif(trim(f[{i}]), '') AS {c}"
+        if i is None:
+            return f"CAST(NULL AS VARCHAR) AS {c}"
+        if c == "duns":
+            # GSA redacted DUNS in the historical extracts to the literal
+            # 'No longer available'; surface that sentinel as NULL.
+            return f"nullif(nullif(trim(f[{i}]), ''), 'No longer available') AS {c}"
+        return f"nullif(trim(f[{i}]), '') AS {c}"
 
     def datecol(c: str) -> str:
         i = m[c]

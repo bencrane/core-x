@@ -48,7 +48,7 @@ export const entityRegistrationsBackfill = task({
           "Modal-Secret": requireEnv("MODAL_SECRET"),
         },
         body: JSON.stringify({
-          app_name: "sam-gov-pipelines",
+          app_name: "sam-gov-entity-pipelines",
           function_name: "ingest_entity_registration_extract",
           kwargs: { key },
           trigger_callback_url: token.url,
