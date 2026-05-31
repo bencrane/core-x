@@ -1,0 +1,8 @@
+# core-x — Gen-3 data plane dependencies
+modal
+duckdb
+lancedb
+pylance
+psycopg
+pyarrow
+requests
