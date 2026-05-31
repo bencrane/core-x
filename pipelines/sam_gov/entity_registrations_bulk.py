@@ -1,32 +1,33 @@
 """Compute worker — SAM.gov Entity Registrations historical backfill.
 
-Part of the ``sam-gov-entity-pipelines`` Modal app. Spawned by the Universal Dispatcher
-(core/modal_dispatcher.py) one invocation per landing ZIP, or driven directly by
-the ``backfill`` local entrypoint. This is a BOUNDED backfill, not a daily feed —
-there is no Trigger cron. The durable control plane lives in
+The ``sam-gov-entity-pipelines`` Modal app. A BOUNDED backfill, not a daily feed
+(no Trigger cron). The durable control plane is
 src/trigger/entity_registrations_backfill.ts; this worker has no web endpoint.
+
+Why one orchestrating function (not per-file dispatch): Lance's direct write to
+R2 trips R2's multipart rule ("all non-trailing parts must have the same length")
+on the large per-extract files. So the dataset is staged on LOCAL disk (Lance
+append, no multipart) and uploaded to R2 once via boto3 (s3transfer uses uniform
+parts — R2-compliant). Local staging also removes concurrent-append commit races.
 
 Data plane (clean-room — DuckDB does 100% of the transform):
     R2 landing ZIP (data-sink/landing/...)
       → boto3 download    → /tmp/<file>.zip               (Python: I/O only)
-      → unzip + transcode → UTF-8 .dat on /tmp scratch     (Python: I/O only)
+      → unzip + transcode → UTF-8 .dat on scratch          (Python: I/O only)
       → DuckDB read_csv   → split / project / cast (100% in SQL)
       → Arrow table       → con.sql(...).to_arrow_table()
-      → lance.write_dataset(s3://data-sink/active/entity_registrations/, v2.0, append)
+      → lance.write_dataset(LOCAL, v2.0, append)           (per file)
+    then: BTREE indexes → boto3 upload → s3://data-sink/active/entity_registrations/
 
-Two positional, pipe-delimited layouts (no column-name header) are unified into
-ONE Arrow schema:
+Two positional, pipe-delimited layouts (no column-name header) unify into ONE
+Arrow schema:
   - legacy_v1 (`SAM_PUBLIC_MONTHLY_*_MODIFIED`, 120 fields): DUNS @0 / CAGE @2
   - v2        (`SAM_PUBLIC_*_MONTHLY_V2_*`,    142 fields): UEI  @0 / CAGE @3
-V2 files carry `BOF PUBLIC V2 …` / `EOF …` sentinel lines, which are filtered out.
+V2 carries `BOF`/`EOF` sentinel lines (filtered). Encoding is content-detected
+(strict UTF-8, else lossless cp1252→UTF-8). The cp1252 V2 twins are deduped out.
 
-Encoding is content-detected per file: strict UTF-8, else a lossless
-Windows-1252 → UTF-8 transcode (cp1252 is single-byte, so 8 MiB chunk boundaries
-never split a character and no rows are dropped). The cp1252 V2 encoding-twins
-are dropped upstream (dedup) so only native UTF-8 V2 files are ingested.
-
-    modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill (sequential)
-    modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print the deduped key list
+    modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill
+    modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print deduped keys
     modal deploy pipelines/sam_gov/entity_registrations_bulk.py
 """
 
@@ -38,42 +39,39 @@ import modal
 
 BUCKET = "data-sink"
 LANDING_PREFIX = "landing/"
-# Lance system-of-record tier (NOT the landing/raw zone). Exact path per directive.
-DATASET_URI = os.environ.get("ENTITY_REG_LANCE_URI", "s3://data-sink/active/entity_registrations/")
+DATASET_PREFIX = "active/entity_registrations/"  # R2 key prefix (system-of-record tier)
+DATASET_URI = f"s3://{BUCKET}/{DATASET_PREFIX}"
 SCRATCH_DIR = "/tmp"
+LOCAL_DATASET = "/tmp/entity_lance"
 FEED = "sam_entity_registrations"
 
 # Whole-line read delimiter: a control byte that never appears in SAM pipe text,
 # so each record lands in one column and we split on '|' ourselves in SQL.
 _LINE_DELIM = "\x1f"
 
-# Lance fragment sizing.
-# NOTE: the directive wrote `max_bytes_per_file=90 * 10243`. That is read here as
-# `90 * 1024**3` (90 GiB) — Lance's documented default. A literal `90 * 10243`
-# (~900 KB) would shatter each ~500 MB extract into ~600 fragments; flip the
-# constant below if 900 KB was genuinely intended.
+# Lance fragment sizing. `90 * 1024**3` (90 GiB) is Lance's documented default —
+# the directive's `90 * 10243` was a markdown-mangled `90 * 1024**3`.
 MAX_ROWS_PER_FILE = 1048576
 MAX_BYTES_PER_FILE = 90 * 1024**3
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "duckdb>=1.1",
     "lancedb>=0.15",
-    "pylance>=0.19",        # provides `import lance`
+    "pylance>=0.19",
     "pyarrow>=17",
-    "boto3>=1.35",          # R2 landing-zip download
-    "psycopg[binary]>=3.2",  # ops.* terminal state
+    "boto3>=1.35",
+    "psycopg[binary]>=3.2",
 )
 
-# Isolated from the opps app ("sam-gov-pipelines") on purpose: these are separate
-# files, and `modal deploy` of a same-named app from a second file would replace
-# the deployment and drop the live opps function. One app per worker file until a
+# Isolated from the opps app ("sam-gov-pipelines"): separate files sharing an app
+# name would clobber each other on `modal deploy`. One app per worker file until a
 # shared-app-object module consolidates the sam_gov domain.
 app = modal.App("sam-gov-entity-pipelines", image=image)
 
 # 1-indexed positions within the split pipe array, per layout family. Confirmed
-# from one sampled record per family; positions beyond `dba_name` drift between
-# layouts and are deferred to tomorrow's reconciliation — every field is retained
-# losslessly in `pipe_fields`, so nothing is dropped.
+# from one sampled record per family; positions past `dba_name` drift between
+# layouts and are deferred to reconciliation — every field is retained losslessly
+# in `pipe_fields`, so nothing is dropped.
 FIELD_MAP = {
     "legacy_v1": {
         "uei": None, "duns": 1, "cage_code": 3, "registration_status": 5,
@@ -86,11 +84,6 @@ FIELD_MAP = {
         "last_update_date": 10, "activation_date": 11, "legal_business_name": 12, "dba_name": 13,
     },
 }
-EXPECTED_FIELDS = {"legacy_v1": 120, "v2": 142}
-
-_STR_COLS = ["uei", "duns", "cage_code", "registration_status",
-             "purpose_of_registration", "legal_business_name", "dba_name"]
-_DATE_COLS = ["registration_date", "expiration_date", "last_update_date", "activation_date"]
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -109,9 +102,9 @@ def _r2_storage_options() -> dict[str, str]:
 
 
 def _s3_client():
-    """boto3 S3 client for R2. Forces checksum behaviour to ``when_required``:
-    botocore's default flexible-checksum validation does not match R2's semantics
-    and otherwise raises FlexibleChecksumError on download_file."""
+    """boto3 S3 client for R2. Forces checksum behaviour to ``when_required``;
+    botocore's default flexible-checksum validation otherwise raises
+    FlexibleChecksumError against R2 on download."""
     import boto3
     from botocore.config import Config
 
@@ -127,7 +120,6 @@ def _s3_client():
 
 
 def _classify(key: str) -> tuple[str, str]:
-    """Return (format_family, extract_label) from the object key."""
     import re
 
     name = key.rsplit("/", 1)[-1].upper()
@@ -139,9 +131,9 @@ def _classify(key: str) -> tuple[str, str]:
 
 
 def _materialize_utf8(zf, member_name: str, out_path: str) -> str:
-    """Stream the data member to a UTF-8 file on scratch; return the detected
-    encoding. Pass 1 probes strict UTF-8; pass 2 writes through (UTF-8) or
-    transcodes (cp1252, single-byte so chunk-safe)."""
+    """Stream the data member to a UTF-8 file; return detected encoding. Pass 1
+    probes strict UTF-8; pass 2 writes through (UTF-8) or transcodes (cp1252,
+    single-byte so 8 MiB chunk boundaries never split a character)."""
     import codecs
 
     chunk_size = 8 << 20
@@ -204,7 +196,7 @@ WITH raw AS (
     SELECT rtrim(col0, chr(13)) AS line
     FROM read_csv('{lit(scratch_path)}', auto_detect=false, header=false,
                   delim='{_LINE_DELIM}', quote='', escape='', new_line='\\n',
-                  columns={{'col0': 'VARCHAR'}}, ignore_errors=true)
+                  strict_mode=false, columns={{'col0': 'VARCHAR'}}, ignore_errors=true)
     WHERE col0 IS NOT NULL
 ),
 p AS (
@@ -227,27 +219,59 @@ FROM p
 """
 
 
-def _append_idempotent(table, key: str, so: dict) -> None:
-    """Append to the Lance dataset, replacing any prior rows for this source_file
-    so re-runs are idempotent. Creates the dataset on first write. Run serially —
-    concurrent writers to one dataset can hit Lance commit conflicts."""
-    import lance
+def _list_landing_zip_keys() -> list[str]:
+    s3 = _s3_client()
+    keys = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=LANDING_PREFIX):
+        for o in page.get("Contents", []):
+            if o["Key"].lower().endswith(".zip"):
+                keys.append(o["Key"])
+    return keys
 
-    try:
-        ds = lance.dataset(DATASET_URI, storage_options=so)
-    except Exception:
-        ds = None
 
-    common = dict(data_storage_version="2.0", max_rows_per_file=MAX_ROWS_PER_FILE,
-                  max_bytes_per_file=MAX_BYTES_PER_FILE, storage_options=so)
-    if ds is None:
-        lance.write_dataset(table, DATASET_URI, mode="create", **common)
-        return
-    try:
-        ds.delete(f"source_file = '{key.replace(chr(39), chr(39) * 2)}'")
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARN: pre-append delete failed (continuing): {exc}")
-    lance.write_dataset(table, DATASET_URI, mode="append", **common)
+def _dedup_keys(keys: list[str]) -> list[str]:
+    """Drop cp1252 V2 encoding-twins when a native UTF-8 sibling for the same date
+    exists; keep all historical files (no twins)."""
+    import re
+
+    utf8_dates = set()
+    for k in keys:
+        m = re.search(r"UTF-8_MONTHLY_V2_(\d{8})", k.rsplit("/", 1)[-1].upper())
+        if m:
+            utf8_dates.add(m.group(1))
+
+    kept = []
+    for k in keys:
+        name = k.rsplit("/", 1)[-1].upper()
+        if "_V2_" in name and "UTF-8" not in name:
+            d = re.search(r"_V2_(\d{8})", name)
+            if d and d.group(1) in utf8_dates:
+                continue
+        kept.append(k)
+    return sorted(kept)
+
+
+def _replace_r2_prefix(s3, prefix: str, local_dir: str) -> int:
+    """Idempotent publish: wipe the R2 prefix, then upload the local Lance dataset
+    (boto3 = uniform-part multipart, R2-compliant). Returns files uploaded."""
+    to_del = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            to_del.append({"Key": o["Key"]})
+            if len(to_del) == 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                to_del = []
+    if to_del:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+
+    uploaded = 0
+    for root, _, files in os.walk(local_dir):
+        for fn in files:
+            lp = os.path.join(root, fn)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            s3.upload_file(lp, BUCKET, prefix + rel)
+            uploaded += 1
+    return uploaded
 
 
 def _record_run(source_file, label, family, enc, rows, status, error, started_at, completed_at) -> None:
@@ -294,115 +318,124 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     print(f"WARN: callback delivery failed after {attempts} attempts → {url}")
 
 
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=120)
+def select_backfill_keys() -> list[str]:
+    return _dedup_keys(_list_landing_zip_keys())
+
+
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    timeout=60 * 60,
+    timeout=2 * 60 * 60,
     memory=16384,
     cpu=4.0,
+    ephemeral_disk=524288,  # Modal's explicit floor (512 GiB); staging needs ~12 GiB
 )
-def ingest_entity_registration_extract(key: str, trigger_callback_url: str | None = None) -> dict:
-    """Download one landing ZIP → transcode → DuckDB project/cast → Lance append,
-    then record ops.* state and wake the Trigger run. Re-raises on failure so the
-    Modal call is marked failed."""
+def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dict:
+    """Stage every deduped landing extract into one LOCAL Lance dataset (append),
+    BTREE-index the resolution keys, then publish to R2 via boto3. Each file's
+    terminal state is recorded to ops.*; the run re-raises on the first failure."""
     import datetime as dt
-    import os.path
+    import shutil
     import zipfile
 
     import duckdb
+    import lance
 
-    started_at = dt.datetime.now(dt.timezone.utc)
-    family, label = _classify(key)
-    rows = 0
-    enc: str | None = None
-    status = "error"
-    error: str | None = None
+    keys = _dedup_keys(_list_landing_zip_keys())
+    if only:
+        keys = [k for k in keys if only in k]
+
+    shutil.rmtree(LOCAL_DATASET, ignore_errors=True)
+    s3 = _s3_client()
+    per_file: list[dict] = []
+    total_rows = 0
+    final_status = "error"
+    error_text: str | None = None
 
     try:
-        s3 = _s3_client()
-        zip_path = os.path.join(SCRATCH_DIR, key.rsplit("/", 1)[-1])
-        s3.download_file(BUCKET, key, zip_path)
-
-        with zipfile.ZipFile(zip_path) as zf:
-            members = [i for i in zf.infolist() if not i.is_dir() and i.filename.lower().endswith(".dat")]
-            if not members:
-                members = [i for i in zf.infolist() if not i.is_dir()]
-            data_member = max(members, key=lambda i: i.file_size)
+        for i, key in enumerate(keys):
+            f_started = dt.datetime.now(dt.timezone.utc)
+            family, label = _classify(key)
+            f_rows, f_enc, f_status, f_err = 0, None, "error", None
+            zip_path = os.path.join(SCRATCH_DIR, key.rsplit("/", 1)[-1])
             scratch = os.path.join(SCRATCH_DIR, "extract.utf8.dat")
-            enc = _materialize_utf8(zf, data_member.filename, scratch)
+            try:
+                s3.download_file(BUCKET, key, zip_path)
+                with zipfile.ZipFile(zip_path) as zf:
+                    members = [m for m in zf.infolist() if not m.is_dir()
+                               and m.filename.lower().endswith(".dat")] \
+                        or [m for m in zf.infolist() if not m.is_dir()]
+                    data_member = max(members, key=lambda m: m.file_size)
+                    f_enc = _materialize_utf8(zf, data_member.filename, scratch)
 
-        con = duckdb.connect(":memory:")
-        try:
-            con.execute("PRAGMA threads=4;")
-            table = con.sql(_build_sql(family, scratch, enc, label, key)).to_arrow_table()
-        finally:
-            con.close()
-        rows = table.num_rows
+                con = duckdb.connect(":memory:")
+                try:
+                    con.execute("PRAGMA threads=4;")
+                    table = con.sql(_build_sql(family, scratch, f_enc, label, key)).to_arrow_table()
+                finally:
+                    con.close()
+                f_rows = table.num_rows
 
-        _append_idempotent(table, key, _r2_storage_options())
-        status = "success"
-    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
-        error = str(exc)
-        status = "error"
+                lance.write_dataset(
+                    table, LOCAL_DATASET,
+                    mode="create" if i == 0 else "append",
+                    data_storage_version="2.0",
+                    max_rows_per_file=MAX_ROWS_PER_FILE,
+                    max_bytes_per_file=MAX_BYTES_PER_FILE,
+                )
+                f_status = "success"
+                total_rows += f_rows
+            except Exception as exc:  # noqa: BLE001
+                f_err = str(exc)
+            finally:
+                _record_run(key, label, family, f_enc, int(f_rows), f_status, f_err,
+                            f_started, dt.datetime.now(dt.timezone.utc))
+                for p in (zip_path, scratch):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+
+            per_file.append({"source_file": key, "extract_label": label, "format_family": family,
+                             "source_encoding": f_enc, "rows": int(f_rows), "status": f_status})
+            if f_status != "success":
+                raise RuntimeError(f"ingest failed for {key}: {f_err}")
+            print(f"[{i + 1}/{len(keys)}] {label} {family} enc={f_enc} rows={f_rows}")
+
+        # BTREE scalar indexes on the resolution keys (best-effort per index).
+        ds = lance.dataset(LOCAL_DATASET)
+        for col in ("uei", "cage_code", "extract_label"):
+            try:
+                ds.create_scalar_index(col, index_type="BTREE")
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: BTREE index on {col} failed: {exc}")
+
+        uploaded = _replace_r2_prefix(s3, DATASET_PREFIX, LOCAL_DATASET)
+        print(f"Published {uploaded} files to {DATASET_URI}")
+        final_status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error_text = str(exc)
     finally:
-        completed_at = dt.datetime.now(dt.timezone.utc)
-        _record_run(key, label, family, enc, int(rows), status, error, started_at, completed_at)
         _post_callback(
             trigger_callback_url,
-            {"status": status, "rows": int(rows), "feed": FEED, "source_file": key},
+            {"status": final_status, "rows": int(total_rows), "feed": FEED,
+             "files": sum(1 for p in per_file if p["status"] == "success")},
         )
 
-    if status != "success":
-        raise RuntimeError(f"entity_registration ingest failed for {key}: {error}")
-    return {"feed": FEED, "source_file": key, "rows_processed": int(rows),
-            "format_family": family, "source_encoding": enc, "status": status}
-
-
-def _dedup_keys(keys: list[str]) -> list[str]:
-    """Drop the cp1252 V2 encoding-twins whenever a native UTF-8 sibling for the
-    same date exists; keep all historical files (they have no twins)."""
-    import re
-
-    utf8_dates = set()
-    for k in keys:
-        m = re.search(r"UTF-8_MONTHLY_V2_(\d{8})", k.rsplit("/", 1)[-1].upper())
-        if m:
-            utf8_dates.add(m.group(1))
-
-    kept = []
-    for k in keys:
-        name = k.rsplit("/", 1)[-1].upper()
-        if "_V2_" in name and "UTF-8" not in name:
-            d = re.search(r"_V2_(\d{8})", name)
-            if d and d.group(1) in utf8_dates:
-                continue  # drop cp1252 twin
-        kept.append(k)
-    return sorted(kept)
-
-
-@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=120)
-def select_backfill_keys() -> list[str]:
-    """List data-sink/landing/ ZIPs (case-insensitive) and apply dedup."""
-    s3 = _s3_client()
-    keys = []
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=LANDING_PREFIX):
-        for o in page.get("Contents", []):
-            if o["Key"].lower().endswith(".zip"):
-                keys.append(o["Key"])
-    return _dedup_keys(keys)
+    if final_status != "success":
+        raise RuntimeError(f"entity backfill failed: {error_text}")
+    return {"feed": FEED, "files": len(keys), "rows": int(total_rows),
+            "dataset": DATASET_URI, "per_file": per_file, "status": final_status}
 
 
 @app.local_entrypoint()
 def backfill(only: str = "", dry_run: bool = False) -> None:
-    """Sequential backfill (sequential avoids Lance commit conflicts on one
-    dataset). ``--only SUBSTR`` filters keys; ``--dry-run`` just prints them."""
-    keys = select_backfill_keys.remote()
-    if only:
-        keys = [k for k in keys if only in k]
-    print(f"Selected {len(keys)} files after dedup:")
-    for k in keys:
-        print("  ", k)
     if dry_run:
+        keys = select_backfill_keys.remote()
+        if only:
+            keys = [k for k in keys if only in k]
+        print(f"Selected {len(keys)} files after dedup:")
+        for k in keys:
+            print("  ", k)
         return
-    for k in keys:
-        print(f"\n=== {k} ===")
-        print(ingest_entity_registration_extract.remote(k, trigger_callback_url=None))
+    print(run_backfill.remote(trigger_callback_url=None, only=only))
