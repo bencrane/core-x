@@ -501,7 +501,14 @@ def _list_committed_indices(ds) -> list:
 
 
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials")],
+    secrets=[
+        modal.Secret.from_name("r2-credentials"),
+        # BTREE training sorts the column; bypass Lance's bounded spill-to-disk
+        # ExternalSorter, whose memory accounting under-sizes the pool to ~19 MB
+        # and exhausts on an 11.5M-row column even in a 16 GiB container. Sorting
+        # in-memory is well within RAM here. See lance-format/lance#2650.
+        modal.Secret.from_dict({"LANCE_BYPASS_SPILLING": "true"}),
+    ],
     timeout=60 * 90,
     memory=16384,
     cpu=4.0,
