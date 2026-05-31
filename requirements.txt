@@ -1,8 +1,8 @@
 # core-x — Gen-3 data plane dependencies
 modal
-duckdb
+duckdb>=1.5,<2
 lancedb
-pylance
+pylance>=7
 psycopg
 pyarrow
 requests
