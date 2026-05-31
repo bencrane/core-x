@@ -3,8 +3,9 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
 /**
  * Control plane — FMCSA daily feeds (Phase 1).
  *
- * Replaces the legacy `*/15 * * * *` heartbeat (96 dispatch-probes/day against a
- * `ops.fmcsa_feed_schedule_config` SPOF) with a single Trigger.dev v4 cron. The
+ * Replaces the legacy every-15-minutes heartbeat (cron "0,15,30,45 * * * *",
+ * 96 dispatch-probes/day against an `ops.fmcsa_feed_schedule_config` SPOF) with a
+ * single Trigger.dev v4 daily cron. The
  * FMCSA "daily difference" feeds are full snapshots refreshed overnight; we pull
  * once per day, well after the upstream publish window.
  *
