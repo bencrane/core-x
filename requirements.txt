@@ -6,3 +6,4 @@ pylance>=7
 psycopg
 pyarrow
 requests
+boto3
