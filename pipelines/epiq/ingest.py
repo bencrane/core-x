@@ -33,6 +33,17 @@ API contract (probe-confirmed against the production Angular bundle + live endpo
          "total": N, "token": <search_after|null>, "totalHitsRelation": "eq"}.
     The server reads ``type`` case-sensitively; a wrong/absent ``type`` → HTTP 400
     "Unsupported search type".
+  • SCOPING DIFFERS BY GRAIN (live-verified). Dockets scope by the projectCode filter.
+    CLAIMS DO NOT — type:"Claims" is a CROSS-CASE search that ignores projectCode and
+    returns a global firehose; the only correct claims scope is the numeric projectId
+    (the getcases ``value``): filters=[{"name":"projectId","values":[projectId]}].
+  • 10k WINDOW (claims). A case's claims register is capped at the Elasticsearch 10k
+    result window. Epiq exposes NO way past it: no search_after/scroll/token (``token``
+    is a request-correlation nonce, not a cursor), no claims export, and the number-range
+    filters (claimNumberSorting/scheduleNumbers) are incoherent + non-composable. The
+    ~handful of mega-cases (Adelphia, Lehman, Tribune, …) are captured to 10k and flagged
+    truncated=true with the real total; complete capture for those needs the filed Claims
+    Register document, not this search API.
   • dbSource — GET /api/search/getprojectdbsource?projectCode={code} → plain text
     (e.g. "DM"). Required inside the getcards ``filters``. Baked into the manifest by
     harvest_cases so the fan-out never re-resolves it.
@@ -91,11 +102,15 @@ DOCKETS_URI = os.environ.get("EPIQ_DOCKETS_LANCE_URI", "s3://data-sink/active/ep
 
 # Per-case fan-out grains (the two paginated getcards registers). ``cases`` is handled
 # separately by harvest_cases (it is the getcases universe, not a per-case getcards call).
+# scope: how a case is filtered. CLAIMS scope by projectId (numeric getcases.value) —
+# type:"Claims" is a CROSS-CASE search that ignores projectCode (verified live: a
+# projectCode-filtered claims query returns claims from every other case). Dockets scope
+# by projectCode correctly.
 GRAINS: dict[str, dict[str, str]] = {
     "claims": {"type": "Claims", "group_by": "claimNumber", "sort": "asc",
-               "uri": CLAIMS_URI, "landing": "claims"},
+               "uri": CLAIMS_URI, "landing": "claims", "scope": "projectId"},
     "dockets": {"type": "Dockets", "group_by": "docketNumber", "sort": "desc",
-                "uri": DOCKETS_URI, "landing": "dockets"},
+                "uri": DOCKETS_URI, "landing": "dockets", "scope": "projectCode"},
 }
 
 # getcards saturates a single response at ~10k results; we page by the returned batch and
@@ -373,20 +388,37 @@ def _read_manifest(s3, key: str) -> list[dict]:
     return json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
 
 
-def _harvest_getcards(sess, s3, code: str, dbsource: str, cfg: dict, run_date: str) -> dict:
-    """Paginate one case's getcards register and land every raw page. Returns
-    {pages, results, total, truncated}. Lands the DECODED envelope (compact one-line
-    JSON) so the DuckDB read needs no double-decode; the wire data is preserved whole."""
+def _scope_filters(entry: dict, cfg: dict, sess) -> list[dict]:
+    """Per-grain case scoping. CLAIMS scope by projectId (the numeric getcases.value) —
+    type:"Claims" is a cross-case search that IGNORES projectCode; projectId is the only
+    correct key (live-verified). Dockets scope by projectCode (+dbSource), which is correct
+    for that grain."""
+    if cfg["scope"] == "projectId":
+        return [{"name": "projectId", "values": [str(entry.get("value"))]}]
+    code = entry.get("projectCode")
+    dbsource = entry.get("dbSource") or _resolve_dbsource(sess, code)
+    return [{"name": "projectCode", "values": [code]},
+            {"name": "dbSource", "values": [dbsource]}]
+
+
+def _harvest_getcards(sess, s3, entry: dict, cfg: dict, run_date: str) -> dict:
+    """Harvest one case's getcards register and land every page. Returns
+    {pages, results, total, truncated}. Scoped per grain via _scope_filters. Captures up to
+    the Elasticsearch 10k result window; a case beyond it sets truncated=true with the real
+    total logged. Epiq exposes NO mechanism past 10k for claims — no search_after/scroll, no
+    claims export, and the number-range filters (claimNumberSorting/scheduleNumbers) are
+    incoherent + non-composable (exhaustively verified). The DECODED envelope is landed
+    (compact one-line JSON) so the DuckDB read needs no double-decode."""
     import json
     import random
     import time
 
+    code = entry.get("projectCode")
     landing_dir = f"{LANDING_PREFIX}{cfg['landing']}/project_code={code}/run_date={run_date}/"
     body_base = {
         "type": cfg["type"], "term": "", "groupBy": cfg["group_by"],
-        "filters": [{"name": "projectCode", "values": [code]},
-                    {"name": "dbSource", "values": [dbsource]}],
-        "sort": cfg["sort"],
+        "filters": _scope_filters(entry, cfg, sess),
+        "sort": cfg["sort"], "size": DOCUMENT_WINDOW_CAP,
     }
     seen: set = set()
     pages = results = 0
@@ -421,8 +453,8 @@ def _harvest_getcards(sess, s3, code: str, dbsource: str, cfg: dict, run_date: s
         time.sleep(0.2 + random.random() * 0.3)  # politeness jitter between pages
 
     if truncated:
-        print(f"WARN: {code}/{cfg['type']} captured {results} of total {total} "
-              f"(>{DOCUMENT_WINDOW_CAP} window cap; token/search_after continuation TODO)")
+        print(f"WARN: {code}/{cfg['type']} captured {results} of {total} — Epiq 10k window "
+              f"(API exposes no >10k mechanism for this grain)")
     return {"pages": pages, "results": results, "total": total, "truncated": truncated}
 
 
@@ -570,6 +602,21 @@ def _build_indexes(grain: str, uri: str, so: dict) -> list[str]:
         except Exception as exc:  # noqa: BLE001
             print(f"  WARN BITMAP {col} failed: {exc}")
     return built
+
+
+def _clear_grain_landing(s3, sub: str, run_date: str) -> int:
+    """Delete prior landed pages for this grain+run_date BEFORE a (re-)harvest, so the
+    transform reads only fresh pages — idempotent overwrite even when a case's count drops
+    to 0 (e.g. the cross-case→projectId claims re-scope leaves 550 cases with no pages).
+    Landing is ephemeral transport, never the Lance system of record."""
+    needle = f"/run_date={run_date}/"
+    keys = [{"Key": o["Key"]}
+            for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=BUCKET, Prefix=f"{LANDING_PREFIX}{sub}/")
+            for o in page.get("Contents", []) if needle in o["Key"]]
+    for i in range(0, len(keys), 1000):
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": keys[i:i + 1000]})
+    return len(keys)
 
 
 def _download_grain_pages(s3, sub: str, run_date: str, dest: str) -> int:
@@ -764,14 +811,11 @@ def fetch_grain_for_case(entry: dict, grain: str, run_date: str,
     a logical fetch failure is captured (not raised) so .map() collects every case and
     the orchestrator counts failures — one bad case never sinks the grain."""
     code = entry.get("projectCode") if isinstance(entry, dict) else str(entry)
-    dbsource = entry.get("dbSource") if isinstance(entry, dict) else None
     cfg = GRAINS[grain]
     try:
         s3 = _s3_client()
         sess = _new_session()
-        if not dbsource:
-            dbsource = _resolve_dbsource(sess, code)
-        out = _harvest_getcards(sess, s3, code, dbsource, cfg, run_date)
+        out = _harvest_getcards(sess, s3, entry, cfg, run_date)
         return {"projectCode": code, "status": "success", **out}
     except Exception as exc:  # noqa: BLE001 — partial durability: report, don't abort the map
         print(f"WARN: {grain} fetch failed for {code}: {exc}")
@@ -797,7 +841,9 @@ def _harvest_grain(grain: str, manifest_key: str, run_date: str,
         s3 = _s3_client()
         entries = _read_manifest(s3, manifest_key)
         attempted = len(entries)
-        print(f"{grain}: fanning out {attempted} project_code(s) (max_containers=8)")
+        cleared = _clear_grain_landing(s3, cfg["landing"], run_date)
+        print(f"{grain}: cleared {cleared} prior landed page(s); fanning out {attempted} "
+              f"project_code(s) (max_containers=8)")
 
         # return_exceptions: a container that dies after retries surfaces as an exception
         # object in the list rather than aborting the whole grain — count it as a failure.
@@ -806,8 +852,14 @@ def _harvest_grain(grain: str, manifest_key: str, run_date: str,
         failed = sum(1 for r in map_results
                      if not isinstance(r, dict) or r.get("status") != "success")
         fetched = sum(r.get("results", 0) for r in map_results if isinstance(r, dict))
-        print(f"{grain}: fan-out complete — {attempted - failed} ok, {failed} failed, "
-              f"~{fetched:,} records landed")
+        # Honest 10k-window accounting: which cases exceeded the ES window (capped).
+        capped = [(r.get("projectCode"), r.get("total")) for r in map_results
+                  if isinstance(r, dict) and r.get("truncated")]
+        with_data = sum(1 for r in map_results
+                        if isinstance(r, dict) and r.get("results", 0) > 0)
+        print(f"{grain}: fan-out complete — {attempted - failed} ok ({with_data} with data), "
+              f"{failed} failed, ~{fetched:,} records landed; {len(capped)} case(s) capped at "
+              f"the 10k window: {sorted(capped, key=lambda x: -(x[1] or 0))[:15]}")
 
         rows = _transform_grain_to_lance(grain, run_date, so, s3)
         built = _build_indexes(grain, cfg["uri"], so)
