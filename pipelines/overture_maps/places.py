@@ -37,9 +37,10 @@ indices) is built on local disk (no multipart) and published once via boto3
 pipelines/pdl_companies/free_company_dataset.py, which solved the identical
 constraint at 35.4M rows.
 
-Index plan (operator-authorized 2026-06-01):
-    BTREE  : id, longitude, latitude   (high-cardinality resolution / range keys)
-    BITMAP : region                    (≤~60 US ISO-3166-2 codes — low cardinality)
+Index plan (operator-authorized 2026-06-01; expanded for entity resolution):
+    BTREE  : id, longitude, latitude, name, postcode, locality
+             (resolution keys + bbox range + postal/locality blocking joins)
+    BITMAP : region   (≤~60 US ISO-3166-2 codes — low cardinality)
 
     modal deploy pipelines/overture_maps/places.py
     modal run    pipelines/overture_maps/places.py::initdb       # create ops.* table
@@ -88,6 +89,9 @@ OVERTURE_BTREE_INDEXES = [
     "id",         # GERS id — unique resolution key
     "longitude",  # flattened ST_X — bbox range predicates
     "latitude",   # flattened ST_Y — bbox range predicates
+    "name",       # business-name exact-match resolution joins
+    "postcode",   # postal-blocking joins (US ZIP / ZIP+4, raw)
+    "locality",   # locality-blocking joins (city / town)
 ]
 OVERTURE_BITMAP_INDEXES = [
     "region",     # US ISO-3166-2 subdivision (~57 distinct) — low cardinality
@@ -255,6 +259,8 @@ SELECT
     ST_X(geom)                               AS longitude,   -- flattened float
     ST_Y(geom)                               AS latitude,    -- flattened float
     nullif(trim(addresses[1].region), '')    AS region,       -- US ISO-3166-2 subdivision
+    nullif(trim(addresses[1].locality), '')  AS locality,     -- city / town (blocking key)
+    nullif(trim(addresses[1].postcode), '')  AS postcode,     -- US ZIP / ZIP+4 (blocking key)
     nullif(trim(addresses[1].country), '')   AS country,      -- constant 'US' (provenance)
     nullif(trim(names.primary), '')          AS name,         -- entity-resolution key
     nullif(trim(categories.primary), '')     AS category,     -- POI category slug
