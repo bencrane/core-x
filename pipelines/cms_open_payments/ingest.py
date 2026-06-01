@@ -2,8 +2,9 @@
 
 Part of the ``cms-open-payments-pipelines`` Modal app. Endpoint-less functions, spawned
 by the Universal Dispatcher (core/modal_dispatcher.py) or driven by the local entrypoints.
-Clean-room data plane: no Iceberg, no Polaris — DuckDB does 100% of the transform, Lance
-is written straight to R2.
+Clean-room data plane: no Iceberg, no Polaris — DuckDB does 100% of the transform, the
+Lance dataset is staged on local disk and published to R2 via boto3 (uniform-part
+multipart — Cloudflare R2 rejects the variable-size parts a direct Lance→R2 write emits).
 
 The catalog is the CMS CKAN metastore (a DKAN dataset/items list). Three DETAIL dataset
 families, each accumulated across every program year the catalog advertises, into three
@@ -46,15 +47,17 @@ Reconnaissance (verified live against the metastore + the 2018 / 2023 / 2024 pay
      INTEGER. Everything else (NPIs, profile/record/payment IDs, codes) stays VARCHAR.
 
 Topology — SINGLE sequential orchestrator (``refresh_all``), the directive's model:
-  one container, one ephemeral disk. For each (family, year) in catalog order:
+  one container, one ephemeral disk. Per family, for each year in catalog order:
       download CSV → /tmp (UTF-8-sanitised stream)  [Python: I/O only, no transform]
-        → DuckDB read_csv(all_varchar, quote-aware) → dynamic project/cast (100% in SQL)
+        → DuckDB read_csv(all_varchar, quote-aware, parallel=false) → dynamic project/cast
         → to_arrow_reader (streaming; never materialise the 8 GB General file)
-        → idempotent: delete WHERE payment_year=N, then Lance append (v2.1, DIRECT to R2)
-        → rm the local CSV   [bounded disk: one year at a time, never concurrent]
-  After a family's years finish, build its BTREE + BITMAP scalar indexes ONCE (a per-year
-  rebuild would be thrown away by the next append). Processing years sequentially in one
-  container is what keeps ephemeral disk bounded (directive: no concurrent year downloads).
+        → Lance append to the LOCAL family dataset (v2.1, on ephemeral disk)
+        → rm the local CSV   [bounded disk: one CSV at a time, never concurrent]
+  After a family's years land locally, build its BTREE + BITMAP scalar indexes ONCE, then
+  PUBLISH the whole dataset to R2 via boto3 (wipe prefix + upload — uniform-part multipart).
+  Direct Lance→R2 writes are NOT used: object_store emits variable-size multipart parts,
+  which R2 rejects ("all non-trailing parts must have the same length"); boto3 does not.
+  A full refresh re-publishes each family from a clean local rebuild (idempotent snapshot).
 
 Control plane (Trigger v4 durable callback): ``refresh_all`` accepts ``trigger_callback_url``
 and, on terminal state, (1) writes per-unit run rows to ``ops.cms_open_payments_runs`` via
@@ -201,14 +204,20 @@ _INT_COLS = {"number_of_payments_included_in_total_amount"}
 # read_csv options — quote-aware (RFC-4180), all_varchar (zero type-inference surprises on
 # a 91-252 col government CSV), malformed rows quarantined to the rejects table rather than
 # aborting an 8 GB load. null_padding tolerates short trailing rows.
+#   parallel = false: MANDATORY. CMS detail files contain embedded newlines inside quoted
+#   fields (e.g. General 2022 at line 12.26M), and DuckDB's parallel CSV scanner rejects
+#   null_padding in conjunction with quoted newlines ("does not support null_padding in
+#   conjunction with quoted new lines"). Single-threaded scan handles both; slower on the
+#   8 GB General files but correct (these are quarterly batch jobs — correctness > speed).
 READ_OPTS = (
     "all_varchar = true, header = true, delim = ',', quote = '\"', escape = '\"', "
-    "sample_size = -1, ignore_errors = true, null_padding = true, store_rejects = true"
+    "sample_size = -1, ignore_errors = true, null_padding = true, store_rejects = true, "
+    "parallel = false"
 )
 # DESCRIBE needs only the schema; drop store_rejects (it would allocate a rejects table).
 DESCRIBE_OPTS = (
     "all_varchar = true, header = true, delim = ',', quote = '\"', escape = '\"', "
-    "sample_size = -1, ignore_errors = true, null_padding = true"
+    "sample_size = -1, ignore_errors = true, null_padding = true, parallel = false"
 )
 
 # Mirrored verbatim by pipelines/cms_open_payments/ops_cms_open_payments_runs.sql.
@@ -243,6 +252,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "lancedb>=0.15",
     "pylance>=7",            # provides `import lance`; lancedb does not re-export it
     "pyarrow>=17",
+    "boto3>=1.35",           # R2 dataset publish (boto3 = uniform-part multipart, R2-compliant)
     "requests>=2.32",        # CMS download + metastore + Trigger waitpoint callback
     "psycopg[binary]>=3.2",  # ops.* terminal state
 ).env(
@@ -367,12 +377,14 @@ def _resolve_units(only_family: str | None, only_year: int | None) -> list[dict]
 
 
 # ───────────────────────────── R2 / object-store config ─────────────────────────────
+# Lance reads/writes are LOCAL (no storage_options) — the dataset is staged on the
+# container's ephemeral disk and published to R2 via boto3. boto3/s3transfer uses uniform
+# multipart part sizes, which Cloudflare R2 requires ("all non-trailing parts must have the
+# same length"); Lance's object_store writer does NOT, so a DIRECT multi-GB Lance→R2 write
+# fails with InvalidPart. This is the proven fleet pattern (PDL, FMCSA, SAM entity-reg).
 def _r2_storage_options() -> dict[str, str]:
-    """object_store options for Cloudflare R2, sourced from the Modal secret. AWS-style
-    creds + explicit endpoint + region 'auto'. Endpoint supplied directly (R2_ENDPOINT)
-    or derived from R2_ACCOUNT_ID. Path-style addressing (virtual_hosted_style_request =
-    false) is the R2 default for the object_store backend; set it explicitly so the
-    bucket-in-path form is never ambiguous."""
+    """R2 endpoint + AWS-style creds from the Modal secret, consumed by the boto3 client.
+    Endpoint supplied directly (R2_ENDPOINT) or derived from R2_ACCOUNT_ID."""
     endpoint = os.environ.get("R2_ENDPOINT")
     account_id = os.environ.get("R2_ACCOUNT_ID")
     if not endpoint and account_id:
@@ -384,8 +396,79 @@ def _r2_storage_options() -> dict[str, str]:
         "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
         "endpoint": endpoint,
         "region": "auto",
-        "virtual_hosted_style_request": "false",
     }
+
+
+def _s3_client():
+    """boto3 S3 client for R2. checksum behaviour forced to ``when_required`` (R2 semantics);
+    path-style addressing — the directive's ``virtual_hosted_style_request=false`` translated
+    to the boto3 world (the default for custom endpoints, set explicitly)."""
+    import boto3
+    from botocore.config import Config
+
+    so = _r2_storage_options()
+    cfg = Config(request_checksum_calculation="when_required",
+                 response_checksum_validation="when_required",
+                 s3={"addressing_style": "path"})
+    return boto3.client(
+        "s3", endpoint_url=so["endpoint"],
+        aws_access_key_id=so["aws_access_key_id"],
+        aws_secret_access_key=so["aws_secret_access_key"],
+        region_name="auto", config=cfg,
+    )
+
+
+def _family_prefix(family: str) -> str:
+    """R2 key prefix for a family dataset, derived from its s3:// URI (bucket stripped)."""
+    return FAMILIES[family]["uri"].split(f"s3://{BUCKET}/", 1)[1]
+
+
+def _local_ds(family: str) -> str:
+    """Local Lance staging directory for a family (accumulated across years, then published)."""
+    return os.path.join(SCRATCH_DIR, f"{family}_lance")
+
+
+def _replace_r2_prefix(s3, prefix: str, local_dir: str) -> int:
+    """Idempotent publish: wipe the R2 prefix, then upload the local Lance dataset
+    (boto3/s3transfer = uniform-part multipart, R2-compliant). Returns files uploaded.
+    Mirrors pipelines/pdl_companies + sam_gov/entity_registrations_bulk."""
+    to_del = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            to_del.append({"Key": o["Key"]})
+            if len(to_del) == 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                to_del = []
+    if to_del:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+    uploaded = 0
+    for root, _, files in os.walk(local_dir):
+        for fn in files:
+            lp = os.path.join(root, fn)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            s3.upload_file(lp, BUCKET, prefix + rel)
+            uploaded += 1
+    return uploaded
+
+
+def _download_r2_prefix(s3, prefix: str, local_dir: str) -> int:
+    """Stage the committed R2 dataset back to local disk (for a single-year update or an
+    in-place reindex — avoids re-downloading every year's CSV). Returns files downloaded;
+    0 means no dataset exists yet at that prefix."""
+    import shutil
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if not rel:
+                continue
+            lp = os.path.join(local_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], lp)
+            n += 1
+    return n
 
 
 # ───────────────────────────── download (Python: I/O only) ─────────────────────────────
@@ -541,42 +624,32 @@ def _build_sql(con, csv_path: str, year: int, source_file: str, source_url: str)
     )
 
 
-def _append_idempotent(reader, uri: str, year: int, so: dict) -> None:
-    """Append this year's batches to the family dataset, first deleting any prior rows for
-    the same payment_year so a re-run is idempotent. Creates the dataset on first write.
-    SEQUENTIAL by design (one writer per dataset → no Lance OCC commit conflict)."""
+def _append_local(reader, local_ds: str, create: bool) -> None:
+    """Write this year's batches to the LOCAL family Lance dataset (no storage_options → no
+    R2 multipart during compute). ``create`` for the first landed year of the family, append
+    thereafter. SEQUENTIAL by design (single writer per local dataset)."""
     import lance
 
-    common = dict(
+    lance.write_dataset(
+        reader,
+        local_ds,
         schema=reader.schema,  # REQUIRED when the source is a RecordBatchReader
+        mode="create" if create else "append",
         data_storage_version=DATA_STORAGE_VERSION,
         max_rows_per_file=MAX_ROWS_PER_FILE,
         max_bytes_per_file=MAX_BYTES_PER_FILE,
-        storage_options=so,
     )
-    try:
-        ds = lance.dataset(uri, storage_options=so)
-    except Exception:
-        ds = None
-
-    if ds is None:
-        lance.write_dataset(reader, uri, mode="create", **common)
-        return
-    try:
-        ds.delete(f"payment_year = {int(year)}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARN: pre-append delete for payment_year={year} failed (continuing): {exc}")
-    lance.write_dataset(reader, uri, mode="append", **common)
 
 
-def _build_indexes(family: str, so: dict) -> list[str]:
-    """Build BTREE + BITMAP scalar indexes for one family dataset. create_scalar_index
+def _build_indexes_local(local_ds: str, family: str) -> list[str]:
+    """Build BTREE + BITMAP scalar indexes on the LOCAL family dataset (no storage_options —
+    local index files also sidestep R2's multipart part-size rule). create_scalar_index
     defaults to replace=True → idempotent. Best-effort per column: a column absent in the
     written schema, or a single heavy BTREE that fails, must not abort the others."""
     import lance
 
     cfg = FAMILIES[family]
-    ds = lance.dataset(cfg["uri"], storage_options=so)
+    ds = lance.dataset(local_ds)
     built: list[str] = []
     for col in cfg["btree"]:
         try:
@@ -672,11 +745,11 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
 
 
 # ───────────────────────────── unit of work (one family-year) ─────────────────────────────
-def _ingest_unit(unit: dict, so: dict) -> dict:
-    """Download → DuckDB project/cast → streaming Arrow → idempotent Lance append for ONE
-    (family, year), then rm the local CSV. Records its own ops.* row. Returns a result
-    dict. Raises on failure (the caller decides whether to abort the batch). No index build
-    here — indexes are built ONCE per family after all its years land."""
+def _ingest_year_local(unit: dict, local_ds: str, create: bool) -> dict:
+    """Download ONE (family, year) CSV → DuckDB project/cast → streaming Arrow → append to
+    the LOCAL family Lance dataset, then rm the CSV. Records its own ops 'ingest' row. Raises
+    on failure (caller records + continues). No R2 I/O here — the family is published to R2
+    ONCE, after all its years land locally (avoids the direct-Lance→R2 multipart rule)."""
     import datetime as dt
     import os.path
 
@@ -692,7 +765,7 @@ def _ingest_unit(unit: dict, so: dict) -> dict:
     try:
         print(f"[{family} {year}] downloading {source_url}")
         csv_path = _download_csv(source_url, SCRATCH_DIR)
-        print(f"[{family} {year}] downloaded {os.path.getsize(csv_path):,} bytes → {csv_path}")
+        print(f"[{family} {year}] downloaded {os.path.getsize(csv_path):,} bytes")
 
         con = duckdb.connect(":memory:")
         try:
@@ -705,7 +778,7 @@ def _ingest_unit(unit: dict, so: dict) -> dict:
             # Streaming reader: never materialise the ~8 GB General file in memory; Lance
             # consumes it fragment-by-fragment (the proven FEC pattern).
             reader = con.sql(sql).to_arrow_reader(MAX_ROWS_PER_FILE)
-            _append_idempotent(reader, uri, year, so)
+            _append_local(reader, local_ds, create)
             try:
                 rj = con.execute("SELECT count(*) FROM reject_errors").fetchone()
                 rejected = int(rj[0]) if rj else 0
@@ -714,11 +787,10 @@ def _ingest_unit(unit: dict, so: dict) -> dict:
         finally:
             con.close()
 
-        # Exact committed count for this year (reflects what landed; no 8 GB rescan).
-        ds = lance.dataset(uri, storage_options=so)
-        rows = ds.count_rows(filter=f"payment_year = {int(year)}")
+        # Exact committed count for this year on the LOCAL dataset (no CSV rescan).
+        rows = lance.dataset(local_ds).count_rows(filter=f"payment_year = {int(year)}")
         status = "success"
-        print(f"[{family} {year}] committed {rows:,} rows ({rejected:,} rejected) → {uri}")
+        print(f"[{family} {year}] appended {rows:,} rows locally ({rejected:,} rejected)")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         status = "error"
@@ -777,37 +849,103 @@ def ingest_family_year(
     family: str, year: int, url: str | None = None,
     build_index: bool = True, trigger_callback_url: str | None = None,
 ) -> dict:
-    """Single-unit Modal entrypoint (targeted re-ingest / parallel ops / testing). Resolves
-    the URL from the catalog if not supplied, ingests the one (family, year), optionally
-    (re)builds the family indexes, then records state + wakes Trigger. Re-raises on failure."""
+    """Surgical SINGLE-YEAR update (targeted re-ingest / ops / testing). Stages the existing
+    R2 family dataset to local disk (if any), replaces this payment_year (delete + append),
+    reindexes locally, and republishes to R2 via boto3 — preserving the family's other years
+    and re-downloading only this one CSV. Records state + wakes Trigger. Re-raises on failure."""
+    import datetime as dt
+    import os.path
+    import shutil
+
+    import duckdb
+    import lance
+
     family = family.strip().lower()
     if family not in FAMILIES:
         raise ValueError(f"family must be one of {sorted(FAMILIES)}, got {family!r}")
     year = int(year)
-    so = _r2_storage_options()
+    cfg = FAMILIES[family]
+    local_ds = _local_ds(family)
+    prefix = _family_prefix(family)
 
     if url:
-        unit = {"family": family, "label": FAMILIES[family]["label"], "year": year,
-                "url": url, "source_file": url.rsplit("/", 1)[-1],
-                "dataset_uri": FAMILIES[family]["uri"], "title": f"{year} {family}"}
+        unit = {"year": year, "url": url, "source_file": url.rsplit("/", 1)[-1]}
     else:
         matches = _resolve_units(family, year)
         if not matches:
             raise RuntimeError(f"catalog has no {family} dataset for year {year}")
         unit = matches[0]
+    source_url, source_file = unit["url"], unit["source_file"]
 
-    status = "error"
-    result: dict = {}
+    started_at = dt.datetime.now(dt.timezone.utc)
+    rows, rejected, status, error = 0, 0, "error", None
+    built: list[str] = []
+    published = 0
+    csv_path = None
+
     try:
-        result = _ingest_unit(unit, so)
+        s3 = _s3_client()
+        staged = _download_r2_prefix(s3, prefix, local_ds)  # 0 → dataset does not exist yet
+        print(f"[{family} {year}] staged {staged} existing files from {cfg['uri']}")
+
+        csv_path = _download_csv(source_url, SCRATCH_DIR)
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("PRAGMA threads=8;")
+            con.execute("SET enable_progress_bar=false;")
+            con.execute("SET memory_limit='24GB';")
+            con.execute("SET preserve_insertion_order=false;")
+            con.execute(f"SET temp_directory='{SCRATCH_DIR}/duckdb_spill';")
+            sql = _build_sql(con, csv_path, year, source_file, source_url)
+            reader = con.sql(sql).to_arrow_reader(MAX_ROWS_PER_FILE)
+            if staged:
+                ds = lance.dataset(local_ds)
+                try:
+                    ds.delete(f"payment_year = {int(year)}")  # idempotent replace of this year
+                except Exception as exc:  # noqa: BLE001
+                    print(f"WARN: delete payment_year={year} failed (continuing): {exc}")
+                lance.write_dataset(reader, local_ds, schema=reader.schema, mode="append",
+                                    data_storage_version=DATA_STORAGE_VERSION,
+                                    max_rows_per_file=MAX_ROWS_PER_FILE,
+                                    max_bytes_per_file=MAX_BYTES_PER_FILE)
+            else:
+                _append_local(reader, local_ds, create=True)
+            try:
+                rj = con.execute("SELECT count(*) FROM reject_errors").fetchone()
+                rejected = int(rj[0]) if rj else 0
+            except Exception:  # noqa: BLE001
+                rejected = 0
+        finally:
+            con.close()
+
+        rows = lance.dataset(local_ds).count_rows(filter=f"payment_year = {int(year)}")
         if build_index:
-            print(f"[{family}] building indexes")
-            result["indices"] = _build_indexes(family, so)
+            print(f"[{family}] building indexes locally")
+            built = _build_indexes_local(local_ds, family)
+        published = _replace_r2_prefix(s3, prefix, local_ds)
         status = "success"
+        print(f"[{family} {year}] published {published} files → {cfg['uri']} ({rows:,} rows this year)")
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        status = "error"
+        raise
     finally:
+        if csv_path:
+            try:
+                os.remove(csv_path)
+            except OSError:
+                pass
+        shutil.rmtree(local_ds, ignore_errors=True)
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run("ingest", family, cfg["uri"], year, source_file, source_url,
+                    int(rows), int(rejected), status, error, started_at, completed_at)
         _post_callback(trigger_callback_url, {"status": status, "phase": "ingest_family_year",
-                                              "family": family, "year": year, **result})
-    return {"status": status, **result}
+                                              "family": family, "year": year, "rows": int(rows),
+                                              "files_published": published, "indices": built})
+
+    return {"status": status, "family": family, "year": year, "rows_processed": int(rows),
+            "rejected_rows": int(rejected), "dataset_uri": cfg["uri"],
+            "files_published": published, "indices": built}
 
 
 @app.function(
@@ -823,70 +961,99 @@ def refresh_all(
     skip_index: bool = False, trigger_callback_url: str | None = None,
 ) -> dict:
     """THE dispatched orchestrator (Trigger → Universal Dispatcher → here). One container,
-    one ephemeral disk: resolve the catalog, then ingest every (family, year) SEQUENTIALLY
-    (download → transform → append → rm), never two years' files on disk at once. After a
-    family's years all land, build its scalar indexes ONCE. Per-unit failures are recorded
-    and skipped (a single bad year must not sink a 7-year backfill); the family is still
-    indexed over whatever landed. Posts ONE flat-JSON summary callback to wake Trigger."""
+    one ephemeral disk. For each family, SEQUENTIALLY (download → transform → append-LOCAL →
+    rm CSV) accumulate every year into a local Lance dataset (never two years' CSVs on disk
+    at once), then build scalar indexes ONCE and publish the whole family to R2 via boto3
+    (uniform-part multipart — the R2-compliant write the direct Lance→R2 path cannot do).
+    Per-unit failures are recorded and skipped (one bad year must not sink the family); the
+    family still indexes + publishes whatever landed. Posts ONE flat-JSON summary callback."""
     import datetime as dt
+    import shutil
 
     started_at = dt.datetime.now(dt.timezone.utc)
-    so = _r2_storage_options()
     units = _resolve_units(only_family, only_year)
 
-    # Group by family, preserving registry order, so we can index each once at its end.
+    # Group by family, preserving registry order (general → research → ownership).
     by_family: dict[str, list[dict]] = {}
     for u in units:
         by_family.setdefault(u["family"], []).append(u)
 
     per_unit: list[dict] = []
-    index_status: dict[str, list[str]] = {}
+    by_family_summary: dict[str, dict] = {}
     failures: list[dict] = []
+    s3 = _s3_client()
 
     for family, fam_units in by_family.items():
+        local_ds = _local_ds(family)
+        shutil.rmtree(local_ds, ignore_errors=True)
+        landed: list[int] = []
         for unit in fam_units:
             try:
-                per_unit.append(_ingest_unit(unit, so))
+                # create on the first LANDED year (a leading failure keeps create=True).
+                per_unit.append(_ingest_year_local(unit, local_ds, create=(len(landed) == 0)))
+                landed.append(unit["year"])
             except Exception as exc:  # noqa: BLE001 — record + continue; re-run is idempotent
                 failures.append({"family": family, "year": unit["year"], "error": str(exc)})
-        if not skip_index:
+
+        built: list[str] = []
+        published = 0
+        publish_status = "skipped"
+        if landed:
+            if not skip_index:
+                try:
+                    print(f"[{family}] building indexes locally over {len(landed)} year(s)")
+                    built = _build_indexes_local(local_ds, family)
+                except Exception as exc:  # noqa: BLE001
+                    built = [f"ERROR: {exc}"]
+            pub_started = dt.datetime.now(dt.timezone.utc)
+            fam_rows = sum(r["rows_processed"] for r in per_unit if r["family"] == family)
             try:
-                print(f"[{family}] building indexes over the full dataset")
-                index_status[family] = _build_indexes(family, so)
+                published = _replace_r2_prefix(s3, _family_prefix(family), local_ds)
+                publish_status = "success"
+                print(f"[{family}] published {published} files → {FAMILIES[family]['uri']}")
             except Exception as exc:  # noqa: BLE001
-                index_status[family] = [f"ERROR: {exc}"]
+                publish_status = "error"
+                failures.append({"family": family, "year": "publish", "error": str(exc)})
+                print(f"[{family}] PUBLISH FAILED: {exc}")
+            _record_run("publish", family, FAMILIES[family]["uri"], None, None, None,
+                        fam_rows, 0, publish_status,
+                        None if publish_status == "success" else "boto3 publish failed",
+                        pub_started, dt.datetime.now(dt.timezone.utc))
+        shutil.rmtree(local_ds, ignore_errors=True)  # free disk before the next family
+
+        by_family_summary[family] = {
+            "rows": sum(r["rows_processed"] for r in per_unit if r["family"] == family),
+            "years": sorted(r["year"] for r in per_unit if r["family"] == family),
+            "indices": built,
+            "files_published": published,
+            "publish": publish_status,
+        }
 
     completed_at = dt.datetime.now(dt.timezone.utc)
     ok = [r for r in per_unit if r["status"] == "success"]
+    published_ok = all(v["publish"] == "success" for v in by_family_summary.values()
+                       if v["years"])
     summary = {
-        "status": "success" if not failures else ("partial" if ok else "error"),
+        "status": "success" if (not failures and published_ok)
+                  else ("partial" if ok else "error"),
         "feed": FEED,
         "phase": "refresh_all",
         "units_total": len(units),
         "units_succeeded": len(ok),
-        "units_failed": len(failures),
+        "units_failed": len([f for f in failures if f["year"] != "publish"]),
         "rows_processed": sum(r["rows_processed"] for r in ok),
-        "by_family": {
-            fam: {
-                "rows": sum(r["rows_processed"] for r in per_unit
-                            if r["family"] == fam and r["status"] == "success"),
-                "years": sorted(r["year"] for r in per_unit
-                                if r["family"] == fam and r["status"] == "success"),
-                "indices": index_status.get(fam, []),
-            }
-            for fam in by_family
-        },
+        "by_family": by_family_summary,
         "failures": failures,
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
     }
     _record_run("refresh_all", None, None, None, None, None,
                 summary["rows_processed"], 0, summary["status"],
-                None if not failures else str(failures), started_at, completed_at)
+                None if not failures else str(failures)[:2000], started_at, completed_at)
     _post_callback(trigger_callback_url, summary)
 
     if summary["status"] == "error":
-        raise RuntimeError(f"cms_open_payments refresh_all: all {len(units)} units failed")
+        raise RuntimeError(f"cms_open_payments refresh_all: no units landed of {len(units)}")
     return summary
 
 
@@ -895,19 +1062,37 @@ def refresh_all(
     timeout=60 * 60 * 3,
     memory=49152,  # BTREE sort over the full ~40-50M-row General dataset (bypass-spilling)
     cpu=8.0,
+    ephemeral_disk=524288,  # stage the full family dataset locally before reindexing
 )
 def reindex_family(family: str) -> dict:
-    """(Re)build the scalar indexes on an already-written family dataset (no re-ingest)."""
+    """(Re)build the scalar indexes without re-ingesting: stage the committed R2 dataset to
+    local disk, index locally (no R2 multipart), republish via boto3. Idempotent."""
+    import shutil
+
+    import lance
+
     family = family.strip().lower()
     if family not in FAMILIES:
         raise ValueError(f"family must be one of {sorted(FAMILIES)}, got {family!r}")
-    so = _r2_storage_options()
-    built = _build_indexes(family, so)
-    import lance
+    cfg = FAMILIES[family]
+    local_ds = _local_ds(family)
+    prefix = _family_prefix(family)
 
-    ds = lance.dataset(FAMILIES[family]["uri"], storage_options=so)
-    return {"family": family, "dataset_uri": FAMILIES[family]["uri"], "rows": ds.count_rows(),
-            "built": built, "committed_indices": _list_committed_indices(ds)}
+    s3 = _s3_client()
+    staged = _download_r2_prefix(s3, prefix, local_ds)
+    if staged == 0:
+        raise RuntimeError(f"{family}: no dataset at {cfg['uri']} to reindex")
+    print(f"Staged {staged} files from {cfg['uri']} → {local_ds}")
+    try:
+        built = _build_indexes_local(local_ds, family)
+        published = _replace_r2_prefix(s3, prefix, local_ds)
+        ds = lance.dataset(local_ds)
+        out = {"family": family, "dataset_uri": cfg["uri"], "rows": ds.count_rows(),
+               "built": built, "files_published": published,
+               "committed_indices": _list_committed_indices(ds)}
+    finally:
+        shutil.rmtree(local_ds, ignore_errors=True)
+    return out
 
 
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=60 * 5)
