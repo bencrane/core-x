@@ -26,6 +26,11 @@ Arrow schema:
 V2 carries `BOF`/`EOF` sentinel lines (filtered). Encoding is content-detected
 (strict UTF-8, else lossless cp1252→UTF-8). The cp1252 V2 twins are deduped out.
 
+The corporate URL ("Entity URL") is materialized as a flat, BTREE-indexed
+`entity_url` column for the SAM↔PDL identity-resolution spine. Its pipe position
+is width-dependent (120-field → f[25], 142-field → f[27]; url_purity >= 0.99)
+and extracted row-wise off len(f). It remains retained losslessly in pipe_fields.
+
     modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill
     modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print deduped keys
     modal deploy pipelines/sam_gov/entity_registrations_bulk.py
@@ -72,6 +77,19 @@ app = modal.App("sam-gov-entity-pipelines", image=image)
 # from one sampled record per family; positions past `dba_name` drift between
 # layouts and are deferred to reconciliation — every field is retained losslessly
 # in `pipe_fields`, so nothing is dropped.
+#
+# KNOWN DEFECT (surfaced by the SAM↔PDL spine build, 2026-06): keying this map on
+# `format_family` is UNSAFE. `_classify()` derives the family from a FILENAME
+# token (`_V2_`); many 142-field v2-LAYOUT extracts lack that token and are
+# mislabeled `legacy_v1`, so this map misprojects them — the real UEI (f[1])
+# lands in `duns`, a date (f[11]) lands in `legal_business_name`, and `uei` is
+# forced NULL. The reliable layout key is the record WIDTH (len(f)): 120 = legacy
+# layout, 142 = v2 layout. `entity_url` below is already extracted width-aware for
+# this reason. FIX (recommended before production lock): drive uei/duns/cage/
+# status/dates/name off len(f) too (the verified width→position map lives in
+# pipelines/resolution/spine_sql.py:SAM_FIELD_POS), then re-backfill. Until then
+# the flat uei/legal_business_name columns are unreliable for the mislabeled rows;
+# the spine derives them width-aware and does not depend on them.
 FIELD_MAP = {
     "legacy_v1": {
         "uei": None, "duns": 1, "cage_code": 3, "registration_status": 5,
@@ -191,6 +209,16 @@ def _build_sql(family: str, scratch_path: str, enc: str, label: str, key: str) -
          datecol("last_update_date"), datecol("activation_date"), strcol("legal_business_name"),
          strcol("dba_name")]
     )
+    # Corporate URL ("Entity URL") — first-class flat column powering the
+    # SAM<->PDL identity-resolution spine. Its position in the pipe array is
+    # width-dependent (structural probe, url_purity >= 0.99): 120-field rows
+    # -> f[25], 142-field rows -> f[27]. Extracted row-wise off len(f) so both
+    # legacy widths and v2 resolve in one pass; BTREE-indexed below as a
+    # resolution key. Still retained losslessly inside pipe_fields.
+    entity_url = (
+        "nullif(trim(CASE WHEN len(f) = 120 THEN f[25] "
+        "WHEN len(f) = 142 THEN f[27] END), '') AS entity_url"
+    )
     return f"""
 WITH raw AS (
     SELECT rtrim(col0, chr(13)) AS line
@@ -208,6 +236,7 @@ p AS (
 )
 SELECT
     {projections},
+    {entity_url},
     f AS pipe_fields,
     len(f) AS field_count,
     '{family}' AS format_family,
@@ -404,7 +433,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
 
         # BTREE scalar indexes on the resolution keys (best-effort per index).
         ds = lance.dataset(LOCAL_DATASET)
-        for col in ("uei", "cage_code", "extract_label"):
+        for col in ("uei", "cage_code", "extract_label", "entity_url"):
             try:
                 ds.create_scalar_index(col, index_type="BTREE")
             except Exception as exc:  # noqa: BLE001
