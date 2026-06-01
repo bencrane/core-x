@@ -63,7 +63,12 @@ ZIP_URL = os.environ.get(
     "https://files.usaspending.gov/database_download/usaspending-db_20260506.zip",
 )
 # Lance system-of-record tier (NOT the landing/raw zone). One dataset per table.
+# Lance is written to LOCAL disk then published to R2 via boto3 (uniform multipart
+# parts) — Lance's own object-store writer trips R2's "all non-trailing parts must
+# have the same length" rule on large data files. ACTIVE_BASE is for reference/
+# verification (s3:// URI); ACTIVE_PREFIX is the boto3 key prefix.
 ACTIVE_BASE = os.environ.get("USASPENDING_LANCE_BASE", "s3://data-sink/active/usaspending/")
+ACTIVE_PREFIX = "active/usaspending/"
 SCRATCH_DIR = "/tmp"
 FEED = "usaspending_bulk"
 
@@ -406,9 +411,9 @@ WITH raw AS (
     SELECT *
     FROM read_csv(
         '{gz_path}',
-        delim = '\t', header = false, quote = '', escape = '',
+        auto_detect = false, delim = '\t', header = false, quote = '', escape = '',
         nullstr = '\\N', null_padding = true, new_line = '\\n',
-        ignore_errors = false,
+        max_line_size = 268435456, ignore_errors = false,
         columns = {{{read_cols}}}
     )
     WHERE "{first}" <> '\\.'
@@ -602,26 +607,56 @@ def _load_toc_text(s3) -> str:
     return obj["Body"].read().decode("latin-1")
 
 
+def _replace_r2_prefix(s3, prefix: str, local_dir: str) -> int:
+    """Idempotent publish: wipe the R2 key prefix, then upload the local Lance
+    dataset (boto3 s3transfer = uniform-part multipart, R2-compliant — unlike
+    Lance's own object-store writer). Per-table prefix → other datasets untouched.
+    Returns files uploaded."""
+    import os
+
+    to_del = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            to_del.append({"Key": o["Key"]})
+            if len(to_del) == 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                to_del = []
+    if to_del:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+
+    uploaded = 0
+    for root, _, files in os.walk(local_dir):
+        for fn in files:
+            lp = os.path.join(root, fn)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            s3.upload_file(lp, BUCKET, prefix + rel)
+            uploaded += 1
+    return uploaded
+
+
 def _ingest(entry: dict, trigger_callback_url) -> dict:
     """Shared ingest core. Standard tables materialize one Arrow table; giants
-    stream batches via to_arrow_reader. Per-table dataset → overwrite is
-    idempotent and conflict-free across concurrent tables."""
+    stream batches via to_arrow_reader. Lance is written to LOCAL disk (no R2
+    multipart) then published to R2 via boto3 (uniform parts). Per-table prefix →
+    idempotent and conflict-free: re-running one table replaces only its dataset."""
     import datetime as dt
     import os.path
+    import shutil
 
     import duckdb
     import lance
 
     started_at = dt.datetime.now(dt.timezone.utc)
     schema, table, size_class = entry["schema"], entry["table"], entry["size_class"]
-    uri = f"{ACTIVE_BASE}{table}/"
+    prefix = f"{ACTIVE_PREFIX}{table}/"
+    local_ds = os.path.join(SCRATCH_DIR, f"{table}_lance")
+    gz_path = os.path.join(SCRATCH_DIR, f"{entry['dump_id']}.dat.gz")
     rows = 0
     status = "error"
     error = None
 
     try:
         s3 = _s3_client()
-        gz_path = os.path.join(SCRATCH_DIR, f"{entry['dump_id']}.dat.gz")
         s3.download_file(BUCKET, entry["landing_key"], gz_path)
 
         toc_text = _load_toc_text(s3)
@@ -629,11 +664,10 @@ def _ingest(entry: dict, trigger_callback_url) -> dict:
         types = _ddl_types(toc_text, schema, table)
         sql = _build_ingest_sql(gz_path, columns, types, schema, table)
 
-        so = _r2_storage_options()
+        shutil.rmtree(local_ds, ignore_errors=True)
         common = dict(data_storage_version=DATA_STORAGE_VERSION,
                       max_rows_per_file=MAX_ROWS_PER_FILE,
-                      max_bytes_per_file=MAX_BYTES_PER_FILE,
-                      storage_options=so)
+                      max_bytes_per_file=MAX_BYTES_PER_FILE)  # local write — no storage_options
 
         con = duckdb.connect(":memory:")
         try:
@@ -642,20 +676,27 @@ def _ingest(entry: dict, trigger_callback_url) -> dict:
             rel = con.sql(sql)
             if size_class == "giant":
                 reader = rel.to_arrow_reader(batch_size=500_000)
-                lance.write_dataset(reader, uri, mode="overwrite",
+                lance.write_dataset(reader, local_ds, mode="create",
                                     schema=reader.schema, **common)
-                rows = lance.dataset(uri, storage_options=so).count_rows()
             else:
                 arrow_table = rel.to_arrow_table()
-                rows = arrow_table.num_rows
-                lance.write_dataset(arrow_table, uri, mode="overwrite", **common)
+                lance.write_dataset(arrow_table, local_ds, mode="create", **common)
         finally:
             con.close()
+
+        rows = lance.dataset(local_ds).count_rows()
+        uploaded = _replace_r2_prefix(s3, prefix, local_ds)
+        print(f"{schema}.{table}: {rows:,} rows → {uploaded} files at s3://{BUCKET}/{prefix}")
         status = "success"
     except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
         error = str(exc)
         status = "error"
     finally:
+        shutil.rmtree(local_ds, ignore_errors=True)
+        try:
+            os.remove(gz_path)
+        except OSError:
+            pass
         completed_at = dt.datetime.now(dt.timezone.utc)
         _record_run(entry, int(rows), status, error, started_at, completed_at)
         _post_callback(
@@ -725,27 +766,45 @@ def _list_committed_indices(ds) -> list:
         # column even in a large container. In-memory sort is within RAM here.
         modal.Secret.from_dict({"LANCE_BYPASS_SPILLING": "true"}),
     ],
-    timeout=60 * 120,
+    timeout=60 * 180,
     memory=32768,
     cpu=8.0,
+    ephemeral_disk=512 * 1024,   # stage the dataset (≤ tens of GiB for giants) locally
 )
 def build_table_indexes(table: str) -> dict:
-    """Phase 3 — build BTREE + BITMAP scalar indexes on one active dataset. Columns
-    are validated against the committed schema (absent → skipped). create_scalar_index
-    defaults to replace=True → idempotent rebuild."""
+    """Phase 3 — build BTREE + BITMAP scalar indexes on one active dataset. The
+    dataset is staged R2 → LOCAL, indexed, then republished via boto3 (uniform
+    parts): indexing directly on R2 trips the same "non-trailing parts must match"
+    multipart rule the data write does. Columns absent from the schema are skipped;
+    create_scalar_index defaults to replace=True → idempotent rebuild."""
+    import os
+    import shutil
+
     import lance
 
     plan = INDEX_PLAN.get(table)
     if not plan:
         return {"table": table, "status": "no_index_plan"}
 
-    so = _r2_storage_options()
-    uri = f"{ACTIVE_BASE}{table}/"
-    ds = lance.dataset(uri, storage_options=so)
+    s3 = _s3_client()
+    prefix = f"{ACTIVE_PREFIX}{table}/"
+    local_ds = os.path.join(SCRATCH_DIR, f"{table}_lance_idx")
+    shutil.rmtree(local_ds, ignore_errors=True)
+
+    staged = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            dst = os.path.join(local_ds, o["Key"][len(prefix):])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], dst)
+            staged += 1
+    if staged == 0:
+        return {"table": table, "status": "dataset_not_found", "prefix": prefix}
+
+    ds = lance.dataset(local_ds)
     present = set(ds.schema.names)
     rows = ds.count_rows()
     built = {"btree": [], "bitmap": [], "skipped": []}
-
     for kind, idx_type in (("btree", "BTREE"), ("bitmap", "BITMAP")):
         for col in plan.get(kind, []):
             if col not in present:
@@ -758,9 +817,11 @@ def build_table_indexes(table: str) -> dict:
             except Exception as exc:  # noqa: BLE001
                 built["skipped"].append(f"{col} ({exc})")
 
-    ds = lance.dataset(uri, storage_options=so)  # reopen → committed index set
-    return {"table": table, "rows": rows, **built,
-            "committed_indices": _list_committed_indices(ds)}
+    uploaded = _replace_r2_prefix(s3, prefix, local_ds)
+    committed = _list_committed_indices(lance.dataset(local_ds))
+    shutil.rmtree(local_ds, ignore_errors=True)
+    return {"table": table, "rows": rows, "uploaded": uploaded, **built,
+            "committed_indices": committed}
 
 
 # ─────────────────────────── ops bootstrap ───────────────────────────
@@ -776,6 +837,22 @@ def list_landing() -> dict:
             objs.append({"key": o["Key"], "bytes": o["Size"]})
     return {"prefix": prefix, "count": len(objs),
             "total_bytes": sum(o["bytes"] for o in objs), "objects": objs}
+
+
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=300)
+def active_status() -> dict:
+    """List active/usaspending/ and summarize each landed Lance dataset (files +
+    bytes per table) — Phase 2 dataset-landing verification."""
+    s3 = _s3_client()
+    tables: dict[str, dict] = {}
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=ACTIVE_PREFIX):
+        for o in page.get("Contents", []):
+            t = o["Key"][len(ACTIVE_PREFIX):].split("/", 1)[0]
+            d = tables.setdefault(t, {"files": 0, "bytes": 0})
+            d["files"] += 1
+            d["bytes"] += o["Size"]
+    return {"prefix": ACTIVE_PREFIX, "dataset_count": len(tables),
+            "datasets": {t: tables[t] for t in sorted(tables)}}
 
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=300)
@@ -801,6 +878,28 @@ def abort_incomplete_mpus() -> dict:
         key_marker = resp.get("NextKeyMarker")
         upload_marker = resp.get("NextUploadIdMarker")
     return {"prefix": prefix, "aborted": len(aborted), "details": aborted}
+
+
+@app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=60)
+def ops_summary() -> dict:
+    """Latest ops.* terminal row per table for this snapshot — Phase 2 ground truth."""
+    import psycopg
+
+    dsn = os.environ["HQX_DB_URL_POOLED"]
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (schema_name, table_name)
+                   schema_name, table_name, status, rows_processed, error, size_class
+            FROM ops.usaspending_table_runs
+            WHERE snapshot_date = %s
+            ORDER BY schema_name, table_name, recorded_at DESC
+            """,
+            (SNAPSHOT_DATE,),
+        )
+        out = [{"schema": r[0], "table": r[1], "status": r[2], "rows": r[3],
+                "error": (r[4] or "")[:140], "size_class": r[5]} for r in cur.fetchall()]
+    return {"tables": out}
 
 
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=120)
@@ -883,6 +982,30 @@ def verify() -> None:
         print(f"SIZE MISMATCH ({len(mismatch)}): {mismatch}")
     if not missing and not mismatch:
         print(f"✓ all {len(expected)} table members present at exact central-directory sizes")
+
+
+@app.local_entrypoint()
+def ops_status() -> None:
+    """Print the latest ops.* terminal state per table for this snapshot."""
+    res = ops_summary.remote()
+    by = {"success": [], "error": [], "other": []}
+    for t in res["tables"]:
+        by.get(t["status"] if t["status"] in by else "other").append(t)
+    print(f"ops rows: {len(res['tables'])}  success={len(by['success'])}  "
+          f"error={len(by['error'])}  other={len(by['other'])}")
+    for t in sorted(res["tables"], key=lambda x: (x["status"], x["table"])):
+        flag = "" if t["status"] == "success" else "  ‹‹"
+        print(f"  [{t['status']:<7}] {t['schema']}.{t['table']:<48} "
+              f"{(t['rows'] or 0):>12,} rows  {t['size_class'] or ''}{flag} {t['error']}")
+
+
+@app.local_entrypoint()
+def active() -> None:
+    """Summarize the landed Lance datasets in active/usaspending/ (Phase 2 check)."""
+    res = active_status.remote()
+    print(f"active/usaspending/ — {res['dataset_count']} datasets")
+    for t, d in res["datasets"].items():
+        print(f"  {t:<52} {d['files']:>5} files  {d['bytes']:>16,} B")
 
 
 @app.local_entrypoint()
