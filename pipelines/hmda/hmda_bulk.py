@@ -870,12 +870,14 @@ def reindex_dataset(dataset: str, trigger_callback_url: str | None = None) -> di
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=6 * 3600, memory=32768, cpu=8.0,
 )
-def backfill_all() -> dict:
-    """Run the ENTIRE 2016–2025 sweep inside ONE Modal container: sequential per-year ingest
-    (via .local() — same process, so the unified-dataset appends never collide) then BTREE
-    indexing. Dispatch detached (`modal run --detach …::run_backfill`) so the sweep completes
-    server-side independent of the client/session. Sources must already be in R2 landing
-    (stage_all, or the sandbox stager); each year's ops.hmda_runs row lands as it completes."""
+def backfill_all(force: bool = False) -> dict:
+    """Orchestrate the ENTIRE 2016–2025 sweep server-side: dispatch each year via .remote()
+    (a FRESH container per year — memory resets, so DuckDB/Arrow/Lance working sets do NOT
+    accumulate across years; a single reused container OOMs by ~year 4), awaiting each before
+    the next so the unified-dataset appends stay single-writer (no manifest collision). Then
+    BTREE indexing. Dispatch detached (`modal run --detach …::run_backfill`) so the sweep
+    completes independent of the client. Sources must already be in R2 landing (stage_all /
+    sandbox stager); each year's ops.hmda_runs row lands as it completes."""
     s3 = _s3_client()
     missing = []
     for kind, years in (("lar", LAR_YEARS), ("panel", PANEL_YEARS)):
@@ -887,15 +889,38 @@ def backfill_all() -> dict:
     if missing:
         raise RuntimeError(f"not staged in R2 landing: {missing} — run stage_all first")
 
+    # Resumable: skip (dataset, year) already at status=success (cheap re-runs after an
+    # interruption). force=True re-ingests every year. Counts for skipped years come from ops.
+    done: dict[tuple, int] = {}
+    if not force:
+        import psycopg
+        dsn = os.environ.get("HQX_DB_URL_POOLED")
+        if dsn:
+            with psycopg.connect(dsn) as cc, cc.cursor() as cur:
+                cur.execute("""
+                  select dataset,data_year,rows_processed from (
+                    select distinct on (dataset,data_year) dataset,data_year,status,rows_processed
+                    from ops.hmda_runs order by dataset,data_year,recorded_at desc) s
+                  where status='success'""")
+                done = {(d, y): int(n or 0) for d, y, n in cur.fetchall()}
+
     lar_counts: dict[int, int] = {}
     for y in LAR_YEARS:
-        r = ingest_lar_year.local(y, trigger_callback_url=None)
+        if ("lar", y) in done:
+            lar_counts[y] = done[("lar", y)]
+            print(f"LAR {y}: {lar_counts[y]:,} (already done — skip)", flush=True)
+            continue
+        r = ingest_lar_year.remote(y, trigger_callback_url=None)  # fresh container per year
         lar_counts[y] = int(r["rows_processed"])
         print(f"LAR {y}: {lar_counts[y]:,} rows", flush=True)
 
     panel_counts: dict[int, int] = {}
     for y in PANEL_YEARS:
-        r = ingest_panel_year.local(y, trigger_callback_url=None)
+        if ("panels", y) in done:
+            panel_counts[y] = done[("panels", y)]
+            print(f"PANEL {y}: {panel_counts[y]:,} (already done — skip)", flush=True)
+            continue
+        r = ingest_panel_year.remote(y, trigger_callback_url=None)  # fresh container per year
         panel_counts[y] = int(r["rows_processed"])
         print(f"PANEL {y}: {panel_counts[y]:,} rows", flush=True)
 
