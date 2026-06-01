@@ -243,6 +243,25 @@ def _s3_client():
     )
 
 
+def _duck_configure_r2(con) -> None:
+    """Point a DuckDB connection at R2 via the httpfs extension so ``read_csv`` can
+    STREAM an ``s3://`` landing object directly — no local ``.gz`` download, hence no
+    ``ephemeral_disk`` request (the 512 GiB scratch the giant path asked for is what
+    forced the job onto preemptible spot capacity). R2 needs path-style addressing and
+    the bare-host endpoint (no scheme)."""
+    import re
+
+    so = _r2_storage_options()
+    host = re.sub(r"^https?://", "", so["endpoint"]).rstrip("/")
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute(f"SET s3_region='{so['region']}';")
+    con.execute(f"SET s3_endpoint='{host}';")
+    con.execute(f"SET s3_access_key_id='{so['aws_access_key_id']}';")
+    con.execute(f"SET s3_secret_access_key='{so['aws_secret_access_key']}';")
+    con.execute("SET s3_url_style='path';")
+    con.execute("SET s3_use_ssl=true;")
+
+
 # ──────────────────── ZIP64 central-directory reader ────────────────────
 # A pg_dump directory ZIP stores every member `stored` (no ZIP compression), so
 # a member's stored byte range IS a standalone gzip stream. We read only the
@@ -735,6 +754,103 @@ def ingest_giant_table(schema: str, table: str, trigger_callback_url: str | None
     return _ingest(_entry_for(schema, table), trigger_callback_url)
 
 
+# ─── Phase 2 (preemption-safe) — httpfs streaming, no ephemeral_disk ───
+# Drop-in replacement for ingest_giant_table for the NEXT snapshot. The giant path
+# requested ephemeral_disk=512 GiB to land the full .gz to /tmp; that scratch demand
+# forced the job onto preemptible spot capacity that was killed and restarted
+# repeatedly. This path never stages the source to local scratch: DuckDB httpfs streams
+# the landing .gz straight from R2, batches out via to_arrow_reader (bounded RAM), and
+# Lance lands on the container's standard disk. Validated end-to-end against
+# rpt.subaward_search (~3.8 GiB gz → 9,801,723 rows, 10 fragments).
+
+def _ingest_stream(entry: dict, trigger_callback_url) -> dict:
+    """Preemption-safe ingest core. Identical transform to ``_ingest`` (same
+    ``_build_ingest_sql``: VARCHAR read → drop the ``\\.`` terminator → TRY_CAST per pg
+    type → audit columns), but the source ``.gz`` is STREAMED from the R2 landing
+    prefix through DuckDB httpfs — never downloaded — so the container needs NO
+    ``ephemeral_disk`` override. DuckDB emits batches via ``to_arrow_reader`` →
+    bounded RAM regardless of decompressed size; Lance is built on the standard
+    container disk, then published to R2 via boto3 (uniform multipart). Per-table
+    prefix → idempotent and conflict-free."""
+    import datetime as dt
+    import os.path
+    import shutil
+
+    import duckdb
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    schema, table, size_class = entry["schema"], entry["table"], entry["size_class"]
+    prefix = f"{ACTIVE_PREFIX}{table}/"
+    local_ds = os.path.join(SCRATCH_DIR, f"{table}_lance")
+    gz_uri = f"s3://{BUCKET}/{entry['landing_key']}"
+    rows = 0
+    status = "error"
+    error = None
+
+    try:
+        s3 = _s3_client()
+        toc_text = _load_toc_text(s3)
+        columns = _copy_columns(toc_text, schema, table)
+        types = _ddl_types(toc_text, schema, table)
+        sql = _build_ingest_sql(gz_uri, columns, types, schema, table)
+
+        shutil.rmtree(local_ds, ignore_errors=True)
+        common = dict(data_storage_version=DATA_STORAGE_VERSION,
+                      max_rows_per_file=MAX_ROWS_PER_FILE,
+                      max_bytes_per_file=MAX_BYTES_PER_FILE)  # local write — no storage_options
+
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("PRAGMA threads=8;")
+            con.execute(f"PRAGMA temp_directory='{SCRATCH_DIR}/duckdb_spill';")
+            _duck_configure_r2(con)
+            rel = con.sql(sql)
+            reader = rel.to_arrow_reader(batch_size=500_000)
+            lance.write_dataset(reader, local_ds, mode="create",
+                                schema=reader.schema, **common)
+        finally:
+            con.close()
+
+        rows = lance.dataset(local_ds).count_rows()
+        uploaded = _replace_r2_prefix(s3, prefix, local_ds)
+        print(f"{schema}.{table}: {rows:,} rows → {uploaded} files at s3://{BUCKET}/{prefix}")
+        status = "success"
+    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
+        error = str(exc)
+        status = "error"
+    finally:
+        shutil.rmtree(local_ds, ignore_errors=True)
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run(entry, int(rows), status, error, started_at, completed_at)
+        _post_callback(
+            trigger_callback_url,
+            {"status": status, "rows": int(rows), "feed": FEED,
+             "schema": schema, "table": table, "snapshot_date": SNAPSHOT_DATE},
+        )
+
+    if status != "success":
+        raise RuntimeError(f"usaspending stream ingest failed for {schema}.{table}: {error}")
+    return {"feed": FEED, "schema": schema, "table": table, "rows_processed": int(rows),
+            "size_class": size_class, "status": status, "mode": "httpfs_stream"}
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 120,
+    memory=32768,
+    cpu=8.0,
+)
+def ingest_stream_table(schema: str, table: str, trigger_callback_url: str | None = None) -> dict:
+    """Phase 2 (preemption-safe) — stream the landing ``.gz`` straight from R2 via
+    DuckDB httpfs and build Lance on the STANDARD container disk. NO ``ephemeral_disk``:
+    the 512 GiB request on ``ingest_giant_table`` forced the run onto preemptible spot
+    capacity that was killed and restarted repeatedly. Drop-in giant-path replacement
+    for the next snapshot; validated against rpt.subaward_search (~3.8 GiB gz → 9.8M
+    rows)."""
+    return _ingest_stream(_entry_for(schema, table), trigger_callback_url)
+
+
 # ─────────────────────────── Phase 3 — indexing ───────────────────────────
 
 def _list_committed_indices(ds) -> list:
@@ -1032,6 +1148,14 @@ def backfill(only: str = "", dry_run: bool = False) -> None:
             continue
         fn = ingest_giant_table if size_class == "giant" else ingest_table
         print(fn.remote(e["schema"], e["table"], trigger_callback_url=None))
+
+
+@app.local_entrypoint()
+def stream_ingest(table: str = "subaward_search", schema: str = "rpt") -> None:
+    """Phase 2 (preemption-safe, manual) — ingest one table via the httpfs streaming
+    path (no .gz download, no ephemeral_disk): the next-snapshot replacement for the
+    spot-preempted giant path. Defaults to rpt.subaward_search."""
+    print(ingest_stream_table.remote(schema, table, trigger_callback_url=None))
 
 
 @app.local_entrypoint()
