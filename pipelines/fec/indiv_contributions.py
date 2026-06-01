@@ -43,14 +43,21 @@ Reconnaissance (verified across cycles 1980 / 1996 / 2008 / 2024):
     (4.8M leading-zero rows in 2024 alone), cmte_id, other_id, tran_id, image_num,
     file_num. A numeric cast would corrupt leading zeros / precision. No VARIANT.
 
-    modal deploy pipelines/fec/indiv_contributions.py
-    modal run    pipelines/fec/indiv_contributions.py::initdb               # create ops.* ledger
-    modal run    pipelines/fec/indiv_contributions.py::land                 # Phase 1: fan-out land all 24 cycles
-    modal run    pipelines/fec/indiv_contributions.py::land --only 1980     # land one cycle
-    modal run    pipelines/fec/indiv_contributions.py::backfill             # Phase 2: sequential ingest all 24
-    modal run    pipelines/fec/indiv_contributions.py::backfill --only 2024 # ingest one cycle
-    modal run    pipelines/fec/indiv_contributions.py::index                # Phase 3: build indexes once
-    modal run    pipelines/fec/indiv_contributions.py::show_ledger
+Execution model — DETACHED, server-side. A multi-cycle backfill runs for hours, so
+the orchestration MUST run inside Modal, not on a local client. ``land_all`` and
+``backfill_all`` are server-side ``@app.function`` orchestrators; invoke them with
+``modal run --detach`` so the sweep survives a local-client disconnect (the
+in-flight cycle and all remaining cycles keep running server-side). The ``land`` /
+``backfill`` local_entrypoints drive the loop on the CLIENT and are kept only for
+short interactive subsets — NEVER use them for an unattended full run.
+
+    modal deploy        pipelines/fec/indiv_contributions.py
+    modal run           pipelines/fec/indiv_contributions.py::initdb                  # create ops.* ledger
+    modal run --detach  pipelines/fec/indiv_contributions.py::land_all                # Phase 1: server-side fan-out land all 24
+    modal run --detach  pipelines/fec/indiv_contributions.py::backfill_all            # Phase 2: server-side sequential ingest all 24
+    modal run --detach  pipelines/fec/indiv_contributions.py::backfill_all --only 202 # ... a subset (e.g. 2020/2022/2024/2026)
+    modal run --detach  pipelines/fec/indiv_contributions.py::build_fec_indiv_indexes # Phase 3: build indexes once
+    modal run           pipelines/fec/indiv_contributions.py::show_ledger
 """
 
 from __future__ import annotations
@@ -605,6 +612,56 @@ def build_fec_indiv_indexes() -> dict:
     print(f"Committed indices: {committed}")
     return {"dataset": DATASET_URI, "rows": rows, "built": built,
             "committed_indices": committed}
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=60 * 60 * 2,
+    memory=2048,
+    cpu=1.0,
+)
+def land_all(only: str = "") -> dict:
+    """Phase 1 orchestrator — runs ENTIRELY SERVER-SIDE so the fan-out survives a
+    local-client disconnect. Invoke detached:
+        modal run --detach pipelines/fec/indiv_contributions.py::land_all
+    Dispatches fetch_indiv_to_landing across the cycles via .map (Modal caps real
+    concurrency at the worker's max_containers=8). Independent landing keys, no Lance
+    writes → safe to parallelize."""
+    years = _select_years(only)
+    print(f"Phase 1 (server-side) — landing {len(years)} cycle(s) → s3://{BUCKET}/{LANDING_PREFIX}", flush=True)
+    results = list(fetch_indiv_to_landing.map(years))
+    total = sum(int(r.get("rows", 0)) for r in results)
+    print(f"Phase 1 complete — {len(results)} cycle(s), ~{total:,} rows landed", flush=True)
+    return {"cycles": len(results), "rows": total, "results": results}
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60 * 8,
+    memory=2048,
+    cpu=1.0,
+)
+def backfill_all(only: str = "") -> dict:
+    """Phase 2 orchestrator — runs ENTIRELY SERVER-SIDE so the sequential sweep
+    survives a local-client disconnect (the killed-`modal run` failure mode). Invoke
+    detached:
+        modal run --detach pipelines/fec/indiv_contributions.py::backfill_all
+        modal run --detach pipelines/fec/indiv_contributions.py::backfill_all --only 202
+    Each cycle is a SEPARATE ingest_indiv_cycle container (its own 16 GiB / 512 GiB
+    config); the calls are SEQUENTIAL → single Lance writer, no OCC conflict. Each
+    append is idempotent (delete WHERE cycle_year=N), so re-running a subset is safe.
+    A failed cycle re-raises and aborts the sweep — resume with --only on the rest."""
+    years = _select_years(only)
+    print(f"Phase 2 (server-side) — ingesting {len(years)} cycle(s) → {DATASET_URI}", flush=True)
+    results = []
+    for y in years:
+        print(f"=== cycle {y} ===", flush=True)
+        r = ingest_indiv_cycle.remote(_landing_key(y), y, None)
+        print(r, flush=True)
+        results.append(r)
+    total = sum(int(r.get("rows_processed", 0)) for r in results)
+    print(f"Phase 2 complete — {len(results)} cycle(s), {total:,} rows", flush=True)
+    return {"cycles": len(results), "rows": total, "results": results}
 
 
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=60 * 5)
