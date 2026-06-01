@@ -80,10 +80,15 @@ import modal
 
 BUCKET = "data-sink"
 
-# CKAN/DKAN metastore catalog. Overridable so the resolver is not pinned to one host.
+# CKAN/DKAN metastore catalog. ``show-reference-ids=false`` makes DKAN expand the
+# distribution references inline (distribution[].data.downloadURL); the bare endpoint
+# returns a flatter shape (distribution[].downloadURL). _download_urls tolerates BOTH, so
+# this param is for determinism, not correctness. Overridable so the resolver is not
+# pinned to one host.
 METASTORE_URL = os.environ.get(
     "CMS_OP_METASTORE_URL",
-    "https://openpaymentsdata.cms.gov/api/1/metastore/schemas/dataset/items",
+    "https://openpaymentsdata.cms.gov/api/1/metastore/schemas/dataset/items"
+    "?show-reference-ids=false",
 )
 
 SCRATCH_DIR = "/tmp/cms_open_payments"
@@ -255,22 +260,29 @@ _WORD_TO_FAMILY = {cfg["title_word"]: key for key, cfg in FAMILIES.items()}
 
 
 def _first_ref_data(values) -> list:
-    """DKAN nests reference fields as ``[{identifier, data}, …]``. Return the list of
-    inner ``data`` scalars (e.g. theme/keyword)."""
+    """DKAN reference fields (theme/keyword) arrive either as ``[{identifier, data}, …]``
+    (reference-expanded) or as bare scalars. Return the inner values either way."""
     out = []
     for v in values or []:
         if isinstance(v, dict) and "data" in v:
             out.append(v["data"])
+        elif isinstance(v, str):
+            out.append(v)
     return out
 
 
 def _download_urls(item: dict) -> list[str]:
-    """Pull every distribution downloadURL from a metastore item. Each distribution is a
-    ``{identifier, data:{downloadURL, format, …}}`` reference object."""
+    """Pull every distribution downloadURL from a metastore item, tolerant of BOTH DKAN
+    response shapes: reference-expanded (``distribution[].data.downloadURL``, returned with
+    show-reference-ids=false) and flat (``distribution[].downloadURL``, the bare endpoint)."""
     urls = []
     for dist in item.get("distribution", []) or []:
-        data = dist.get("data", {}) if isinstance(dist, dict) else {}
+        if not isinstance(dist, dict):
+            continue
+        data = dist.get("data")
         url = data.get("downloadURL") if isinstance(data, dict) else None
+        if not url:
+            url = dist.get("downloadURL")  # flat shape
         if url:
             urls.append(url)
     return urls
@@ -759,7 +771,7 @@ def discover_units(only_family: str | None = None, only_year: int | None = None)
     timeout=60 * 90,
     memory=32768,
     cpu=8.0,
-    ephemeral_disk=76800,  # ~75 GiB: one ~8 GB General year + DuckDB spill, with headroom
+    ephemeral_disk=524288,  # Modal floor (512 GiB) — far exceeds one ~8 GB year + DuckDB spill
 )
 def ingest_family_year(
     family: str, year: int, url: str | None = None,
@@ -803,7 +815,7 @@ def ingest_family_year(
     timeout=60 * 60 * 10,  # full historical backfill across all families/years, sequential
     memory=32768,
     cpu=8.0,
-    ephemeral_disk=76800,  # ~75 GiB; only one year resides on disk at a time
+    ephemeral_disk=524288,  # Modal floor (512 GiB); only one year resides on disk at a time
     retries=0,             # a 10 h job must not silently restart from scratch; re-run is idempotent
 )
 def refresh_all(
