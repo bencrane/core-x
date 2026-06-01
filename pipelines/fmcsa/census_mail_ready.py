@@ -31,12 +31,14 @@ What this worker adds on top of census (the achievable direct-mail intent):
   - Standardized mailing block: structured physical + mailing address fields plus a
     ready-to-render ``mail_to_block`` (delivery address preferred, physical
     fallback) and a ``mailable`` deliverability flag.
-  - Officer ↔ email anchor preserved on disk: ``officer_name`` paired with
-    ``contact_email`` on the same row, plus an explicit ``officer_email_anchor``
-    string. The link is soft (census does not assert the officer owns the mailbox)
-    but is materialized for downstream demand-side identity resolution.
-  - Contact anchors: phone / fax / cell, email + raw ``email_domain`` + the
-    suppressed corporate ``proxy_domain`` (passed through from census, not
+  - Officer names and the company email kept as STRICTLY SEPARATE columns
+    (``company_officer_1`` / ``company_officer_2`` vs ``email_address``). There is
+    deliberately NO glued officer<->email anchor: census does not assert the officer
+    owns the mailbox, and the on-file email is frequently a generic company inbox
+    (``info@`` / ``dispatch@`` / ``safety@``). Materializing a 1:1 officer<->email
+    string would manufacture a false identity and mis-target downstream GTM.
+  - Contact anchors: phone / fax / cell, ``email_address`` + raw ``email_domain`` +
+    the suppressed corporate ``proxy_domain`` (passed through from census, not
     recomputed — it already encodes the bridge's consumer-mailbox suppression).
   - MC number recovered from the ``docket{1,2,3}{,prefix}`` pairs (census carries
     no single docket column; ``carrier_docket`` is NULL in the tabular feed).
@@ -226,9 +228,9 @@ WITH base AS (
         {m_zip} AS mail_zip, {m_cty} AS mail_country,
         {_norm("phone")} AS phone, {_norm("fax")} AS fax,
         {_norm("cell_phone")} AS cell_phone,
-        {email} AS contact_email, {email_domain} AS email_domain,
+        {email} AS email_address, {email_domain} AS email_domain,
         {_norm("proxy_domain")} AS proxy_domain,
-        {officer1} AS officer_name, {officer2} AS officer_name_2,
+        {officer1} AS company_officer_1, {officer2} AS company_officer_2,
         {_norm("status_code")} AS status_code,
         {_norm("carrier_operation")} AS carrier_operation,
         {_norm("business_org_id")} AS business_org_id,
@@ -266,13 +268,12 @@ SELECT
     (COALESCE(mail_street, phy_street) IS NOT NULL
         AND COALESCE(mail_state, phy_state) IS NOT NULL
         AND COALESCE(mail_zip, phy_zip) IS NOT NULL)        AS mailable,
-    -- contact anchors
-    phone, fax, cell_phone, contact_email, email_domain, proxy_domain,
-    -- officer ↔ email anchor (soft link, materialized for identity resolution)
-    officer_name, officer_name_2,
-    CASE WHEN officer_name IS NOT NULL AND contact_email IS NOT NULL
-         THEN officer_name || ' <' || lower(contact_email) || '>' END
-                                                            AS officer_email_anchor,
+    -- contact anchors (company-level email; NOT asserted to belong to an officer)
+    phone, fax, cell_phone, email_address, email_domain, proxy_domain,
+    -- officer names — kept STRICTLY separate from email_address. No glued
+    -- officer<->email anchor: the company mailbox (often generic info@/dispatch@)
+    -- does not map 1:1 to a named officer, and asserting it would mis-target GTM.
+    company_officer_1, company_officer_2,
     -- low-cardinality status flags (BTREE-indexed)
     status_code,
     CASE status_code WHEN 'A' THEN 'Active' WHEN 'I' THEN 'Inactive'
@@ -407,8 +408,8 @@ def build_mail_ready(trigger_callback_url: str | None = None) -> dict:
             # Aggregate proof metrics straight off the built Arrow table.
             con.register("out", table)
             mailable = con.sql("SELECT count(*) FILTER (WHERE mailable) FROM out").fetchone()[0]
-            email_rows = con.sql("SELECT count(contact_email) FROM out").fetchone()[0]
-            officer_rows = con.sql("SELECT count(officer_name) FROM out").fetchone()[0]
+            email_rows = con.sql("SELECT count(email_address) FROM out").fetchone()[0]
+            officer_rows = con.sql("SELECT count(company_officer_1) FROM out").fetchone()[0]
         finally:
             con.close()
 
@@ -468,10 +469,9 @@ def dry_run_mail_ready() -> dict:
     out = {
         "rows": table.num_rows,
         "mailable": c("count(*) FILTER (WHERE mailable)"),
-        "email": c("count(contact_email)"),
+        "email": c("count(email_address)"),
         "proxy_domain": c("count(proxy_domain)"),
-        "officer": c("count(officer_name)"),
-        "officer_email_anchor": c("count(officer_email_anchor)"),
+        "officer": c("count(company_officer_1)"),
         "mc_number": c("count(mc_number)"),
         "schema": [f.name for f in table.schema],
     }
@@ -482,8 +482,8 @@ def dry_run_mail_ready() -> dict:
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=600)
 def verify_mail_ready(limit: int = 5) -> dict:
     """Read-back proof: open the published dataset from R2, report rows / schema /
-    indices, and return ``limit`` fully-parsed best-quality records (resolved name,
-    mailing block, email/domain + officer anchor)."""
+    indices, and return ``limit`` fully-parsed best-quality records — with the
+    company email_address and officer names projected as DISTINCT columns."""
     import duckdb
     import lance
 
@@ -500,12 +500,12 @@ def verify_mail_ready(limit: int = 5) -> dict:
     con.register("m", ds.scanner().to_reader())
     rel = con.sql(f"""
         SELECT carrier_dot, mc_number, legal_name, dba_name, mail_to_block,
-               contact_email, email_domain, proxy_domain, officer_name,
-               officer_email_anchor, status_label, carrier_operation_label,
-               entity_type, power_units
+               email_address, email_domain, proxy_domain,
+               company_officer_1, company_officer_2,
+               status_label, carrier_operation_label, entity_type, power_units
         FROM m
         WHERE legal_name IS NOT NULL AND mail_to_block IS NOT NULL
-          AND contact_email IS NOT NULL AND proxy_domain IS NOT NULL
+          AND email_address IS NOT NULL AND company_officer_1 IS NOT NULL
         LIMIT {int(limit)}
     """)
     cols = rel.columns
@@ -523,9 +523,8 @@ def main(dry_run: bool = False, sample: bool = False) -> None:
     if dry_run:
         d = dry_run_mail_ready.remote()
         print(f"[dry-run] rows={d['rows']:,} mailable={d['mailable']:,} "
-              f"email={d['email']:,} proxy_domain={d['proxy_domain']:,} "
-              f"officer={d['officer']:,} officer_email_anchor={d['officer_email_anchor']:,} "
-              f"mc_number={d['mc_number']:,}")
+              f"email_address={d['email']:,} proxy_domain={d['proxy_domain']:,} "
+              f"company_officer_1={d['officer']:,} mc_number={d['mc_number']:,}")
         print(f"[dry-run] out_cols={len(d['schema'])}: {d['schema']}")
         return
 

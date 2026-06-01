@@ -28,12 +28,11 @@
     {"name": "phone", "type": "string", "coverage_pct": 96.6, "desc": "Primary phone."},
     {"name": "fax", "type": "string", "desc": "Fax number."},
     {"name": "cell_phone", "type": "string", "desc": "Cell phone."},
-    {"name": "contact_email", "type": "string", "coverage_pct": 65.5, "role": "email_anchor", "desc": "Email address on file (raw case preserved)."},
-    {"name": "email_domain", "type": "string", "desc": "Bare host parsed from contact_email (after the last @, lowercased). No consumer-mailbox suppression — includes gmail.com etc."},
+    {"name": "email_address", "type": "string", "coverage_pct": 65.5, "role": "company_email", "desc": "Company email on file (raw case preserved). A GENERIC company-level mailbox (often info@/dispatch@/safety@) — NOT asserted to belong to any named officer. Kept strictly separate from the company_officer_* columns."},
+    {"name": "email_domain", "type": "string", "desc": "Bare host parsed from email_address (after the last @, lowercased). No consumer-mailbox suppression — includes gmail.com etc."},
     {"name": "proxy_domain", "type": "string", "coverage_pct": 16.6, "indexed": true, "role": "resolution_key", "desc": "Corporate web/email domain with consumer-mailbox + placeholder + regional-ISP suppression applied (NULL for shared mailboxes). The deterministic join key into the SAM↔FMCSA domain bridge. Passed through from census, not recomputed."},
-    {"name": "officer_name", "type": "string", "coverage_pct": 85.6, "role": "officer_anchor", "desc": "Primary company officer / authorized signatory."},
-    {"name": "officer_name_2", "type": "string", "desc": "Secondary company officer."},
-    {"name": "officer_email_anchor", "type": "string", "coverage_pct": 64.8, "role": "officer_anchor", "desc": "Soft officer↔email linkage materialized on disk as 'OFFICER NAME <email>'. The link is not asserted by FMCSA (the officer may not own the mailbox); preserved for downstream demand-side identity resolution."},
+    {"name": "company_officer_1", "type": "string", "coverage_pct": 85.6, "role": "officer", "desc": "Primary company officer / authorized signatory. Distinct column — NOT linked to email_address (no 1:1 assertion)."},
+    {"name": "company_officer_2", "type": "string", "desc": "Secondary company officer. Distinct column — NOT linked to email_address."},
     {"name": "status_code", "type": "string", "indexed": true, "role": "status_flag", "desc": "Carrier status code (A=Active, I=Inactive)."},
     {"name": "status_label", "type": "string", "role": "status_flag", "desc": "Human-readable status (Active / Inactive)."},
     {"name": "carrier_operation", "type": "string", "indexed": true, "role": "status_flag", "desc": "Operation classification code (A/B/C)."},
@@ -50,8 +49,8 @@
     {"name": "derived_at", "type": "timestamp", "desc": "UTC timestamp the projection was built."}
   ],
   "example_queries": [
-    {"intent": "Active interstate carriers in TX with a corporate domain, mailable", "sql": "SELECT carrier_dot, legal_name, mail_to_block, proxy_domain, officer_name FROM census_mail_ready WHERE status_code='A' AND carrier_operation='A' AND mail_state='TX' AND proxy_domain IS NOT NULL AND mailable"},
-    {"intent": "Officer↔email anchors for mid-size fleets", "sql": "SELECT carrier_dot, officer_email_anchor, power_units FROM census_mail_ready WHERE officer_email_anchor IS NOT NULL AND power_units BETWEEN 10 AND 100"},
+    {"intent": "Active interstate carriers in TX with a corporate domain, mailable", "sql": "SELECT carrier_dot, legal_name, mail_to_block, proxy_domain, company_officer_1 FROM census_mail_ready WHERE status_code='A' AND carrier_operation='A' AND mail_state='TX' AND proxy_domain IS NOT NULL AND mailable"},
+    {"intent": "Distinct officer + company email for mid-size fleets (no glued anchor)", "sql": "SELECT carrier_dot, company_officer_1, company_officer_2, email_address FROM census_mail_ready WHERE company_officer_1 IS NOT NULL AND power_units BETWEEN 10 AND 100"},
     {"intent": "Direct-mail pull for a Lob cohort", "sql": "SELECT carrier_dot, mail_to_block FROM census_mail_ready WHERE mailable AND status_code='A'"}
   ]
 }
