@@ -34,11 +34,13 @@ suppressed).
 - **Standardized mailing block** — structured `phy_*` + `mail_*` fields plus a
   ready-to-render `mail_to_block` (mailing address preferred, physical fallback)
   and a `mailable` deliverability flag (99.98% true).
-- **Officer ↔ email anchor on disk** — `officer_name` paired with `contact_email`,
-  plus an explicit `officer_email_anchor` (`"OFFICER NAME <email>"`, 64.8%
-  coverage). The link is soft (FMCSA does not assert the officer owns the mailbox)
-  but is materialized for downstream identity resolution.
-- **Contact anchors** — `phone`/`fax`/`cell_phone`, `contact_email`, raw
+- **Officer names + company email kept STRICTLY separate** — `company_officer_1`,
+  `company_officer_2`, and `email_address` are distinct columns. There is
+  deliberately **no** glued officer↔email anchor: FMCSA does not assert the officer
+  owns the mailbox, and the on-file email is frequently a generic company inbox
+  (`info@`/`dispatch@`/`safety@`). Gluing them would manufacture a false 1:1 and
+  mis-target downstream GTM.
+- **Contact anchors** — `phone`/`fax`/`cell_phone`, `email_address`, raw
   `email_domain`, and the suppressed corporate `proxy_domain` (the bridge join key,
   passed through from census).
 - **MC number** recovered from the census docket pairs (39.1%).
@@ -75,11 +77,11 @@ mail_to_block         KODIAK TRANSFER CO
                       DBA KODIAK TRANSFER INC
                       5152 TOM STILES RD BLDG A
                       KODIAK, AK 99615
-contact_email         kodiaktransfer@alaska.net
+email_address         kodiaktransfer@alaska.net
 email_domain          alaska.net
 proxy_domain          alaska.net
-officer_name          GREG WAKEFIELD
-officer_email_anchor  GREG WAKEFIELD <kodiaktransfer@alaska.net>
+company_officer_1     GREG WAKEFIELD
+company_officer_2     (null)
 status_label          Active
 carrier_operation_label  Interstate
 entity_type           INDIVIDUAL
