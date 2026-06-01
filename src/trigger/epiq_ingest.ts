@@ -7,8 +7,9 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  *   P1  harvest_cases   → GET /api/search/getcases (master universe), lands raw + a
  *                         project_codes manifest, writes active/epiq_cases (overwrite),
  *                         and returns the manifest's R2 key + the project_code count.
- *   P2  harvest_claims ‖ harvest_dockets  (Promise.all — distinct Lance datasets → no
- *                         shared-writer manifest conflict). Each reads the P1 manifest
+ *   P2  harvest_claims ‖ harvest_dockets  (dispatched UP FRONT, then awaited SEQUENTIALLY —
+ *                         distinct Lance datasets, no writer conflict; Trigger v4 forbids
+ *                         concurrent waits). Each reads the P1 manifest
  *                         from R2 and fans out ONE Modal container PER project_code via
  *                         fetch_grain_for_case.map(), capped at max_containers=8 — the
  *                         single global politeness ceiling against Epiq. The wide dynamic
@@ -57,31 +58,22 @@ export const epiqIngest = task({
     logger.info("Epiq ingest starting", { run_date: runDate });
 
     // P1 — cases (also yields the project_codes manifest the grains fan out over).
-    const cases = await dispatch<CasesCallback>(
-      "harvest_cases",
-      { run_date: runDate },
-      "1h",
-      ["epiq", "cases"],
-    );
+    const casesHandle = await fire("harvest_cases", { run_date: runDate }, "1h", ["epiq", "cases"]);
+    const cases = await collect<CasesCallback>(casesHandle);
     if (!cases.manifest_key) {
       throw new Error("harvest_cases returned no manifest_key");
     }
 
-    // P2 — claims ‖ dockets in parallel (distinct Lance datasets → no writer conflict).
-    const [claims, dockets] = await Promise.all([
-      dispatch<GrainCallback>(
-        "harvest_claims",
-        { manifest_key: cases.manifest_key, run_date: runDate },
-        "3h",
-        ["epiq", "claims"],
-      ),
-      dispatch<GrainCallback>(
-        "harvest_dockets",
-        { manifest_key: cases.manifest_key, run_date: runDate },
-        "3h",
-        ["epiq", "dockets"],
-      ),
-    ]);
+    // P2 — dispatch claims + dockets UP FRONT so the Modal workers run in PARALLEL, then
+    // collect their callbacks SEQUENTIALLY. Trigger v4 forbids concurrent waits (no
+    // Promise.all around wait.forToken — TASK_DID_CONCURRENT_WAIT); the parallelism lives
+    // Modal-side (both spawned before either is awaited), the waits are serialized here.
+    const claimsHandle = await fire(
+      "harvest_claims", { manifest_key: cases.manifest_key, run_date: runDate }, "3h", ["epiq", "claims"]);
+    const docketsHandle = await fire(
+      "harvest_dockets", { manifest_key: cases.manifest_key, run_date: runDate }, "3h", ["epiq", "dockets"]);
+    const claims = await collect<GrainCallback>(claimsHandle);
+    const dockets = await collect<GrainCallback>(docketsHandle);
 
     const result = {
       run_date: runDate,
@@ -97,15 +89,16 @@ export const epiqIngest = task({
 });
 
 /**
- * Mint a durable waitpoint, fire the Universal Dispatcher (202), and suspend until the
- * Modal worker POSTs its flat-JSON terminal callback. Returns that callback body.
+ * Mint a durable waitpoint and fire the Universal Dispatcher (202) WITHOUT waiting —
+ * returns the token handle so the caller collects later. Firing both grains before
+ * collecting either keeps the Modal workers running in parallel.
  */
-async function dispatch<T extends { status: "success" | "error" }>(
+async function fire(
   functionName: string,
   kwargs: Record<string, unknown>,
   timeout: string,
   tags: string[],
-): Promise<T> {
+): Promise<{ tokenId: string; fn: string }> {
   const token = await wait.createToken({ timeout, tags });
 
   const res = await fetch(requireEnv("MODAL_DISPATCHER_URL"), {
@@ -126,11 +119,21 @@ async function dispatch<T extends { status: "success" | "error" }>(
     const body = await res.text();
     throw new Error(`dispatcher ${res.status} for ${functionName}: ${body.slice(0, 300)}`);
   }
+  return { tokenId: token.id, fn: functionName };
+}
 
-  const out = await wait.forToken<T>(token.id);
-  if (!out.ok) throw new Error(`timed out before Modal callback for ${functionName}`);
+/**
+ * Suspend on ONE waitpoint token and resolve the Modal worker's flat-JSON callback. Must
+ * be called sequentially (never via Promise.all) — Trigger v4 allows only one pending wait
+ * per run (TASK_DID_CONCURRENT_WAIT otherwise).
+ */
+async function collect<T extends { status: "success" | "error" }>(
+  handle: { tokenId: string; fn: string },
+): Promise<T> {
+  const out = await wait.forToken<T>(handle.tokenId);
+  if (!out.ok) throw new Error(`timed out before Modal callback for ${handle.fn}`);
   if (out.output.status !== "success") {
-    throw new Error(`Modal failed for ${functionName}: ${JSON.stringify(out.output)}`);
+    throw new Error(`Modal failed for ${handle.fn}: ${JSON.stringify(out.output)}`);
   }
   return out.output;
 }
