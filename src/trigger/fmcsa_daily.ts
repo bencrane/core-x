@@ -86,6 +86,35 @@ export const fmcsaDaily = schedules.task({
       results.push({ feed, rows: out.output.rows });
     }
 
+    // 3) Chain the direct-mail serving projection off census. It is a pure
+    //    read-only projection of the census SoR (app `fmcsa-derived`), so it runs
+    //    only after census ingested cleanly and never races the raw write.
+    if (results.some((r) => r.feed === "census")) {
+      const dtoken = await wait.createToken({ timeout: "1h", tags: ["fmcsa-daily", "census_mail_ready"] });
+      const dres = await fetch(requireEnv("MODAL_DISPATCHER_URL"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Modal-Key": requireEnv("MODAL_KEY"),
+          "Modal-Secret": requireEnv("MODAL_SECRET"),
+        },
+        body: JSON.stringify({
+          app_name: "fmcsa-derived",
+          function_name: "build_mail_ready",
+          kwargs: {},
+          trigger_callback_url: dtoken.url,
+        }),
+      });
+      if (!dres.ok) {
+        failures.push(`census_mail_ready: dispatcher ${dres.status}: ${(await dres.text()).slice(0, 200)}`);
+      } else {
+        const dout = await wait.forToken<IngestCallback>(dtoken.id);
+        if (!dout.ok) failures.push("census_mail_ready: timed out before Modal callback");
+        else if (dout.output.status !== "success") failures.push(`census_mail_ready: ${JSON.stringify(dout.output)}`);
+        else logger.info("derived built", { feed: "census_mail_ready", rows: dout.output.rows });
+      }
+    }
+
     const rows = results.reduce((acc, r) => acc + r.rows, 0);
     logger.info("FMCSA daily complete", { ok: results.length, failed: failures.length, rows });
     if (failures.length) {
