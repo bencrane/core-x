@@ -43,7 +43,15 @@ from .src.tools import audience, dmaas
 _SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 # The unified gateway. One server instance; tool modules mount onto it.
-mcp = FastMCP("gtm-mcp", transport_security=_SECURITY)
+#
+# stateless_http=True: the Streamable HTTP transport holds NO in-memory session
+# state. The default (stateful) pins each client to an in-memory mcp-session-id,
+# which is lost whenever the instance restarts — every deploy, platform restart,
+# or scale event then makes in-flight agent calls fail with `404 Not Found`
+# ("session terminated"). A tools-only gateway needs no resumable streams or
+# server-initiated messages, so stateless is correct AND restart-resilient (it
+# also makes the service safe to run on >1 instance later).
+mcp = FastMCP("gtm-mcp", stateless_http=True, transport_security=_SECURITY)
 audience.register(mcp)
 dmaas.register(mcp)
 
