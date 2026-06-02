@@ -11,22 +11,34 @@ DOL Open Data API enforces a strict daily usage plan (~20 calls/day), so this
 worker is governed by a HARD circuit breaker (MAX_API_CALLS) that aborts before it
 can ever overrun the plan.
 
+Two design corrections grounded in what the live DOL feed actually returns:
+  1. VIOLATIONS lead, inspections enrich. The goal is "most recent severe
+     violations." A citation is issued weeks-to-months AFTER its inspection opens,
+     so recent inspections carry no violations yet — pulling inspections first
+     yields an empty join. Pulling violations first always joins: every violation
+     has exactly one parent inspection (the company/site/NAICS enrichment).
+  2. Recency is anchored to the DATA FRONTIER, not wall-clock. The enforcement feed
+     loads on a lag (newest issuance_date trails "today" by ~weeks). A literal
+     "last 7 days from today" filter is therefore empty. The trailing window is
+     instead measured back from max(issuance_date) in the pull — i.e. the 7 most
+     recent days of AVAILABLE severe citations. Self-adjusts as DOL loads newer data.
+
 Data plane (clean-room — no Iceberg, no Polaris, Arrow-only interchange):
-    DOL API /v4/get/OSHA/inspection/csv   (Step 1: open_date in the last N days)
-    DOL API /v4/get/OSHA/violation/csv    (Step 2: activity_nr IN <Step-1 ids>)
+    DOL /v4/get/OSHA/violation/csv   (Step 1: severe viol_types, newest issuance first)
+    DOL /v4/get/OSHA/inspection/csv  (Step 2: activity_nr IN <Step-1 recent ids>)
       → requests (-G/--data-urlencode semantics)  → /tmp CSVs   (Python: I/O only)
-      → DuckDB read_csv → join + normalize + shape               (100% in SQL)
+      → DuckDB read_csv → frontier-trim + join + normalize        (100% in SQL)
       → Arrow table
       → lance.merge_insert(trigger_uid)  →  s3://data-sink/active/osha_daily_triggers/
 
-The two-step "delta" pull, the breaker, and the dedup key are the load-bearing
-design (see the block comments inline):
-  • Step 1 — one call: recent inspections (estab + site + naics), sorted newest-first.
-  • Step 2 — up to (MAX_API_CALLS-1) calls: violations for those activity_nrs,
-    batched so each request URL stays under the gateway length limit.
+Load-bearing design (see the block comments inline):
+  • Step 1 — one call: severe violations sorted by issuance_date DESC (the freshest
+    severe citations; the top row defines the data frontier).
+  • Step 2 — up to (MAX_API_CALLS-1) calls: the parent inspections for the recent
+    activity_nrs, batched so each request URL stays under the gateway length limit.
   • Dedup — synthetic ``trigger_uid = activity_nr || '-' || citation_id`` is the
-    primary key; daily 7-day windows overlap, so we UPSERT (merge_insert), never
-    append blindly. No (activity_nr, citation_id) pair is ever duplicated.
+    primary key; daily windows overlap, so we UPSERT (merge_insert), never append
+    blindly. No (activity_nr, citation_id) pair is ever duplicated.
 
 Control plane (Trigger v4 durable callback): the worker accepts
 ``trigger_callback_url`` (the pre-signed waitpoint URL). On terminal state — success
@@ -46,22 +58,23 @@ import modal
 
 # ── DOL Open Data API surface (apiprod.dol.gov v4) ─────────────────────────────
 # Endpoint template:  <base>/<agency>/<endpoint>/<format>?<params>
-# Auth:  X-API-KEY header (kept OUT of the query string so it never lands in logs).
-# Agency abbreviations are uppercase in the catalog (MSHA, ILAB, WB → OSHA). All
-# four tokens below are env-overridable so a catalog rename is a one-line fix.
+# Auth:  X-API-KEY is read from the QUERY STRING (verified: header → 401, query
+# param → 200), so it travels in `params` and is redacted from logs. Agency
+# abbreviations are uppercase in the catalog (MSHA, ILAB, WB → OSHA). All four
+# tokens below are env-overridable so a catalog rename is a one-line fix.
 DOL_API_BASE = os.environ.get("DOL_API_BASE", "https://apiprod.dol.gov/v4/get")
 OSHA_AGENCY = os.environ.get("OSHA_AGENCY", "OSHA")
 INSPECTION_ENDPOINT = os.environ.get("OSHA_INSPECTION_ENDPOINT", "inspection")
 VIOLATION_ENDPOINT = os.environ.get("OSHA_VIOLATION_ENDPOINT", "violation")
 
-# DOL filter_object field names (Step 1 recency + optional state scope; Step 2 join).
-INSP_DATE_FIELD = "open_date"
-INSP_STATE_FIELD = "site_state"
-VIOL_ACTIVITY_FIELD = "activity_nr"
+# DOL filter_object field names.
+VIOL_TYPE_FIELD = "viol_type"          # Step-1 severity gate (server-side)
+VIOL_DATE_FIELD = "issuance_date"      # Step-1 recency sort + frontier anchor
+INSP_ACTIVITY_FIELD = "activity_nr"    # Step-2 join key (inspection IN-list)
 
 # Column projections requested via the `fields` param — lean payloads, predictable
-# schema. Exactly the columns the join needs (names per the DOL OSHA recon). Set
-# OSHA_REQUEST_ALL_FIELDS=1 to drop `fields` and request every column (escape hatch).
+# schema. Exactly the columns the join needs (names live-confirmed against the DOL
+# OSHA endpoints). Set OSHA_REQUEST_ALL_FIELDS=1 to drop `fields` (request all).
 INSPECTION_FIELDS = [
     "activity_nr", "estab_name", "site_address", "site_city",
     "site_state", "site_zip", "naics_code", "open_date",
@@ -76,17 +89,19 @@ VIOLATION_FIELDS = [
 # The 6th attempt aborts instantly, protecting the ~20-call/day usage plan.
 MAX_API_CALLS = 5
 
-# DOL per-request hard cap (10k rows OR 5 MB, whichever first). 7-day nationwide
-# OSHA inspections sit comfortably under 10k, so Step 1 is a single call.
+# DOL per-request hard cap (10k rows OR 5 MB, whichever first). The freshest 7-day
+# slice of severe violations sits far under 10k, so Step 1 is a single call.
 ROW_LIMIT = 10000
 
-# Conservative URL-length budget for the Step-2 activity_nr IN-list (apiprod runs
-# behind a gateway; keep the encoded GET URL well under the common ~8 KB ceiling).
-MAX_URL_BYTES = 7000
+# apiprod.dol.gov sits behind AWS WAF, whose Core Rule Set blocks any QUERY STRING
+# over 2048 bytes (SizeRestrictions_QUERYSTRING → 403 Forbidden, NOT 414). The
+# Step-2 activity_nr IN-list is the only large query component, so batches are
+# packed to keep the encoded query string under this margin (~90 nine-digit ids).
+MAX_QUERYSTRING_BYTES = 1900
 
 # "Severe" = everything except Other-than-Serious ('O'). Serious / Willful / Repeat
 # / Failure-to-abate / Unclassified all signal a real safety problem worth mailing.
-# Tunable via severe_only=False (keep all types) on the worker call.
+# Applied server-side in Step 1; relax via severe_only=False (keep all types).
 SEVERE_VIOL_TYPES = ["S", "W", "R", "F", "U"]
 
 # ── Lance system-of-record (R2) — the directive's outbound-ready sink ──────────
@@ -113,10 +128,11 @@ CREATE TABLE IF NOT EXISTS ops.osha_sniper_runs (
     feed               text        NOT NULL,
     snapshot_date      date,
     lookback_days      int,
+    frontier_date      date,
     api_calls_used     int,
-    inspections_pulled bigint,
-    activity_nrs       int,
     violations_pulled  bigint,
+    activity_nrs       int,
+    inspections_pulled bigint,
     rows_upserted      bigint,
     truncated          boolean,
     status             text        NOT NULL,
@@ -125,6 +141,7 @@ CREATE TABLE IF NOT EXISTS ops.osha_sniper_runs (
     completed_at       timestamptz,
     recorded_at        timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE ops.osha_sniper_runs ADD COLUMN IF NOT EXISTS frontier_date date;
 CREATE INDEX IF NOT EXISTS osha_sniper_runs_status_idx      ON ops.osha_sniper_runs (status);
 CREATE INDEX IF NOT EXISTS osha_sniper_runs_recorded_at_idx ON ops.osha_sniper_runs (recorded_at DESC);
 """
@@ -144,8 +161,10 @@ app = modal.App("osha-pipelines", image=image)
 
 # ── Name normalization — the standard regex protocol (verbatim from ────────────
 #    pipelines/sos_normalized/normalize.py). UPPER → strip every non-[A-Z0-9 space]
-#    char (punctuation, &, accents, AND entity suffixes' separators) → collapse
-#    whitespace → trim. NULL if emptied. Produces the normalized_legal_name bridge.
+#    char (punctuation, &, accents) → collapse whitespace → trim. NULL if emptied.
+#    Produces the normalized_legal_name bridge key. NOTE: this KEEPS entity tokens
+#    (LLC/INC) — that is what makes the key match the sos_normalized / SAM spines;
+#    stripping them would break cross-spine resolution.
 def _name_norm(col: str) -> str:
     return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
             " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
@@ -171,6 +190,10 @@ class QuotaExceeded(RuntimeError):
     """Raised when the worker would exceed MAX_API_CALLS — the hard circuit breaker."""
 
 
+class _Done(Exception):
+    """Internal early-exit sentinel (clean success with nothing to materialize)."""
+
+
 class _CallBudget:
     """Hard circuit breaker for the DOL daily usage plan. ``charge()`` is called
     BEFORE every HTTP request; once ``used`` reaches the cap, the next charge raises
@@ -194,86 +217,152 @@ class _CallBudget:
         return self.max_calls - self.used
 
 
-def _dol_csv_get(endpoint: str, params: dict, budget: _CallBudget, api_key: str) -> str:
+def _dol_csv_get(endpoint: str, params: dict, budget: _CallBudget) -> str:
     """One DOL CSV GET with exact `-G --data-urlencode` semantics (requests `params`
-    URL-encodes each field; GET puts them on the query string). Charges the breaker
-    first. X-API-KEY rides as a header, never in the URL."""
+    URL-encodes each field onto the query string). The DOL gateway reads the
+    ``X-API-KEY`` from the **query string**, NOT an HTTP header — so the caller
+    includes it in ``params`` (verified: header auth → 401, query-param → 200). The
+    key is redacted from the log line. Charges the breaker before the request."""
     import requests
 
     n = budget.charge()
     url = f"{DOL_API_BASE}/{OSHA_AGENCY}/{endpoint}/csv"
-    headers = {"X-API-KEY": api_key, "Accept": "text/csv, */*"}
-    redacted = {k: v for k, v in params.items()}
+    redacted = {k: v for k, v in params.items() if k != "X-API-KEY"}
     fo = redacted.get("filter_object", "")
     if isinstance(fo, str) and len(fo) > 120:
         redacted["filter_object"] = fo[:120] + f"…(+{len(fo) - 120}b)"
     print(f"DOL call #{n}/{budget.max_calls} → {endpoint} :: {redacted}")
-    resp = requests.get(url, params=params, headers=headers, timeout=(15, 180))
+    resp = requests.get(url, params=params, headers={"Accept": "text/csv, */*"}, timeout=(15, 180))
     resp.raise_for_status()
     return resp.text
 
 
-def _filter_object_inspections(cutoff_iso: str, site_states: list[str] | None) -> str:
-    """filter_object for Step 1: open_date `gt` cutoff, optionally AND site_state `in`.
-    (DOL supports eq/neq/gt/lt/in/not_in/like; `in` takes a JSON array.)"""
+def _filter_object_violations(severe_only: bool) -> str | None:
+    """Step-1 filter_object: gate to severe viol_types server-side (DOL `in` takes a
+    JSON array). None when severe_only is False (pull every type, recency-sorted)."""
     import json
 
-    recency = {"field": INSP_DATE_FIELD, "operator": "gt", "value": cutoff_iso}
-    if site_states:
-        obj: dict = {"and": [
-            recency,
-            {"field": INSP_STATE_FIELD, "operator": "in", "value": site_states},
-        ]}
-    else:
-        obj = recency
-    return json.dumps(obj, separators=(",", ":"))
+    if not severe_only:
+        return None
+    return json.dumps(
+        {"field": VIOL_TYPE_FIELD, "operator": "in", "value": SEVERE_VIOL_TYPES},
+        separators=(",", ":"),
+    )
+
+
+def _nonempty_csv(path: str) -> bool:
+    """A DOL CSV with zero matches comes back as an empty body (no header). DuckDB
+    read_csv chokes on that ('column0' binder error), so callers must pre-filter.
+    True iff the file holds a header row (a comma in its first non-blank line)."""
+    try:
+        if os.path.getsize(path) < 2:
+            return False
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.strip():
+                    return "," in line
+        return False
+    except OSError:
+        return False
 
 
 def _pack_activity_batches(
     activity_nrs: list[str], remaining_calls: int, base_params: dict
 ) -> tuple[list[list[str]], int]:
-    """Greedily pack activity_nrs into Step-2 batches whose encoded violation-request
-    URL stays under MAX_URL_BYTES, capped at ``remaining_calls`` batches. Returns
-    (batches, dropped_count). Inputs are recency-ordered, so a truncation drops the
-    OLDEST ids first — and we surface the drop rather than silently capping."""
+    """Greedily pack activity_nrs into Step-2 batches whose encoded QUERY STRING stays
+    under MAX_QUERYSTRING_BYTES (the AWS WAF 2048-byte rule), capped at
+    ``remaining_calls`` batches. Returns (batches, dropped_count). Inputs are
+    recency-ordered, so a truncation drops the OLDEST ids first — surfaced, not
+    silently capped."""
     import json
     import urllib.parse
 
-    prefix = f"{DOL_API_BASE}/{OSHA_AGENCY}/{VIOLATION_ENDPOINT}/csv?"
     batches: list[list[str]] = []
     i, n = 0, len(activity_nrs)
     while i < n and len(batches) < remaining_calls:
         batch: list[str] = []
         while i < n:
             fo = json.dumps(
-                {"field": VIOL_ACTIVITY_FIELD, "operator": "in", "value": batch + [activity_nrs[i]]},
+                {"field": INSP_ACTIVITY_FIELD, "operator": "in", "value": batch + [activity_nrs[i]]},
                 separators=(",", ":"),
             )
-            qlen = len(prefix) + len(urllib.parse.urlencode(dict(base_params, filter_object=fo)))
-            if qlen > MAX_URL_BYTES and batch:
+            qslen = len(urllib.parse.urlencode(dict(base_params, filter_object=fo)))
+            if qslen > MAX_QUERYSTRING_BYTES and batch:
                 break               # close batch; this id starts the next one
             batch.append(activity_nrs[i])
             i += 1
-            if qlen > MAX_URL_BYTES:
+            if qslen > MAX_QUERYSTRING_BYTES:
                 break               # single id already at budget — take it alone
         batches.append(batch)
     dropped = n - sum(len(b) for b in batches)
     return batches, dropped
 
 
-def _build_transform_sql(insp_path: str, viol_paths: list[str], snapshot_iso: str,
-                         severe_only: bool) -> str:
-    """DuckDB does 100% of the transform: read both CSVs (all_varchar + TRY_CAST),
-    inner-join on activity_nr, normalize estab_name → normalized_legal_name, derive
-    the trigger_uid PK, optionally gate to severe viol_types, and de-dup the pair
-    within the batch. Controlled /tmp paths only — no injection surface."""
-    viol_list = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in viol_paths) + "]"
+def _recent_activity_nrs_sql(viol_path: str, severe_only: bool, lookback_days: int) -> str:
+    """Recency-ordered DISTINCT activity_nrs whose newest severe citation falls within
+    ``lookback_days`` of the data frontier (max issuance_date in the pull). Drives the
+    Step-2 inspection fetch — a control-flow id list, not the write-path interchange."""
     severe_pred = ""
     if severe_only:
         in_list = ", ".join("'" + t + "'" for t in SEVERE_VIOL_TYPES)
-        severe_pred = f"    WHERE upper(trim(viol_type)) IN ({in_list})\n"
+        severe_pred = f"      AND upper(trim(viol_type)) IN ({in_list})\n"
     return f"""
-WITH insp AS (
+WITH vr AS (
+    SELECT nullif(trim(activity_nr), '') AS activity_nr,
+           TRY_CAST(issuance_date AS DATE) AS d
+    FROM read_csv('{viol_path}', all_varchar = true, header = true,
+                  sample_size = -1, ignore_errors = true)
+    WHERE nullif(trim(activity_nr), '') IS NOT NULL
+{severe_pred}),
+fr AS (SELECT max(d) AS frontier FROM vr)
+SELECT activity_nr FROM (
+    SELECT vr.activity_nr, max(vr.d) AS md
+    FROM vr, fr
+    WHERE vr.d IS NOT NULL AND vr.d > fr.frontier - {int(lookback_days)}
+    GROUP BY vr.activity_nr
+)
+ORDER BY md DESC NULLS LAST
+"""
+
+
+def _build_transform_sql(viol_path: str, insp_paths: list[str], snapshot_iso: str,
+                         severe_only: bool, lookback_days: int,
+                         site_states: list[str] | None) -> str:
+    """DuckDB does 100% of the transform: read the severe-violation pull + the parent
+    inspections (all_varchar + TRY_CAST), trim violations to the frontier window,
+    inner-join on activity_nr (every kept violation has a parent inspection),
+    normalize estab_name → normalized_legal_name, derive the trigger_uid PK, optional
+    state scope, and de-dup the (activity_nr, citation_id) pair within the batch.
+    Controlled /tmp paths only — no injection surface."""
+    insp_list = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in insp_paths) + "]"
+    severe_pred = ""
+    if severe_only:
+        in_list = ", ".join("'" + t + "'" for t in SEVERE_VIOL_TYPES)
+        severe_pred = f"        AND upper(trim(viol_type)) IN ({in_list})\n"
+    state_pred = ""
+    if site_states:
+        st_list = ", ".join("'" + s.upper().replace("'", "''") + "'" for s in site_states)
+        state_pred = f"  AND i.site_state IN ({st_list})\n"
+    return f"""
+WITH viol_raw AS (
+    SELECT
+        nullif(trim(activity_nr), '')       AS activity_nr,
+        nullif(trim(citation_id), '')       AS citation_id,
+        nullif(trim(standard), '')          AS standard,
+        nullif(upper(trim(viol_type)), '')  AS viol_type,
+        TRY_CAST(gravity AS INTEGER)        AS gravity,
+        TRY_CAST(current_penalty AS DOUBLE) AS current_penalty,
+        TRY_CAST(issuance_date AS DATE)     AS issuance_date
+    FROM read_csv('{viol_path}', all_varchar = true, header = true,
+                  sample_size = -1, ignore_errors = true)
+    WHERE nullif(trim(citation_id), '') IS NOT NULL
+{severe_pred}),
+frontier AS (SELECT max(issuance_date) AS f FROM viol_raw),
+viol AS (
+    SELECT v.* FROM viol_raw v, frontier
+    WHERE v.issuance_date IS NOT NULL AND v.issuance_date > frontier.f - {int(lookback_days)}
+),
+insp AS (
     SELECT
         nullif(trim(activity_nr), '')   AS activity_nr,
         nullif(trim(estab_name), '')    AS estab_name,
@@ -283,24 +372,12 @@ WITH insp AS (
         nullif(left(regexp_replace(CAST(site_zip AS VARCHAR), '[^0-9]', '', 'g'), 5), '') AS site_zip,
         nullif(trim(naics_code), '')    AS naics_code,
         TRY_CAST(open_date AS DATE)     AS open_date
-    FROM read_csv('{insp_path}', all_varchar = true, header = true,
-                  sample_size = -1, ignore_errors = true)
-),
-viol AS (
-    SELECT
-        nullif(trim(activity_nr), '')       AS activity_nr,
-        nullif(trim(citation_id), '')       AS citation_id,
-        nullif(trim(standard), '')          AS standard,
-        nullif(upper(trim(viol_type)), '')  AS viol_type,
-        TRY_CAST(gravity AS INTEGER)        AS gravity,
-        TRY_CAST(current_penalty AS DOUBLE) AS current_penalty,
-        TRY_CAST(issuance_date AS DATE)     AS issuance_date
-    FROM read_csv({viol_list}, all_varchar = true, header = true,
+    FROM read_csv({insp_list}, all_varchar = true, header = true,
                   sample_size = -1, ignore_errors = true, union_by_name = true)
-{severe_pred})
+)
 SELECT
-    i.activity_nr || '-' || v.citation_id AS trigger_uid,
-    i.activity_nr,
+    v.activity_nr || '-' || v.citation_id AS trigger_uid,
+    v.activity_nr,
     v.citation_id,
     i.estab_name,
     {_name_norm('i.estab_name')}          AS normalized_legal_name,
@@ -319,9 +396,9 @@ SELECT
     CAST(now() AS TIMESTAMP)              AS ingested_at
 FROM viol v
 JOIN insp i ON i.activity_nr = v.activity_nr
-WHERE v.citation_id IS NOT NULL AND i.activity_nr IS NOT NULL
-QUALIFY row_number() OVER (
-    PARTITION BY i.activity_nr || '-' || v.citation_id
+WHERE v.citation_id IS NOT NULL AND v.activity_nr IS NOT NULL
+{state_pred}QUALIFY row_number() OVER (
+    PARTITION BY v.activity_nr || '-' || v.citation_id
     ORDER BY v.current_penalty DESC NULLS LAST
 ) = 1
 """
@@ -406,17 +483,17 @@ def _record_run(metrics: dict, status: str, error, started_at, completed_at) -> 
             cur.execute(
                 """
                 INSERT INTO ops.osha_sniper_runs
-                    (feed, snapshot_date, lookback_days, api_calls_used,
-                     inspections_pulled, activity_nrs, violations_pulled,
+                    (feed, snapshot_date, lookback_days, frontier_date, api_calls_used,
+                     violations_pulled, activity_nrs, inspections_pulled,
                      rows_upserted, truncated, status, error, started_at, completed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     FEED, metrics.get("snapshot_date"), metrics.get("lookback_days"),
-                    metrics.get("api_calls_used"), metrics.get("inspections_pulled"),
-                    metrics.get("activity_nrs"), metrics.get("violations_pulled"),
-                    metrics.get("rows_upserted"), metrics.get("truncated"),
-                    status, error, started_at, completed_at,
+                    metrics.get("frontier_date"), metrics.get("api_calls_used"),
+                    metrics.get("violations_pulled"), metrics.get("activity_nrs"),
+                    metrics.get("inspections_pulled"), metrics.get("rows_upserted"),
+                    metrics.get("truncated"), status, error, started_at, completed_at,
                 ),
             )
             conn.commit()
@@ -465,13 +542,14 @@ def osha_sniper(
     max_api_calls: int = MAX_API_CALLS,
     mode: str = "merge",
 ) -> dict:
-    """Two-step quota-safe DOL pull → DuckDB join/normalize → Lance upsert, then
-    record state + wake Trigger.
+    """Violations-first quota-safe DOL pull → DuckDB frontier-trim + join/normalize →
+    Lance upsert, then record state + wake Trigger.
 
     Args:
-      lookback_days: Step-1 window — inspections with open_date in the last N days.
-      site_states:   optional high-value-state scope (e.g. ["TX","CA"]); None = nationwide.
-      severe_only:   keep only severe viol_types (exclude Other-than-Serious).
+      lookback_days: trailing window measured back from the data frontier
+                     (max issuance_date in the pull), NOT wall-clock today.
+      site_states:   optional high-value-state scope applied to the joined site_state.
+      severe_only:   gate to severe viol_types (exclude Other-than-Serious).
       max_api_calls: hard circuit-breaker ceiling (default MAX_API_CALLS = 5).
       mode:          "merge" (dedup upsert on trigger_uid) | "overwrite" (rebuild).
 
@@ -486,14 +564,14 @@ def osha_sniper(
 
     started_at = dt.datetime.now(dt.timezone.utc)
     snapshot_iso = started_at.date().isoformat()
-    cutoff_iso = (started_at.date() - dt.timedelta(days=lookback_days)).isoformat()
-    insp_path = os.path.join(SCRATCH_DIR, "osha_inspection.csv")
+    viol_path = os.path.join(SCRATCH_DIR, "osha_violation.csv")
 
     budget = _CallBudget(max_api_calls)
     metrics: dict = {
         "snapshot_date": snapshot_iso, "lookback_days": lookback_days,
-        "api_calls_used": 0, "inspections_pulled": 0, "activity_nrs": 0,
-        "violations_pulled": 0, "rows_upserted": 0, "truncated": False,
+        "frontier_date": None, "api_calls_used": 0, "violations_pulled": 0,
+        "activity_nrs": 0, "inspections_pulled": 0, "rows_upserted": 0,
+        "truncated": False,
     }
     status, error = "error", None
 
@@ -503,96 +581,109 @@ def osha_sniper(
             raise RuntimeError("DOL_API_KEY not set (Modal secret 'dol-api').")
         so = _r2_storage_options()
 
-        # ── Step 1 — recent inspections (one call). Newest-first so any Step-2
-        #    truncation drops the oldest ids. fields= keeps the payload lean. ──────
-        insp_params: dict = {
-            "limit": ROW_LIMIT, "offset": 0, "sort": "desc", "sort_by": INSP_DATE_FIELD,
-            "filter_object": _filter_object_inspections(cutoff_iso, site_states),
+        # ── Step 1 — the freshest SEVERE violations (one call). Sorted by
+        #    issuance_date DESC so the top rows define the data frontier; the
+        #    severity gate is pushed server-side. fields= keeps the payload lean. ──
+        v_params: dict = {
+            "limit": ROW_LIMIT, "offset": 0, "sort": "desc", "sort_by": VIOL_DATE_FIELD,
+            "X-API-KEY": api_key,
         }
+        fo = _filter_object_violations(severe_only)
+        if fo:
+            v_params["filter_object"] = fo
         if not os.environ.get("OSHA_REQUEST_ALL_FIELDS"):
-            insp_params["fields"] = ",".join(INSPECTION_FIELDS)
-        insp_csv = _dol_csv_get(INSPECTION_ENDPOINT, insp_params, budget, api_key)
-        with open(insp_path, "w", encoding="utf-8") as fh:
-            fh.write(insp_csv)
+            v_params["fields"] = ",".join(VIOLATION_FIELDS)
+        with open(viol_path, "w", encoding="utf-8") as fh:
+            fh.write(_dol_csv_get(VIOLATION_ENDPOINT, v_params, budget))
 
-        # Pull the recency-ordered distinct activity_nrs (control-flow list to drive
-        # Step 2 — NOT the write-path interchange; DuckDB still does the transform).
+        if not _nonempty_csv(viol_path):
+            print("Step 1 returned no severe violations — nothing to materialize.")
+            metrics["rows_upserted"] = 0
+            status = "success"
+            raise _Done()
+
+        # Frontier-trim + recency-ordered distinct activity_nrs (control-flow list).
         con = duckdb.connect(":memory:")
         try:
             con.execute("PRAGMA threads=4;")
+            row = con.execute(
+                f"SELECT count(*), CAST(max(TRY_CAST(issuance_date AS DATE)) AS VARCHAR) "
+                f"FROM read_csv('{viol_path}', all_varchar=true, header=true, "
+                f"sample_size=-1, ignore_errors=true)"
+            ).fetchone()
+            metrics["violations_pulled"] = int(row[0] or 0)
+            frontier = row[1]
+            metrics["frontier_date"] = frontier
             ids_tbl = con.execute(
-                f"""
-                SELECT activity_nr FROM (
-                    SELECT nullif(trim(activity_nr), '') AS activity_nr,
-                           max(TRY_CAST({INSP_DATE_FIELD} AS DATE)) AS od
-                    FROM read_csv('{insp_path}', all_varchar = true, header = true,
-                                  sample_size = -1, ignore_errors = true)
-                    GROUP BY 1
-                )
-                WHERE activity_nr IS NOT NULL
-                ORDER BY od DESC NULLS LAST
-                """
+                _recent_activity_nrs_sql(viol_path, severe_only, lookback_days)
             ).to_arrow_table()
         finally:
             con.close()
         activity_nrs = ids_tbl.column("activity_nr").to_pylist()
-        metrics["inspections_pulled"] = len(activity_nrs)
-        if len(activity_nrs) >= ROW_LIMIT:
-            print(f"WARN: Step 1 hit the {ROW_LIMIT}-row cap — inspections truncated; "
-                  f"narrow the window or scope site_states.")
-        print(f"Step 1: {len(activity_nrs)} distinct activity_nrs (since {cutoff_iso}).")
+        metrics["activity_nrs"] = len(activity_nrs)
+        print(f"Step 1: frontier issuance_date={frontier}; "
+              f"{len(activity_nrs)} distinct activity_nrs within {lookback_days}d of frontier.")
 
-        # ── Step 2 — violations for those activity_nrs, batched under the URL budget
-        #    and the remaining call budget. No silent cap: log any dropped ids. ────
-        viol_paths: list[str] = []
+        # ── Step 2 — parent inspections for those activity_nrs, batched under the URL
+        #    budget and remaining call budget. No silent cap: log any dropped ids. ──
+        insp_paths: list[str] = []
         dropped = 0
         if activity_nrs:
-            base_params = {"limit": ROW_LIMIT}
+            base_params = {"limit": ROW_LIMIT, "X-API-KEY": api_key}
             if not os.environ.get("OSHA_REQUEST_ALL_FIELDS"):
-                base_params["fields"] = ",".join(VIOLATION_FIELDS)
-            batches, dropped = _pack_activity_batches(activity_nrs, budget.remaining, base_params)
+                base_params["fields"] = ",".join(INSPECTION_FIELDS)
+            batches, dropped = _pack_activity_batches(
+                activity_nrs, budget.remaining, base_params)
             metrics["truncated"] = dropped > 0
             if dropped:
                 print(f"WARN: {dropped}/{len(activity_nrs)} activity_nrs dropped — "
-                      f"{budget.remaining} call(s) × URL budget cannot cover all this run "
+                      f"{budget.remaining} call(s) × query-string budget cannot cover all this run "
                       f"(oldest dropped first; they resurface as the window rolls).")
             for idx, batch in enumerate(batches):
                 import json
 
-                vp = os.path.join(SCRATCH_DIR, f"osha_violation_{idx}.csv")
-                v_params = dict(
+                ip = os.path.join(SCRATCH_DIR, f"osha_inspection_{idx}.csv")
+                i_params = dict(
                     base_params,
                     filter_object=json.dumps(
-                        {"field": VIOL_ACTIVITY_FIELD, "operator": "in", "value": batch},
+                        {"field": INSP_ACTIVITY_FIELD, "operator": "in", "value": batch},
                         separators=(",", ":"),
                     ),
                 )
-                v_csv = _dol_csv_get(VIOLATION_ENDPOINT, v_params, budget, api_key)
-                with open(vp, "w", encoding="utf-8") as fh:
-                    fh.write(v_csv)
-                viol_paths.append(vp)
+                with open(ip, "w", encoding="utf-8") as fh:
+                    fh.write(_dol_csv_get(INSPECTION_ENDPOINT, i_params, budget))
+                if _nonempty_csv(ip):
+                    insp_paths.append(ip)
 
-        # ── Transform — DuckDB join + normalize + dedup → Arrow (zero-copy) ───────
+        # ── Transform — DuckDB frontier-trim + join + normalize + dedup → Arrow ───
         rows = 0
-        if viol_paths:
+        if insp_paths:
             con = duckdb.connect(":memory:")
             try:
                 con.execute("PRAGMA threads=4;")
+                insp_list_sql = "[" + ", ".join(
+                    "'" + p.replace("'", "''") + "'" for p in insp_paths) + "]"
+                metrics["inspections_pulled"] = con.execute(
+                    f"SELECT count(*) FROM read_csv({insp_list_sql}, all_varchar=true, "
+                    f"header=true, sample_size=-1, ignore_errors=true, union_by_name=true)"
+                ).fetchone()[0]
                 arrow_table = con.execute(
-                    _build_transform_sql(insp_path, viol_paths, snapshot_iso, severe_only)
+                    _build_transform_sql(viol_path, insp_paths, snapshot_iso,
+                                         severe_only, lookback_days, site_states)
                 ).to_arrow_table()
             finally:
                 con.close()
-            metrics["violations_pulled"] = arrow_table.num_rows
             rows, action = _materialize(arrow_table, so, mode)
             print(f"Materialized {rows} trigger rows ({action}) → {LANCE_URI}")
             if rows:
                 _build_indexes(so)
         else:
-            print("No activity_nrs / no violations this run — nothing to materialize.")
+            print("No parent inspections resolved — nothing to materialize.")
 
         metrics["rows_upserted"] = int(rows)
         status = "success"
+    except _Done:
+        pass
     except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
         error = str(exc)
         status = "error"
