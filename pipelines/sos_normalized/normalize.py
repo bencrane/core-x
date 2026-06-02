@@ -39,6 +39,9 @@ import os
 
 import modal
 
+from core.name_norm import legal_name_base as _legal_name_base
+from core.name_norm import name_norm as _name_norm
+
 BUCKET = "data-sink"
 SCRATCH_DIR = "/tmp"
 AS_OF_DEFAULT = "2026-05-31"
@@ -109,7 +112,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # sorter, which OOMs on high-cardinality string columns (normalized_legal_name over
     # ~18M rows). In-memory sort is well within the container RAM. (lance-format/lance#2650)
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 
 app = modal.App("sos-normalized", image=image)
 
@@ -297,35 +300,9 @@ STATE_PROJECTIONS: dict[str, dict] = {
 
 
 # ── SQL normalization fragments (DuckDB). \\s / \\x{..} in Python source → \s / \x{..} in SQL. ──
-def _name_norm(col: str) -> str:
-    """Canonical blocking-key name. UPPER → '&'→' AND ' (literal, replaced PRE-strip so the
-    conjunction survives as a token instead of being dropped) → dash/en-dash/em-dash → ' '
-    (so "BRAND - STORE" and "BRAND-STORE" both block as two tokens, never "BRANDSTORE") →
-    strip every remaining non-[A-Z0-9 space] char (punctuation, quotes, accents) → collapse
-    whitespace runs → trim. NULL if emptied.
-
-    THE canonical rule. Five bridge replicas mirror this body so their normalized_legal_name
-    stays exact-join-compatible with sos_normalized_master — change here ⇒ change all six:
-    fl_federal_tax_liens/ingest, osha/osha_sniper, resolution/{recon_ca_ucc_sos,
-    crosswalk_hmda_gleif, crosswalk_sam_usaspending}."""
-    return (
-        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-        "upper(CAST(%s AS VARCHAR)),"
-        " '&', ' AND ', 'g'),"
-        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
-        " '[^A-Z0-9 ]+', '', 'g'),"
-        " '\\s+', ' ', 'g')), '')"
-    ) % col
-
-
-def _legal_name_base(name_norm_expr: str) -> str:
-    """Suffix-stripped base of a _name_norm'd name (Task C). Peel one OR MORE trailing
-    corporate designators (LLC/INC/CORP/CO/LTD/PLC) off the end. The `$` anchor means a
-    designator strips only as a whole trailing token: "ACME CO LLC" → "ACME", while
-    "TACO COMPANY" / "ACME CORPORATION" keep their tail (COMPANY/CORPORATION aren't in the
-    set, and a partial CO/CORP can't reach end-of-string). NULL if emptied."""
-    return ("nullif(trim(regexp_replace(%s,"
-            " '( (LLC|INC|CORP|CO|LTD|PLC))+$', '', 'g')), '')") % name_norm_expr
+# _name_norm (the canonical blocking key) and _legal_name_base (its suffix-stripped base) are
+# the single source of truth for the whole fleet — imported above from core/name_norm.py so
+# every spine/bridge emits byte-identical SQL and the rule cannot drift across copies.
 
 
 # ── Colorado status-decoration scrub (Task A) ──────────────────────────────────────────

@@ -50,6 +50,8 @@ import os
 
 import modal
 
+from core.name_norm import name_norm as _name_norm
+
 BUCKET = "data-sink"
 FEED = "fl_federal_tax_liens"
 
@@ -129,6 +131,7 @@ image = (
         # index always builds (fleet convention; lance-format/lance#2650). Trivial at this scale.
         {"LANCE_BYPASS_SPILLING": "true"}
     )
+    .add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 )
 
 app = modal.App("fl-federal-tax-liens", image=image)
@@ -214,13 +217,10 @@ def _date8(off: int) -> str:
 
 def _build_transform_sql(paths: dict[str, str], as_of: str) -> str:
     """Debtor-grain unified view. Offsets are the exact copybook positions validated by the
-    probe (FLRF 82 / FLRD-FLRS 206). normalized_legal_name + zip5 use the directive's exact
-    regex standard (= sos_normalized_master). \\\\s / \\\\x1F survive Python → emit \\s / \\x1F."""
-    name_norm = (
-        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-        "upper(d.debtor_name), '&',' AND ','g'), '[-\\x{2013}\\x{2014}]+',' ','g'),"
-        " '[^A-Z0-9 ]+','','g'), '\\s+',' ','g')),'')"
-    )
+    probe (FLRF 82 / FLRD-FLRS 206). normalized_legal_name comes from the canonical macro
+    (core/name_norm.py, byte-identical to sos_normalized_master); zip5 uses the directive's
+    exact regex standard. \\\\s / \\\\x1F survive Python → emit \\s / \\x1F."""
+    name_norm = _name_norm("d.debtor_name")
     zip5_debtor = "nullif(left(regexp_replace(d.debtor_zip,'[^0-9]','','g'),5),'')"
     zip5_secured = "nullif(left(regexp_replace(secured_zip,'[^0-9]','','g'),5),'')"
     return f"""

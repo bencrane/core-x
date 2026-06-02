@@ -52,6 +52,11 @@ import os
 
 import modal
 
+# Canonical blocking-key macro (single source of truth). Aliased to _norm_sql because this
+# worker passes an EXPRESSION (the coalesced sam_legal_name), not a bare column — name_norm
+# interpolates its argument verbatim, so it serves both shapes identically.
+from core.name_norm import name_norm as _norm_sql
+
 BUCKET = "data-sink"
 SAM_SRC_URI = "s3://data-sink/active/entity_registrations/"
 RL_SRC_URI = "s3://data-sink/active/usaspending/recipient_lookup/"
@@ -123,7 +128,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # DataFusion pool and OOMs on high-cardinality string columns (lance#2650).
     # Force the in-memory sort path so uei / cage_code index builds every run.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 
 app = modal.App("resolution-crosswalk-pipelines", image=image)
 
@@ -148,22 +153,10 @@ def _r2_storage_options() -> dict[str, str]:
 
 # --------------------------------------------------------------------------- #
 # DuckDB transform — pure SQL builder (importable without modal/auth)
+# _norm_sql (= the canonical name_norm macro, imported above) is applied to the coalesced
+# sam_legal_name so crosswalk.normalized_legal_name is byte-identical to the SoS spine key —
+# applying the SAME macro on both sides of the BTREE block-join is what makes it valid.
 # --------------------------------------------------------------------------- #
-def _norm_sql(expr: str) -> str:
-    """The canonical cross-spine name-normalization macro — BYTE-IDENTICAL to
-    pipelines/sos_normalized/normalize.py: UPPER → '&'→' AND ' → dash→' ' → strip every
-    remaining non-[A-Z0-9 space] char → collapse whitespace runs → trim → NULL if emptied.
-    ``\\s`` / ``\\x{..}`` in this Python source emit ``\\s`` / ``\\x{..}`` in the SQL. Applying
-    the SAME macro on both sides (crosswalk.normalized_legal_name and a feed's normalized
-    borrower name) is what makes the BTREE block-join valid."""
-    return ("nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-            "upper(CAST(" + expr + " AS VARCHAR)),"
-            " '&', ' AND ', 'g'),"
-            " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
-            " '[^A-Z0-9 ]+', '', 'g'),"
-            " '\\s+', ' ', 'g')), '')")
-
-
 def build_crosswalk_sql() -> str:
     """Final join statement. Assumes four relations are registered/built:
     sam(uei,cage_code,legal_business_name,dba_name) 1/uei (v2 registry),
