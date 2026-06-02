@@ -10,3 +10,5 @@ pylance>=7           # `import lance` — index pushdown scanner; lancedb does n
 pyarrow>=17          # Arrow bridge between the Lance scanner and DuckDB
 boto3>=1.34          # R2 S3 listing for runtime dataset auto-discovery (database.discover_datasets)
 psycopg[binary]>=3.1 # structured ops.* upsert into hq-x Postgres (tools/ops.py); [binary] bundles libpq for Render's native runtime. DuckDB's own `postgres` extension (the ATTACH) bundles libpq separately and is auto-installed at runtime.
+pytz>=2024.1         # REQUIRED: DuckDB materializes attached-Postgres TIMESTAMP WITH TIME ZONE columns into Python via pytz. Without it, any execute_audience_query / read that selects a tz-aware ts column from hqx.ops.* (the *_runs ledgers' recorded_at/started_at/…) raises "Required module 'pytz' failed to import" unless cast ::VARCHAR.
+tzdata>=2024.1       # IANA tz database for stdlib zoneinfo on the slim Render image — belt-and-suspenders for tz-aware timestamp conversion.
