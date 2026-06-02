@@ -38,7 +38,8 @@ Built for multi-dataset extensibility: adding a dataset is one entry in
 - **Runtime:** native Python 3 · **Region:** Ohio (`us-east-2`)
 - **Build:** `pip install -r apps/gtm_mcp/requirements.txt`
 - **Start:** `python -m apps.gtm_mcp.main` (run from the repo root; binds `0.0.0.0:$PORT`)
-- **Env:** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (required — same names as the `r2-credentials` Modal secret / `hq-x/prd` Doppler config). `LOB_API_KEY` + `DMAAS_MCP_BEARER_TOKEN` for the DMaaS surface when wired.
+- **Env:** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (required — same names as the `r2-credentials` Modal secret / `hq-x/prd` Doppler config). `HQX_MCP_BEARER_TOKEN` gates the MCP routes. `LOB_API_KEY` + `DMAAS_MCP_BEARER_TOKEN` for the DMaaS surface when wired.
+- **Auth:** `/sse` and `/messages/` require `Authorization: Bearer $HQX_MCP_BEARER_TOKEN`. `/healthz` is open. If the token is unset, the server logs a warning and runs open (local dev only).
 - **Public endpoint:** `GET /sse` (event stream) · `POST /messages/` (client→server) · `GET /healthz` (liveness/info)
 
 > The Python package is `gtm_mcp` (underscore) so `python -m apps.gtm_mcp.main`
@@ -47,13 +48,14 @@ Built for multi-dataset extensibility: adding a dataset is one entry in
 ## Local run + verify
 
 ```bash
-# serve with R2 creds injected from Doppler
+# serve with R2 creds + bearer token injected from Doppler
 PORT=8765 doppler run -p hq-x -c prd -- python -m apps.gtm_mcp.main
 
-# drive it with the MCP Inspector CLI
+# drive it with the MCP Inspector CLI (send the bearer token)
+TOKEN=$(doppler secrets get HQX_MCP_BEARER_TOKEN -p hq-x -c prd --plain)
 npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8765/sse \
-  --transport sse --method tools/list
+  --transport sse --header "Authorization: Bearer $TOKEN" --method tools/list
 npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8765/sse \
-  --transport sse --method tools/call \
+  --transport sse --header "Authorization: Bearer $TOKEN" --method tools/call \
   --tool-name search_company_by_domain --tool-arg domain=jpmorgan.com
 ```
