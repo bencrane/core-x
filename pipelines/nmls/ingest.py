@@ -298,8 +298,10 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
 
 # ── DuckDB transforms — 100% in SQL. Identifiers double-quoted (source headers carry
 #    spaces / parens / '$' / '#'). S = trimmed VARCHAR; I = TRY_CAST INTEGER; N = TRY_CAST
-#    BIGINT (loan $ amounts run to 12+ digits); F = TRY_CAST DOUBLE (growth ratios). The
-#    /tmp path, source_file and as_of are bound positionally via ? — never interpolated. ──
+#    BIGINT (loan $ amounts run to 12+ digits); F = TRY_CAST DOUBLE (growth ratios). N/F
+#    also strip ',' thousands separators before the cast (CSV measures arrive as "1,074",
+#    which BIGINT/DOUBLE casts to NULL). The /tmp path, source_file and as_of are bound
+#    positionally via ? — never interpolated. ──
 def S(col: str, alias: str) -> str:
     return f"nullif(trim({col}), '') AS {alias}"
 
@@ -309,11 +311,11 @@ def I(col: str, alias: str) -> str:
 
 
 def N(col: str, alias: str) -> str:
-    return f"TRY_CAST(nullif(trim({col}), '') AS BIGINT) AS {alias}"
+    return f"TRY_CAST(replace(nullif(trim({col}), ''), ',', '') AS BIGINT) AS {alias}"
 
 
 def F(col: str, alias: str) -> str:
-    return f"TRY_CAST(nullif(trim({col}), '') AS DOUBLE) AS {alias}"
+    return f"TRY_CAST(replace(nullif(trim({col}), ''), ',', '') AS DOUBLE) AS {alias}"
 
 
 _CSV_READ = "all_varchar=true, header=true, sample_size=-1, ignore_errors=true, store_rejects=true"
