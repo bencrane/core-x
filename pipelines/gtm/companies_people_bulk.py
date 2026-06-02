@@ -7,8 +7,8 @@ transform, Lance is written straight to R2. No Iceberg, no Polaris, no catalog r
 WHY THIS WORKER EXISTS (Directive 8)
     The core go-to-market data lives in the legacy PostgreSQL ``gtm`` schema of the DEX
     Supabase project (the same DB that backs the data-factory ``gtm.*`` tables). This worker
-    migrates the two load-bearing entity grains — companies and people — out of Postgres and
-    materializes them as native Gen-3 Lance datasets in the active data sink. It builds a
+    migrates the load-bearing grains — companies, people, and the company→target-industry
+    edge — out of Postgres and materializes them as native Gen-3 Lance in the active sink. It builds a
     *minimal* unified identity graph: every business entity is a company, every contact is a
     person, and each row tracks its source lineage verbatim. NO external API payloads are
     merged and NO enrichment engine runs here — this is a faithful, minimal projection.
@@ -18,6 +18,8 @@ SOURCE (live Postgres, read-only via the DuckDB postgres scanner):
       gtm.companies  (~748 rows)   — canonical companies, PK ``id`` (uuid)
       gtm.people     (~7,739 rows) — canonical contacts, PK ``id`` (uuid),
                                      FK ``company_id`` → gtm.companies.id (verified: 0 orphans)
+      gtm.company_served_industries (~1,894 rows) — canonical company→served-industry edges,
+                                     PK (company_id, canonical_segment); FK company_id → companies.id
     The DSN is the DEX pooled (Supavisor session-mode) URL, supplied by the ``dex-postgres``
     Modal secret as ``DEX_DB_URL_POOLED``. DuckDB ATTACHes it READ_ONLY — no server-side
     compute, the transform boundary is 100% local DuckDB.
@@ -25,6 +27,7 @@ SOURCE (live Postgres, read-only via the DuckDB postgres scanner):
 TARGET (Gen-3 system of record — native Lance v2.1, full-snapshot overwrite):
     s3://data-sink/active/companies/
     s3://data-sink/active/people/
+    s3://data-sink/active/company_target_industries/
 
 MINIMAL SCHEMAS (every identifier is STRICT VARCHAR — uuid rendered as its canonical
 hyphenated text, the fleet convention; string equality is the join semantics):
@@ -49,6 +52,12 @@ hyphenated text, the fleet convention; string equality is the join semantics):
         person_linkedin_url   VARCHAR          (nullable — the person's linkedin.com URL)
         source_platform       VARCHAR          (lineage)
 
+    company_target_industries  (many-to-many edge grain — STRICT_SCHEMA-enforced types/nullability)
+        company_id            String  NOT NULL  (foreign key → companies.company_id)
+        normalized_domain     String  NOT NULL  (DENORMALIZED from the companies join)
+        target_industry       String  NOT NULL  (= s.canonical_segment, 1 of 34 segments)
+        source_platform       String  (nullable — edge/company origin: sfnet, prospeo-parallel.ai, …)
+
 NORMALIZED_DOMAIN is the anchor. Built inline (NOT from core.name_norm, which is a *name*
 blocking key, not a domain rule): lower/trim → strip scheme → strip leading ``www.`` →
 strip path/query → strip trailing dots → NULL if emptied. Inlined deliberately — there is
@@ -72,8 +81,9 @@ grain, so it is not read. Likewise first/last name come straight from gtm.people
 rows, which have no counterpart in any raw sfnet source).
 
 INDEXES (directive's hard deliverable — scalar BTREE only, kept minimal):
-    companies : BTREE(normalized_domain)
-    people    : BTREE(company_id), BTREE(normalized_domain)
+    companies                 : BTREE(normalized_domain)
+    people                    : BTREE(company_id), BTREE(normalized_domain)
+    company_target_industries : BTREE(company_id), BTREE(normalized_domain), BTREE(target_industry)
 
 Control plane (Trigger v4 durable callback): the worker accepts ``trigger_callback_url`` and,
 on terminal state (success OR failure), (1) writes the run row to
@@ -97,10 +107,12 @@ import modal
 
 # Gen-3 target sink (active tier). Net-new datasets land directly here.
 _ACTIVE = "s3://data-sink/active"
-DATASETS = ("companies", "people")
+DATASETS = ("companies", "people", "company_target_industries")
 DATASET_URI = {
     "companies": os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/"),
     "people": os.environ.get("GTM_PEOPLE_URI", f"{_ACTIVE}/people/"),
+    "company_target_industries": os.environ.get(
+        "GTM_TARGET_INDUSTRIES_URI", f"{_ACTIVE}/company_target_industries/"),
 }
 
 FEED = "gtm_companies_people"
@@ -117,6 +129,21 @@ DATA_STORAGE_VERSION = "2.1"
 INDEXES: dict[str, dict[str, list[str]]] = {
     "companies": {"BTREE": ["normalized_domain"]},
     "people": {"BTREE": ["company_id", "normalized_domain"]},
+    # Edge grain — BTREE both join keys + the industry, so gtm-mcp filters resolve
+    # instantly from either direction (company→industries or industry→companies).
+    "company_target_industries": {"BTREE": ["company_id", "normalized_domain", "target_industry"]},
+}
+
+# Strict output schemas — every field is String; the bool is `nullable`. Enforced
+# post-transform by _enforce_schema (NOT-NULL null-count guard + cast to this exact schema).
+# Datasets absent here keep DuckDB's inferred to_arrow_table() schema (companies / people).
+STRICT_SCHEMA: dict[str, list[tuple[str, bool]]] = {
+    "company_target_industries": [
+        ("company_id", False),         # NOT NULL
+        ("normalized_domain", False),  # NOT NULL — denormalized from the companies join
+        ("target_industry", False),    # NOT NULL — canonical_segment
+        ("source_platform", True),     # nullable
+    ],
 }
 
 # ── ops.companies_migration_runs DDL — verbatim mirror of the canonical .sql sibling.
@@ -216,10 +243,47 @@ LEFT JOIN dex.gtm.companies c ON c.id = p.company_id
 """
 
 
+def _sql_company_target_industries() -> str:
+    # Edge grain — one row per (company, served industry). The canonical, clean layer:
+    # gtm.company_served_industries (alias s) INNER JOIN gtm.companies (alias c) on the FK.
+    # normalized_domain is denormalized from the company (verified non-null for all 1,894
+    # edges); target_industry is the canonical_segment. INNER JOIN drops orphan edges (0 exist).
+    return f"""
+SELECT
+    CAST(s.company_id AS VARCHAR)         AS company_id,
+    {_normalized_domain('c.domain')}      AS normalized_domain,
+    nullif(trim(s.canonical_segment), '') AS target_industry,
+    nullif(trim(s.source), '')            AS source_platform
+FROM dex.gtm.company_served_industries s
+JOIN dex.gtm.companies c ON c.id = s.company_id
+"""
+
+
 SQL_BUILDER = {
     "companies": _sql_companies,
     "people": _sql_people,
+    "company_target_industries": _sql_company_target_industries,
 }
+
+
+def _enforce_schema(ds_name: str, table):
+    """Strictly enforce the declared output schema (STRICT_SCHEMA) for ``ds_name``: select +
+    order the mandated columns, fail loud if a NOT-NULL column carries any null (a data
+    contract violation, not something to silently coerce), then cast to the exact
+    (String, nullability) schema. Datasets with no STRICT_SCHEMA entry pass through unchanged."""
+    spec = STRICT_SCHEMA.get(ds_name)
+    if not spec:
+        return table
+    import pyarrow as pa
+
+    schema = pa.schema([pa.field(name, pa.string(), nullable=nullable) for name, nullable in spec])
+    table = table.select([f.name for f in schema])
+    for f in schema:
+        if not f.nullable and table.column(f.name).null_count:
+            raise ValueError(
+                f"schema contract violation: {ds_name}.{f.name} declared NOT NULL but has "
+                f"{table.column(f.name).null_count} null value(s)")
+    return table.cast(schema)
 
 
 # ── Source DSN + R2 plumbing ─────────────────────────────────────────────────────────────
@@ -397,6 +461,7 @@ def ingest_gtm_company_people(
             for ds_name in targets:
                 print(f"\n=== {ds_name} ===")
                 table = con.sql(SQL_BUILDER[ds_name]()).to_arrow_table()
+                table = _enforce_schema(ds_name, table)  # strict types + NOT-NULL guard (no-op if unspecced)
                 counts[ds_name] = table.num_rows
                 print(f"  read {table.num_rows:,} rows ({table.num_columns} cols) "
                       f"→ {DATASET_URI[ds_name]}")

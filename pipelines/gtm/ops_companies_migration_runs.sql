@@ -11,9 +11,11 @@
 -- (gtm.companies / gtm.people) is read from DEX; run-state is centralized in HQX.
 --
 -- One run materializes the two entity grains
--- (DEX gtm.companies / gtm.people) into the Gen-3 active sink
--- (s3://data-sink/active/companies/ and s3://data-sink/active/people/).
--- ``datasets`` is the per-table row-count map, e.g. {"companies": 748, "people": 7739}.
+-- (DEX gtm.companies / gtm.people / gtm.company_served_industries) into the Gen-3 active sink
+-- (active/companies/, active/people/, active/company_target_industries/).
+-- ``datasets`` is a schemaless per-dataset row-count map (jsonb — accepts any subset of the
+-- grains; an --only run records just one), e.g.
+-- {"companies": 748, "people": 7739, "company_target_industries": 1894}.
 
 CREATE SCHEMA IF NOT EXISTS ops;
 
@@ -21,7 +23,7 @@ CREATE TABLE IF NOT EXISTS ops.companies_migration_runs (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     feed           text        NOT NULL,   -- 'gtm_companies_people'
     source_db      text        NOT NULL,   -- source identifier ('dex:gtm')
-    datasets       jsonb       NOT NULL,   -- {"companies": n, "people": n}
+    datasets       jsonb       NOT NULL,   -- {"companies": n, "people": n, "company_target_industries": n}
     rows_total     bigint      NOT NULL DEFAULT 0,
     status         text        NOT NULL,   -- 'success' | 'error'
     error          text,
