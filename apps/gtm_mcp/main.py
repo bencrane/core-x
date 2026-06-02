@@ -20,13 +20,22 @@ from __future__ import annotations
 import os
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .src.tools import audience, dmaas
 
+# Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
+# rejects any non-localhost Host header with `421 Invalid Host header` — which
+# breaks a PUBLIC endpoint (every request arrives with the Render/edge host). The
+# protection guards browser-reachable *localhost* dev servers from DNS-rebinding;
+# it does not apply to a public HTTPS service whose host is already enforced by
+# Render's routing edge, and whose clients are non-browser MCP agents.
+_SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
 # The unified gateway. One server instance; tool modules mount onto it.
-mcp = FastMCP("gtm-mcp")
+mcp = FastMCP("gtm-mcp", transport_security=_SECURITY)
 audience.register(mcp)
 dmaas.register(mcp)
 
