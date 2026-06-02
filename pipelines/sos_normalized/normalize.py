@@ -10,7 +10,8 @@ into ONE unified entity-resolution layout for a future fuzzy-matching crosswalk:
 
     source_state          'CA' | 'NY' | 'FL' | 'CO'   (the registry of origin)
     original_entity_id    each state's native entity/document key (VARCHAR, never cast)
-    normalized_legal_name UPPER, punctuation-stripped, whitespace-collapsed name
+    normalized_legal_name UPPER, &→AND, dash→space, punctuation-stripped, ws-collapsed name
+    legal_name_base       normalized_legal_name minus trailing corp designators (LLC/INC/…)
     street_address        principal/business street (address lines joined)
     city · state · zip_code   principal/business locality (zip_code = ZIP5 blocking key)
     entity_status         source status (UPPER/trim; FL 1-char code decoded)
@@ -18,8 +19,8 @@ into ONE unified entity-resolution layout for a future fuzzy-matching crosswalk:
 
 Output: ONE combined Lance dataset s3://data-sink/active/sos_normalized_master/
 (memory permits the union easily — entity grain is ~18M rows, narrow projection).
-Mandatory BTREE blocking indexes on normalized_legal_name and zip_code; a BITMAP on
-source_state for cheap per-state slicing.
+Mandatory BTREE blocking indexes on normalized_legal_name, legal_name_base and zip_code;
+a BITMAP on source_state for cheap per-state slicing.
 
 Grounding guardrail: column names are NOT assumed. ``probe`` reads each
 lance.dataset(uri).schema (read-only), surveys NY's competing address blocks by
@@ -71,8 +72,9 @@ MAX_ROWS_PER_FILE = 1048576
 MAX_BYTES_PER_FILE = 90 * 1024**3
 DATA_STORAGE_VERSION = "2.1"
 
-# Mandatory blocking indexes (directive) + a cheap categorical bitmap.
-MASTER_BTREE_INDEXES = ["normalized_legal_name", "zip_code"]
+# Mandatory blocking indexes (directive) + a cheap categorical bitmap. legal_name_base is a
+# load-bearing resolution key (suffix-stripped cross-layer join), so it gets a hard BTREE too.
+MASTER_BTREE_INDEXES = ["normalized_legal_name", "legal_name_base", "zip_code"]
 MASTER_BITMAP_INDEXES = ["source_state"]
 
 OPS_DDL = """
@@ -284,6 +286,9 @@ STATE_PROJECTIONS: dict[str, dict] = {
                  "principal_address_1", "principal_address_2", "principal_city",
                  "principal_state", "principal_zip", "snapshot_date"],
         "id": "entity_id", "name": "entity_name",
+        # CO's raw entity_name carries trailing status decorations ("… DELINQUENT MAY 1
+        # 2016"); scrub them off the blocking-key input only (Task A — _co_status_scrub).
+        "strip_status_decorations": True,
         "a1": "principal_address_1", "a2": "principal_address_2",
         "city": "principal_city", "state": "principal_state", "zip": "principal_zip",
         "status_sql": "nullif(upper(trim(CAST(entity_status AS VARCHAR))), '')",
@@ -291,12 +296,68 @@ STATE_PROJECTIONS: dict[str, dict] = {
 }
 
 
-# ── SQL normalization fragments (DuckDB). \\s in Python source → \s in the emitted SQL. ──
+# ── SQL normalization fragments (DuckDB). \\s / \\x{..} in Python source → \s / \x{..} in SQL. ──
 def _name_norm(col: str) -> str:
-    """Blocking-key name: UPPER → strip every non-[A-Z0-9 space] char (punctuation,
-    quotes, &, accents) → collapse whitespace runs → trim. NULL if emptied."""
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
+    """Canonical blocking-key name. UPPER → '&'→' AND ' (literal, replaced PRE-strip so the
+    conjunction survives as a token instead of being dropped) → dash/en-dash/em-dash → ' '
+    (so "BRAND - STORE" and "BRAND-STORE" both block as two tokens, never "BRANDSTORE") →
+    strip every remaining non-[A-Z0-9 space] char (punctuation, quotes, accents) → collapse
+    whitespace runs → trim. NULL if emptied.
+
+    THE canonical rule. Five bridge replicas mirror this body so their normalized_legal_name
+    stays exact-join-compatible with sos_normalized_master — change here ⇒ change all six:
+    fl_federal_tax_liens/ingest, osha/osha_sniper, resolution/{recon_ca_ucc_sos,
+    crosswalk_hmda_gleif, crosswalk_sam_usaspending}."""
+    return (
+        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+        "upper(CAST(%s AS VARCHAR)),"
+        " '&', ' AND ', 'g'),"
+        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
+        " '[^A-Z0-9 ]+', '', 'g'),"
+        " '\\s+', ' ', 'g')), '')"
+    ) % col
+
+
+def _legal_name_base(name_norm_expr: str) -> str:
+    """Suffix-stripped base of a _name_norm'd name (Task C). Peel one OR MORE trailing
+    corporate designators (LLC/INC/CORP/CO/LTD/PLC) off the end. The `$` anchor means a
+    designator strips only as a whole trailing token: "ACME CO LLC" → "ACME", while
+    "TACO COMPANY" / "ACME CORPORATION" keep their tail (COMPANY/CORPORATION aren't in the
+    set, and a partial CO/CORP can't reach end-of-string). NULL if emptied."""
+    return ("nullif(trim(regexp_replace(%s,"
+            " '( (LLC|INC|CORP|CO|LTD|PLC))+$', '', 'g')), '')") % name_norm_expr
+
+
+# ── Colorado status-decoration scrub (Task A) ──────────────────────────────────────────
+# CO's SoS feed appends a status clause to the raw entity name, e.g.
+#   "ACME WIDGETS LLC DELINQUENT MAY 1 2016"      "FOO INC DISSOLVED APRIL 20"
+# The clause is [<modifier>] <STATUS> [<effective date…>] and always trails the legal name.
+# It is not part of the name and detonates the blocking key, so strip it BEFORE the value
+# reaches _name_norm. To spare legitimate names that merely contain a status word (e.g.
+# "BIG MERGED MEDIA INC"), cut only when the status word is whitespace-led AND runs to
+# end-of-string or is followed by date debris (a month name or a digit) — the structural
+# signature of a real decoration. Applied case-insensitively to the raw (mixed-case) name.
+_CO_STATUS_MODIFIERS = ["ADMINISTRATIVELY", "VOLUNTARILY", "JUDICIALLY"]
+_CO_STATUS_KEYWORDS = [
+    "DELINQUENT", "DELINQUENCY", "DISSOLVED", "DISSOLUTION", "WITHDRAWN", "REVOKED",
+    "SUSPENDED", "EXPIRED", "NONCOMPLIANT", "FORFEITED", "TERMINATED", "MERGED",
+]
+_CO_MONTHS = [
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST",
+    "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+    "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AUG", "SEPT", "SEP", "OCT", "NOV", "DEC",
+]
+_CO_STATUS_SCRUB_RE = (
+    r"\s+(?:(?:" + "|".join(_CO_STATUS_MODIFIERS) + r")\s+)?"
+    r"(?:" + "|".join(_CO_STATUS_KEYWORDS) + r")"
+    r"(?:\s+(?:(?:" + "|".join(_CO_MONTHS) + r")|\d).*)?$"
+)
+
+
+def _co_status_scrub(col: str) -> str:
+    """Strip CO's trailing status decoration from a raw entity-name column (Task A),
+    case-insensitively, before the value is handed to _name_norm."""
+    return "regexp_replace(CAST(%s AS VARCHAR), '%s', '', 'gi')" % (col, _CO_STATUS_SCRUB_RE)
 
 
 def _raw(col: str) -> str:
@@ -324,14 +385,21 @@ def _zip5(col: str) -> str:
 
 
 def _build_state_sql(code: str, spec: dict) -> str:
-    """One state's SELECT → the canonical 11-column unified layout, read from its
+    """One state's SELECT → the canonical 12-column unified layout, read from its
     registered Arrow table. Every branch emits identical column names + types so the
-    UNION ALL produces one perfectly-aligned schema."""
+    UNION ALL produces one perfectly-aligned schema. legal_name_base references the
+    normalized_legal_name alias (DuckDB resolves SELECT-list aliases left-to-right), so the
+    name-normalization chain is evaluated once per row, not twice."""
+    # CO leaks status decorations into the raw entity name; scrub them off the value that
+    # feeds the blocking key (Task A), but keep source_entity_name byte-faithful to source.
+    name_src = (_co_status_scrub(spec["name"])
+                if spec.get("strip_status_decorations") else spec["name"])
     return (
         "SELECT\n"
         f"    '{code}' AS source_state,\n"
         f"    {_raw(spec['id'])} AS original_entity_id,\n"
-        f"    {_name_norm(spec['name'])} AS normalized_legal_name,\n"
+        f"    {_name_norm(name_src)} AS normalized_legal_name,\n"
+        f"    {_legal_name_base('normalized_legal_name')} AS legal_name_base,\n"
         f"    {_raw(spec['name'])} AS source_entity_name,\n"
         f"    {_street(spec['a1'], spec['a2'])} AS street_address,\n"
         f"    {_city(spec['city'])} AS city,\n"

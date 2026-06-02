@@ -154,10 +154,16 @@ def _name_norm(col: str) -> str:
     """CANONICAL blocking-key normalization — lifted verbatim from
     pipelines/sos_normalized/normalize.py::_name_norm so this crosswalk's
     normalized_legal_name is rule-identical to the sos_normalized_master blocking key:
-    UPPER → strip every non-[A-Z0-9 space] char (punctuation, quotes, &, accents) →
-    collapse whitespace runs → trim. NULL if emptied."""
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
+    UPPER → '&'→' AND ' → dash→' ' → strip every remaining non-[A-Z0-9 space] char
+    (punctuation, quotes, accents) → collapse whitespace runs → trim. NULL if emptied."""
+    return (
+        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+        "upper(CAST(%s AS VARCHAR)),"
+        " '&', ' AND ', 'g'),"
+        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
+        " '[^A-Z0-9 ]+', '', 'g'),"
+        " '\\s+', ' ', 'g')), '')"
+    ) % col
 
 
 def build_crosswalk_sql() -> str:

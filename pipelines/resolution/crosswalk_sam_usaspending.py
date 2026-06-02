@@ -151,13 +151,17 @@ def _r2_storage_options() -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 def _norm_sql(expr: str) -> str:
     """The canonical cross-spine name-normalization macro — BYTE-IDENTICAL to
-    pipelines/sos_normalized/normalize.py: UPPER → strip every non-[A-Z0-9 space]
-    char → collapse whitespace runs → trim → NULL if emptied. ``\\s`` in this Python
-    source emits ``\\s`` in the SQL. Applying the SAME macro on both sides
-    (crosswalk.normalized_legal_name and a feed's normalized borrower name) is what
-    makes the BTREE block-join valid."""
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(" + expr + " AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')")
+    pipelines/sos_normalized/normalize.py: UPPER → '&'→' AND ' → dash→' ' → strip every
+    remaining non-[A-Z0-9 space] char → collapse whitespace runs → trim → NULL if emptied.
+    ``\\s`` / ``\\x{..}`` in this Python source emit ``\\s`` / ``\\x{..}`` in the SQL. Applying
+    the SAME macro on both sides (crosswalk.normalized_legal_name and a feed's normalized
+    borrower name) is what makes the BTREE block-join valid."""
+    return ("nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+            "upper(CAST(" + expr + " AS VARCHAR)),"
+            " '&', ' AND ', 'g'),"
+            " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
+            " '[^A-Z0-9 ]+', '', 'g'),"
+            " '\\s+', ' ', 'g')), '')")
 
 
 def build_crosswalk_sql() -> str:

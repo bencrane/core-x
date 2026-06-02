@@ -79,8 +79,14 @@ def _r2_storage_options() -> dict[str, str]:
 
 # ── canonical normalization (byte-identical to sos_normalized/normalize.py::_name_norm) ──
 def _name_norm(col: str) -> str:
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
+    return (
+        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+        "upper(CAST(%s AS VARCHAR)),"
+        " '&', ' AND ', 'g'),"
+        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
+        " '[^A-Z0-9 ]+', '', 'g'),"
+        " '\\s+', ' ', 'g')), '')"
+    ) % col
 
 
 def _zip5(col: str) -> str:
