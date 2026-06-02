@@ -11,12 +11,14 @@ Run (locally and on Render, from the repo root):
 
 Render binds the process to ``$PORT`` on ``0.0.0.0``; ``mcp.sse_app()`` is the
 native SSE Starlette app, exposing GET ``/sse`` (event stream) + POST
-``/messages/`` (client→server). A lightweight ``/healthz`` (and ``/``) route is
-added for liveness probes and connectivity checks — outside the MCP surface.
+``/messages/`` (client→server). The MCP routes are gated by a bearer token
+(``HQX_MCP_BEARER_TOKEN``); a lightweight ``/healthz`` (and ``/``) route stays
+open for liveness probes and connectivity checks — outside the MCP surface.
 """
 
 from __future__ import annotations
 
+import hmac
 import os
 
 from mcp.server.fastmcp import FastMCP
@@ -54,10 +56,48 @@ async def _info(request):  # noqa: ANN001 — Starlette endpoint
     )
 
 
-# Native SSE ASGI app (GET /sse + POST /messages/), plus the ops routes.
-app = mcp.sse_app()
-app.router.routes.append(Route("/healthz", _info, methods=["GET"]))
-app.router.routes.append(Route("/", _info, methods=["GET"]))
+class _BearerAuth:
+    """Pure-ASGI bearer-token gate over the MCP transport routes (/sse, /messages).
+
+    Pure ASGI on purpose — Starlette's ``BaseHTTPMiddleware`` buffers the response
+    body and would break the long-lived SSE stream. Enforces
+    ``Authorization: Bearer <HQX_MCP_BEARER_TOKEN>`` on the MCP endpoints; /healthz
+    and / stay open for liveness probes. When the token is unset (local dev) it
+    warns and allows; production (Render) sets it, so enforcement is live there.
+    Constant-time comparison avoids token-timing leaks."""
+
+    def __init__(self, app, token: str | None):
+        self.app = app
+        self._expected = f"Bearer {token}".encode() if token else None
+
+    @staticmethod
+    def _protected(path: str) -> bool:
+        return path == "/sse" or path.startswith("/messages")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self._expected and self._protected(scope.get("path", "")):
+            provided = dict(scope.get("headers") or []).get(b"authorization", b"")
+            if not hmac.compare_digest(provided, self._expected):
+                await JSONResponse(
+                    {"error": "unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+# Native SSE Starlette app (GET /sse + POST /messages/), plus open ops routes.
+_sse_app = mcp.sse_app()
+_sse_app.router.routes.append(Route("/healthz", _info, methods=["GET"]))
+_sse_app.router.routes.append(Route("/", _info, methods=["GET"]))
+
+# Public ASGI entrypoint — bearer-gated MCP transport (token mirrors
+# DMAAS_MCP_BEARER_TOKEN per directive); /healthz stays open for liveness.
+_TOKEN = os.environ.get("HQX_MCP_BEARER_TOKEN")
+if not _TOKEN:
+    print("WARNING: HQX_MCP_BEARER_TOKEN unset — MCP endpoints (/sse, /messages) are UNAUTHENTICATED.")
+app = _BearerAuth(_sse_app, _TOKEN)
 
 
 def main() -> None:
