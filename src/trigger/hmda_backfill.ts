@@ -89,7 +89,9 @@ export const hmdaBackfill = task({
     const indexes: Record<string, string[]> = {};
     if (doReindex) {
       for (const dataset of ["lar", "panels"]) {
-        const r = await dispatch<ReindexCallback>("reindex_dataset", { dataset }, `reindex-${dataset}`);
+        // reindex_local (local round-trip) — direct-to-R2 index writes trip R2's multipart
+        // part-size rule at LAR scale; see pipelines/hmda/hmda_bulk.py.
+        const r = await dispatch<ReindexCallback>("reindex_local", { dataset }, `reindex-${dataset}`);
         indexes[dataset] = r.indexes ?? [];
       }
     }
