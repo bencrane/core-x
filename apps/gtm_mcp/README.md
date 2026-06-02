@@ -10,6 +10,11 @@ Gen-3 R2 sink (the Lance system-of-record) two ways against one shared context:
   sub-100 ms without a full scan.
 - **Raw DuckDB ANSI SQL** — `execute_audience_query` runs arbitrary read-only SQL
   over the datasets as named relations for cross-layer segment building.
+- **Live hq-x Postgres, attached in-session** — the same DuckDB connection
+  `ATTACH`es the hq-x control-plane Postgres as the `hqx` catalog, so an agent can
+  JOIN Lance R2 datasets against operational `hqx.ops.*` state in one statement
+  (e.g. subtract a suppression list), and manage campaign state through structured,
+  audited write tools.
 
 Built for the whole plane: the dataset registry is **discovered at runtime** by
 listing the active sink — flat roots and the leaves nested under source namespaces
@@ -49,6 +54,30 @@ if a scoped token can read objects but not list the bucket):
 **Catalog** ([`src/tools/catalog.py`](src/tools/catalog.py))
 - `list_datasets()` — the runtime-discovered dataset names + columns (columns from the maintained `active/catalog.json` manifest, or read off the Lance schema for the edge datasets it omits); the schema an agent inspects before writing `execute_audience_query` SQL
 
+**Operational Postgres** ([`src/tools/ops.py`](src/tools/ops.py)) — the structured read/write surface over the attached hq-x control plane (`hqx`)
+- `save_campaign_audience(campaign_id, audience_name, source_query, parameters)` — upsert a campaign-audience tracking row into `ops.campaign_audiences` (parameterized psycopg upsert inside one transaction; the table self-bootstraps). The **only** write path into hq-x.
+- `get_postgres_schema(schema_name)` — discover the tables + columns of an attached `hqx` schema (e.g. `ops`) via DuckDB's `information_schema`, so an agent can find operational state before writing hybrid-join SQL
+
+### Hybrid Lance ⋈ Postgres
+
+`execute_audience_query` resolves `hqx.<schema>.<table>` references against the
+attached Postgres engine over the wire, while Lance datasets stay JIT-bound — so a
+single query spans both planes:
+
+```sql
+SELECT c.* FROM companies c
+LEFT JOIN hqx.ops.exclusions e ON c.normalized_domain = e.domain
+WHERE e.domain IS NULL AND c.industry = 'Aerospace & Defense'
+```
+
+The JIT layer strips `hqx.*` references before Lance-name matching, so a
+Postgres-qualified table never triggers a needless R2 manifest open.
+
+### Safety (Directive 18 §4)
+
+The `hqx` attach is read/write, but the agent-facing raw-SQL path is **read-only-gated**:
+`execute_audience_query` accepts a single read statement only — `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`ATTACH`/`COPY`/extension-load/transaction-control and `;`-chained statements are rejected (keywords inside string literals and comments don't trip the guard, and aren't a bypass either). All hq-x writes flow through `save_campaign_audience` — a parameterized upsert inside an explicit transaction boundary; `source_query`/`parameters` are stored as data, never executed.
+
 **DMaaS** ([`src/tools/dmaas.py`](src/tools/dmaas.py)) — Direct-Mail action wrappers, Lob-backed (**stubs**: validate + echo, return `not_implemented`)
 - `create_direct_mail_campaign`, `send_postcard`, `send_letter`, `get_fulfillment_status`
 
@@ -57,7 +86,7 @@ if a scoped token can read objects but not list the bucket):
 - **Runtime:** native Python 3 · **Region:** Ohio (`us-east-2`)
 - **Build:** `pip install -r apps/gtm_mcp/requirements.txt`
 - **Start:** `python -m apps.gtm_mcp.main` (run from the repo root; binds `0.0.0.0:$PORT`)
-- **Env:** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (required — same names as the `r2-credentials` Modal secret / `hq-x/prd` Doppler config). `HQX_MCP_BEARER_TOKEN` gates the MCP routes. `LOB_API_KEY` + `DMAAS_MCP_BEARER_TOKEN` for the DMaaS surface when wired.
+- **Env:** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (required — same names as the `r2-credentials` Modal secret / `hq-x/prd` Doppler config). `HQX_DB_URL_POOLED` attaches the hq-x control-plane Postgres for hybrid joins + the `ops.*` write tools (pooled/Supavisor DSN, TLS enforced; if unset, Lance/R2 tools still work and `hqx.*` queries fail with a clear message). `HQX_MCP_BEARER_TOKEN` gates the MCP routes. `LOB_API_KEY` + `DMAAS_MCP_BEARER_TOKEN` for the DMaaS surface when wired.
 - **Auth:** `/mcp`, `/sse`, and `/messages/` require `Authorization: Bearer $HQX_MCP_BEARER_TOKEN`. `/healthz` is open. If the token is unset, the server logs a warning and runs open (local dev only).
 - **Public endpoints:** `POST/GET /mcp` (Streamable HTTP — the transport managed agents require) · `GET /sse` + `POST /messages/` (SSE) · `GET /healthz` (liveness/info)
 

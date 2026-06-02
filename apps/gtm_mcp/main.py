@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .src.tools import audience, catalog, dmaas
+from .src.tools import audience, catalog, dmaas, ops
 
 # Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
 # rejects any non-localhost Host header with `421 Invalid Host header` — which
@@ -55,6 +55,7 @@ mcp = FastMCP("gtm-mcp", stateless_http=True, transport_security=_SECURITY)
 audience.register(mcp)
 catalog.register(mcp)
 dmaas.register(mcp)
+ops.register(mcp)  # Directive 18: hq-x ops.* upsert + Postgres schema introspection
 
 
 async def _info(request):  # noqa: ANN001 — Starlette endpoint
@@ -137,6 +138,11 @@ def main() -> None:
 
     database.get_registry()
     print(f"gtm-mcp: discovered {len(database.dataset_names())} datasets in the active sink.")
+
+    # Warm the shared DuckDB connection so the hq-x Postgres attach (Directive 18) is
+    # attempted at boot — an attach/credential failure surfaces here, not mid-request.
+    database.get_connection()
+    print(f"gtm-mcp: hq-x Postgres attached: {database.hqx_attached()}")
 
     port = int(os.environ.get("PORT", "10000"))
     uvicorn.run(app, host="0.0.0.0", port=port)

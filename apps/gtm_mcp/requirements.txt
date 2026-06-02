@@ -9,3 +9,4 @@ duckdb>=1.5,<2       # raw ANSI-SQL audience engine over R2 (>=1.5 → to_arrow_
 pylance>=7           # `import lance` — index pushdown scanner; lancedb does not re-export it
 pyarrow>=17          # Arrow bridge between the Lance scanner and DuckDB
 boto3>=1.34          # R2 S3 listing for runtime dataset auto-discovery (database.discover_datasets)
+psycopg[binary]>=3.1 # structured ops.* upsert into hq-x Postgres (tools/ops.py); [binary] bundles libpq for Render's native runtime. DuckDB's own `postgres` extension (the ATTACH) bundles libpq separately and is auto-installed at runtime.
