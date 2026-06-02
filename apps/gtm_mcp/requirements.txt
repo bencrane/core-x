@@ -1,0 +1,10 @@
+# apps/gtm-mcp — unified GTM MCP gateway (Render Web Service, Ohio).
+# Native Python 3 runtime. Pins mirror the Gen-3 data-plane fleet
+# (pipelines/*) so the gateway reads Lance/R2 byte-identically to the workers
+# that wrote it.
+
+mcp>=1.2,<2          # FastMCP server + native SSE transport (mcp.server.fastmcp)
+uvicorn>=0.30        # ASGI host for the SSE Starlette app (binds 0.0.0.0:$PORT)
+duckdb>=1.5,<2       # raw ANSI-SQL audience engine over R2 (>=1.5 → to_arrow_table; <2 stays pre-break)
+pylance>=7           # `import lance` — index pushdown scanner; lancedb does not re-export it
+pyarrow>=17          # Arrow bridge between the Lance scanner and DuckDB

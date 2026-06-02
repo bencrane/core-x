@@ -4,10 +4,13 @@ Source of truth for core-x, the Gen-3 data & compute plane. Every new
 data-ingest / compute worker follows these patterns; deviations require updating
 this file first.
 
-core-x is a clean room. There is **no FastAPI / Railway application layer, no
-Iceberg, no Polaris, and no `modal.Cron`.** The stack is exactly four layers: a
-Trigger.dev v4 control plane, one proxy-authed Modal dispatcher, domain-grouped
-Modal compute workers, and a DuckDB → LanceDB v2.0 → R2 data plane.
+core-x is a clean room. There is **no Iceberg, no Polaris, no `modal.Cron`, and
+no Gen-2 FastAPI/Railway *ingest* application.** The ingest/compute stack is
+exactly four layers: a Trigger.dev v4 control plane, one proxy-authed Modal
+dispatcher, domain-grouped Modal compute workers, and a DuckDB → LanceDB v2.0 →
+R2 data plane. A thin **read-only gateway layer** (`apps/`) sits *on top of* the
+committed data plane — it serves the Lance system-of-record to consumers (e.g.
+the `gtm-mcp` MCP server) and reintroduces none of the retired patterns.
 
 There is one reference implementation today — SAM.gov Contract Opportunities
 (active) — and it is the template every other feed is built against.
@@ -120,3 +123,23 @@ Building `BTREE` scalar indices on R2 Lance datasets — the two-tier rule:
   `_versions/<n>.manifest`, `_transactions/*.txn`) via boto3 (uniform parts). Never
   wipe or re-upload data files. **Do not** reach for a large `ephemeral_disk`
   override — that is what forced the USAspending giant ingest onto spot capacity.
+
+## Application layer (`apps/`) — read-only gateways
+
+`apps/` holds long-running services that *read* the committed Gen-3
+system-of-record and expose it to consumers. They are categorically distinct from
+`pipelines/` (Modal workers that *ingest / materialize / mutate* the data plane):
+a gateway never writes a dataset. They host **no** Gen-2 patterns — no Iceberg /
+Polaris, no per-feed data-plane endpoints, no embedded cron — and read R2 with the
+same credentials the workers use (`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` /
+`R2_ENDPOINT`).
+
+Reference: [`apps/gtm_mcp/`](apps/gtm_mcp/) — the unified **GTM MCP gateway**
+(Render Web Service, Ohio). One `FastMCP` server (`mcp.server.fastmcp`) over the
+SSE transport, exposing two access shapes over the same R2 sink: **Lance `BTREE`
+index pushdown** for sub-100 ms point-lookups (`companies` / `people` / `awards`),
+and **raw DuckDB ANSI SQL** (`execute_audience_query`) for cross-layer audience
+segments. Name-matching reuses the canonical `core.name_norm` blocking key as a
+DuckDB SQL literal — the gateway never re-implements a spine rule. Run from the
+repo root: `python -m apps.gtm_mcp.main` (package `gtm_mcp` is underscored to be a
+valid module path; the Render service is named `gtm-mcp`).
