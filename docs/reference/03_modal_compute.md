@@ -10,9 +10,9 @@ This document is loaded verbatim as system truth. Every decorator, parameter, an
 
 Modal in core-x runs compute and nothing else. The following are **forbidden** on the execution plane:
 
-- **NO FastAPI / Railway application layer.** core-x has no long-lived web application. The only HTTP surface Modal exposes is the one dispatcher endpoint (§3). Workers expose **zero** endpoints.
+- **NO FastAPI / Railway application layer.** core-x has no long-lived web application. The only HTTP surface Modal exposes for routing compute is the one dispatcher endpoint (§3). Workers expose **zero** endpoints, with one documented exception — a push-ingestion endpoint for an external producer (§4, `gtm-clay-ingest`).
 - **NO `modal.Cron`.** Schedule lives **exclusively** in Trigger.dev v4 via `schedules.task({ cron })`. A worker that embeds `modal.Cron` is a defect — delete it. Cadence is owned by [`04_trigger_orchestration.md`](04_trigger_orchestration.md), full stop.
-- **NO per-feed endpoints, NO per-feed secrets.** A new feed adds a worker function and a one-line Trigger task. It adds no new endpoint and no new proxy-auth pair. This is what kills env-var bloat.
+- **NO per-feed endpoints, NO per-feed secrets.** A new feed adds a worker function and a one-line Trigger task. It adds no new endpoint and no new proxy-auth pair. This is what kills env-var bloat. (One push-ingestion endpoint exists for an external producer that initiates its own request — §4, `gtm-clay-ingest`.)
 - **NO Iceberg, NO Polaris.** The data plane writes Lance directly to R2 with no catalog round-trip. The execution plane never touches a REST catalog.
 
 The contract (mirrors [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §2–3): Trigger POSTs the dispatcher → the dispatcher `spawn()`s the named worker fire-and-forget and returns `202` → the worker streams source → DuckDB → Arrow → Lance, writes terminal state to `ops.*`, and POSTs the Trigger waitpoint callback. Modal holds no schedule, no connection, and no durable state.
@@ -260,7 +260,7 @@ In production the caller is never `curl` — it is the Trigger v4 task, which mi
 
 ## 4. Domain-Grouped Compute Workers
 
-Modal apps are grouped **strictly by domain**: `app = modal.App("sam-gov-pipelines")`. Workers live under `pipelines/<domain>/` — e.g. [`pipelines/sam_gov/sam_opps_bulk.py`](../../pipelines/sam_gov/sam_opps_bulk.py). **All new compute workers MUST be placed in a domain-specific subdirectory under `pipelines/`.** Workers **never** expose a web endpoint. They are reachable only by the dispatcher's `spawn()` (or `modal run` for manual ops) and receive `trigger_callback_url` as a kwarg.
+Modal apps are grouped **strictly by domain**: `app = modal.App("sam-gov-pipelines")`. Workers live under `pipelines/<domain>/` — e.g. [`pipelines/sam_gov/sam_opps_bulk.py`](../../pipelines/sam_gov/sam_opps_bulk.py). **All new compute workers MUST be placed in a domain-specific subdirectory under `pipelines/`.** Workers **never** expose a web endpoint, with one documented exception (the push-ingestion worker below). They are reachable only by the dispatcher's `spawn()` (or `modal run` for manual ops) and receive `trigger_callback_url` as a kwarg.
 
 The SAM.gov worker is the reference every feed is built against. Its resource config:
 
@@ -335,6 +335,14 @@ def main(mode: str = "overwrite") -> None:
 ```
 
 The manual path passes `trigger_callback_url=None` — there is no Trigger run to wake. The terminal-state write to `ops.*` still fires. The full terminal contract (Postgres `ops.*` write via psycopg + waitpoint callback POST) is owned by the worker; see [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §5 and [`04_trigger_orchestration.md`](04_trigger_orchestration.md).
+
+### Push-ingestion exception — `gtm-clay-ingest`
+
+One worker exposes its own web endpoint. It receives POSTs initiated by an external producer (Clay); it is not Trigger-scheduled and not dispatcher-spawned. [`pipelines/gtm/clay_industries_endpoint.py`](../../pipelines/gtm/clay_industries_endpoint.py), Modal app `gtm-clay-ingest`:
+
+- `@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True, label="clay-industries")` → `POST https://bencrane--clay-industries.modal.run`; missing/invalid `Modal-Key` / `Modal-Secret` get `401`.
+- Each request inserts one row into HQX Postgres `public.company_industry_payloads` (`normalized_domain text`, `source_platform text`, `raw_payload jsonb`, `ingested_at timestamptz`) via psycopg; `raw_payload` is bound with `Jsonb`.
+- Secret: `hqx-postgres` (`HQX_DB_URL_POOLED`). No new secret. It writes no Lance and runs no schedule.
 
 ---
 

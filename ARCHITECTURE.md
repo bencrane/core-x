@@ -40,10 +40,10 @@ There is one reference implementation today — SAM.gov Contract Opportunities
 ## 2. Router — the Universal Dispatcher
 
 - `core/modal_dispatcher.py`, Modal app `universal-dispatcher`. It is the
-  **only** Modal app exposing a web endpoint, and that endpoint is
+  **only** Modal app exposing a web endpoint for routing compute, and that endpoint is
   **proxy-authenticated** (`requires_proxy_auth=True`; `Modal-Key` /
   `Modal-Secret`). One endpoint for the entire fleet, `MODAL_DISPATCHER_URL`,
-  forever.
+  forever. One separate push-ingestion endpoint exists for an external producer — §6.
 - A **stateless router.** It receives the Trigger payload
   `{app_name, function_name, kwargs, trigger_callback_url}`, resolves the target
   via `modal.Function.from_name(app_name, function_name)`, `spawn()`s it
@@ -57,9 +57,10 @@ There is one reference implementation today — SAM.gov Contract Opportunities
   `app = modal.App("sam-gov-pipelines")`. Workers live under
   `pipelines/<domain>/` — e.g. `pipelines/sam_gov/`. **All new compute workers
   MUST be placed in a domain-specific subdirectory under `pipelines/`.**
-- Workers **do not expose web endpoints.** They are reachable only by the
-  dispatcher's `spawn()` (or `modal run` for manual ops) and receive
-  `trigger_callback_url` as a kwarg.
+- Workers **do not expose web endpoints** — one exception, a push-ingestion
+  endpoint for an external producer, is documented in §6. Otherwise they are
+  reachable only by the dispatcher's `spawn()` (or `modal run` for manual ops)
+  and receive `trigger_callback_url` as a kwarg.
 
 ## 4. Data plane — DuckDB → LanceDB v2.0 → R2
 
@@ -85,12 +86,30 @@ There is one reference implementation today — SAM.gov Contract Opportunities
 - Trigger.dev therefore owns true end-to-end success/failure state. **No
   polling, no heartbeat.** (SAM.gov writes `ops.sam_opps_canonical_runs`.)
 
+## 6. Push-ingestion endpoints — external producers
+
+One worker exposes its own web endpoint. It receives POSTs initiated by an
+external producer (Clay) — it is not Trigger-scheduled and not dispatcher-spawned:
+
+| File | Modal app | Endpoint | Auth |
+|---|---|---|---|
+| [`pipelines/gtm/clay_industries_endpoint.py`](pipelines/gtm/clay_industries_endpoint.py) | `gtm-clay-ingest` | `POST https://bencrane--clay-industries.modal.run` | `requires_proxy_auth=True` (`Modal-Key` / `Modal-Secret`) |
+
+- Decorator: `@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True, label="clay-industries")`.
+- Each request inserts one row into HQX Postgres `public.company_industry_payloads`
+  (`normalized_domain text`, `source_platform text`, `raw_payload jsonb`,
+  `ingested_at timestamptz`) via psycopg; `raw_payload` is bound with `Jsonb`.
+- Secret: `hqx-postgres` (`HQX_DB_URL_POOLED`). No new secret.
+- It writes no Lance, holds no schedule, and is not invoked by the dispatcher.
+
 ## Forbidden / retired — do not reintroduce
 
 - **Iceberg** tables and the **Polaris** REST catalog. The Gen-3 data plane
   writes Lance to R2 directly and needs neither.
 - **`modal.Cron`** embedded in workers — cadence belongs to Trigger v4.
-- **Per-feed Modal web endpoints** — the Universal Dispatcher is the only one.
+- **Per-feed Modal web endpoints** for dispatcher-routed compute — the Universal
+  Dispatcher is the only one. Push-ingestion endpoints, where an external producer
+  initiates the request, are documented in §6.
 
 **Adding a feed:** a new feed earns a `src/trigger/<feed>.ts` task, a
 domain-grouped worker under `pipelines/<domain>/`, and an `ops.*` runs table for
