@@ -20,9 +20,12 @@ Data plane (clean-room — DuckDB does 100% of the transform):
     then: BTREE indexes → boto3 upload → s3://data-sink/active/entity_registrations/
 
 Two positional, pipe-delimited layouts (no column-name header) unify into ONE
-Arrow schema:
-  - legacy_v1 (`SAM_PUBLIC_MONTHLY_*_MODIFIED`, 120 fields): DUNS @0 / CAGE @2
-  - v2        (`SAM_PUBLIC_*_MONTHLY_V2_*`,    142 fields): UEI  @0 / CAGE @3
+Arrow schema. Layout — and the emitted `format_family` — is WIDTH-determined, not
+filename-determined: GSA shipped some `MONTHLY_*_MODIFIED` extracts (which the
+filename classifier tags `legacy_v1`) in the 142-wide v2 layout. A filename-only
+map nulled their UEI and read CAGE/dates one position off; width is authoritative:
+  - legacy_v1 (120 fields): DUNS @0 / CAGE @2, no UEI
+  - v2        (142 fields): UEI  @0 / CAGE @3
 V2 carries `BOF`/`EOF` sentinel lines (filtered). Encoding is content-detected
 (strict UTF-8, else lossless cp1252→UTF-8). The cp1252 V2 twins are deduped out.
 
@@ -68,10 +71,11 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
 # shared-app-object module consolidates the sam_gov domain.
 app = modal.App("sam-gov-entity-pipelines", image=image)
 
-# 1-indexed positions within the split pipe array, per layout family. Confirmed
-# from one sampled record per family; positions past `dba_name` drift between
-# layouts and are deferred to reconciliation — every field is retained losslessly
-# in `pipe_fields`, so nothing is dropped.
+# 1-indexed positions within the split pipe array, per layout family (verified
+# against live records of each width — see `_build_sql`). The map is selected per
+# row by WIDTH, not filename: 142 ⇒ v2, 120 ⇒ legacy_v1. Positions past `dba_name`
+# drift between layouts and are deferred to reconciliation — every field is retained
+# losslessly in `pipe_fields`, so nothing is dropped.
 FIELD_MAP = {
     "legacy_v1": {
         "uei": None, "duns": 1, "cage_code": 3, "registration_status": 5,
@@ -120,6 +124,10 @@ def _s3_client():
 
 
 def _classify(key: str) -> tuple[str, str]:
+    """(family_hint, extract_label) from the filename. The family is a FALLBACK only:
+    `_build_sql` derives the authoritative layout/`format_family` from each record's
+    width (142⇒v2, 120⇒legacy_v1), since some `MONTHLY_*_MODIFIED` extracts ship the
+    142-wide v2 layout. The hint is used only for widths that are neither 142 nor 120."""
     import re
 
     name = key.rsplit("/", 1)[-1].upper()
@@ -164,32 +172,45 @@ def _materialize_utf8(zf, member_name: str, out_path: str) -> str:
 
 
 def _build_sql(family: str, scratch_path: str, enc: str, label: str, key: str) -> str:
-    m = FIELD_MAP[family]
+    """Width-aware positional projection. The pipe-array layout is determined per row
+    by its width, NOT the filename: 142 fields ⇒ v2 layout (uei@0, cage@3, dates at
+    the v2 positions), 120 ⇒ legacy_v1 (no uei, cage@2). GSA emitted some
+    `MONTHLY_*_MODIFIED` extracts (filename-classified `legacy_v1`) in the 142-wide v2
+    layout; projecting those as v2 recovers the UEI/CAGE/date block a filename-only
+    map dropped. `format_family` is emitted from the width so every downstream consumer
+    keys on the true layout. Widths that are neither 142 nor 120 fall back to `family`."""
+    v2, lg = FIELD_MAP["v2"], FIELD_MAP["legacy_v1"]
+    fb = FIELD_MAP[family]  # fallback map for any width outside {142, 120}
 
     def lit(s: str) -> str:
         return s.replace("'", "''")
 
-    def strcol(c: str) -> str:
-        i = m[c]
-        if i is None:
-            return f"CAST(NULL AS VARCHAR) AS {c}"
-        if c == "duns":
-            # GSA redacted DUNS in the historical extracts to the literal
-            # 'No longer available'; surface that sentinel as NULL.
-            return f"nullif(nullif(trim(f[{i}]), ''), 'No longer available') AS {c}"
-        return f"nullif(trim(f[{i}]), '') AS {c}"
+    def str_val(i) -> str:
+        return "CAST(NULL AS VARCHAR)" if i is None else f"nullif(trim(f[{i}]), '')"
 
-    def datecol(c: str) -> str:
-        i = m[c]
-        if i is None:
-            return f"CAST(NULL AS DATE) AS {c}"
-        return f"TRY_CAST(TRY_STRPTIME(nullif(trim(f[{i}]), ''), '%Y%m%d') AS DATE) AS {c}"
+    def duns_val(i) -> str:
+        # GSA redacted DUNS in the historical extracts to the literal
+        # 'No longer available'; surface that sentinel as NULL.
+        return ("CAST(NULL AS VARCHAR)" if i is None
+                else f"nullif(nullif(trim(f[{i}]), ''), 'No longer available')")
+
+    def date_val(i) -> str:
+        return ("CAST(NULL AS DATE)" if i is None
+                else f"TRY_CAST(TRY_STRPTIME(nullif(trim(f[{i}]), ''), '%Y%m%d') AS DATE)")
+
+    def col(c: str, val) -> str:
+        # Per-row CASE on the actual width so one anomalous record can never be
+        # projected under the wrong layout.
+        return (f"CASE WHEN len(f) = 142 THEN {val(v2[c])} "
+                f"WHEN len(f) = 120 THEN {val(lg[c])} "
+                f"ELSE {val(fb[c])} END AS {c}")
 
     projections = ",\n    ".join(
-        [strcol("uei"), strcol("duns"), strcol("cage_code"), strcol("registration_status"),
-         strcol("purpose_of_registration"), datecol("registration_date"), datecol("expiration_date"),
-         datecol("last_update_date"), datecol("activation_date"), strcol("legal_business_name"),
-         strcol("dba_name")]
+        [col("uei", str_val), col("duns", duns_val), col("cage_code", str_val),
+         col("registration_status", str_val), col("purpose_of_registration", str_val),
+         col("registration_date", date_val), col("expiration_date", date_val),
+         col("last_update_date", date_val), col("activation_date", date_val),
+         col("legal_business_name", str_val), col("dba_name", str_val)]
     )
     return f"""
 WITH raw AS (
@@ -210,13 +231,27 @@ SELECT
     {projections},
     f AS pipe_fields,
     len(f) AS field_count,
-    '{family}' AS format_family,
+    CASE WHEN len(f) = 142 THEN 'v2'
+         WHEN len(f) = 120 THEN 'legacy_v1'
+         ELSE '{family}' END AS format_family,
     '{lit(enc)}' AS source_encoding,
     '{lit(label)}' AS extract_label,
     '{lit(key)}' AS source_file,
     now() AS ingested_at
 FROM p
 """
+
+
+def _resolve_family(table, fallback: str) -> str:
+    """The width-derived family actually written (distinct `format_family` in the
+    projected table) so the ops ledger matches the data, not the filename. A single
+    monthly extract is uniform width; '+'-joins the rare mixed-width case."""
+    import pyarrow.compute as pc
+
+    if table.num_rows == 0:
+        return fallback
+    fams = sorted(f for f in pc.unique(table.column("format_family")).to_pylist() if f)
+    return fams[0] if len(fams) == 1 else "+".join(fams)
 
 
 def _list_landing_zip_keys() -> list[str]:
@@ -357,6 +392,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
             f_started = dt.datetime.now(dt.timezone.utc)
             family, label = _classify(key)
             f_rows, f_enc, f_status, f_err = 0, None, "error", None
+            f_family = family  # width-resolved from the projected table on success
             zip_path = os.path.join(SCRATCH_DIR, key.rsplit("/", 1)[-1])
             scratch = os.path.join(SCRATCH_DIR, "extract.utf8.dat")
             try:
@@ -375,6 +411,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
                 finally:
                     con.close()
                 f_rows = table.num_rows
+                f_family = _resolve_family(table, family)
 
                 lance.write_dataset(
                     table, LOCAL_DATASET,
@@ -388,7 +425,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
             except Exception as exc:  # noqa: BLE001
                 f_err = str(exc)
             finally:
-                _record_run(key, label, family, f_enc, int(f_rows), f_status, f_err,
+                _record_run(key, label, f_family, f_enc, int(f_rows), f_status, f_err,
                             f_started, dt.datetime.now(dt.timezone.utc))
                 for p in (zip_path, scratch):
                     try:
@@ -396,11 +433,11 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
                     except OSError:
                         pass
 
-            per_file.append({"source_file": key, "extract_label": label, "format_family": family,
+            per_file.append({"source_file": key, "extract_label": label, "format_family": f_family,
                              "source_encoding": f_enc, "rows": int(f_rows), "status": f_status})
             if f_status != "success":
                 raise RuntimeError(f"ingest failed for {key}: {f_err}")
-            print(f"[{i + 1}/{len(keys)}] {label} {family} enc={f_enc} rows={f_rows}")
+            print(f"[{i + 1}/{len(keys)}] {label} {f_family} enc={f_enc} rows={f_rows}")
 
         # BTREE scalar indexes on the resolution keys (best-effort per index).
         ds = lance.dataset(LOCAL_DATASET)
