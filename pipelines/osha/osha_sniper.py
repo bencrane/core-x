@@ -56,6 +56,10 @@ import os
 
 import modal
 
+# Canonical blocking-key macro (single source of truth). KEEPS entity tokens (LLC/INC) — that
+# is what makes estab_name's normalized_legal_name match the sos_normalized / SAM spines.
+from core.name_norm import name_norm as _name_norm
+
 # ── DOL Open Data API surface (apiprod.dol.gov v4) ─────────────────────────────
 # Endpoint template:  <base>/<agency>/<endpoint>/<format>?<params>
 # Auth:  X-API-KEY is read from the QUERY STRING (verified: header → 401, query
@@ -154,27 +158,9 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pyarrow>=17",
     "requests>=2.32",
     "psycopg[binary]>=3.2",  # terminal state write to ops.*
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 
 app = modal.App("osha-pipelines", image=image)
-
-
-# ── Name normalization — the standard regex protocol (verbatim from ────────────
-#    pipelines/sos_normalized/normalize.py::_name_norm — change there ⇒ change here).
-#    UPPER → '&'→' AND ' → dash→' ' → strip every remaining non-[A-Z0-9 space] char
-#    (punctuation, accents) → collapse whitespace → trim. NULL if emptied. Produces the
-#    normalized_legal_name bridge key. NOTE: this KEEPS entity tokens (LLC/INC) — that is
-#    what makes the key match the sos_normalized / SAM spines; stripping them would break
-#    cross-spine resolution.
-def _name_norm(col: str) -> str:
-    return (
-        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-        "upper(CAST(%s AS VARCHAR)),"
-        " '&', ' AND ', 'g'),"
-        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
-        " '[^A-Z0-9 ]+', '', 'g'),"
-        " '\\s+', ' ', 'g')), '')"
-    ) % col
 
 
 def _r2_storage_options() -> dict[str, str]:

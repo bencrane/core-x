@@ -55,6 +55,8 @@ import os
 
 import modal
 
+from core.name_norm import name_norm as _name_norm
+
 BUCKET = "data-sink"
 HMDA_PANELS_URI = os.environ.get("HMDA_PANEL_LANCE_URI", "s3://data-sink/active/hmda_panels/")
 GLEIF_L1_URI = os.environ.get("GLEIF_L1_LANCE_URI", "s3://data-sink/active/gleif_l1_entities/")
@@ -124,7 +126,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # pool and OOMs on high-cardinality string columns (lance#2650). Force the in-memory
     # sort path so lei / normalized_legal_name index builds every run.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 
 app = modal.App("resolution-hmda-gleif-pipelines", image=image)
 
@@ -149,23 +151,9 @@ def _r2_storage_options() -> dict[str, str]:
 
 # --------------------------------------------------------------------------- #
 # DuckDB transform — pure SQL builders (importable without modal/auth)
+# _name_norm is the canonical blocking-key macro, imported from core/name_norm.py so this
+# crosswalk's normalized_legal_name stays byte-identical to the sos_normalized_master key.
 # --------------------------------------------------------------------------- #
-def _name_norm(col: str) -> str:
-    """CANONICAL blocking-key normalization — lifted verbatim from
-    pipelines/sos_normalized/normalize.py::_name_norm so this crosswalk's
-    normalized_legal_name is rule-identical to the sos_normalized_master blocking key:
-    UPPER → '&'→' AND ' → dash→' ' → strip every remaining non-[A-Z0-9 space] char
-    (punctuation, quotes, accents) → collapse whitespace runs → trim. NULL if emptied."""
-    return (
-        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-        "upper(CAST(%s AS VARCHAR)),"
-        " '&', ' AND ', 'g'),"
-        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
-        " '[^A-Z0-9 ]+', '', 'g'),"
-        " '\\s+', ' ', 'g')), '')"
-    ) % col
-
-
 def build_crosswalk_sql() -> str:
     """Final join statement. Assumes two grain-temps are built: hmda_panel(1 row/lei,
     latest-year HMDA identity + year coverage) and gleif(1 row/lei, GLEIF L1 attributes).

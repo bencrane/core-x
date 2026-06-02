@@ -34,6 +34,8 @@ import os
 
 import modal
 
+from core.name_norm import name_norm as _name_norm
+
 BUCKET = "data-sink"
 _ACTIVE = "s3://data-sink/active"
 
@@ -57,7 +59,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pylance>=7",
     "pyarrow>=17",
     "boto3>=1.35",
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro to the container
 
 app = modal.App("recon-ca-ucc-sos", image=image)
 
@@ -75,18 +77,6 @@ def _r2_storage_options() -> dict[str, str]:
         "endpoint": endpoint,
         "region": "auto",
     }
-
-
-# ── canonical normalization (byte-identical to sos_normalized/normalize.py::_name_norm) ──
-def _name_norm(col: str) -> str:
-    return (
-        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
-        "upper(CAST(%s AS VARCHAR)),"
-        " '&', ' AND ', 'g'),"
-        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
-        " '[^A-Z0-9 ]+', '', 'g'),"
-        " '\\s+', ' ', 'g')), '')"
-    ) % col
 
 
 def _zip5(col: str) -> str:
