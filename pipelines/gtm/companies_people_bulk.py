@@ -5,27 +5,28 @@ Dispatcher (core/modal_dispatcher.py). Clean-room data plane: DuckDB does 100% o
 transform, Lance is written straight to R2. No Iceberg, no Polaris, no catalog round-trip.
 
 WHY THIS WORKER EXISTS (Directive 8)
-    The core go-to-market data lives in the legacy PostgreSQL ``gtm`` schema of the DEX
-    Supabase project (the same DB that backs the data-factory ``gtm.*`` tables). This worker
-    migrates the load-bearing grains — companies, people, and the company→target-industry
-    edge — out of Postgres and materializes them as native Gen-3 Lance in the active sink. It builds a
+    The core go-to-market data lives in the ``dexarchive`` schema of the HQX Supabase
+    project — the canonical home after the gtm data was consolidated out of the legacy DEX
+    project (DEX is no longer wired to Lance). This worker materializes the load-bearing
+    grains — companies, people, and the company→target-industry edge — from that Postgres
+    source into native Gen-3 Lance in the active sink. It builds a
     *minimal* unified identity graph: every business entity is a company, every contact is a
     person, and each row tracks its source lineage verbatim. NO external API payloads are
     merged and NO enrichment engine runs here — this is a faithful, minimal projection.
 
 SOURCE (live Postgres, read-only via the DuckDB postgres scanner):
-    DEX Supabase · schema ``gtm``
-      gtm.companies  (~748 rows)   — canonical companies, PK ``id`` (uuid)
-      gtm.people     (~7,739 rows) — canonical contacts, PK ``id`` (uuid),
-                                     FK ``company_id`` → gtm.companies.id (verified: 0 orphans)
-      gtm.company_served_industries (~1,894 rows) — canonical company→served-industry edges,
+    HQX Supabase · schema ``dexarchive``
+      dexarchive.companies  (~748 rows)   — canonical companies, PK ``id`` (uuid)
+      dexarchive.people     (~7,739 rows) — canonical contacts, PK ``id`` (uuid),
+                                     FK ``company_id`` → dexarchive.companies.id (0 orphans)
+      dexarchive.company_served_industries (~1,894 rows) — company→served-industry edges,
                                      PK (company_id, canonical_segment); FK company_id → companies.id
-      gtm.company_exa_industries    (~278 rows)   — Exa.ai industry tags for the exa-all cohort
-                                     (9 buckets); folded into target_industry, normalized to the
-                                     same canonical vocabulary (financing products dropped)
-    The DSN is the DEX pooled (Supavisor session-mode) URL, supplied by the ``dex-postgres``
-    Modal secret as ``DEX_DB_URL_POOLED``. DuckDB ATTACHes it READ_ONLY — no server-side
-    compute, the transform boundary is 100% local DuckDB.
+      dexarchive.company_exa_industries    (~278 rows)   — Exa.ai industry tags for the exa-all
+                                     cohort (9 buckets); folded into target_industry, normalized
+                                     to the same canonical vocabulary (financing products dropped)
+    The DSN is the HQX pooled (Supavisor session-mode) URL, supplied by the ``hqx-postgres``
+    Modal secret as ``HQX_DB_URL_POOLED`` — the same DB that already receives ops.* run rows.
+    DuckDB ATTACHes it READ_ONLY — no server-side compute, transform is 100% local DuckDB.
 
 TARGET (Gen-3 system of record — native Lance v2.1, full-snapshot overwrite):
     s3://data-sink/active/companies/
@@ -121,7 +122,7 @@ DATASET_URI = {
 }
 
 FEED = "gtm_companies_people"
-SOURCE_DB = "dex:gtm"  # provenance label recorded in ops.* (DEX Supabase, schema gtm)
+SOURCE_DB = "hqx:dexarchive"  # provenance label recorded in ops.* (HQX Supabase, schema dexarchive)
 
 # Lance fragment sizing — fleet defaults (02_lancedb_storage.md §2.3). Both datasets are
 # tiny (one fragment each); these caps simply mirror the rest of the fleet.
@@ -191,8 +192,8 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
 app = modal.App("gtm-company-people", image=image)
 
 
-# ── DuckDB projections. The DEX Postgres is ATTACHed READ_ONLY as `dex`; tables are read as
-# dex.gtm.<table>. Every identifier is STRICT VARCHAR (uuid → canonical text); string fields
+# ── DuckDB projections. The HQX Postgres is ATTACHed READ_ONLY as `hqx`; tables are read as
+# hqx.dexarchive.<table>. Every identifier is STRICT VARCHAR (uuid → canonical text); string fields
 # are trimmed and emptied-to-NULL. ──────────────────────────────────────────────────────
 def _normalized_domain(col: str) -> str:
     """Canonical domain-anchor normalization (a DuckDB SQL expression).
@@ -225,7 +226,7 @@ SELECT
     {_normalized_domain('domain')}       AS normalized_domain,
     nullif(trim(linkedin_url), '')       AS company_linkedin_url,
     nullif(trim(source), '')             AS source_platform
-FROM dex.gtm.companies
+FROM hqx.dexarchive.companies
 """
 
 
@@ -243,8 +244,8 @@ SELECT
     nullif(trim(p.title), '')             AS title,
     nullif(trim(p.linkedin_url), '')      AS person_linkedin_url,
     nullif(trim(p.source), '')            AS source_platform
-FROM dex.gtm.people p
-LEFT JOIN dex.gtm.companies c ON c.id = p.company_id
+FROM hqx.dexarchive.people p
+LEFT JOIN hqx.dexarchive.companies c ON c.id = p.company_id
 """
 
 
@@ -272,8 +273,8 @@ WITH served AS (
         {_normalized_domain('c.domain')}      AS normalized_domain,
         nullif(trim(s.canonical_segment), '') AS target_industry,
         nullif(trim(s.source), '')            AS source_platform
-    FROM dex.gtm.company_served_industries s
-    JOIN dex.gtm.companies c ON c.id = s.company_id
+    FROM hqx.dexarchive.company_served_industries s
+    JOIN hqx.dexarchive.companies c ON c.id = s.company_id
 ),
 exa AS (
     SELECT
@@ -290,8 +291,8 @@ exa AS (
             ELSE NULL  -- 'equipment financing' / 'working capital' = products, not industries
         END                                   AS target_industry,
         nullif(trim(c.source), '')            AS source_platform
-    FROM dex.gtm.company_exa_industries e
-    JOIN dex.gtm.companies c ON c.id = e.company_id
+    FROM hqx.dexarchive.company_exa_industries e
+    JOIN hqx.dexarchive.companies c ON c.id = e.company_id
 )
 SELECT company_id, normalized_domain, target_industry, source_platform FROM served
 UNION
@@ -328,12 +329,12 @@ def _enforce_schema(ds_name: str, table):
 
 
 # ── Source DSN + R2 plumbing ─────────────────────────────────────────────────────────────
-def _dex_dsn() -> str:
-    """The DEX Postgres DSN (pooled/Supavisor session mode) with SSL enforced. The DuckDB
+def _source_dsn() -> str:
+    """The HQX Postgres DSN (pooled/Supavisor session mode) with SSL enforced. The DuckDB
     postgres scanner hands this to libpq; Supabase requires TLS."""
-    dsn = os.environ.get("DEX_DB_URL_POOLED")
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
     if not dsn:
-        raise RuntimeError("DEX_DB_URL_POOLED not set in the dex-postgres Modal secret.")
+        raise RuntimeError("HQX_DB_URL_POOLED not set in the hqx-postgres Modal secret.")
     if "sslmode=" not in dsn:
         dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
     return dsn
@@ -455,7 +456,6 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
 @app.function(
     secrets=[
         modal.Secret.from_name("r2-credentials"),
-        modal.Secret.from_name("dex-postgres"),
         modal.Secret.from_name("hqx-postgres"),
     ],
     timeout=60 * 30,
@@ -466,7 +466,7 @@ def ingest_gtm_company_people(
     only: str = "",
     trigger_callback_url: str | None = None,
 ) -> dict:
-    """Migrate gtm.companies + gtm.people → Gen-3 Lance. ATTACH the DEX Postgres READ_ONLY,
+    """Migrate dexarchive.companies + dexarchive.people → Gen-3 Lance. ATTACH the HQX Postgres READ_ONLY,
     project/cast each grain in DuckDB → Arrow → Lance overwrite → BTREE indexes. Then record
     ops.* state and wake the Trigger run. ``only`` restricts to one dataset. Re-raises on
     failure so the Modal call is marked failed."""
@@ -489,7 +489,7 @@ def ingest_gtm_company_people(
 
     try:
         so = _r2_storage_options()
-        dsn = _dex_dsn()
+        dsn = _source_dsn()
 
         con = duckdb.connect(":memory:")
         try:
@@ -497,7 +497,7 @@ def ingest_gtm_company_people(
             con.execute("PRAGMA threads=4;")
             # READ_ONLY ATTACH — no server-side writes, ever. DSN is single-quote escaped for
             # the string literal (never logged; it carries the password).
-            con.execute(f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS dex "
+            con.execute(f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS hqx "
                         "(TYPE postgres, READ_ONLY);")
             for ds_name in targets:
                 print(f"\n=== {ds_name} ===")
