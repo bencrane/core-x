@@ -1,8 +1,9 @@
 # gtm-mcp — unified GTM MCP gateway
 
 A global **data gateway + action engine** for autonomous GTM agents, served as a
-Render Web Service (Ohio) over the MCP **SSE** transport. It reads the Gen-3 R2
-sink (the Lance system-of-record) two ways against one shared context:
+Render Web Service (Ohio) over MCP — **Streamable HTTP at `/mcp`** (what the
+Anthropic managed-agent connector requires) **and SSE at `/sse`**. It reads the
+Gen-3 R2 sink (the Lance system-of-record) two ways against one shared context:
 
 - **Lance index pushdown** — point-lookups push their predicate straight into
   `lance.dataset(...).scanner(filter=...)`, so a load-bearing `BTREE` answers in
@@ -39,8 +40,8 @@ Built for multi-dataset extensibility: adding a dataset is one entry in
 - **Build:** `pip install -r apps/gtm_mcp/requirements.txt`
 - **Start:** `python -m apps.gtm_mcp.main` (run from the repo root; binds `0.0.0.0:$PORT`)
 - **Env:** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (required — same names as the `r2-credentials` Modal secret / `hq-x/prd` Doppler config). `HQX_MCP_BEARER_TOKEN` gates the MCP routes. `LOB_API_KEY` + `DMAAS_MCP_BEARER_TOKEN` for the DMaaS surface when wired.
-- **Auth:** `/sse` and `/messages/` require `Authorization: Bearer $HQX_MCP_BEARER_TOKEN`. `/healthz` is open. If the token is unset, the server logs a warning and runs open (local dev only).
-- **Public endpoint:** `GET /sse` (event stream) · `POST /messages/` (client→server) · `GET /healthz` (liveness/info)
+- **Auth:** `/mcp`, `/sse`, and `/messages/` require `Authorization: Bearer $HQX_MCP_BEARER_TOKEN`. `/healthz` is open. If the token is unset, the server logs a warning and runs open (local dev only).
+- **Public endpoints:** `POST/GET /mcp` (Streamable HTTP — the transport managed agents require) · `GET /sse` + `POST /messages/` (SSE) · `GET /healthz` (liveness/info)
 
 > The Python package is `gtm_mcp` (underscore) so `python -m apps.gtm_mcp.main`
 > is a valid module path; the Render **service** is named `gtm-mcp`.
