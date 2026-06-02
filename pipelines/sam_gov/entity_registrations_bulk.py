@@ -29,6 +29,15 @@ map nulled their UEI and read CAGE/dates one position off; width is authoritativ
 V2 carries `BOF`/`EOF` sentinel lines (filtered). Encoding is content-detected
 (strict UTF-8, else lossless cp1252→UTF-8). The cp1252 V2 twins are deduped out.
 
+Landing scope is INTRINSIC, not caller-supplied. The backfill ingests ONLY the SAM
+monthly extracts under landing/entity_registrations_raw_public-historical/
+(SAM_PUBLIC_MONTHLY_*_MODIFIED) and landing/entity_registrations_raw_public-v2/
+(SAM_PUBLIC_UTF-8_MONTHLY_V2_*). The bucket's other 40+ datasets (HMDA, USPTO,
+CA/FL SoS, NMLS, PDL, ...) share landing/ but never enter the SAM projection or the
+publish path: `--only` narrows WITHIN the SAM set, it cannot widen it, and a publish
+guard refuses any run whose selected keys fall outside SAM scope — so the destructive
+`_replace_r2_prefix` can never wipe/overwrite the system-of-record with foreign rows.
+
     modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill
     modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print deduped keys
     modal deploy pipelines/sam_gov/entity_registrations_bulk.py
@@ -42,6 +51,17 @@ import modal
 
 BUCKET = "data-sink"
 LANDING_PREFIX = "landing/"
+# SAM monthly extracts land under exactly these two subprefixes of landing/. They are
+# the DEFAULT (and only) universe the backfill is allowed to ingest — the bucket's
+# other 40+ datasets share landing/ but must never reach the SAM projection/publish.
+SAM_LANDING_PREFIXES = (
+    LANDING_PREFIX + "entity_registrations_raw_public-historical/",  # SAM_PUBLIC_MONTHLY_*_MODIFIED
+    LANDING_PREFIX + "entity_registrations_raw_public-v2/",          # SAM_PUBLIC_UTF-8_MONTHLY_V2_*
+)
+# Defense-in-depth on top of the prefix scope: a SAM monthly extract's basename
+# matches this (e.g. SAM_PUBLIC_MONTHLY_2018_APR_MODIFIED, SAM_PUBLIC_UTF-8_MONTHLY_V2_…).
+# Guards against a foreign file dropped under a SAM prefix entering the publish path.
+_SAM_NAME_PATTERN = r"SAM_PUBLIC_.*MONTHLY"
 DATASET_PREFIX = "active/entity_registrations/"  # R2 key prefix (system-of-record tier)
 DATASET_URI = f"s3://{BUCKET}/{DATASET_PREFIX}"
 SCRATCH_DIR = "/tmp"
@@ -254,13 +274,31 @@ def _resolve_family(table, fallback: str) -> str:
     return fams[0] if len(fams) == 1 else "+".join(fams)
 
 
+def _is_sam_key(key: str) -> bool:
+    """True iff `key` is a SAM monthly extract: under a SAM landing prefix AND its
+    basename matches the SAM_PUBLIC monthly-extract naming. Both are load-bearing —
+    the prefix scopes the listing; the name guards against a foreign file dropped
+    under a SAM prefix from entering the projection/publish path."""
+    import re
+
+    if not key.startswith(SAM_LANDING_PREFIXES):
+        return False
+    return re.search(_SAM_NAME_PATTERN, key.rsplit("/", 1)[-1], re.IGNORECASE) is not None
+
+
 def _list_landing_zip_keys() -> list[str]:
+    """SAM monthly-extract ZIPs ONLY. The listing is scoped to the two SAM landing
+    prefixes — NOT all of landing/, which also holds 40+ foreign datasets (HMDA,
+    USPTO, CA/FL SoS, NMLS, PDL, ...) that would otherwise be fed through the SAM
+    pipe-split projection and published over the system-of-record."""
     s3 = _s3_client()
     keys = []
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=LANDING_PREFIX):
-        for o in page.get("Contents", []):
-            if o["Key"].lower().endswith(".zip"):
-                keys.append(o["Key"])
+    for prefix in SAM_LANDING_PREFIXES:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+            for o in page.get("Contents", []):
+                key = o["Key"]
+                if key.lower().endswith(".zip") and _is_sam_key(key):
+                    keys.append(key)
     return keys
 
 
@@ -284,6 +322,25 @@ def _dedup_keys(keys: list[str]) -> list[str]:
                 continue
         kept.append(k)
     return sorted(kept)
+
+
+def _assert_sam_scope(keys: list[str]) -> None:
+    """Publish guard. Every key entering the SAM projection/publish path MUST be a
+    SAM monthly extract, and the set MUST be non-empty. A run that selected anything
+    foreign — or nothing — must NOT reach `_replace_r2_prefix`: it would publish junk
+    rows over, or wipe to empty, the 19.3M-row entity_registrations system-of-record."""
+    if not keys:
+        raise RuntimeError(
+            "SAM scope guard: 0 keys selected — refusing to publish. An empty dataset "
+            "would wipe the entity_registrations system-of-record. Check the SAM "
+            "landing prefixes and any --only filter."
+        )
+    foreign = [k for k in keys if not _is_sam_key(k)]
+    if foreign:
+        raise RuntimeError(
+            "SAM scope guard: selected keys fall outside SAM scope and must never "
+            f"reach the publish path: {foreign}"
+        )
 
 
 def _replace_r2_prefix(s3, prefix: str, local_dir: str) -> int:
@@ -388,6 +445,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
     error_text: str | None = None
 
     try:
+        _assert_sam_scope(keys)  # fail fast — never spend the 2h compute on a non-SAM scope
         for i, key in enumerate(keys):
             f_started = dt.datetime.now(dt.timezone.utc)
             family, label = _classify(key)
@@ -447,6 +505,7 @@ def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dic
             except Exception as exc:  # noqa: BLE001
                 print(f"WARN: BTREE index on {col} failed: {exc}")
 
+        _assert_sam_scope(keys)  # publish gate — re-assert immediately before the destructive wipe+upload
         uploaded = _replace_r2_prefix(s3, DATASET_PREFIX, LOCAL_DATASET)
         print(f"Published {uploaded} files to {DATASET_URI}")
         final_status = "success"
