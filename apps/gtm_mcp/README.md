@@ -56,7 +56,10 @@ if a scoped token can read objects but not list the bucket):
 
 **Operational Postgres** ([`src/tools/ops.py`](src/tools/ops.py)) — the structured read/write surface over the attached hq-x control plane (`hqx`)
 - `save_campaign_audience(campaign_id, audience_name, source_query, parameters)` — upsert a campaign-audience tracking row into `ops.campaign_audiences` (parameterized psycopg upsert inside one transaction; the table self-bootstraps). The **only** write path into hq-x.
-- `get_postgres_schema(schema_name)` — discover the tables + columns of an attached `hqx` schema (e.g. `ops`) via DuckDB's `information_schema`, so an agent can find operational state before writing hybrid-join SQL
+- `list_postgres_tables(schema_name="ops")` — cheap "look around": table names + column counts in a schema (no column detail), plus `available_schemas`. The progressive-disclosure entry point.
+- `get_postgres_schema(schema_name, table_name=None)` — drill into **one** table's columns (`table_name` set, the preferred path after `list_postgres_tables`), or the whole schema's columns when omitted (heavy)
+
+Introspection is two-level by design — `list_postgres_tables` → `get_postgres_schema(schema, table)` — so an agent pulls only the columns it needs instead of dumping every column of every table (for `ops`: ~28 KB full dump vs ~2.5 KB look-around vs ~0.5 KB single table).
 
 ### Hybrid Lance ⋈ Postgres
 

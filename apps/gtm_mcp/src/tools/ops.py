@@ -8,8 +8,15 @@ STRUCTURED operational tools the directive mandates — never raw, unchecked mut
 
   • ``save_campaign_audience`` — upsert a campaign-audience tracking row into
     ``ops.campaign_audiences``. The sole write path into hq-x.
-  • ``get_postgres_schema`` — discover the tables/columns of an attached ``hqx``
-    schema at runtime via DuckDB's ``information_schema``.
+  • ``list_postgres_tables`` — cheap "look around": the table names (+ column counts)
+    in a schema, no column detail. The progressive-disclosure entry point.
+  • ``get_postgres_schema`` — drill into one table's columns (or, heavy, a whole
+    schema's) via DuckDB's ``information_schema``.
+
+Introspection is two-level by design: an agent calls ``list_postgres_tables`` to see
+what exists, then ``get_postgres_schema(schema, table)`` for just the table(s) it
+needs — instead of dumping every column of every table (``ops`` alone is ~44 tables /
+hundreds of columns) in one oversized result.
 
 WHY psycopg FOR THE WRITE (not the DuckDB attach). The DuckDB postgres writer has no
 clean ``ON CONFLICT`` upsert and only coarse transaction control. The established
@@ -145,19 +152,35 @@ def save_campaign_audience(
     }
 
 
-def get_postgres_schema(schema_name: str) -> dict[str, Any]:
-    """Discover the tables and columns of a schema in the attached hq-x Postgres
-    (catalog ``hqx``), via DuckDB's ``information_schema``. Use this to learn the
-    operational state available for hybrid joins in ``execute_audience_query`` before
-    writing SQL — e.g. ``schema_name='ops'`` lists ``campaign_audiences`` and the
-    ``*_runs`` ledgers with their columns.
+_SYSTEM_SCHEMAS = "('pg_catalog', 'information_schema')"  # never interesting to a GTM agent
 
-    Reference the results in ``execute_audience_query`` as ``hqx.<schema>.<table>``
-    (e.g. ``FROM companies c LEFT JOIN hqx.ops.exclusions e ON …``).
 
-    Returns ``{"database": "hqx", "schema", "attached", "table_count", "tables":
-    [{"name", "columns": [{"name", "type"}]}]}``. When hq-x is not attached, returns
-    ``attached=false`` with an empty table list and a ``detail`` message.
+def _sql_str(value: str) -> str:
+    """Single-quoted SQL string literal (validated identifiers; escaped as belt-and-suspenders)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _not_attached(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "attached": False,
+        "detail": "hq-x is not attached (HQX_DB_URL_POOLED unset or attach failed).",
+    }
+
+
+def list_postgres_tables(schema_name: str = "ops") -> dict[str, Any]:
+    """Look around the attached hq-x Postgres CHEAPLY: list the table NAMES (with a
+    column count each) in a schema — no column detail. **Start here**, then call
+    ``get_postgres_schema(schema_name, table_name)`` to pull the columns of only the
+    table(s) you actually need, instead of dumping every column of every table.
+
+    ``schema_name`` defaults to ``'ops'`` (the operational state: ``campaign_audiences``
+    and the ``*_runs`` ledgers). ``available_schemas`` is returned too, so you can
+    pivot to another schema without guessing.
+
+    Returns ``{"database": "hqx", "attached", "schema", "available_schemas": [...],
+    "table_count", "tables": [{"name", "column_count"}]}`` (tables sorted by name).
+    When hq-x is not attached, returns ``attached=false`` with a ``detail`` message.
     """
     schema = (schema_name or "").strip()
     if not _IDENT.fullmatch(schema):
@@ -165,33 +188,96 @@ def get_postgres_schema(schema_name: str) -> dict[str, Any]:
 
     database.get_connection()  # ensure the hqx attach has been attempted
     if not database.hqx_attached():
-        return {
-            "database": "hqx",
-            "schema": schema,
-            "attached": False,
-            "table_count": 0,
-            "tables": [],
-            "detail": "hq-x is not attached (HQX_DB_URL_POOLED unset or attach failed).",
-        }
+        return _not_attached(
+            {"database": "hqx", "schema": schema, "available_schemas": [], "table_count": 0, "tables": []}
+        )
 
-    lit = "'" + schema.replace("'", "''") + "'"  # validated identifier; escaped as belt-and-suspenders
-    sql = (
-        "SELECT table_name, column_name, data_type, ordinal_position "
-        "FROM information_schema.columns "
-        f"WHERE table_catalog = 'hqx' AND table_schema = {lit} "
-        "ORDER BY table_name, ordinal_position"
-    )
-    result = database.query(sql)
+    available = [
+        r["table_schema"]
+        for r in database.query(
+            "SELECT DISTINCT table_schema FROM information_schema.tables "
+            f"WHERE table_catalog = 'hqx' AND table_schema NOT IN {_SYSTEM_SCHEMAS} "
+            "ORDER BY table_schema"
+        )["rows"]
+    ]
+    rows = database.query(
+        "SELECT table_name, count(*) AS column_count FROM information_schema.columns "
+        f"WHERE table_catalog = 'hqx' AND table_schema = {_sql_str(schema)} "
+        "GROUP BY table_name ORDER BY table_name"
+    )["rows"]
+    tables = [{"name": r["table_name"], "column_count": int(r["column_count"])} for r in rows]
+    return {
+        "database": "hqx",
+        "attached": True,
+        "schema": schema,
+        "available_schemas": available,
+        "table_count": len(tables),
+        "tables": tables,
+    }
+
+
+def get_postgres_schema(schema_name: str, table_name: str | None = None) -> dict[str, Any]:
+    """Describe the columns of attached hq-x Postgres tables, via DuckDB's
+    ``information_schema``. Reference the results in ``execute_audience_query`` as
+    ``hqx.<schema>.<table>`` (e.g. ``FROM companies c LEFT JOIN hqx.ops.exclusions e``).
+
+    Pass ``table_name`` to get just THAT table's columns — the targeted drill-down,
+    and the preferred path: call ``list_postgres_tables`` first to find the table, then
+    this with the name. Returns ``{"database", "attached", "schema", "table", "found",
+    "column_count", "columns": [{"name", "type"}]}``.
+
+    Omit ``table_name`` to get EVERY table in the schema with all columns. This is the
+    heavy form (e.g. ``ops`` is ~44 tables / hundreds of columns) — prefer the
+    targeted form above unless you truly need the whole schema. Returns ``{"database",
+    "attached", "schema", "table_count", "tables": [{"name", "columns": [...]}]}``.
+
+    When hq-x is not attached, returns ``attached=false`` with a ``detail`` message.
+    """
+    schema = (schema_name or "").strip()
+    if not _IDENT.fullmatch(schema):
+        raise ValueError("schema_name must be a bare SQL identifier, e.g. 'ops'")
+    table = (table_name or "").strip() or None
+    if table is not None and not _IDENT.fullmatch(table):
+        raise ValueError("table_name, when given, must be a bare SQL identifier")
+
+    database.get_connection()  # ensure the hqx attach has been attempted
+    if not database.hqx_attached():
+        base = {"database": "hqx", "schema": schema}
+        return _not_attached(
+            {**base, "table": table, "found": False, "column_count": 0, "columns": []}
+            if table is not None
+            else {**base, "table_count": 0, "tables": []}
+        )
+
+    where = f"table_catalog = 'hqx' AND table_schema = {_sql_str(schema)}"
+    if table is not None:
+        where += f" AND table_name = {_sql_str(table)}"
+    rows = database.query(
+        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+        f"WHERE {where} ORDER BY table_name, ordinal_position"
+    )["rows"]
 
     tables: dict[str, list[dict[str, Any]]] = {}
-    for r in result["rows"]:
+    for r in rows:
         tables.setdefault(r["table_name"], []).append(
             {"name": r["column_name"], "type": r["data_type"]}
         )
+
+    if table is not None:
+        cols = tables.get(table, [])
+        return {
+            "database": "hqx",
+            "attached": True,
+            "schema": schema,
+            "table": table,
+            "found": bool(cols),
+            "column_count": len(cols),
+            "columns": cols,
+        }
     return {
         "database": "hqx",
-        "schema": schema,
         "attached": True,
+        "schema": schema,
         "table_count": len(tables),
         "tables": [{"name": name, "columns": cols} for name, cols in sorted(tables.items())],
     }
@@ -200,5 +286,5 @@ def get_postgres_schema(schema_name: str) -> dict[str, Any]:
 def register(mcp) -> None:
     """Mount the operational Postgres tools onto the FastMCP server. Each function's
     signature + docstring becomes the tool's input schema + agent-facing contract."""
-    for fn in (save_campaign_audience, get_postgres_schema):
+    for fn in (save_campaign_audience, list_postgres_tables, get_postgres_schema):
         mcp.add_tool(fn)
