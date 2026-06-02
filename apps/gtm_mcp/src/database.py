@@ -1,6 +1,6 @@
 """Unified data context for the GTM MCP gateway — one shared DuckDB connection
-over the Gen-3 R2 data sink, a runtime-discovered dataset registry, and the Lance
-pushdown plumbing.
+over the Gen-3 R2 data sink, a runtime-discovered dataset registry, the Lance
+pushdown plumbing, and the live hq-x control-plane Postgres attached in-session.
 
 WHY THIS MODULE. The gateway combines two access shapes against the *same*
 Cloudflare R2 sink:
@@ -31,6 +31,18 @@ JIT REGISTRATION (the performance gate). The directive's hard constraint: DuckDB
 must not open all ~100 Lance manifests on every query. ``query`` registers ONLY
 the datasets a caller names (resolved from the SQL by ``referenced_datasets``), so
 a two-table join opens two manifests, not the whole plane.
+
+HQ-X POSTGRES ATTACH (Directive 18). The same shared connection ATTACHes the live
+hq-x control-plane Postgres as the ``hqx`` catalog (``HQX_DB_URL_POOLED``, TLS
+enforced), so an agent can JOIN a Lance R2 dataset against ``hqx.ops.*`` relational
+state in a single statement (companies ⋈ ops.exclusions to subtract a suppression
+list, etc.). ``referenced_datasets`` strips ``hqx.*`` references before Lance-name
+matching, so a Postgres-qualified table is resolved by the attached engine over the
+wire — never opened as a Lance manifest. SAFETY: the attach is read/write per the
+directive, but the agent-facing raw-SQL path is read-only-gated (``assert_read_only``
+in ``query``) — a single read statement only, no mutation / DDL / ATTACH / COPY /
+extension-load / txn-control / ``;``-chaining. The ONLY write path into hq-x is the
+structured, parameterized, transaction-bounded upsert in ``tools/ops.py``.
 
 SECRET MAPPING (exact, per directive). The fleet exposes R2 credentials as
 ``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY`` / ``R2_ENDPOINT`` (Render
@@ -68,6 +80,13 @@ ACTIVE_URI = f"s3://{BUCKET}/active"  # base for the s3:// dataset URIs Lance op
 # whatever the canonical dataset resolves to (discovery or seed/override).
 ALIASES: dict[str, str] = {"awards": "contractor_award_summary"}
 
+# Attached hq-x control-plane Postgres catalog name (Directive 18). The live
+# operational DB is ATTACHed to the shared DuckDB connection under this alias, so
+# an agent can JOIN Lance R2 datasets against ``hqx.ops.*`` relational state in one
+# session. The relational read/join path is DuckDB-over-the-attach; the only WRITE
+# path is the structured, parameterized upsert in tools/ops.py (psycopg).
+HQX_ALIAS = "hqx"
+
 # Lance internal directories — never themselves a dataset name. Presence of
 # ``_versions`` is what marks a prefix as a committed Lance dataset root.
 _INTERNAL = {"_versions", "_indices", "_transactions", "_deletions", "data"}
@@ -81,8 +100,29 @@ _DISCOVERY_WORKERS = 16
 # handed to an agent, not a bulk export channel. Truncation is reported, never silent.
 MAX_QUERY_ROWS = 1000
 
+# ── Read-only guard for the raw-SQL path (Directive 18 §4) ───────────────────
+# The gateway now ATTACHes a LIVE read/write production Postgres. The agent-facing
+# raw-SQL tool (execute_audience_query → query()) is therefore confined to a SINGLE
+# read-only statement: the only legal entry points are these leading keywords, and
+# the deny-list below is rejected as a whole-token anywhere in the (string/comment-
+# stripped) text — so no mutation, DDL, extension load, transaction control, or
+# ``;``-chained second statement can reach DuckDB or the attached engine. The ONLY
+# mutation path into hq-x is the structured upsert in tools/ops.py.
+_RO_ALLOW_LEAD = frozenset(
+    {"SELECT", "WITH", "FROM", "TABLE", "VALUES", "EXPLAIN", "DESCRIBE", "DESC",
+     "SHOW", "SUMMARIZE", "PIVOT", "UNPIVOT"}
+)
+_RO_DENY = frozenset(
+    {"INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "DROP", "ALTER", "CREATE",
+     "TRUNCATE", "REPLACE", "ATTACH", "DETACH", "COPY", "INSTALL", "LOAD", "SET",
+     "RESET", "PRAGMA", "CALL", "EXPORT", "IMPORT", "GRANT", "REVOKE", "VACUUM",
+     "CHECKPOINT", "USE", "BEGIN", "START", "COMMIT", "ROLLBACK", "PREPARE",
+     "EXECUTE", "DEALLOCATE"}
+)
+
 _lock = threading.Lock()
 _con: Any = None  # the single shared duckdb.DuckDBPyConnection (lazy singleton)
+_hqx_attached = False  # set under _lock the first time get_connection() runs
 
 _registry_lock = threading.Lock()
 _registry: dict[str, str] | None = None  # discovered name → s3:// uri (lazy singleton)
@@ -272,6 +312,83 @@ def dataset_names() -> list[str]:
     return sorted(name for name in get_registry() if name not in ALIASES)
 
 
+# ── Read-only SQL guard + Postgres passthrough (Directive 18 §§3–4) ──────────
+# A qualified reference into the attached Postgres: ``hqx.<schema>.<table>`` or
+# ``hqx.<table>`` (each segment a bare or double-quoted identifier). Whitespace
+# around the dots is tolerated; a leading ``[\w.]`` is rejected so this never fires
+# mid-identifier.
+_HQX_REF = re.compile(
+    r"(?<![\w.])" + re.escape(HQX_ALIAS) + r"\s*\.\s*(?:\"[^\"]+\"|\w+)"
+    r"(?:\s*\.\s*(?:\"[^\"]+\"|\w+))?",
+    re.IGNORECASE,
+)
+
+
+def _strip_sql_noise(sql: str) -> str:
+    """Blank out block/line comments and string + double-quoted-identifier literals
+    so keyword/statement scanning sees only structural SQL — a column named
+    ``update_date`` or a literal ``'DROP'`` can never trip the guard, and a ``;`` or
+    keyword hidden inside a string can never evade it."""
+    s = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)   # block comments
+    s = re.sub(r"--[^\n]*", " ", s)                   # line comments
+    s = re.sub(r"\$\$.*?\$\$", " ", s, flags=re.S)    # PG dollar-quoted bodies
+    s = re.sub(r"'(?:''|[^'])*'", " ", s)             # single-quoted strings ('' escape)
+    s = re.sub(r'"(?:""|[^"])*"', " ", s)             # double-quoted identifiers
+    return s
+
+
+def assert_read_only(sql: str) -> None:
+    """Raise ``ValueError`` unless ``sql`` is a single read-only statement.
+
+    The directive's safety rail (Directive 18 §4): the raw-SQL tool may read the
+    Lance plane and the attached ``hqx`` catalog, but must never mutate. Enforcement
+    is allow-list + deny-list over the noise-stripped text — the statement must begin
+    with a read keyword (``_RO_ALLOW_LEAD``), must be the ONLY statement (no
+    ``;``-chaining), and must not contain any forbidden token (``_RO_DENY``) anywhere
+    (which also kills a data-modifying CTE like ``WITH x AS (DELETE …)``). All hq-x
+    writes go through the structured ``save_campaign_audience`` upsert instead."""
+    scrubbed = _strip_sql_noise(sql)
+    statements = [s for s in scrubbed.split(";") if s.strip()]
+    if not statements:
+        raise ValueError("empty SQL")
+    if len(statements) > 1:
+        raise ValueError(
+            "only a single read-only statement is permitted; "
+            "';'-chained statements are blocked"
+        )
+    tokens = statements[0].replace("(", " ").split()
+    lead = tokens[0].upper() if tokens else ""
+    if lead not in _RO_ALLOW_LEAD:
+        raise ValueError(
+            f"the audience SQL path is read-only: a statement must begin with one of "
+            f"{', '.join(sorted(_RO_ALLOW_LEAD))} (got {lead or '∅'!r}). "
+            "Use save_campaign_audience for ops.* writes."
+        )
+    for kw in _RO_DENY:
+        if re.search(r"(?<!\w)" + kw + r"(?!\w)", scrubbed, re.IGNORECASE):
+            raise ValueError(
+                f"blocked keyword {kw!r}: the audience SQL path is read-only — no "
+                "INSERT/UPDATE/DELETE/DDL/ATTACH/COPY/extension-load/txn-control. "
+                "Use save_campaign_audience for ops.* writes."
+            )
+
+
+def references_postgres(sql: str) -> bool:
+    """True if the SQL names an attached-Postgres relation (``hqx.<schema>.<table>``
+    or ``hqx.<table>``). Such a query is served by the attached engine over the wire,
+    NOT the Lance plane — ``query()`` requires the attach to be live for it
+    (Directive 18 §3)."""
+    return _HQX_REF.search(_strip_sql_noise(sql)) is not None
+
+
+def _strip_hqx_refs(sql: str) -> str:
+    """Remove ``hqx.*`` qualified references before Lance-name matching so a
+    Postgres-qualified table can never be mistaken for a Lance manifest and trigger a
+    needless R2 open — the Directive 18 §3 passthrough guarantee. (The name-boundary
+    class already rejects dotted matches; this makes the intent explicit and total.)"""
+    return _HQX_REF.sub(" ", sql)
+
+
 def referenced_datasets(sql: str) -> set[str]:
     """The performance gate: which registered datasets does this SQL reference?
 
@@ -281,11 +398,15 @@ def referenced_datasets(sql: str) -> set[str]:
     ``subtier_agency`` and a flat name never matches a path suffix; nested names
     (``usaspending/award_search``) match when written double-quoted, as DuckDB
     requires. Ambiguous mentions over-match (a needless manifest open) rather than
-    under-match (a broken query) — the safe direction."""
+    under-match (a broken query) — the safe direction.
+
+    ``hqx.*`` references are stripped first (Directive 18 §3) so a Postgres-qualified
+    table is resolved by the attached engine, never as a Lance dataset."""
+    scrubbed = _strip_hqx_refs(sql)
     found: set[str] = set()
     for name in get_registry():
         pattern = r"(?<![\w./])" + re.escape(name) + r"(?![\w./])"
-        if re.search(pattern, sql, re.IGNORECASE):
+        if re.search(pattern, scrubbed, re.IGNORECASE):
             found.add(name)
     return found
 
@@ -302,6 +423,68 @@ def open_dataset(name: str):
     if uri is None:
         raise KeyError(f"unknown dataset {name!r}; call list_datasets to see what is registered")
     return lance.dataset(uri, storage_options=r2_storage_options())
+
+
+# ── hq-x Postgres attach (Directive 18 §1) ──────────────────────────────────
+def _hqx_dsn() -> str | None:
+    """The hq-x Postgres DSN (pooled / Supavisor) with TLS enforced — the exact form
+    the DuckDB ``postgres`` scanner and psycopg both hand to libpq (Supabase requires
+    TLS). ``None`` when ``HQX_DB_URL_POOLED`` is unset (local / R2-only dev). Byte-for-
+    byte the same construction the data-plane workers use (pipelines/* ``_hqx_dsn``)."""
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    if not dsn:
+        return None
+    if "sslmode=" not in dsn:
+        dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
+    return dsn
+
+
+def hqx_dsn() -> str | None:
+    """Public accessor for the TLS-enforced hq-x DSN — the structured write path
+    (tools/ops.py) opens its own psycopg connection on this, independent of the
+    shared DuckDB attach."""
+    return _hqx_dsn()
+
+
+def hqx_attached() -> bool:
+    """True once the hq-x Postgres has been ATTACHed to the shared DuckDB connection.
+    The flag is set the first time ``get_connection()`` runs, so callers that need a
+    definitive answer should ensure the connection is built first."""
+    return _hqx_attached
+
+
+def _attach_hqx(con) -> bool:
+    """ATTACH the hq-x control-plane Postgres to ``con`` as the ``hqx`` catalog
+    (Directive 18 §1) so hybrid Lance⋈Postgres joins resolve in one session.
+
+    Read/write attach, exactly as the directive specifies (``ATTACH … (TYPE
+    postgres)`` — no ``READ_ONLY``); mutation is nonetheless withheld from arbitrary
+    SQL by the read-only guard on query(), and the sole write path is the structured
+    upsert in tools/ops.py. The ``postgres`` extension is auto-installed on first use
+    (same pattern as ``httpfs``).
+
+    Best-effort: a missing DSN or an attach failure logs and leaves the gateway
+    R2-only (every Lance tool keeps working); ``hqx.*`` queries then fail with a
+    clear "not attached" error rather than taking down the whole plane. The DSN
+    carries the password — it is single-quote-escaped into the literal and is NEVER
+    logged."""
+    dsn = _hqx_dsn()
+    if not dsn:
+        log.warning(
+            "gtm-mcp: HQX_DB_URL_POOLED unset — hq-x not attached. Lance/R2 tools "
+            "work; hqx.* relational joins and ops.* writes are unavailable."
+        )
+        return False
+    try:
+        con.execute("INSTALL postgres; LOAD postgres;")
+        con.execute(
+            f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS {HQX_ALIAS} (TYPE postgres);"
+        )
+        log.info("gtm-mcp: attached hq-x Postgres as '%s' (read/write).", HQX_ALIAS)
+        return True
+    except Exception as exc:  # noqa: BLE001 — a PG attach failure must not sink the R2 gateway
+        log.warning("gtm-mcp: hq-x Postgres attach failed (Lance/R2 tools still up): %s", exc)
+        return False
 
 
 # ── Shared DuckDB connection ─────────────────────────────────────────────────
@@ -332,11 +515,12 @@ def _configure_r2_s3(con) -> None:
 
 
 def get_connection():
-    """The single, shared in-memory DuckDB connection, configured for R2 S3 on
-    first use. Per-query work runs on a ``.cursor()`` of this connection so
-    concurrent SSE tool calls never collide on one execution context while still
-    sharing the catalog + the R2 secret."""
-    global _con
+    """The single, shared in-memory DuckDB connection, configured for R2 S3 AND with
+    the hq-x Postgres ATTACHed (Directive 18) on first use. Per-query work runs on a
+    ``.cursor()`` of this connection so concurrent SSE tool calls never collide on one
+    execution context while still sharing the catalog, the R2 secret, and the ``hqx``
+    attach (DuckDB attaches live on the database instance, so every cursor sees it)."""
+    global _con, _hqx_attached
     if _con is None:
         with _lock:
             if _con is None:
@@ -345,6 +529,7 @@ def get_connection():
                 con = duckdb.connect(":memory:")
                 con.execute("PRAGMA threads=4;")
                 _configure_r2_s3(con)
+                _hqx_attached = _attach_hqx(con)
                 _con = con
     return _con
 
@@ -370,12 +555,32 @@ def _register_datasets(cur, names: Iterable[str]) -> None:
         cur.register(name, lance.dataset(uri, storage_options=so))
 
 
-def query(sql: str, datasets: Iterable[str] = (), max_rows: int = MAX_QUERY_ROWS) -> dict[str, Any]:
-    """Execute raw ANSI SQL with ONLY ``datasets`` bound as Lance relations (plus
-    any ``s3://`` transport Parquet the SQL reads directly). Returns
-    ``{"columns", "rows", "row_count", "truncated"}``. Runs on a fresh cursor with
-    freshly-registered (latest-version) Lance relations; the cursor is closed after."""
-    cur = get_connection().cursor()
+def query(
+    sql: str,
+    datasets: Iterable[str] = (),
+    max_rows: int = MAX_QUERY_ROWS,
+    *,
+    read_only: bool = True,
+) -> dict[str, Any]:
+    """Execute raw ANSI SQL with ONLY ``datasets`` bound as Lance relations (plus any
+    ``s3://`` transport Parquet the SQL reads directly), and with the attached ``hqx``
+    Postgres catalog visible for hybrid joins. Returns ``{"columns", "rows",
+    "row_count", "truncated"}``. Runs on a fresh cursor with freshly-registered
+    (latest-version) Lance relations; the cursor is closed after.
+
+    ``read_only`` (default True) enforces the Directive 18 §4 safety rail: a single
+    read statement, no mutation/DDL/ATTACH/COPY/extension-load. A query naming
+    ``hqx.*`` is served by the attached Postgres and requires the attach to be live —
+    otherwise it fails fast with a clear message instead of a cryptic catalog error."""
+    if read_only:
+        assert_read_only(sql)
+    con = get_connection()  # builds + attaches hqx on first use; sets _hqx_attached
+    if references_postgres(sql) and not _hqx_attached:
+        raise RuntimeError(
+            "query references hqx.* but the hq-x Postgres is not attached "
+            "(set HQX_DB_URL_POOLED). Lance/R2 datasets remain queryable."
+        )
+    cur = con.cursor()
     try:
         _register_datasets(cur, datasets)
         rel = cur.execute(sql)
