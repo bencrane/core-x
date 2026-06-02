@@ -16,8 +16,10 @@ Two access shapes, one sink:
     normalization to every spine in ``pipelines/``.
 
   • ``execute_audience_query`` is the general escape hatch: arbitrary ANSI SQL
-    over ``companies`` / ``people`` / ``awards`` (and raw ``s3://`` Parquet) for
-    cross-layer segment building.
+    over the full runtime-discovered Lance plane (``companies`` / ``people`` /
+    ``awards`` and ~100 more — see ``list_datasets``), plus raw ``s3://`` Parquet,
+    for cross-layer segment building. Only the datasets a query references are
+    attached to DuckDB (JIT), so the plane stays sub-second.
 
 Tool docstrings below are the agent-facing contracts — the MCP client shows them
 verbatim, so they describe inputs, the matching semantics, and the shape returned.
@@ -160,7 +162,9 @@ def search_company_by_name(name: str) -> dict[str, Any]:
         WHERE {predicate}
         LIMIT {_LOOKUP_LIMIT}
     """
-    result = database.query(sql, max_rows=_LOOKUP_LIMIT)
+    # Only the companies relation is needed — bind it explicitly (JIT) rather than
+    # the whole plane, so this stays a one-manifest open.
+    result = database.query(sql, datasets={"companies"}, max_rows=_LOOKUP_LIMIT)
     return {
         "query_name": name,
         "match_count": result["row_count"],
@@ -170,24 +174,29 @@ def search_company_by_name(name: str) -> dict[str, Any]:
 
 # ── Dynamic audience querying (raw DuckDB SQL) ───────────────────────────────
 def execute_audience_query(sql: str) -> dict[str, Any]:
-    """Run arbitrary read-only ANSI SQL over the GTM datasets to build audience
-    segments. Available relations (query them by name):
+    """Run arbitrary read-only ANSI SQL over the full Gen-3 Lance plane to build
+    audience segments. The datasets are named relations — reference them by name;
+    every committed dataset in the sink is available (the registry is discovered
+    at runtime, not a fixed list). Call ``list_datasets`` to see the exact names
+    and columns.
 
-      • ``companies`` — company_id, company_name, normalized_domain,
-        company_linkedin_url, source_platform
-      • ``people``    — contact_id, company_id, normalized_domain, full_name,
-        first_name, last_name, title, person_linkedin_url, source_platform
-      • ``awards``    — recipient_uei + the federal-spend resume
-        (lifetime/active/closed prime & subaward dollars + counts, combined
-        totals, dollar buckets, top-3 funding agencies)
+    Naming: a flat dataset is a bare identifier (``companies``, ``people``,
+    ``firmographics_blitz``); ``awards`` is an alias for ``contractor_award_summary``.
+    A dataset nested under a source namespace is named by its path and MUST be
+    double-quoted in SQL, e.g. ``FROM "usaspending/award_search"``,
+    ``"fmcsa/carrier"``.
 
-    Raw transport Parquet in the sink is also reachable via
-    ``read_parquet('s3://data-sink/...')``. Cross-layer joins are the point —
-    e.g. companies ⋈ awards on a domain→UEI bridge to segment contractors by
-    spend. The result is capped at 1000 rows (``truncated`` flags overflow).
-    Returns ``{"columns", "rows", "row_count", "truncated"}``.
+    Only the datasets your query references are attached to DuckDB for the call —
+    a two-table join opens two Lance manifests, not the ~100-dataset plane — so
+    cross-layer joins stay fast. Raw transport Parquet is also reachable via
+    ``read_parquet('s3://data-sink/...')``. Cross-layer joins are the point — e.g.
+    companies ⋈ awards on a domain→UEI bridge to segment contractors by spend.
+    The result is capped at 1000 rows (``truncated`` flags overflow). Returns
+    ``{"columns", "rows", "row_count", "truncated"}``.
     """
-    return database.query(sql)
+    # The performance gate: resolve which registered datasets the SQL names, and
+    # bind ONLY those (never the whole catalog) before handing the SQL to DuckDB.
+    return database.query(sql, datasets=database.referenced_datasets(sql))
 
 
 def register(mcp) -> None:

@@ -11,16 +11,31 @@ Gen-3 R2 sink (the Lance system-of-record) two ways against one shared context:
 - **Raw DuckDB ANSI SQL** — `execute_audience_query` runs arbitrary read-only SQL
   over the datasets as named relations for cross-layer segment building.
 
-Built for multi-dataset extensibility: adding a dataset is one entry in
-[`src/database.py`](src/database.py) `DATASETS` plus (optionally) a typed tool.
+Built for the whole plane: the dataset registry is **discovered at runtime** by
+listing the active sink — flat roots and the leaves nested under source namespaces
+alike — so a pipeline that drops a new dataset shows up on the next restart with
+no code change. Call `list_datasets` to inspect what's queryable.
 
 ## Datasets (R2 active sink)
 
-| Relation    | URI                                              | BTREE anchor(s)                       |
-|-------------|--------------------------------------------------|---------------------------------------|
-| `companies` | `s3://data-sink/active/companies/`               | `normalized_domain`                   |
-| `people`    | `s3://data-sink/active/people/`                  | `normalized_domain`, `company_id`     |
-| `awards`    | `s3://data-sink/active/contractor_award_summary/`| `recipient_uei`                       |
+**Auto-discovered** ([`src/database.py`](src/database.py) `discover_datasets`). At
+first use the gateway lists `s3://data-sink/active/` and resolves every committed
+Lance dataset (~100+) into an in-memory `name → uri` registry. A dataset's name is
+its path relative to `active/`:
+
+- flat root → bare name: `companies`, `people`, `firmographics_blitz`
+- nested under a namespace → quoted path: `"usaspending/award_search"`, `"fmcsa/carrier"`, `"ca_ucc/filings"`
+
+The three **indexed core datasets** that power the typed point-lookups carry a
+load-bearing `BTREE` and are always resolvable (a defensive seed keeps them up even
+if a scoped token can read objects but not list the bucket):
+
+| Relation               | URI                                              | BTREE anchor(s)                   |
+|------------------------|--------------------------------------------------|-----------------------------------|
+| `companies`            | `s3://data-sink/active/companies/`               | `normalized_domain`               |
+| `people`               | `s3://data-sink/active/people/`                  | `normalized_domain`, `company_id` |
+| `awards` (alias →      | `s3://data-sink/active/contractor_award_summary/`| `recipient_uei`                   |
+| `contractor_award_summary`) |                                             |                                   |
 
 ## Tools
 
@@ -29,7 +44,10 @@ Built for multi-dataset extensibility: adding a dataset is one entry in
 - `search_people_by_domain(domain)` — BTREE pushdown on `people.normalized_domain`
 - `lookup_awards_by_uei(recipient_uei)` — BTREE pushdown on `awards.recipient_uei` (federal-spend resume)
 - `search_company_by_name(name)` — canonical blocking-key match via `core.name_norm` (applied as a DuckDB SQL literal)
-- `execute_audience_query(sql)` — arbitrary ANSI SQL over `companies`/`people`/`awards` (+ raw `s3://` Parquet); cross-layer joins; capped at 1000 rows
+- `execute_audience_query(sql)` — arbitrary ANSI SQL over the full discovered plane (+ raw `s3://` Parquet); **JIT registration** binds only the datasets the SQL references, so cross-layer joins open two manifests, not ~100; capped at 1000 rows
+
+**Catalog** ([`src/tools/catalog.py`](src/tools/catalog.py))
+- `list_datasets()` — the runtime-discovered dataset names + columns (columns from the maintained `active/catalog.json` manifest, or read off the Lance schema for the edge datasets it omits); the schema an agent inspects before writing `execute_audience_query` SQL
 
 **DMaaS** ([`src/tools/dmaas.py`](src/tools/dmaas.py)) — Direct-Mail action wrappers, Lob-backed (**stubs**: validate + echo, return `not_implemented`)
 - `create_direct_mail_campaign`, `send_postcard`, `send_letter`, `get_fulfillment_status`

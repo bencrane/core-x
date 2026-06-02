@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .src.tools import audience, dmaas
+from .src.tools import audience, catalog, dmaas
 
 # Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
 # rejects any non-localhost Host header with `421 Invalid Host header` — which
@@ -53,6 +53,7 @@ _SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 # also makes the service safe to run on >1 instance later).
 mcp = FastMCP("gtm-mcp", stateless_http=True, transport_security=_SECURITY)
 audience.register(mcp)
+catalog.register(mcp)
 dmaas.register(mcp)
 
 
@@ -123,7 +124,19 @@ app = _BearerAuth(_app, _TOKEN)
 
 
 def main() -> None:
+    import logging
+
     import uvicorn
+
+    logging.basicConfig(level=logging.INFO)
+
+    # Warm the dataset registry at startup: list the active sink once so the
+    # catalog is in memory before the first query, and a listing/credential
+    # failure surfaces at boot rather than mid-request.
+    from .src import database
+
+    database.get_registry()
+    print(f"gtm-mcp: discovered {len(database.dataset_names())} datasets in the active sink.")
 
     port = int(os.environ.get("PORT", "10000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
