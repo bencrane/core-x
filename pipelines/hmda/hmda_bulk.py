@@ -865,6 +865,96 @@ def reindex_dataset(dataset: str, trigger_callback_url: str | None = None) -> di
     return {"status": "success", "dataset": dataset, "indexes": built, "dataset_uri": uri}
 
 
+# ── R2-safe index build (local round-trip) ────────────────────────────────────
+# Building a scalar index directly to R2 trips R2's "all non-trailing parts must have the
+# same length" rule once page_data.lance is large enough that object_store ESCALATES its
+# adaptive multipart part size mid-upload (HTTP 400 InvalidPart). Small datasets (panels,
+# fl_sos) stay under that threshold and index fine; hmda_lar at 168M rows does not. Fix
+# (mirrors pipelines/pdl_companies): stage the dataset to LOCAL disk, build the index there
+# (no multipart), then upload ONLY the new files (index dirs + new manifest) via boto3 —
+# whose s3transfer uses uniform parts, which R2 accepts. Data fragments are untouched.
+_DS_PREFIX = {"lar": "active/hmda_lar/", "panels": "active/hmda_panels/"}
+
+
+def _download_r2_prefix(s3, prefix: str, local_dir: str) -> set[str]:
+    """Stage every object under an R2 prefix to local disk. Returns the set of relative keys
+    already present in R2 (so the publish step can skip re-uploading unchanged data files)."""
+    import os.path
+    import shutil
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    existing: set[str] = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if not rel:
+                continue
+            lp = os.path.join(local_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], lp)
+            existing.add(rel)
+    return existing
+
+
+def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> int:
+    """Upload local files whose relative key is NOT already in R2 (the freshly-built index
+    files + the new manifest version). boto3/s3transfer = uniform-part multipart → R2-safe.
+    Manifest/version files are uploaded LAST so the new dataset version only becomes resolvable
+    once every index + data file it references is already present — an interrupt-safe publish
+    (a kill mid-upload leaves the prior committed version intact, never a dangling manifest)."""
+    import os
+
+    new: list[tuple[str, str]] = []
+    for root, _, files in os.walk(local_dir):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            if rel not in existing:
+                new.append((rel, lp))
+    # False (index/data) sorts before True (manifest) → manifests upload last.
+    new.sort(key=lambda t: ("_versions/" in t[0] or t[0].endswith(".manifest"), t[0]))
+    for rel, lp in new:
+        s3.upload_file(lp, BUCKET, prefix + rel)
+    return len(new)
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=3 * 3600, memory=65536, cpu=16.0, ephemeral_disk=524288,
+)
+def reindex_local(dataset: str, trigger_callback_url: str | None = None) -> dict:
+    """R2-safe BTREE build: download the dataset → local, create_scalar_index LOCALLY (no R2
+    multipart), then publish the new index + manifest files via boto3. Works at any size."""
+    import lance
+
+    dataset = dataset.strip().lower()
+    if dataset not in _DS_PREFIX:
+        raise ValueError(f"dataset must be lar|panels, got {dataset!r}")
+    prefix = _DS_PREFIX[dataset]
+    local = f"/tmp/{dataset}_local"
+    s3 = _s3_client()
+
+    existing = _download_r2_prefix(s3, prefix, local)
+    print(f"staged {len(existing)} files from s3://{BUCKET}/{prefix} → {local}")
+
+    ds = lance.dataset(local)  # LOCAL — index writes go to disk, never R2 multipart
+    cols = set(ds.schema.names)
+    built: list[str] = []
+    for col in INDEX_PLAN[dataset]:
+        if col not in cols:
+            continue
+        ds.create_scalar_index(col, index_type="BTREE", replace=True)
+        built.append(col)
+        print(f"  BTREE ✓ {col} (local)")
+
+    published = _upload_new_files(s3, prefix, local, existing)
+    print(f"published {published} new files (index + manifest) → s3://{BUCKET}/{prefix}")
+    _post_callback(trigger_callback_url,
+                   {"status": "success", "dataset": dataset, "indexes": built, "published": published})
+    return {"status": "success", "dataset": dataset, "indexes": built, "published": published}
+
+
 # ── Server-side full sweep (one container — survives the client; no append conflict) ──
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
@@ -924,11 +1014,11 @@ def backfill_all(force: bool = False) -> dict:
         panel_counts[y] = int(r["rows_processed"])
         print(f"PANEL {y}: {panel_counts[y]:,} rows", flush=True)
 
-    # Indexing the ~165M-row LAR BTREEs needs more memory than this container — run each in
-    # reindex_dataset's own 64 GB container via .remote() (no append in flight ⇒ safe).
+    # R2-safe index build via the local round-trip (direct-to-R2 index writes trip R2's
+    # multipart part-size rule at LAR scale). Each runs in reindex_local's own container.
     indexes: dict[str, list[str]] = {}
     for d in ("lar", "panels"):
-        indexes[d] = reindex_dataset.remote(d)["indexes"]
+        indexes[d] = reindex_local.remote(d)["indexes"]
 
     return {"lar": lar_counts, "panels": panel_counts, "indexes": indexes,
             "lar_total": sum(lar_counts.values()), "panel_total": sum(panel_counts.values())}
@@ -977,7 +1067,7 @@ def reindex(dataset: str = "all") -> None:
     import json
     targets = ["lar", "panels"] if dataset == "all" else [dataset]
     for d in targets:
-        print(json.dumps(reindex_dataset.remote(d), default=str))
+        print(json.dumps(reindex_local.remote(d), default=str))
 
 
 @app.local_entrypoint()
