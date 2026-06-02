@@ -8,14 +8,14 @@ crosswalk spine. Spawned only by the Universal Dispatcher; no web endpoint.
 Source-of-truth input (read-only; never mutated):
   s3://data-sink/active/entity_registrations/   (Lance, 19.3M rows)
     POCs live in pipe_fields (the lossless positional array the ingest deferred),
-    NOT in a separate dataset. Layout is width-determined (confirmed empirically):
+    NOT in a separate dataset. Layout is width-determined — the loader classifies
+    `format_family` by width (142 ⇒ v2, 120 ⇒ legacy_v1):
       - v2            (width 142): uei@pos0, cage@pos3, 6 POC slots base pos46
       - legacy_v1     (width 120): no uei, cage@pos2, 6 POC slots base pos44
-      - legacy_v1     (width 142): MIS-CLASSIFIED v2-layout — the ingest nulls the
-                       uei (real uei is at pos0) and reads cage from the wrong
-                       position. EXCLUDED here; recovery requires fixing
-                       pipelines/sam_gov/entity_registrations_bulk.py, not a
-                       work-around on top of corrupt projections.
+    The loader previously filename-classified some 142-wide v2 extracts (the
+    `MONTHLY_*_MODIFIED` set) as legacy_v1 and nulled their uei; that is fixed in
+    entity_registrations_bulk.py, so every 142-wide record — including those
+    recovered extracts — is uei-native v2 here and attaches at base pos46.
 
 POC slot = 11 contiguous fields: first, middle, last, title, address_line_1,
 address_line_2, city, zip5, zip4, country, state. Six slots per entity:
@@ -193,8 +193,9 @@ WITH extracted AS (
              WHEN field_count = 120 THEN 45 END                      AS b,
         pipe_fields                                                  AS pf
     FROM reg
-    -- v2 (uei-native) + clean 120-wide legacy (cage-native). 142-wide legacy is a
-    -- mis-classified v2 layout (uei nulled by the ingest) → excluded by design.
+    -- v2 (uei-native, width 142) + legacy_v1 (cage-native, width 120). The loader
+    -- now classifies by width, so 142-wide records are always v2 here; the
+    -- field_count guard only drops any future width-anomalous legacy_v1 row.
     WHERE (format_family = 'v2')
        OR (format_family = 'legacy_v1' AND field_count = 120)
 ),
