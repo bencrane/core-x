@@ -59,6 +59,14 @@ import os
 
 import modal
 
+# Canonical blocking-key name normalization — THE shared macro (core/name_norm.py),
+# IMPORTED rather than copied. A local copy silently drifts: the &→AND and dash→space
+# rules were added to the canonical macro (and to sos_normalized_master) AFTER this
+# worker's first cut, so a hand-copied rule here produced "JOHNSON JOHNSON" where the SoS
+# spine now produces "JOHNSON AND JOHNSON" — breaking the credit↔SoS block-join for every
+# borrower name containing "&" or a dash. Importing guarantees byte-identity with the spine.
+from core.name_norm import name_norm as _name_norm
+
 # ── System-of-record (R2). The three SBA credit datasets under data-sink/active/. ──
 BUCKET = "data-sink"
 
@@ -91,17 +99,10 @@ NEW_COLS = (NORM_NAME_COL, NORM_ZIP_COL)
 
 
 # ── Canonical normalization (DuckDB SQL fragments) ───────────────────────────
-# BYTE-IDENTICAL to pipelines/sos_normalized/normalize.py::_name_norm / ::_zip5.
-# `\\s` in this Python source emits `\s` in the SQL. Applying the SAME macro that
-# produced sos_normalized_master.normalized_legal_name / .zip_code is what makes
-# the credit-spine BTREE block-join valid — do NOT "improve" these in isolation.
-def _name_norm(col: str) -> str:
-    """Blocking-key name: UPPER → strip every non-[A-Z0-9 space] char (punctuation,
-    quotes, &, accents) → collapse whitespace runs → trim. NULL if emptied."""
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
-
-
+# _name_norm is IMPORTED from core.name_norm (top of file) — the ONE shared macro that
+# also produces sos_normalized_master.normalized_legal_name, so the credit-spine key is
+# byte-identical to the spine it block-joins. _zip5 is the trivial digits-left-5 key
+# (core.name_norm does not export it; the rule is identical on both sides, no drift risk).
 def _zip5(col: str) -> str:
     """ZIP5 blocking key: digits-only, left 5 (leading zeros survive — string ops). NULL if none."""
     return "nullif(left(regexp_replace(CAST(%s AS VARCHAR), '[^0-9]', '', 'g'), 5), '')" % col
@@ -140,7 +141,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # 7(a) high-cardinality string columns. Force the in-RAM sort path (well
     # within the 32 GiB container). Mirrors build_ppp_indexes / sba_foia.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro into the container
 
 app = modal.App("credit-spine-normalize-index", image=image)
 
