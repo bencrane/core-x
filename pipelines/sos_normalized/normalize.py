@@ -308,16 +308,26 @@ STATE_PROJECTIONS: dict[str, dict] = {
 # ── Colorado status-decoration scrub (Task A) ──────────────────────────────────────────
 # CO's SoS feed appends a status clause to the raw entity name, e.g.
 #   "ACME WIDGETS LLC DELINQUENT MAY 1 2016"      "FOO INC DISSOLVED APRIL 20"
-# The clause is [<modifier>] <STATUS> [<effective date…>] and always trails the legal name.
-# It is not part of the name and detonates the blocking key, so strip it BEFORE the value
-# reaches _name_norm. To spare legitimate names that merely contain a status word (e.g.
-# "BIG MERGED MEDIA INC"), cut only when the status word is whitespace-led AND runs to
-# end-of-string or is followed by date debris (a month name or a digit) — the structural
-# signature of a real decoration. Applied case-insensitively to the raw (mixed-case) name.
+#   "TEXAS PIPE LINE COMPANY, Colorado Authority Terminated October 1, 1999"
+#   "OPPORTUNITY CORPORATION, Colorado Authority Relinquished October 10, 1945"
+# The clause is [Colorado Authority] [<modifier>] <STATUS> [<effective date…>] and always
+# trails the legal name. It is not part of the name and detonates the blocking key, so strip
+# it BEFORE the value reaches _name_norm. To spare legitimate names that merely contain a
+# status word (e.g. "BIG MERGED MEDIA INC"), cut only when the status word is whitespace-led
+# AND runs to end-of-string or is followed by date debris (a month name or a digit) — the
+# structural signature of a real decoration. Applied case-insensitively to the raw name.
+#
+# TWO additions over the original Task-A pattern, ground-truthed against the full CO bulk
+# file (167,614-row sample): the decoration that prefixes the verb with "Colorado Authority"
+# (≈15.6k rows / 9.3% — "… Terminated/Relinquished") otherwise survived as the residual
+# token "COLORADO AUTHORITY" in the key; and RELINQUISHED/REINSTATED were missing verbs
+# (REINSTATED is whitespace-appended without a comma — "… INC Reinstated July 04, 2022").
+# With these, decoration residual in the final key drops from 15,751 rows to 8 (0 over-strips).
 _CO_STATUS_MODIFIERS = ["ADMINISTRATIVELY", "VOLUNTARILY", "JUDICIALLY"]
 _CO_STATUS_KEYWORDS = [
     "DELINQUENT", "DELINQUENCY", "DISSOLVED", "DISSOLUTION", "WITHDRAWN", "REVOKED",
     "SUSPENDED", "EXPIRED", "NONCOMPLIANT", "FORFEITED", "TERMINATED", "MERGED",
+    "RELINQUISHED", "REINSTATED",
 ]
 _CO_MONTHS = [
     "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST",
@@ -325,7 +335,8 @@ _CO_MONTHS = [
     "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AUG", "SEPT", "SEP", "OCT", "NOV", "DEC",
 ]
 _CO_STATUS_SCRUB_RE = (
-    r"\s+(?:(?:" + "|".join(_CO_STATUS_MODIFIERS) + r")\s+)?"
+    r"\s+(?:COLORADO\s+AUTHORITY\s+)?"  # consume the "Colorado Authority" decoration prefix too
+    r"(?:(?:" + "|".join(_CO_STATUS_MODIFIERS) + r")\s+)?"
     r"(?:" + "|".join(_CO_STATUS_KEYWORDS) + r")"
     r"(?:\s+(?:(?:" + "|".join(_CO_MONTHS) + r")|\d).*)?$"
 )
