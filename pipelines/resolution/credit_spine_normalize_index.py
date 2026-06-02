@@ -133,6 +133,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pandas>=2.2",           # lance.add_columns imports pandas on some paths
     "boto3>=1.35",           # R2 object probe (read-only size/existence)
     "psycopg[binary]>=3.2",  # ops.schema_patch_runs terminal-state ledger
+    "requests>=2.32",        # _post_callback → Trigger waitpoint URL (if dispatched)
 ).env(
     # BTREE training sorts the column; Lance's bounded spill-to-disk sorter
     # under-sizes its DataFusion pool and OOMs on the 11.47M-row PPP / 1.95M-row
