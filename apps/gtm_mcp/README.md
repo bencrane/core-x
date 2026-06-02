@@ -51,8 +51,9 @@ if a scoped token can read objects but not list the bucket):
 - `search_company_by_name(name)` — canonical blocking-key match via `core.name_norm` (applied as a DuckDB SQL literal)
 - `execute_audience_query(sql)` — arbitrary ANSI SQL over the full discovered plane (+ raw `s3://` Parquet); **JIT registration** binds only the datasets the SQL references, so cross-layer joins open two manifests, not ~100; capped at 1000 rows
 
-**Catalog** ([`src/tools/catalog.py`](src/tools/catalog.py))
-- `list_datasets()` — the runtime-discovered dataset names + columns (columns from the maintained `active/catalog.json` manifest, or read off the Lance schema for the edge datasets it omits); the schema an agent inspects before writing `execute_audience_query` SQL
+**Catalog** ([`src/tools/catalog.py`](src/tools/catalog.py)) — two-level, mirroring the Postgres introspection
+- `list_datasets()` — cheap "look around": every runtime-discovered dataset name + a column count (no column detail; one `active/catalog.json` GET, no Lance opens). The entry point.
+- `describe_dataset(name)` — drill into one dataset's columns (with types), from the manifest or a single Lance-schema read; alias-aware (`awards` → `contractor_award_summary`)
 
 **Operational Postgres** ([`src/tools/ops.py`](src/tools/ops.py)) — the structured read/write surface over the attached hq-x control plane (`hqx`)
 - `save_campaign_audience(campaign_id, audience_name, source_query, parameters)` — upsert a campaign-audience tracking row into `ops.campaign_audiences` (parameterized psycopg upsert inside one transaction; the table self-bootstraps). The **only** write path into hq-x.
