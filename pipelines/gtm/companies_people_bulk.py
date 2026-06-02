@@ -20,6 +20,9 @@ SOURCE (live Postgres, read-only via the DuckDB postgres scanner):
                                      FK ``company_id`` → gtm.companies.id (verified: 0 orphans)
       gtm.company_served_industries (~1,894 rows) — canonical company→served-industry edges,
                                      PK (company_id, canonical_segment); FK company_id → companies.id
+      gtm.company_exa_industries    (~278 rows)   — Exa.ai industry tags for the exa-all cohort
+                                     (9 buckets); folded into target_industry, normalized to the
+                                     same canonical vocabulary (financing products dropped)
     The DSN is the DEX pooled (Supavisor session-mode) URL, supplied by the ``dex-postgres``
     Modal secret as ``DEX_DB_URL_POOLED``. DuckDB ATTACHes it READ_ONLY — no server-side
     compute, the transform boundary is 100% local DuckDB.
@@ -53,10 +56,12 @@ hyphenated text, the fleet convention; string equality is the join semantics):
         source_platform       VARCHAR          (lineage)
 
     company_target_industries  (many-to-many edge grain — STRICT_SCHEMA-enforced types/nullability)
+        UNION of two legacy sources, normalized into one canonical target_industry vocabulary:
+        company_served_industries (served segments) + company_exa_industries (Exa tags, mapped).
         company_id            String  NOT NULL  (foreign key → companies.company_id)
         normalized_domain     String  NOT NULL  (DENORMALIZED from the companies join)
-        target_industry       String  NOT NULL  (= s.canonical_segment, 1 of 34 segments)
-        source_platform       String  (nullable — edge/company origin: sfnet, prospeo-parallel.ai, …)
+        target_industry       String  NOT NULL  (canonical segment — served canonical_segment OR mapped Exa bucket)
+        source_platform       String  (nullable — origin cohort: sfnet, prospeo-parallel.ai, exa-all, …)
 
 NORMALIZED_DOMAIN is the anchor. Built inline (NOT from core.name_norm, which is a *name*
 blocking key, not a domain rule): lower/trim → strip scheme → strip leading ``www.`` →
@@ -244,18 +249,54 @@ LEFT JOIN dex.gtm.companies c ON c.id = p.company_id
 
 
 def _sql_company_target_industries() -> str:
-    # Edge grain — one row per (company, served industry). The canonical, clean layer:
-    # gtm.company_served_industries (alias s) INNER JOIN gtm.companies (alias c) on the FK.
-    # normalized_domain is denormalized from the company (verified non-null for all 1,894
-    # edges); target_industry is the canonical_segment. INNER JOIN drops orphan edges (0 exist).
+    # Edge grain — one row per (company, target industry), UNIONed from the two legacy sources
+    # and normalized into one canonical `target_industry` vocabulary. `source_platform` retains
+    # the originating cohort so provenance is never lost.
+    #   served: gtm.company_served_industries — already-canonical served segments (the sfnet /
+    #           prospeo / elfa / exa company cohorts).
+    #   exa:    gtm.company_exa_industries — Exa.ai tags for the exa-all cohort, mapped to the
+    #           SAME canonical segments via the explicit CASE below (the 9 Exa buckets are a
+    #           fixed set). Two of them are financing PRODUCTS, not target industries —
+    #           'equipment financing' and 'working capital' map to NULL and are dropped (that
+    #           signal will be sourced elsewhere). 'logistics and transporation' (sic — source
+    #           typo) → Transportation & Logistics. The legacy industry_normalization crosswalk
+    #           is deliberately bypassed for Exa: it wrongly maps 'equipment financing' →
+    #           Manufacturing. INNER JOIN to companies; normalized_domain denormalized from the
+    #           company (verified non-null for both cohorts).
+    # The cohorts are disjoint by company (exa-all has 0 served rows), so UNION never collapses
+    # across sources; it still de-dupes any intra-source repeat of (company, segment).
     return f"""
-SELECT
-    CAST(s.company_id AS VARCHAR)         AS company_id,
-    {_normalized_domain('c.domain')}      AS normalized_domain,
-    nullif(trim(s.canonical_segment), '') AS target_industry,
-    nullif(trim(s.source), '')            AS source_platform
-FROM dex.gtm.company_served_industries s
-JOIN dex.gtm.companies c ON c.id = s.company_id
+WITH served AS (
+    SELECT
+        CAST(s.company_id AS VARCHAR)         AS company_id,
+        {_normalized_domain('c.domain')}      AS normalized_domain,
+        nullif(trim(s.canonical_segment), '') AS target_industry,
+        nullif(trim(s.source), '')            AS source_platform
+    FROM dex.gtm.company_served_industries s
+    JOIN dex.gtm.companies c ON c.id = s.company_id
+),
+exa AS (
+    SELECT
+        CAST(e.company_id AS VARCHAR)         AS company_id,
+        {_normalized_domain('c.domain')}      AS normalized_domain,
+        CASE lower(trim(e.exa_industry))
+            WHEN 'manufacturing'               THEN 'Manufacturing'
+            WHEN 'government contractors'      THEN 'Government & Public Sector'
+            WHEN 'agriculture'                 THEN 'Agriculture'
+            WHEN 'construction'                THEN 'Construction'
+            WHEN 'aerospace and defense'       THEN 'Aerospace & Defense'
+            WHEN 'waste management'            THEN 'Environmental & Waste Services'
+            WHEN 'logistics and transporation' THEN 'Transportation & Logistics'
+            ELSE NULL  -- 'equipment financing' / 'working capital' = products, not industries
+        END                                   AS target_industry,
+        nullif(trim(c.source), '')            AS source_platform
+    FROM dex.gtm.company_exa_industries e
+    JOIN dex.gtm.companies c ON c.id = e.company_id
+)
+SELECT company_id, normalized_domain, target_industry, source_platform FROM served
+UNION
+SELECT company_id, normalized_domain, target_industry, source_platform FROM exa
+WHERE target_industry IS NOT NULL
 """
 
 
