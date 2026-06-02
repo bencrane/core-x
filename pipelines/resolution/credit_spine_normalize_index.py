@@ -9,7 +9,7 @@ two columns appended via ``LanceDataset.add_columns`` (positional zip in _rowid
 order), and the indices committed straight to R2 with ``create_scalar_index``.
 
 WHY THIS EXISTS (docs/reference/uspto_sba_ppp_mapping_blueprint.md §Finding-2):
-name normalization mutates the string ("Smith & Co., LLC" → "SMITH CO LLC"), so
+name normalization mutates the string ("Smith & Co., LLC" → "SMITH AND CO LLC"), so
 the credit spines' *existing raw-name* BTREE (``borr_name`` / nothing on PPP
 borrower) CANNOT serve a normalized-owner equality join. The cross-layer match
 (USPTO owners, SoS entities, the ``crosswalk_*`` Pattern-B outputs) blocks on the
@@ -18,13 +18,17 @@ must carry those two columns natively, each with its own ``BTREE``. This worker
 is the credit-spine counterpart to ``federal_spine_index_campaign`` (which only
 indexes EXISTING columns); it ADDS the columns first, then indexes them.
 
-CANONICAL KEYS. ``_name_norm`` / ``_zip5`` here are byte-identical to
-``pipelines/sos_normalized/normalize.py`` (and to ``recon_ca_ucc_sos`` /
-``crosswalk_hmda_gleif`` / ``crosswalk_sam_usaspending`` / ``osha_sniper``). The
-output column names ``normalized_legal_name`` + ``zip_code`` are the SAME names
-the ``sos_normalized_master`` blocking spine persists and BTREE-indexes
-(``MASTER_BTREE_INDEXES``). Applying the IDENTICAL macro on both sides is what
-makes the BTREE block-join valid — drift here silently breaks every credit join.
+CANONICAL KEYS. ``_name_norm`` is IMPORTED from ``core/name_norm.py`` (THE single
+source of truth — see the import below), so it is byte-identical to the macro that
+produces ``sos_normalized_master.normalized_legal_name`` and every other spine/bridge
+(``recon_ca_ucc_sos`` / ``crosswalk_hmda_gleif`` / ``crosswalk_sam_usaspending`` /
+``osha_sniper`` / ``fl_federal_tax_liens``) and CANNOT drift from them. ``_zip5`` stays
+local — the trivial digits-left-5 key, identical on both sides. The output column names
+``normalized_legal_name`` + ``zip_code`` are the SAME names the ``sos_normalized_master``
+blocking spine persists and BTREE-indexes (``MASTER_BTREE_INDEXES``). Applying the
+IDENTICAL macro on both sides is what makes the BTREE block-join valid; that identity is
+now guaranteed by the shared import, not by hand-copying — a local copy DID drift once
+(it lagged the ``&``→AND / dash→space additions, breaking every &/dash join; fixed #70).
 
 SOURCE-COLUMN MAP (the borrower name/zip column differs per dataset — confirmed
 by the blueprint's field map and by ::probe): PPP exposes ``borrower_name`` /
@@ -344,7 +348,8 @@ def probe() -> None:
     # fragments straight to R2. No local dataset staging → no scratch disk needed (all
     # three datasets are far below the ~100M-row giants threshold; see module docstring).
 )
-def patch_dataset(name: str, trigger_callback_url: str | None = None) -> dict:
+def patch_dataset(name: str, trigger_callback_url: str | None = None,
+                  recompute: bool = False) -> dict:
     """ADDITIVE IN-PLACE: materialize normalized_legal_name + zip_code on one credit
     dataset and BTREE-index both, WITHOUT recreating it.
 
@@ -357,7 +362,12 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None) -> dict:
          unchanged, and both indices committed — else restore() to the pre-patch
          version and fail.
     Idempotent: a key already in the schema is not re-added; the indices are always
-    (re)built. A source column absent from the schema is fatal (misconfiguration)."""
+    (re)built. A source column absent from the schema is fatal (misconfiguration).
+    ``recompute=True`` first DROPS an existing ``normalized_legal_name`` (+ its BTREE) so it
+    is re-materialized with the CURRENT canonical macro — required whenever that macro changes
+    (e.g. #70's ``&``→AND / dash→space): add_columns only fills MISSING keys, so a stale
+    old-rule column would otherwise be skipped and then fail the gate. ``zip_code``'s rule is
+    unchanged, so it is never dropped (its BTREE is still rebuilt, like every run)."""
     import datetime as dt
 
     import duckdb
@@ -383,6 +393,21 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None) -> dict:
                 f"source column(s) absent from {name} schema: {missing_src} "
                 f"(have name/zip candidates among {sorted(present)[:20]}…) — refusing to "
                 f"materialize an all-NULL blocking key")
+
+        # 0. --recompute: force re-materialization of normalized_legal_name under the CURRENT
+        # macro. add_columns (step 1+2) only fills keys MISSING from the schema, so a
+        # normalized_legal_name already materialized under an OLD rule would be SKIPPED and then
+        # FAIL the integrity gate (stored old-rule value != new-rule recompute). Drop the stale
+        # key (+ its BTREE) so the additive step rebuilds it canonically. zip_code's rule is
+        # unchanged → never dropped. Safe no-op when the key is absent (first/fresh materialize).
+        if recompute and NORM_NAME_COL in present:
+            stale_idx = f"{NORM_NAME_COL}_idx"
+            if stale_idx in _index_names(ds):
+                ds.drop_index(stale_idx)
+            ds.drop_columns([NORM_NAME_COL])
+            ds = lance.dataset(uri, storage_options=so)
+            present = set(ds.schema.names)
+            print(f"recompute ✓ {name}: dropped stale {NORM_NAME_COL} (+{stale_idx}) → re-materializing")
 
         # 1+2. Add only the keys not already present (positional zip in _rowid order).
         to_add = tuple(c for c in NEW_COLS if c not in present)
@@ -475,9 +500,11 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None) -> dict:
 
 
 @app.local_entrypoint()
-def run(only: str = "") -> None:
+def run(only: str = "", recompute: bool = False) -> None:
     """Materialize + BTREE-index the normalized keys in place on each credit dataset.
-    --only <name>   restrict to one of: ppp | sba_7a | sba_504 (substring match)."""
+    --only <name>   restrict to one of: ppp | sba_7a | sba_504 (substring match).
+    --recompute     drop + re-materialize normalized_legal_name under the CURRENT macro
+                    (use after the canonical rule changes; no-op when the key is absent)."""
     import json
 
     targets = [n for n in DATASETS if (only in n if only else True)]
@@ -485,8 +512,9 @@ def run(only: str = "") -> None:
         print(f"No datasets matched only={only!r}; known: {sorted(DATASETS)}")
         return
     for name in targets:
-        print(f"\n=== {name} ===")
-        print(json.dumps(patch_dataset.remote(name, trigger_callback_url=None),
+        print(f"\n=== {name}{' (recompute)' if recompute else ''} ===")
+        print(json.dumps(patch_dataset.remote(name, trigger_callback_url=None,
+                                              recompute=recompute),
                          indent=2, default=str))
 
 
@@ -565,3 +593,83 @@ def verify(only: str = "", runs: int = 5) -> None:
     for name in targets:
         print(f"\n=== verify {name} ===")
         print(json.dumps(verify_dataset.remote(name, runs), indent=2, default=str))
+
+
+# ───────────── Sample — read-only &/dash spot-check (drift evidence) ─────────────
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 20,
+              memory=16384, cpu=4.0)
+def sample_dataset(name: str, n: int = 6) -> dict:
+    """READ-ONLY: surface borrower names containing ``&`` or a dash and show the canonical
+    normalization — plus the STORED ``normalized_legal_name`` (if materialized) and whether
+    they agree. Direct evidence that the ``&``→AND / dash→space rules (#70's fix) are live in
+    the materialized key. Filtering runs in DuckDB (exact LIKE semantics — not Lance
+    filter-pushdown) over the streamed name column, and the &/dash population counts are
+    reported so a genuinely sparse dataset is distinguishable from a missed match. Mutates
+    nothing. Before ::run the key is absent → ``canonical_preview`` shows what WILL be written;
+    after, ``stored`` must equal ``canonical`` for every sample (the gate guarantees it for ALL
+    rows — this surfaces it on the names that exercise the new rules)."""
+    import duckdb
+    import lance
+
+    if name not in DATASETS:
+        return {"dataset": name, "status": "unknown_dataset"}
+    spec = DATASETS[name]
+    so = _r2_storage_options()
+    ds = lance.dataset(spec["uri"], storage_options=so)
+    name_col = spec["name_col"]
+    has_norm = NORM_NAME_COL in set(ds.schema.names)
+    cols = [name_col] + ([NORM_NAME_COL] if has_norm else [])
+
+    con = duckdb.connect(":memory:")
+    con.execute("PRAGMA threads=4;")
+    con.execute("SET memory_limit='12GB';")
+    con.register("rdr", ds.scanner(columns=cols).to_reader())
+    stored_sel = f"{_q(NORM_NAME_COL)} AS stored, " if has_norm else ""
+    con.execute(
+        f"CREATE TABLE t AS SELECT {_q(name_col)} AS raw, {stored_sel}"
+        f"{_name_norm(_q(name_col))} AS canonical FROM rdr"
+    )
+    con.unregister("rdr")
+    dash_pred = "(raw LIKE '%-%' OR raw LIKE '%–%' OR raw LIKE '%—%')"  # hyphen + en/em dash
+    amp = con.execute("SELECT count(*) FROM t WHERE raw LIKE '%&%'").fetchone()[0]
+    dash = con.execute(f"SELECT count(*) FROM t WHERE {dash_pred}").fetchone()[0]
+    half = max(1, n // 2)
+    sel = "raw, " + ("stored, " if has_norm else "") + "canonical"
+    rows = con.execute(
+        f"(SELECT {sel} FROM t WHERE raw LIKE '%&%' LIMIT {half}) UNION ALL "
+        f"(SELECT {sel} FROM t WHERE {dash_pred} LIMIT {half})"
+    ).fetchall()
+    con.close()
+
+    samples = []
+    for r in rows:
+        if has_norm:
+            raw, stored, canonical = r
+            samples.append({"raw": raw, "stored": stored, "canonical": canonical,
+                            "match": stored == canonical})
+        else:
+            raw, canonical = r
+            samples.append({"raw": raw, "canonical_preview": canonical})
+    all_match = all(s.get("match", True) for s in samples)
+    print(f"{name}: &-names={amp:,} dash-names={dash:,} | has_norm={has_norm} | "
+          f"{len(samples)} samples | all stored==canonical={all_match}")
+    for s in samples:
+        print(f"  {s}")
+    return {"dataset": name, "has_norm_column": has_norm,
+            "ampersand_name_count": amp, "dash_name_count": dash,
+            "all_stored_equal_canonical": all_match, "samples": samples}
+
+
+@app.local_entrypoint()
+def sample(only: str = "", n: int = 6) -> None:
+    """READ-ONLY &/dash spot-check across the credit spines (stored vs canonical recompute).
+    --only <name>   restrict to one of: ppp | sba_7a | sba_504."""
+    import json
+
+    targets = [nm for nm in DATASETS if (only in nm if only else True)]
+    if not targets:
+        print(f"No datasets matched only={only!r}; known: {sorted(DATASETS)}")
+        return
+    for nm in targets:
+        print(f"\n=== sample {nm} ===")
+        print(json.dumps(sample_dataset.remote(nm, n), indent=2, default=str))

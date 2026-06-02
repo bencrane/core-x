@@ -39,6 +39,7 @@ CONSUMERS: list[tuple[str, str]] = [
     ("pipelines/resolution/recon_ca_ucc_sos.py", "_name_norm"),
     ("pipelines/resolution/crosswalk_hmda_gleif.py", "_name_norm"),
     ("pipelines/resolution/crosswalk_sam_usaspending.py", "_norm_sql"),
+    ("pipelines/resolution/credit_spine_normalize_index.py", "_name_norm"),
 ]
 
 
@@ -167,7 +168,8 @@ def main() -> int:
         for f in failures:
             print("  - " + f)
         return 1
-    print("\nOK — all six consumers emit byte-identical canonical SQL; DuckDB battery matches goldens.")
+    print(f"\nOK — all {len(CONSUMERS)} consumers emit byte-identical canonical SQL; "
+          "DuckDB battery matches goldens.")
     return 0
 
 
