@@ -217,8 +217,9 @@ def _build_transform_sql(paths: dict[str, str], as_of: str) -> str:
     probe (FLRF 82 / FLRD-FLRS 206). normalized_legal_name + zip5 use the directive's exact
     regex standard (= sos_normalized_master). \\\\s / \\\\x1F survive Python → emit \\s / \\x1F."""
     name_norm = (
-        "nullif(trim(regexp_replace(regexp_replace("
-        "upper(d.debtor_name), '[^A-Z0-9 ]+','','g'), '\\s+',' ','g')),'')"
+        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+        "upper(d.debtor_name), '&',' AND ','g'), '[-\\x{2013}\\x{2014}]+',' ','g'),"
+        " '[^A-Z0-9 ]+','','g'), '\\s+',' ','g')),'')"
     )
     zip5_debtor = "nullif(left(regexp_replace(d.debtor_zip,'[^0-9]','','g'),5),'')"
     zip5_secured = "nullif(left(regexp_replace(secured_zip,'[^0-9]','','g'),5),'')"

@@ -160,14 +160,21 @@ app = modal.App("osha-pipelines", image=image)
 
 
 # ── Name normalization — the standard regex protocol (verbatim from ────────────
-#    pipelines/sos_normalized/normalize.py). UPPER → strip every non-[A-Z0-9 space]
-#    char (punctuation, &, accents) → collapse whitespace → trim. NULL if emptied.
-#    Produces the normalized_legal_name bridge key. NOTE: this KEEPS entity tokens
-#    (LLC/INC) — that is what makes the key match the sos_normalized / SAM spines;
-#    stripping them would break cross-spine resolution.
+#    pipelines/sos_normalized/normalize.py::_name_norm — change there ⇒ change here).
+#    UPPER → '&'→' AND ' → dash→' ' → strip every remaining non-[A-Z0-9 space] char
+#    (punctuation, accents) → collapse whitespace → trim. NULL if emptied. Produces the
+#    normalized_legal_name bridge key. NOTE: this KEEPS entity tokens (LLC/INC) — that is
+#    what makes the key match the sos_normalized / SAM spines; stripping them would break
+#    cross-spine resolution.
 def _name_norm(col: str) -> str:
-    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(%s AS VARCHAR)),"
-            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')") % col
+    return (
+        "nullif(trim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+        "upper(CAST(%s AS VARCHAR)),"
+        " '&', ' AND ', 'g'),"
+        " '[-\\x{2013}\\x{2014}]+', ' ', 'g'),"
+        " '[^A-Z0-9 ]+', '', 'g'),"
+        " '\\s+', ' ', 'g')), '')"
+    ) % col
 
 
 def _r2_storage_options() -> dict[str, str]:
