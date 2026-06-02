@@ -26,6 +26,7 @@ exact-join the SoS spine imports from this module:
     pipelines/resolution/recon_ca_ucc_sos.py
     pipelines/resolution/crosswalk_hmda_gleif.py
     pipelines/resolution/crosswalk_sam_usaspending.py   (passes an EXPRESSION, not a column)
+    pipelines/resolution/credit_spine_normalize_index.py (PPP / 7(a) / 504 credit spines)
 
 ``\\s`` / ``\\x{..}`` in this Python source emit ``\\s`` / ``\\x{..}`` verbatim in the
 generated SQL. Change the rule HERE and every spine/bridge moves together — do NOT
