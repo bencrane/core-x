@@ -177,8 +177,10 @@ def execute_audience_query(sql: str) -> dict[str, Any]:
     """Run arbitrary read-only ANSI SQL over the full Gen-3 Lance plane to build
     audience segments. The datasets are named relations — reference them by name;
     every committed dataset in the sink is available (the registry is discovered
-    at runtime, not a fixed list). Call ``list_datasets`` to see the exact names
-    and columns.
+    at runtime, not a fixed list). Call ``list_datasets`` for the names (with column
+    counts), then ``describe_dataset(name)`` for a dataset's columns. Operational
+    Postgres state is reachable too: ``list_postgres_tables`` / ``get_postgres_schema``
+    and ``hqx.<schema>.<table>`` joins (see those tools).
 
     Naming: a flat dataset is a bare identifier (``companies``, ``people``,
     ``firmographics_blitz``); ``awards`` is an alias for ``contractor_award_summary``.
