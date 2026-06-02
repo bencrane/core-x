@@ -1,0 +1,13 @@
+# Doppler repo config — declares the project/config this checkout binds to.
+# Contains NO secrets: only the project + config NAMES. Doppler reads these to
+# auto-scope `doppler run` for this directory (and any worktree beneath it).
+#
+# Fresh checkout or wiped ~/.doppler? Re-bind with:
+#   doppler setup --no-interactive
+# which reads the values below and writes the machine-local scope.
+#
+# History: secrets formerly lived under project `hq-x`, which was renamed to
+# `core-x` (matching this repo). The directory scope is now pinned to core-x/prd.
+setup:
+  project: core-x
+  config: prd
