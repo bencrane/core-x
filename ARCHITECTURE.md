@@ -93,3 +93,30 @@ There is one reference implementation today — SAM.gov Contract Opportunities
 domain-grouped worker under `pipelines/<domain>/`, and an `ops.*` runs table for
 its terminal state — then it is wired through the same dispatcher by name. Zero
 new endpoints, zero new secrets.
+
+## Maintenance workers (reindex / cross-domain campaigns)
+
+A worker that mutates *already-committed* datasets (rather than ingesting a feed)
+is a maintenance worker. When it spans domains — e.g. a physical-indexing campaign
+over the federal-spend + mortgage + crosswalk spines —
+it lives under the closest cross-source domain (`pipelines/resolution/`), not
+duplicated per feed. Reference: `pipelines/resolution/federal_spine_index_campaign.py`.
+
+Building `BTREE` scalar indices on R2 Lance datasets — the two-tier rule:
+
+- **Default — direct-R2, in place.** `lance.dataset(uri, storage_options=so)
+  .create_scalar_index(col, "BTREE")` appends index files straight to R2. Read
+  the column via range GETs, sort in-RAM (`LANCE_BYPASS_SPILLING=true`, 32–64 GiB),
+  no scratch disk. This is the dominant fleet pattern and the first choice.
+- **Giants — Volume-staged, append-only.** Once a single scalar-index
+  `page_data.lance` is large enough (empirically ~100M+ rows on a load-bearing
+  column), a direct-R2 write trips R2's "all non-trailing parts must have the same
+  length" rule (`400 InvalidPart`) — object_store's adaptive multipart escalates
+  part size mid-upload and R2 (unlike S3) rejects it. Lance exposes no part-size
+  knob. Fix: stage the dataset to a **Modal Volume** (network storage — does NOT
+  push the worker onto preemptible spot capacity the way a large `ephemeral_disk`
+  request does), build the index on the local copy (local FS has no multipart
+  rule), then upload **only the new files** (`_indices/<uuid>/`, the new
+  `_versions/<n>.manifest`, `_transactions/*.txn`) via boto3 (uniform parts). Never
+  wipe or re-upload data files. **Do not** reach for a large `ephemeral_disk`
+  override — that is what forced the USAspending giant ingest onto spot capacity.
