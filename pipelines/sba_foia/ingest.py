@@ -75,6 +75,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "requests>=2.32",       # SBA CKAN download + Trigger callback
     "zstandard>=0.22",      # .csv.zst landing compression
     "psycopg[binary]>=3.2",  # terminal state write to ops.*
+    "pandas>=2.2",          # lance.add_columns path imports pandas (normalize_transform shim)
 ).env(
     # BTREE scalar-index builds sort the column. Lance's spill-to-disk sorter
     # uses a small bounded DataFusion memory pool that OOMs on the ~1.95M-row
@@ -158,13 +159,60 @@ _PROV = """    regexp_replace(filename, '.*/', '') AS source_file,
     now() AS ingested_at"""
 
 # BTREE scalar indexes on the load-bearing resolution / common-filter keys.
+# sba_surrogate_id leads — it is the minted primary key (SBA published no loan id).
 _INDEX_COLS = {
-    "_core": ["borr_name", "borr_state", "project_state", "naics_code", "approval_fy",
-              "loan_status", "location_id", "congressional_district", "business_type",
-              "sba_district_office"],
+    "_core": ["sba_surrogate_id", "borr_name", "borr_state", "project_state", "naics_code",
+              "approval_fy", "loan_status", "location_id", "congressional_district",
+              "business_type", "sba_district_office"],
     "7a": ["bank_name", "bank_fdic_number"],
     "504": ["cdc_name", "third_party_lender_name"],
 }
+
+# ── Surrogate primary key (sba_surrogate_id) ────────────────────────────────────
+# SBA publishes NO loan identifier, so we MINT one: a deterministic sha256 over every
+# published row attribute (EXCEPT the per-run-volatile ingested_at) + a per-identical-
+# group ordinal. The ordinal is required because the FOIA corpus contains byte-identical
+# duplicate rows (7a: 1,909; 504: 74) that no pure content hash can separate; the hash
+# alone keeps the key idempotent across overwrite rebuilds, the ordinal makes it unique
+# per physical row. Both the canonical rebuild (_build_sql) and the in-place patch
+# (patch_surrogate_id) hash the SAME ordered column set → identical ids (up to an
+# immaterial permutation among byte-duplicate rows).
+#
+# Column names below MIRROR _CORE / _SEVENA_X / _F504_X / _PROV (projection order). Keep
+# in sync if those projection fragments change.
+_CORE_COLS = [
+    "as_of_date", "program", "location_id", "borr_name", "borr_street", "borr_city",
+    "borr_state", "borr_zip", "gross_approval", "approval_date", "approval_fy",
+    "first_disbursement_date", "processing_method", "subprogram", "term_in_months",
+    "naics_code", "naics_description", "franchise_code", "franchise_name", "project_county",
+    "project_state", "sba_district_office", "congressional_district", "business_type",
+    "business_age", "loan_status", "paid_in_full_date", "charge_off_date",
+    "gross_charge_off_amount", "jobs_supported", "collateral_ind",
+]
+_SEVENA_COLS = [
+    "bank_name", "bank_fdic_number", "bank_ncua_number", "bank_street", "bank_city",
+    "bank_state", "bank_zip", "sba_guaranteed_approval", "initial_interest_rate",
+    "fixed_or_variable_interest_ind", "revolver_status", "sold_sec_mrkt_ind",
+]
+_F504_COLS = [
+    "cdc_name", "cdc_street", "cdc_city", "cdc_state", "cdc_zip", "third_party_lender_name",
+    "third_party_lender_city", "third_party_lender_state", "third_party_dollars",
+]
+
+
+def _hash_cols(program: str) -> list[str]:
+    """Ordered hash-input set: all published attributes EXCEPT ingested_at (volatile) and
+    the surrogate itself. Identical between the rebuild and the in-place patch."""
+    extra = _SEVENA_COLS if program == "7a" else _F504_COLS
+    return _CORE_COLS + extra + ["source_file", "extract_label"]
+
+
+def _surrogate_serialization(cols: list[str]) -> str:
+    """Delimiter-safe, injective serialization of the hash columns. chr(31)=unit
+    separator between fields; chr(30)=NULL sentinel — neither byte occurs in SBA text."""
+    return ("concat_ws(chr(31), "
+            + ", ".join(f'coalesce(CAST("{c}" AS VARCHAR), chr(30))' for c in cols)
+            + ")")
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -273,13 +321,24 @@ def _land_or_reuse(s3, url: str, name: str, as_of: str) -> tuple[str, str]:
 def _build_sql(program: str, files: list[str]) -> str:
     extra = _SEVENA_X if program == "7a" else _F504_X
     file_list = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
+    ser = _surrogate_serialization(_hash_cols(program))
+    # Project the canonical columns, fingerprint each row (sha256 over _hash_cols), then
+    # mint sba_surrogate_id = fingerprint || '-' || per-identical-group ordinal. The
+    # ordinal disambiguates byte-duplicate FOIA rows so the PK is unique on every row.
     return (
         "WITH raw AS (\n"
         "    SELECT * FROM read_csv([" + file_list + "], "
         "union_by_name=true, filename=true, all_varchar=true, "
         "header=true, sample_size=-1, ignore_errors=false)\n"
-        ")\n"
-        "SELECT\n" + _CORE + extra + _PROV + "\nFROM raw\n"
+        "),\n"
+        "proj AS (\n"
+        "    SELECT\n" + _CORE + extra + _PROV + "\n    FROM raw\n"
+        "),\n"
+        "hashed AS (SELECT *, sha256(" + ser + ") AS _sk_hash FROM proj)\n"
+        "SELECT * EXCLUDE (_sk_hash),\n"
+        "    _sk_hash || '-' || CAST(row_number() OVER "
+        "(PARTITION BY _sk_hash ORDER BY _sk_hash) AS VARCHAR) AS sba_surrogate_id\n"
+        "FROM hashed\n"
     )
 
 
@@ -452,6 +511,174 @@ def reindex_program(program: str) -> dict:
             "indices": names, "index_count": len(names)}
 
 
+# --------------------------------------------------------------------------- #
+# In-place additive surrogate-key patch (no recreate) + ops ledger
+# --------------------------------------------------------------------------- #
+# Cross-worker ledger for additive in-place schema patches. Idempotent DDL; mirrored
+# verbatim from resolution/crosswalk_sam_usaspending.py.
+OPS_PATCH_DDL = """
+CREATE SCHEMA IF NOT EXISTS ops;
+CREATE TABLE IF NOT EXISTS ops.schema_patch_runs (
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    dataset_uri     text        NOT NULL,
+    operation       text        NOT NULL,
+    column_added    text,
+    index_built     text,
+    rows            bigint,
+    exact_dup_rows  bigint,
+    version_before  bigint,
+    version_after   bigint,
+    status          text        NOT NULL,
+    error           text,
+    started_at      timestamptz,
+    completed_at    timestamptz,
+    recorded_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS schema_patch_runs_dataset_idx  ON ops.schema_patch_runs (dataset_uri);
+CREATE INDEX IF NOT EXISTS schema_patch_runs_recorded_idx ON ops.schema_patch_runs (recorded_at DESC);
+"""
+
+
+def _record_patch(dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                  version_before, version_after, status, error, started_at, completed_at) -> None:
+    """Terminal row → ops.schema_patch_runs (psycopg). Best-effort; never masks the patch."""
+    import psycopg
+
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    if not dsn:
+        print("WARN: HQX_DB_URL_POOLED not set; skipping ops.schema_patch_runs write.")
+        return
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(OPS_PATCH_DDL)
+            cur.execute(
+                """
+                INSERT INTO ops.schema_patch_runs
+                    (dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                     version_before, version_after, status, error, started_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                 version_before, version_after, status, error, started_at, completed_at),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 — audit must not mask the patch
+        print(f"WARN: ops.schema_patch_runs write failed: {exc}")
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60,
+    memory=16384,
+    cpu=4.0,
+)
+def patch_surrogate_id(program: str, trigger_callback_url: str | None = None) -> dict:
+    """ADDITIVE IN-PLACE: mint + BTREE-index sba_surrogate_id on a program dataset WITHOUT
+    recreating it. One global DuckDB pass keyed to _rowid computes the deterministic
+    sha256+ordinal id (LANCE_BYPASS_SPILLING is set on the image for the high-cardinality
+    index sort); add_columns zips it on positionally; create_scalar_index builds the BTREE.
+    Idempotent (skips the add if the column already exists; always (re)builds the index).
+    Integrity-gated: every stored id's hash-prefix must equal the macro recomputed from the
+    row, the id must be globally unique + non-null, and the row count unchanged — else the
+    dataset is rolled back to its pre-patch version and the run fails."""
+    import datetime as dt
+
+    import duckdb
+    import lance
+
+    program = program.strip().lower()
+    if program not in DATASET_URI:
+        raise ValueError(f"program must be one of {sorted(DATASET_URI)}, got {program!r}")
+    uri = DATASET_URI[program]
+    so = _r2_storage_options()
+    started = dt.datetime.now(dt.timezone.utc)
+    status, error, added, result = "error", None, None, {}
+    cols = _hash_cols(program)
+    ser = _surrogate_serialization(cols)
+
+    ds = lance.dataset(uri, storage_options=so)
+    v_before = ds.version
+    n0 = ds.count_rows()
+    v_after = v_before
+    try:
+        missing = [c for c in cols if c not in {f.name for f in ds.schema}]
+        if missing:
+            raise RuntimeError(f"hash columns absent from schema: {missing}")
+
+        if "sba_surrogate_id" not in {f.name for f in ds.schema}:
+            con = duckdb.connect(":memory:")
+            con.execute("PRAGMA threads=4;")
+            con.execute("SET memory_limit='12GB';")
+            con.execute("SET temp_directory='/tmp/sba_patch_spill';")
+            con.register("rdr", ds.scanner(columns=cols, with_row_id=True).to_reader())
+            con.execute("CREATE TABLE t AS SELECT * FROM rdr")
+            con.unregister("rdr")
+            q = (
+                "WITH hashed AS (SELECT _rowid, sha256(" + ser + ") AS _h FROM t)\n"
+                "SELECT _h || '-' || CAST(row_number() OVER "
+                "(PARTITION BY _h ORDER BY _h) AS VARCHAR) AS sba_surrogate_id\n"
+                "FROM hashed ORDER BY _rowid"
+            )
+            arrow = con.execute(q).to_arrow_table().combine_chunks()
+            con.close()
+            ds.add_columns(arrow, batch_size=65536)   # positional zip in _rowid order
+            ds = lance.dataset(uri, storage_options=so)
+            added = "sba_surrogate_id"
+
+        ds.create_scalar_index("sba_surrogate_id", index_type="BTREE", replace=True)
+        ds = lance.dataset(uri, storage_options=so)
+        v_after = ds.version
+
+        # ── integrity gate ────────────────────────────────────────────────────
+        con = duckdb.connect(":memory:")
+        con.execute("PRAGMA threads=4;")
+        con.execute("SET memory_limit='12GB';")
+        con.execute("SET temp_directory='/tmp/sba_patch_spill';")
+        con.register("rdr", ds.scanner(columns=cols + ["sba_surrogate_id"]).to_reader())
+        con.execute("CREATE TABLE v AS SELECT * FROM rdr")
+        con.unregister("rdr")
+        bad = con.execute(
+            f"SELECT count(*) FROM v WHERE split_part(sba_surrogate_id, '-', 1) <> sha256({ser})"
+        ).fetchone()[0]
+        n1, dist, nulls = con.execute(
+            "SELECT count(*), count(DISTINCT sba_surrogate_id), "
+            "count(*) FILTER (WHERE sba_surrogate_id IS NULL) FROM v"
+        ).fetchone()
+        dup_rows = con.execute(
+            f"SELECT count(*) - count(DISTINCT {ser}) FROM v"
+        ).fetchone()[0]
+        con.close()
+        idx = {i.get("name") if isinstance(i, dict) else getattr(i, "name", None)
+               for i in ds.list_indices()}
+        ok = (bad == 0 and n1 == n0 and n1 == dist and nulls == 0
+              and "sba_surrogate_id_idx" in idx)
+        if not ok:
+            lance.dataset(uri, storage_options=so, version=v_before).restore()
+            raise RuntimeError(
+                f"integrity gate failed (rolled back to v{v_before}): hash_prefix_mismatch={bad} "
+                f"rows={n1}/{n0} distinct={dist} nulls={nulls} indices={sorted(idx)}")
+        result = {"rows": n1, "distinct_surrogate": dist, "exact_dup_rows": dup_rows,
+                  "hash_prefix_mismatches": bad, "nulls": nulls, "indices": sorted(idx)}
+        status = "success"
+    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
+        error = str(exc)
+        status = "error"
+    finally:
+        completed = dt.datetime.now(dt.timezone.utc)
+        _record_patch(uri, f"add_sba_surrogate_id:{program}", added,
+                      "sba_surrogate_id_idx" if status == "success" else None,
+                      result.get("rows"), result.get("exact_dup_rows"),
+                      v_before, v_after, status, error, started, completed)
+        _post_callback(trigger_callback_url,
+                       {"status": status, "dataset_uri": uri, "program": program,
+                        "operation": "add_sba_surrogate_id", **result})
+
+    if status != "success":
+        raise RuntimeError(f"patch_surrogate_id failed for {program}: {error}")
+    return {"dataset_uri": uri, "program": program, "operation": "add_sba_surrogate_id",
+            "version_before": v_before, "version_after": v_after, **result}
+
+
 @app.local_entrypoint()
 def run_all(as_of: str = AS_OF_DEFAULT) -> None:
     """Run both programs (distinct datasets → independent). No callback (manual)."""
@@ -470,3 +697,14 @@ def reindex(program: str = "") -> None:
     """Rebuild BTREE indexes on existing datasets (no re-ingest). Defaults to both."""
     for p in ([program] if program else ["504", "7a"]):
         print(reindex_program.remote(p))
+
+
+@app.local_entrypoint()
+def patch_surrogate(program: str = "") -> None:
+    """In-place additive patch: mint + BTREE-index sba_surrogate_id on the existing
+    program dataset(s) WITHOUT recreating them. Defaults to both programs."""
+    import json
+
+    for p in ([program] if program else ["504", "7a"]):
+        print(f"\n=== {p} ===")
+        print(json.dumps(patch_surrogate_id.remote(p), indent=2, default=str))

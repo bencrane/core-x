@@ -68,8 +68,11 @@ MAX_ROWS_PER_FILE = 1048576
 MAX_BYTES_PER_FILE = 90 * 1024**3
 
 # Resolution keys → BTREE (equality point-lookup). uei = the spine key; cage_code =
-# the secondary defense-tail bridge. Both high-cardinality string columns.
-BTREE_INDEXES = ["uei", "cage_code"]
+# the secondary defense-tail bridge; normalized_legal_name = the name-blocking key that
+# lets PPP/SBA (and any nameonly feed) resolve into the federal UEI spine. All three are
+# high-cardinality string columns. normalized_legal_name is derived from sam_legal_name
+# via the canonical SoS macro (see _norm_sql + build_crosswalk_sql).
+BTREE_INDEXES = ["uei", "cage_code", "normalized_legal_name"]
 
 # Validated compute boundary (recon + materialization runs): 16 GB cap, 4 threads,
 # disk spill. Honoured exactly so the worker matches the proven-stable envelope.
@@ -114,6 +117,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pyarrow>=17",
     "requests>=2.32",        # Trigger callback
     "psycopg[binary]>=3.2",  # terminal state → ops.crosswalk_sam_usaspending_runs
+    "pandas>=2.2",           # lance.add_columns BatchUDF path imports pandas (normalize_transform shim)
 ).env(
     # BTREE index builds sort the column; Lance's spill sorter under-sizes its
     # DataFusion pool and OOMs on high-cardinality string columns (lance#2650).
@@ -145,13 +149,27 @@ def _r2_storage_options() -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # DuckDB transform — pure SQL builder (importable without modal/auth)
 # --------------------------------------------------------------------------- #
+def _norm_sql(expr: str) -> str:
+    """The canonical cross-spine name-normalization macro — BYTE-IDENTICAL to
+    pipelines/sos_normalized/normalize.py: UPPER → strip every non-[A-Z0-9 space]
+    char → collapse whitespace runs → trim → NULL if emptied. ``\\s`` in this Python
+    source emits ``\\s`` in the SQL. Applying the SAME macro on both sides
+    (crosswalk.normalized_legal_name and a feed's normalized borrower name) is what
+    makes the BTREE block-join valid."""
+    return ("nullif(trim(regexp_replace(regexp_replace(upper(CAST(" + expr + " AS VARCHAR)),"
+            " '[^A-Z0-9 ]+', '', 'g'), '\\s+', ' ', 'g')), '')")
+
+
 def build_crosswalk_sql() -> str:
     """Final join statement. Assumes four relations are registered/built:
     sam(uei,cage_code,legal_business_name,dba_name) 1/uei (v2 registry),
     sam_cage_map(cage_code,sam_uei,sam_legal_name,sam_dba_name) 1/cage (all families),
     usa(uei,parent_uei,parent_legal_name,usa_legal_name,state,zip5) 1/uei,
-    fpds_uei_cage(uei,fpds_cage) 1/uei. Output grain = 1 row per usa.uei."""
-    return """
+    fpds_uei_cage(uei,fpds_cage) 1/uei. Output grain = 1 row per usa.uei.
+    A trailing wrap derives normalized_legal_name from sam_legal_name via the canonical
+    macro so every rebuild ships the name-blocking key natively (no drift vs. the in-place
+    patch)."""
+    inner = """
 SELECT
     u.uei,
     (s.uei IS NOT NULL)                                   AS matched_by_uei,
@@ -174,6 +192,13 @@ LEFT JOIN sam s              ON s.uei = u.uei
 LEFT JOIN fpds_uei_cage fc   ON s.uei IS NULL AND fc.uei = u.uei
 LEFT JOIN sam_cage_map scage ON scage.cage_code = fc.fpds_cage
 """
+    # Wrap: derive the name-blocking key from the final sam_legal_name (the coalesced
+    # SAM legal name). Same macro the in-place patch uses → zero drift on rebuild.
+    return (
+        "WITH xw0 AS (" + inner + ")\n"
+        "SELECT *, " + _norm_sql("sam_legal_name") + " AS normalized_legal_name\n"
+        "FROM xw0\n"
+    )
 
 
 def _materialize(con):
@@ -434,6 +459,148 @@ def init_ops() -> dict:
     return {"status": "ok", "table": "ops.crosswalk_sam_usaspending_runs"}
 
 
+# --------------------------------------------------------------------------- #
+# In-place additive schema patch — normalized_legal_name + BTREE (no recreate)
+# --------------------------------------------------------------------------- #
+# Cross-worker ledger for additive in-place schema patches (column + index adds that
+# do NOT recreate the dataset). Idempotent DDL; mirrored verbatim in sba_foia/ingest.py.
+OPS_PATCH_DDL = """
+CREATE SCHEMA IF NOT EXISTS ops;
+CREATE TABLE IF NOT EXISTS ops.schema_patch_runs (
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    dataset_uri     text        NOT NULL,
+    operation       text        NOT NULL,
+    column_added    text,
+    index_built     text,
+    rows            bigint,
+    exact_dup_rows  bigint,
+    version_before  bigint,
+    version_after   bigint,
+    status          text        NOT NULL,
+    error           text,
+    started_at      timestamptz,
+    completed_at    timestamptz,
+    recorded_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS schema_patch_runs_dataset_idx  ON ops.schema_patch_runs (dataset_uri);
+CREATE INDEX IF NOT EXISTS schema_patch_runs_recorded_idx ON ops.schema_patch_runs (recorded_at DESC);
+"""
+
+
+def _record_patch(dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                  version_before, version_after, status, error, started_at, completed_at) -> None:
+    """Terminal row → ops.schema_patch_runs (psycopg). Best-effort; never masks the patch."""
+    import psycopg
+
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    if not dsn:
+        print("WARN: HQX_DB_URL_POOLED not set; skipping ops.schema_patch_runs write.")
+        return
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(OPS_PATCH_DDL)
+            cur.execute(
+                """
+                INSERT INTO ops.schema_patch_runs
+                    (dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                     version_before, version_after, status, error, started_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (dataset_uri, operation, column_added, index_built, rows, exact_dup_rows,
+                 version_before, version_after, status, error, started_at, completed_at),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 — audit must not mask the patch
+        print(f"WARN: ops.schema_patch_runs write failed: {exc}")
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 45,
+    memory=16384,
+    cpu=4.0,
+)
+def patch_normalized_name(trigger_callback_url: str | None = None) -> dict:
+    """ADDITIVE IN-PLACE: derive normalized_legal_name from sam_legal_name (canonical
+    macro) and BTREE-index it WITHOUT recreating the dataset — lance.add_columns +
+    create_scalar_index write a new version while prior columns/indices stay intact.
+    Idempotent (skips the add if the column already exists — e.g. a rebuild already
+    shipped it — and (re)builds the index either way). Integrity-gated: every row's
+    stored value must equal the macro recomputed from sam_legal_name, else roll the
+    dataset back to the pre-patch version and fail."""
+    import datetime as dt
+
+    import duckdb
+    import lance
+
+    so = _r2_storage_options()
+    started = dt.datetime.now(dt.timezone.utc)
+    status, error, added, result = "error", None, None, {}
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    v_before = ds.version
+    n0 = ds.count_rows()
+    v_after = v_before
+    macro = _norm_sql("sam_legal_name")
+    try:
+        if "normalized_legal_name" not in {f.name for f in ds.schema}:
+            # One DuckDB pass keyed to _rowid → the exact macro → positional add_columns.
+            con = duckdb.connect(":memory:")
+            con.execute("PRAGMA threads=4;")
+            con.register("rdr", ds.scanner(columns=["sam_legal_name"], with_row_id=True).to_reader())
+            con.execute("CREATE TABLE t AS SELECT * FROM rdr")
+            con.unregister("rdr")
+            arrow = con.execute(
+                f"SELECT {macro} AS normalized_legal_name FROM t ORDER BY _rowid"
+            ).to_arrow_table().combine_chunks()
+            con.close()
+            ds.add_columns(arrow, batch_size=65536)   # positional zip in _rowid order
+            ds = lance.dataset(DATASET_URI, storage_options=so)
+            added = "normalized_legal_name"
+
+        ds.create_scalar_index("normalized_legal_name", index_type="BTREE", replace=True)
+        ds = lance.dataset(DATASET_URI, storage_options=so)
+        v_after = ds.version
+
+        # ── integrity gate: stored value == macro recomputed, row count stable, idx present
+        con = duckdb.connect(":memory:")
+        con.execute("PRAGMA threads=4;")
+        con.register("rdr", ds.scanner(columns=["sam_legal_name", "normalized_legal_name"]).to_reader())
+        con.execute("CREATE TABLE v AS SELECT * FROM rdr")
+        con.unregister("rdr")
+        mism = con.execute(
+            f"SELECT count(*) FROM v WHERE normalized_legal_name IS DISTINCT FROM {macro}").fetchone()[0]
+        n1, nn = con.execute(
+            "SELECT count(*), count(normalized_legal_name) FROM v").fetchone()
+        con.close()
+        idx = {i.get("name") if isinstance(i, dict) else getattr(i, "name", None)
+               for i in ds.list_indices()}
+        ok = (mism == 0) and (n1 == n0) and ("normalized_legal_name_idx" in idx)
+        if not ok:
+            lance.dataset(DATASET_URI, storage_options=so, version=v_before).restore()
+            raise RuntimeError(
+                f"integrity gate failed (rolled back to v{v_before}): "
+                f"macro_mismatches={mism} rows={n1}/{n0} indices={sorted(idx)}")
+        result = {"rows": n1, "non_null_normalized": nn, "macro_mismatches": mism,
+                  "indices": sorted(idx)}
+        status = "success"
+    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
+        error = str(exc)
+        status = "error"
+    finally:
+        completed = dt.datetime.now(dt.timezone.utc)
+        _record_patch(DATASET_URI, "add_normalized_legal_name", added,
+                      "normalized_legal_name_idx" if status == "success" else None,
+                      result.get("rows"), None, v_before, v_after, status, error, started, completed)
+        _post_callback(trigger_callback_url,
+                       {"status": status, "dataset_uri": DATASET_URI,
+                        "operation": "add_normalized_legal_name", **result})
+
+    if status != "success":
+        raise RuntimeError(f"patch_normalized_name failed: {error}")
+    return {"dataset_uri": DATASET_URI, "operation": "add_normalized_legal_name",
+            "version_before": v_before, "version_after": v_after, **result}
+
+
 @app.local_entrypoint()
 def build(dry_run: bool = False) -> None:
     if dry_run:
@@ -448,3 +615,13 @@ def build(dry_run: bool = False) -> None:
         return
     print(build_crosswalk.remote(trigger_callback_url=None))
     print(verify_crosswalk.remote())
+
+
+@app.local_entrypoint()
+def patch_norm() -> None:
+    """In-place additive patch: add + BTREE-index normalized_legal_name on the live
+    crosswalk WITHOUT recreating it. Run after deploying the patched worker so the daily
+    rebuild also ships the column natively."""
+    import json
+
+    print(json.dumps(patch_normalized_name.remote(), indent=2, default=str))
