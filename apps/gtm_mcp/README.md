@@ -101,10 +101,10 @@ The `hqx` attach is read/write, but the agent-facing raw-SQL path is **read-only
 
 ```bash
 # serve with R2 creds + bearer token injected from Doppler
-PORT=8765 doppler run -p hq-x -c prd -- python -m apps.gtm_mcp.main
+PORT=8765 doppler run -p core-x -c prd -- python -m apps.gtm_mcp.main
 
 # drive it with the MCP Inspector CLI (send the bearer token)
-TOKEN=$(doppler secrets get HQX_MCP_BEARER_TOKEN -p hq-x -c prd --plain)
+TOKEN=$(doppler secrets get HQX_MCP_BEARER_TOKEN -p core-x -c prd --plain)
 npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8765/sse \
   --transport sse --header "Authorization: Bearer $TOKEN" --method tools/list
 npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8765/sse \

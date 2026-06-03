@@ -7,7 +7,7 @@ structural specification for a future `pipelines/resolution/crosswalk_uspto_sba.
 Pattern-B bridge.
 
 **Method.** `lance 7.0.0` + `duckdb 1.5.3`, R2 credentials injected via
-`doppler run -p hq-x -c prd`. Every figure below is the output of an actual query against
+`doppler run -p core-x -c prd`. Every figure below is the output of an actual query against
 the committed Lance datasets — column-projected scans, no sampling on the USPTO side
 (66 k rows read in full), full streams of SBA (2.17 M) and PPP (11.47 M). Reads were local
 over WAN; **latency figures are NOT representative of in-region Modal execution** and are
