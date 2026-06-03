@@ -161,7 +161,13 @@ async def find_email(
     business/HTTP errors (the worker inspects ``ok`` / ``found``)::
 
         {"ok": bool, "found": bool, "email": str|None, "certainty": str|None,
-         "status": str, "scan_id": str|None, "http_status": int, "error": str|None}
+         "status": str, "scan_id": str|None, "http_status": int, "error": str|None,
+         "raw": <Icypeas result item, VERBATIM> | None}
+
+    ``raw`` is the untouched Icypeas read item (``items[0]`` — results.emails[],
+    mxRecords, certainty, status, …), present on every terminal outcome (found AND
+    not-found) so the worker can persist the provider payload as-is. The extracted
+    fields above are a convenience projection on top of it, never a replacement.
     """
     import httpx
 
@@ -239,18 +245,20 @@ async def find_email(
             if not items:
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
-            status, email, certainty = _extract(items[0])
+            raw_item = items[0]   # Icypeas result object, VERBATIM — surfaced for raw persistence
+            status, email, certainty = _extract(raw_item)
             if status in _TERMINAL_FOUND or (email and status not in _PENDING):
                 return {"ok": True, "found": bool(email), "email": email,
                         "certainty": certainty, "status": status or "FOUND",
-                        "scan_id": scan_id, "http_status": sc, "error": None}
+                        "scan_id": scan_id, "http_status": sc, "error": None, "raw": raw_item}
             if status in _TERMINAL_NOT_FOUND:
                 return {"ok": True, "found": False, "email": None, "certainty": None,
-                        "status": status, "scan_id": scan_id, "http_status": sc, "error": None}
+                        "status": status, "scan_id": scan_id, "http_status": sc,
+                        "error": None, "raw": raw_item}
             if status in _TERMINAL_ERROR:
                 return {"ok": False, "found": False, "email": None, "certainty": None,
                         "status": status, "scan_id": scan_id, "http_status": sc,
-                        "error": f"terminal status {status}"}
+                        "error": f"terminal status {status}", "raw": raw_item}
             # still NONE / SCHEDULED / IN_PROGRESS → wait and poll again
             await asyncio.sleep(POLL_INTERVAL)
         except Exception as exc:  # noqa: BLE001 — network / timeout
