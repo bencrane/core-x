@@ -482,14 +482,14 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
 
 # ── Exa item shaping ─────────────────────────────────────────────────────────────────────
 def _verification_status(evaluations: list) -> str:
-    """Derive a coarse status from per-criterion evaluations. 'match'/'satisfied'==True →
-    satisfied; all satisfied → verified; some → partial; none/empty → unverified."""
+    """Coarse status from Websets per-criterion evaluations. Each evaluation's `satisfied`
+    field is the JSON string "yes" | "no" | "unclear" (verified vs exa-websets-spec.yaml ·
+    WebsetItemEvaluation). all yes → verified; some yes → partial; none → unverified.
+    Tier B passes [] → unverified."""
     if not evaluations:
         return "unverified"
-    def _ok(ev):
-        s = _g(ev, "satisfied", "match", "status", "result")
-        return str(s).lower() in ("match", "yes", "true", "satisfied", "pass")
-    flags = [_ok(ev) for ev in evaluations if isinstance(ev, dict)]
+    flags = [str((ev or {}).get("satisfied", "")).lower() == "yes"
+             for ev in evaluations if isinstance(ev, dict)]
     if not flags:
         return "unverified"
     if all(flags):
@@ -498,17 +498,16 @@ def _verification_status(evaluations: list) -> str:
 
 
 def _item_to_record(item: dict, ctx: dict) -> dict:
-    """Flatten one Exa item (Webset item OR synthesized Tier-B result) to a candidate row.
-    Constants (webset_label, run_id, …) come from ctx so the downstream SQL stays literal-free."""
+    """Map ONE Tier B (/search · /findSimilar) SYNTHESIZED result to a candidate row. The Tier A
+    Websets envelope is parsed separately by _websets_item_to_record (strict decoupling per
+    Directive 22-B). Tier B synthesizes {id, properties:{type, url, name, description}} with no
+    evaluations/enrichments. Constants come from ctx so the downstream SQL stays literal-free."""
     import json
 
     props = _g(item, "properties", default={}) or {}
-    entity = _g(props, "entity", default={}) or {}
-    evaluations = _g(item, "evaluations", "verifications", default=[]) or []
-    enrichments = _g(item, "enrichments", default=None)
-    linkedin = _g(entity, "linkedinUrl", "linkedin_url") or _g(props, "linkedinUrl", "linkedin_url")
+    evaluations = _g(item, "evaluations", default=[]) or []   # always [] for Tier B → unverified
     return {
-        "exa_item_id": str(_g(item, "id", "itemId", default="")) or None,
+        "exa_item_id": str(_g(item, "id", default="")) or None,
         "exa_webset_id": ctx["exa_webset_id"],
         "webset_label": ctx["webset_label"],
         "webset_identifier": ctx["webset_identifier"],
@@ -517,6 +516,53 @@ def _item_to_record(item: dict, ctx: dict) -> dict:
         "company_name": _g(props, "name", "title"),
         "company_url": _g(props, "url"),
         "description": _g(props, "description", "summary"),
+        "linkedin_url": None,                                  # /search results carry no LinkedIn field
+        "verification_status": _verification_status(evaluations),
+        "verification_json": None,
+        "match_criteria_json": ctx["match_criteria_json"],
+        "enrichment_json": None,
+        "raw_item_json": json.dumps(item, default=str),
+        "source_platform": SOURCE_PLATFORM,
+        "raw_payload_uri": ctx["raw_payload_uri"],
+        "exa_webset_run_id": ctx["run_id"],
+        "discovered_at": ctx["started_iso"],
+        "snapshot_date": ctx["snapshot_date"],
+    }
+
+
+def _websets_item_to_record(item: dict, ctx: dict) -> dict:
+    """Map ONE Exa Websets item to a candidate row — STRICTLY per the canonical Websets envelope
+    (exa-websets-spec.yaml · WebsetItem), decoupled from the Tier B shape.
+
+    Verified shape:
+      item.id, item.properties{type, url, description, content?, <entity-key>{...}},
+      item.evaluations[{criterion, reasoning, satisfied:"yes"|"no"|"unclear", references[]}],
+      item.enrichments[EnrichmentResult{status, format, result:str[], enrichmentId, ...}] | null.
+    The entity sub-object is keyed by type: company|person|article|researchPaper|custom
+    (note research_paper → 'researchPaper'). Company name → properties.company.name; entity URL
+    → properties.url; person profile URL (may be LinkedIn) → properties.url."""
+    import json
+
+    props = item.get("properties") or {}
+    etype = props.get("type") or ctx["entity_type"]
+    subkey = {"research_paper": "researchPaper"}.get(etype, etype)
+    sub = props.get(subkey) or {}
+    name = sub.get("name") or sub.get("title")               # company/person → name; article/custom → title
+    url = props.get("url")                                    # entity URL lives at properties.url
+    description = props.get("description") or sub.get("about")
+    linkedin = url if (etype == "person" and url and "linkedin.com" in url.lower()) else None
+    evaluations = item.get("evaluations") or []
+    enrichments = item.get("enrichments")                    # EnrichmentResult[] | null
+    return {
+        "exa_item_id": str(item.get("id") or "") or None,
+        "exa_webset_id": ctx["exa_webset_id"],
+        "webset_label": ctx["webset_label"],
+        "webset_identifier": ctx["webset_identifier"],
+        "search_prompt": ctx["search_prompt"],
+        "entity_type": etype,
+        "company_name": name,
+        "company_url": url,
+        "description": description,
         "linkedin_url": linkedin,
         "verification_status": _verification_status(evaluations),
         "verification_json": json.dumps(evaluations, default=str) if evaluations else None,
@@ -526,52 +572,58 @@ def _item_to_record(item: dict, ctx: dict) -> dict:
         "source_platform": SOURCE_PLATFORM,
         "raw_payload_uri": ctx["raw_payload_uri"],
         "exa_webset_run_id": ctx["run_id"],
-        "discovered_at": _g(item, "createdAt", "created_at") or ctx["started_iso"],
+        "discovered_at": item.get("createdAt") or ctx["started_iso"],
         "snapshot_date": ctx["snapshot_date"],
     }
 
 
 # ── Tier A — Websets API ─────────────────────────────────────────────────────────────────
-def _tier_a_websets(*, run_id, search_prompt, count, entity_type, criteria, enrichments,
-                    exclude_known, known_domains) -> tuple[str, list, str]:
-    """Create a webset, poll to idle (bounded), cursor-pull all items.
-    Returns (exa_webset_id, items, terminal) where terminal ∈ {'idle','timeout_partial'}."""
+def _tier_a_websets(*, run_id, search_prompt, count, entity_type, criteria, enrichments
+                    ) -> tuple[str, list, str]:
+    """Tier A — create a Webset, poll to idle (bounded), cursor-pull all items. Request +
+    response strictly per exa-websets-spec.yaml (decoupled from the Tier B /search builder).
+    Returns (exa_webset_id, items, terminal) with terminal ∈ {'idle','timeout_partial'}."""
     import time
 
+    # CreateWebsetParameters: search.query (the natural-language prompt, a string), search.count
+    # (default 10, min 1, NO max — HARD_RESULT_CAP clamps upstream), search.entity.type
+    # (company|person|article|research_paper|custom), search.criteria[{description}] (1–5 items).
+    # The Websets API has NO `search.excludeDomains` (that is a Tier B /search field) — domain
+    # suppression would require search.exclude=[{source:'import', id}] against a pre-created Exa
+    # Import; out of scope for v1. JIT dedup vs companies (§5) remains the dedup authority.
     body = {
         "search": {
             "query": search_prompt,
             "count": count,
             "entity": {"type": entity_type},
         },
-        "enrichments": enrichments,           # already sanitised (no contact formats)
-        "externalId": f"exa-webset-{run_id}",  # idempotency key
+        "externalId": f"exa-webset-{run_id}",   # duplicate externalId → HTTP 409 (idempotent create)
         "metadata": {"feed": FEED, "run_id": run_id},
     }
     if criteria:
-        body["search"]["criteria"] = [{"description": c} for c in criteria]
-    # Cost lever (§4.3): suppress already-known domains via excludeDomains when the set is
-    # small enough for the inline filter (Imports is the scale path; out of scope for v1).
-    if exclude_known and known_domains:
-        capped = list(known_domains)[:1200]
-        if capped:
-            body["search"]["excludeDomains"] = capped
+        body["search"]["criteria"] = [{"description": c} for c in criteria[:5]]  # spec maxItems = 5
+    if enrichments:
+        body["enrichments"] = enrichments        # [{description, format, options?}] — contact stripped (D2)
 
     created = _exa_request("POST", "/websets", base=WEBSETS_BASE, json_body=body)
-    webset_id = str(_g(created, "id"))
-    print(f"  webset created: {webset_id} (status={_g(created, 'status')})")
+    webset_id = str(created.get("id"))           # Webset.id
+    print(f"  webset created: {webset_id} (status={created.get('status')})")
 
-    # Poll to idle, bounded by POLL_BUDGET_S.
+    # Poll GET /websets/v0/websets/{id} until status == 'idle' — the ONLY webset-level terminal
+    # (WebsetStatus = idle|pending|running|paused; 'completed' is a SEARCH-level status). Bounded.
     waited, idx, terminal = 0.0, 0, "timeout_partial"
     while waited < POLL_BUDGET_S:
         sleep = POLL_BACKOFF_S[min(idx, len(POLL_BACKOFF_S) - 1)]
         time.sleep(sleep)
         waited += sleep
         idx += 1
-        st = _g(_exa_request("GET", f"/websets/{webset_id}", base=WEBSETS_BASE), "status")
+        st = _exa_request("GET", f"/websets/{webset_id}", base=WEBSETS_BASE).get("status")
         print(f"  poll +{int(waited)}s → status={st}")
-        if st in ("idle", "completed", "paused"):
+        if st == "idle":
             terminal = "idle"
+            break
+        if st == "paused":               # manual/abnormal pause — won't self-resume; persist what exists
+            terminal = "timeout_partial"
             break
 
     items = _pull_items(webset_id)
@@ -579,18 +631,19 @@ def _tier_a_websets(*, run_id, search_prompt, count, entity_type, criteria, enri
 
 
 def _pull_items(webset_id: str) -> list:
-    """Cursor-paginate GET /v0/websets/{id}/items until exhausted."""
+    """Cursor-paginate GET /websets/v0/websets/{id}/items. Envelope (exa-websets-spec.yaml ·
+    ListWebsetItemResponse) is exactly {data: WebsetItem[], hasMore: bool, nextCursor: str|null};
+    query params limit (default 20, max 100) + cursor."""
     items, cursor = [], None
     while True:
-        params = {"limit": 100}
+        params = {"limit": 100}                  # spec max
         if cursor:
             params["cursor"] = cursor
         page = _exa_request("GET", f"/websets/{webset_id}/items", base=WEBSETS_BASE, params=params)
-        batch = _g(page, "data", "items", default=[]) or []
+        batch = page.get("data") or []
         items.extend(batch)
-        cursor = _g(page, "nextCursor", "next_cursor")
-        has_more = _g(page, "hasMore", "has_more", default=bool(cursor))
-        if not cursor or not has_more or not batch:
+        cursor = page.get("nextCursor")
+        if not page.get("hasMore") or not cursor or not batch:
             break
     print(f"  pulled {len(items)} items from webset {webset_id}")
     return items
@@ -789,8 +842,7 @@ def ingest_exa_webset(
         if tier == "precision":
             exa_webset_id, items, terminal = _tier_a_websets(
                 run_id=run_id, search_prompt=search_prompt, count=count,
-                entity_type=entity_type, criteria=criteria, enrichments=enrichments,
-                exclude_known=exclude_known_domains, known_domains=known_domains)
+                entity_type=entity_type, criteria=criteria, enrichments=enrichments)
             credits_act = len(items) * (CREDITS_PER_RESULT + CREDITS_PER_ENRICH_ROW * text_enrich)
             usd_act = credits_act * CREDIT_USD
         else:
@@ -810,7 +862,10 @@ def ingest_exa_webset(
             "match_criteria_json": json.dumps(criteria) if criteria else None,
             "snapshot_date": started.date().isoformat(), "started_iso": started.isoformat(),
         }
-        records = [_item_to_record(it, ctx) for it in items]
+        # Strict per-tier parsing (Directive 22-B): Tier A → canonical Websets envelope;
+        # Tier B → synthesized /search-result shape. No cross-tier shape assumptions.
+        _map = _websets_item_to_record if tier == "precision" else _item_to_record
+        records = [_map(it, ctx) for it in items]
         records = [r for r in records if r["exa_item_id"]]  # need the idempotency key
 
         if not records:
