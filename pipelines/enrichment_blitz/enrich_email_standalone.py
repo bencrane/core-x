@@ -38,6 +38,14 @@ SINK (Directive 28 §3 — shared work-email system-of-record). Latest-wins upse
 a single downstream materializer rolls BOTH pipelines' verified emails into Lance with
 no special-casing. Per-run terminal state into ``ops.blitz_email_finder_runs``.
 
+RAW PAYLOAD PRESERVATION. Both upstream responses are persisted **verbatim, exactly
+as-is, with no interpretation imposed**: ``blitz_email_raw`` holds Blitz's full
+``/v2/enrichment/email`` payload (incl. ``all_emails``); ``mv_raw`` holds EVERY
+MillionVerifier response (a list — 1, or 2 on an unknown re-check). These raw columns
+are the source of truth; ``email`` / ``verification_status`` / ``mv_*`` are a convenience
+projection ON TOP of them, never a replacement. A discarded-by-MV or missed address
+still has its raw Blitz + MV payloads saved (only the derived ``email`` is nulled).
+
     modal deploy pipelines/enrichment_blitz/enrich_email_standalone.py
     modal run    pipelines/enrichment_blitz/enrich_email_standalone.py::init_ops
     modal run    pipelines/enrichment_blitz/enrich_email_standalone.py::run_manual \\
@@ -108,12 +116,22 @@ CREATE TABLE IF NOT EXISTS ops.email_resolutions (
     certainty           text,
     company_domain      text,
     person_linkedin_url text,
+    blitz_email_raw     jsonb,
+    mv_raw              jsonb,
     attempts            jsonb       NOT NULL DEFAULT '[]'::jsonb,
     batch_label         text,
     resolved_at         timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT email_resolutions_status_chk
         CHECK (verification_status IN ('verified', 'risky', 'unresolved'))
 );
+-- Raw-payload preservation (Directive 28 follow-up). The shared table predates these
+-- columns, so ADD COLUMN IF NOT EXISTS for the existing instance. The upstream
+-- responses are stored VERBATIM — Blitz's /v2/enrichment/email payload and EVERY
+-- MillionVerifier response — with no interpretation imposed; the derived columns above
+-- (email / verification_status / mv_*) are a convenience projection ON TOP of these raw
+-- payloads, never a replacement for them.
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS blitz_email_raw jsonb;
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS mv_raw          jsonb;
 CREATE INDEX IF NOT EXISTS email_resolutions_status_idx ON ops.email_resolutions (verification_status);
 CREATE INDEX IF NOT EXISTS email_resolutions_domain_idx ON ops.email_resolutions (company_domain);
 CREATE INDEX IF NOT EXISTS email_resolutions_email_idx  ON ops.email_resolutions (email);
@@ -184,50 +202,64 @@ def _gateway():
 
 # ── MillionVerifier — the sole deliverability arbiter (mirror cascade) ────────
 def _mv_call(email: str, timeout: int) -> dict[str, Any]:
+    """Return MillionVerifier's response **EXACTLY as-is** (the JSON payload, untouched).
+    The rubric + the projected columns read ``resultcode``/``result``/``quality``/
+    ``subresult`` straight off it; the full payload is persisted to ``mv_raw``. On a
+    no-key / network failure (no real payload exists) returns a synthetic ``{resultcode:
+    None, error}`` so the caller still has a dict — that synthetic is what gets stored,
+    honestly recording the absence of a verdict."""
     import requests
 
     key = os.environ.get("MILLIONVERIFIER_API_KEY")
     if not key:
-        return {"resultcode": None, "result": None, "quality": None, "subresult": None,
-                "http_status": 0, "error": "MILLIONVERIFIER_API_KEY absent in email-cascade secret"}
+        return {"resultcode": None, "error": "MILLIONVERIFIER_API_KEY absent in email-cascade secret"}
     try:
         resp = requests.get(MV_URL, params={"api": key, "email": email, "timeout": timeout},
                             timeout=timeout + 10)
     except Exception as exc:  # noqa: BLE001 — network / timeout
-        return {"resultcode": None, "result": None, "quality": None, "subresult": None,
-                "http_status": 0, "error": str(exc)}
+        return {"resultcode": None, "error": str(exc)}
     data = _safe_json(resp)
-    return {"resultcode": data.get("resultcode") if isinstance(data, dict) else None,
-            "result": data.get("result") if isinstance(data, dict) else None,
-            "quality": data.get("quality") if isinstance(data, dict) else None,
-            "subresult": data.get("subresult") if isinstance(data, dict) else None,
-            "http_status": resp.status_code, "error": data.get("error") if isinstance(data, dict) else None}
+    # MillionVerifier's payload, verbatim. Non-dict bodies are wrapped so the caller
+    # still gets a dict while the raw text is preserved under "raw".
+    return data if isinstance(data, dict) else {"resultcode": None, "raw": data}
 
 
-def _millionverifier(email: str) -> dict[str, Any]:
-    """The sole arbiter. ``unknown`` (3) is transient → one slow retry at timeout=60."""
+def _millionverifier(email: str) -> tuple[dict[str, Any], list[dict]]:
+    """The sole arbiter. Returns ``(verdict, responses)``: ``verdict`` is the FINAL raw
+    MV payload (the rubric + projections read it); ``responses`` is the list of EVERY raw
+    MV payload for this email — 1, or 2 when an ``unknown`` (3) is re-checked at
+    timeout=60. Nothing is discarded: every MV response is preserved for ``mv_raw``."""
+    responses: list[dict] = []
     mv = _mv_call(email, 20)
-    if mv.get("resultcode") == 3:
+    responses.append(mv)
+    if mv.get("resultcode") == 3:  # unknown is transient → one slow retry
         mv = _mv_call(email, 60)
-    return mv
+        responses.append(mv)
+    return mv, responses
 
 
 # ── Resolution (Blitz email via the gateway → MV gate) ───────────────────────
 def _make_result(c: dict, email: str | None, status: str, vendor: str | None,
-                 tier: int | None, mv: dict | None, attempts: list) -> dict:
+                 tier: int | None, mv: dict | None, attempts: list,
+                 blitz_raw: Any = None, mv_responses: list | None = None) -> dict:
     return {
         "contact_id": c.get("contact_id"),
         "email": email,
         "verification_status": status,
-        "source_vendor": vendor,
-        "source_tier": tier,
+        # Derived projections (convenience / indexed) — a view ON TOP of the raw payloads
+        # below, never a replacement. mv = the FINAL MV verdict payload.
         "mv_resultcode": (mv or {}).get("resultcode"),
         "mv_result": (mv or {}).get("result"),
         "mv_quality": (mv or {}).get("quality"),
         "mv_subresult": (mv or {}).get("subresult"),
+        "source_vendor": vendor,
+        "source_tier": tier,
         "certainty": None,                       # Blitz email carries no certainty score
         "company_domain": _normalize_domain(c.get("company_domain")),
         "person_linkedin_url": (c.get("person_linkedin_url") or "").strip() or None,
+        # Raw upstream responses, VERBATIM — the source of truth, no interpretation imposed.
+        "blitz_email_raw": blitz_raw,            # Blitz /v2/enrichment/email payload, as-is
+        "mv_raw": mv_responses,                  # every MillionVerifier response, as-is (list)
         "attempts": attempts,
     }
 
@@ -247,41 +279,52 @@ def _resolve_contact(c: dict, gw, priority: str, counts: dict) -> dict:
     # ── Blitz email via the gateway (the ONLY egress), bulk LOW/NORMAL lane ──
     counts["gateway_calls"] += 1
     rb = gw.remote(endpoint=EMAIL_PATH, payload={"person_linkedin_url": purl}, priority=priority)
-    data = rb.get("data") or {}
-    found = bool(rb.get("ok")) and isinstance(data, dict) and bool(data.get("found"))
+    blitz_raw = rb.get("data")                        # Blitz's response, VERBATIM (kept on hit AND miss)
+    data = blitz_raw if isinstance(blitz_raw, dict) else {}
+    found = bool(rb.get("ok")) and bool(data.get("found"))
     email = (data.get("email") if found else None) or None
 
     if not email:
         attempts.append({"vendor": "blitz", "outcome": "miss", "ok": rb.get("ok"),
                          "http_status": rb.get("http_status"), "error": rb.get("error")})
-        return _make_result(c, None, "unresolved", None, None, None, attempts)
+        return _make_result(c, None, "unresolved", None, None, None, attempts, blitz_raw=blitz_raw)
 
-    # ── MillionVerifier gate — the sole arbiter ──
-    counts["mv_calls"] += 1
-    mv = _millionverifier(email)
-    rc = mv.get("resultcode")
+    # ── MillionVerifier gate — the sole arbiter. Every found email is verified, and
+    #    every MV response is preserved raw, regardless of the verdict. ──
+    verdict, mv_responses = _millionverifier(email)
+    counts["mv_calls"] += len(mv_responses)
+    rc = verdict.get("resultcode")
     attempts.append({"vendor": "blitz", "outcome": "hit", "email": email,
-                     "mv_resultcode": rc, "mv_result": mv.get("result"), "mv_quality": mv.get("quality")})
+                     "mv_resultcode": rc, "mv_result": verdict.get("result"),
+                     "mv_quality": verdict.get("quality")})
 
     if rc in MV_OK:                                   # OK → STOP & SAVE (verified)
-        return _make_result(c, email, "verified", "blitz", 1, mv, attempts)
+        return _make_result(c, email, "verified", "blitz", 1, verdict, attempts,
+                            blitz_raw=blitz_raw, mv_responses=mv_responses)
     if rc in MV_RISKY:                                # catch_all / unknown → save as risky
-        return _make_result(c, email, "risky", "blitz", 1, mv, attempts)
-    # MV_BAD, or no terminal verdict (rc None / MV outage) → DISCARD, fail-closed.
-    return _make_result(c, None, "unresolved", None, None, mv, attempts)
+        return _make_result(c, email, "risky", "blitz", 1, verdict, attempts,
+                            blitz_raw=blitz_raw, mv_responses=mv_responses)
+    # MV_BAD, or no terminal verdict (rc None / MV outage) → DISCARD (email), fail-closed —
+    # but the Blitz payload AND the MV verdict are still persisted raw.
+    return _make_result(c, None, "unresolved", None, None, verdict, attempts,
+                        blitz_raw=blitz_raw, mv_responses=mv_responses)
 
 
 # ── Sink writers (ops.email_resolutions upsert — verbatim mirror of the cascade) ─
 def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
     from psycopg.types.json import Jsonb
 
+    def _j(v):  # jsonb bind, or SQL NULL when there is no payload (call not made)
+        return Jsonb(v) if v is not None else None
+
     cur.execute(
         """
         INSERT INTO ops.email_resolutions
             (contact_id, email, verification_status, source_vendor, source_tier,
              mv_resultcode, mv_result, mv_quality, mv_subresult, certainty,
-             company_domain, person_linkedin_url, attempts, batch_label, resolved_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+             company_domain, person_linkedin_url, blitz_email_raw, mv_raw,
+             attempts, batch_label, resolved_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
         ON CONFLICT (contact_id) DO UPDATE SET
             email               = EXCLUDED.email,
             verification_status = EXCLUDED.verification_status,
@@ -294,6 +337,8 @@ def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
             certainty           = EXCLUDED.certainty,
             company_domain      = EXCLUDED.company_domain,
             person_linkedin_url = EXCLUDED.person_linkedin_url,
+            blitz_email_raw     = EXCLUDED.blitz_email_raw,
+            mv_raw              = EXCLUDED.mv_raw,
             attempts            = EXCLUDED.attempts,
             batch_label         = EXCLUDED.batch_label,
             resolved_at         = now()
@@ -301,6 +346,7 @@ def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
         (r["contact_id"], r["email"], r["verification_status"], r["source_vendor"],
          r["source_tier"], r["mv_resultcode"], r["mv_result"], r["mv_quality"],
          r["mv_subresult"], r["certainty"], r["company_domain"], r["person_linkedin_url"],
+         _j(r.get("blitz_email_raw")), _j(r.get("mv_raw")),
          Jsonb(r["attempts"]), batch_label),
     )
 
@@ -467,7 +513,8 @@ def verify(limit: int = 8) -> dict:
         cur = conn.cursor()
         cur.execute(OPS_DDL)
         cur.execute(
-            """SELECT contact_id, email, verification_status, source_vendor, mv_result, resolved_at
+            """SELECT contact_id, email, verification_status, source_vendor, mv_result,
+                      blitz_email_raw, mv_raw, resolved_at
                FROM ops.email_resolutions WHERE source_vendor = 'blitz'
                ORDER BY resolved_at DESC LIMIT %s""",
             (limit,),

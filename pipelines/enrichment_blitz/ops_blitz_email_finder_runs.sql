@@ -31,12 +31,20 @@ CREATE TABLE IF NOT EXISTS ops.email_resolutions (
     certainty           text,                         -- NULL for Blitz (no certainty score)
     company_domain      text,
     person_linkedin_url text,
+    blitz_email_raw     jsonb,                         -- Blitz /v2/enrichment/email payload, VERBATIM
+    mv_raw              jsonb,                          -- every MillionVerifier response, VERBATIM (array)
     attempts            jsonb       NOT NULL DEFAULT '[]'::jsonb,
     batch_label         text,
     resolved_at         timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT email_resolutions_status_chk
         CHECK (verification_status IN ('verified', 'risky', 'unresolved'))
 );
+-- Raw-payload preservation (Directive 28 follow-up). The shared table predates these
+-- columns; ADD COLUMN IF NOT EXISTS upgrades the existing instance. Upstream responses
+-- are stored exactly as-is — no interpretation imposed; the derived columns above are a
+-- convenience projection ON TOP of these, never a replacement.
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS blitz_email_raw jsonb;
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS mv_raw          jsonb;
 CREATE INDEX IF NOT EXISTS email_resolutions_status_idx ON ops.email_resolutions (verification_status);
 CREATE INDEX IF NOT EXISTS email_resolutions_domain_idx ON ops.email_resolutions (company_domain);
 CREATE INDEX IF NOT EXISTS email_resolutions_email_idx  ON ops.email_resolutions (email);
