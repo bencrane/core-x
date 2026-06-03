@@ -1,9 +1,53 @@
 # Directive 21 — Multi-Provider Email Waterfall & Verification
 
-> **Status:** DESIGN CONTRACT — recon & blueprint. **No production code ships until this is signed off.**
-> **Verified against live systems:** 2026-06-02 (Blitz docs MCP, Doppler `core-x`, repo control/data-plane source).
+> **Status:** ⚙️ **BUILT (Directive 21-Final)** — decoupled pipeline implemented & merged. See the amendment below; §§1–9 are the original blueprint, retained for design history.
+> **Verified against live systems:** 2026-06-02 (blueprint) · **2026-06-03** (Icypeas + LeadMagic contracts locked via official-docs recon; Doppler/Modal re-checked).
 > **Authoritative for:** vendor cascade order, verification rubric, Modal concurrency model, payload I/O, error handling.
-> **Supersedes:** nothing (net-new subsystem).
+
+---
+
+## ⚠️ Amendment — Directive 21-Final (BUILD): Blitz decoupled
+
+**Structural pivot (supersedes §§0–8 wherever they mention Blitz or a pattern tier):** Blitz is **removed entirely** from this workflow. The waterfall is now strictly **Icypeas (Tier 1) → LeadMagic (Tier 2)**, with **MillionVerifier as the sole arbiter** after every hit. The Tier-4 pattern-permutation step is dropped. The MillionVerifier rubric (§3) is unchanged and remains authoritative.
+
+### A. Vendor contracts — LOCKED (autonomous official-docs recon, 2026-06-03)
+
+| | **Icypeas** (Tier 1) | **LeadMagic** (Tier 2) |
+|---|---|---|
+| Submit | `POST https://app.icypeas.com/api/email-search` | `POST https://api.leadmagic.io/email-finder` |
+| Auth | `Authorization: <API_KEY>` — **raw key, no HMAC** (the Icypeas HMAC-SHA1 scheme is webhook-verification-only) | `X-API-Key: <key>` (case-insensitive) |
+| Request | `{firstname, lastname, domainOrCompany, custom:{externalId}}` | `{first_name, last_name, domain` \| `company_name}` (names required) |
+| Model | **async** — submit → `item._id` (status `NONE`); poll until terminal | synchronous |
+| Fetch results | `POST https://app.icypeas.com/api/bulk-single-searchs/read` `{"id": <_id>}` → email at `items[0].results.emails[0].email`, confidence at `…[0].certainty` | n/a (in the response) |
+| Hit/miss | terminal status ∈ {`FOUND`,`DEBITED`} with an email = hit; {`NOT_FOUND`,`DEBITED_NOT_FOUND`} = miss | `status ∈ {valid, valid_catch_all}` + email = hit; `not_found`/null = miss |
+| **Rate limits** | **two separate buckets**: submit **10/sec**, read **30/min** ← *the binding constraint* | **300/min**; charged only on a found email |
+| Errors | validation = HTTP 200 + `success:false`; 401; 429 | 400/401/402/404/429/500; RFC 9457 problem+json |
+
+> **Verification mandate (unchanged):** vendor-native status (`valid`, `FOUND`, certainty) is used **only** to detect hit-vs-miss. **Every** address — including LeadMagic `valid` — is re-verified by MillionVerifier, which alone decides `verified`/`risky`/discard. No vendor "valid" flag is trusted.
+
+### B. As-built architecture
+
+| Artifact | Path | Role |
+|---|---|---|
+| Icypeas rate gateway | `core/icypeas_gateway.py` (app `icypeas-gateway`) | **single-container** (`max_containers=1` + `@modal.concurrent`) global egress; submit 10/s + read 30/min token buckets; submit+poll → final envelope. Holds `ICYPEAS_API_KEY` only (secret blast radius). Mirrors `core/blitz_gateway.py`. |
+| Cascade worker | `pipelines/enrichment_email_cascade/enrich_email_cascade.py` (app `enrichment-email-cascade`) | `run_cascade(contacts[])`: Icypeas (via gateway) → LeadMagic (inline, elastic) → MillionVerifier (inline, elastic) per the §3 rubric. Holds `LEADMAGIC_API_KEY` + `MILLIONVERIFIER_API_KEY` (`email-cascade` secret) + `hqx-postgres`. |
+| Sink DDL | `pipelines/enrichment_email_cascade/ops_email_cascade_runs.sql` | `ops.email_resolutions` (latest-wins per `contact_id`) + `ops.email_cascade_runs` (run-state). |
+| Coordinator | `src/trigger/enrichment_email_cascade.ts` (task `enrichment-email-cascade-resolve`) | chunks contacts, dispatches per-chunk via the Universal Dispatcher, suspends on `wait.forToken`, aggregates terminal counts. |
+
+**Concurrency:** Icypeas is the *only* gated vendor (single-container buckets). LeadMagic (300/min) + MillionVerifier run **elastically** inline — safe by construction because they only see Tier-1 misses, a population already throttled below Icypeas's 30/min read ceiling. Matches Directive 21-Final mandate §3.
+
+**Sink decision (aligned to Directive 23 §5 "event-log / no new Lance write path"):** the worker writes the work-email system-of-record to **`ops.email_resolutions`** (Postgres, latest-wins upsert keyed on `contact_id`), **not** a direct Lance `merge_insert` as the original §8 proposed. A downstream materializer can roll it into a Lance dataset on its own cadence, exactly as `firmographics-blitz` does. Idempotency: already-`verified` contacts are skipped unless `force=true`.
+
+### C. Provisioning & deploy status
+
+- **🔴 Human-gated blocker — vendor keys absent from Doppler `core-x/prd`.** As of 2026-06-03 the config holds only `BLITZAPI_API_KEY`. **`ICYPEAS_API_KEY`, `LEADMAGIC_API_KEY`, `MILLIONVERIFIER_API_KEY` must be added**, then synced to two Modal secrets:
+  ```sh
+  modal secret create icypeas-api  ICYPEAS_API_KEY="$(doppler secrets get ICYPEAS_API_KEY  -p core-x -c prd --plain)" --force
+  modal secret create email-cascade \
+      LEADMAGIC_API_KEY="$(doppler secrets get LEADMAGIC_API_KEY  -p core-x -c prd --plain)" \
+      MILLIONVERIFIER_API_KEY="$(doppler secrets get MILLIONVERIFIER_API_KEY -p core-x -c prd --plain)" --force
+  ```
+  The gateway and worker **fail closed** when a key is absent (return a structured "key absent" envelope; never crash), so deploy + dispatcher-resolution work today and live resolution lights up the moment the keys land.
 
 ---
 
