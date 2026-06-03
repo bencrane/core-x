@@ -66,7 +66,8 @@ MEMBERSHIP_URI = os.environ.get("EXA_MEMBERSHIP_URI", f"{_ACTIVE}/webset_members
 
 FEED = "exa_websets"
 SOURCE_PLATFORM = "exa-websets"          # lineage (extends the existing 'exa-all' convention)
-EXA_BASE = "https://api.exa.ai"
+EXA_BASE = "https://api.exa.ai"               # core endpoints: /search, /findSimilar, /contents
+WEBSETS_BASE = "https://api.exa.ai/websets/v0"  # Websets API is namespaced under /websets/v0 (NOT root /v0)
 
 # ── Credit-protection constants — §11 RATIFIED (D1–D4). Tunable here; payload cannot exceed. ─
 HARD_RESULT_CAP = 1000                    # D4 — absolute clamp on count per run
@@ -215,14 +216,15 @@ def _exa_headers() -> dict[str, str]:
     return {"x-api-key": key, "Content-Type": "application/json"}
 
 
-def _exa_request(method: str, path: str, *, json_body=None, params=None, attempts: int = 6):
-    """One Exa API call with backoff. Raises on non-2xx after exhausting attempts."""
+def _exa_request(method: str, path: str, *, base: str = EXA_BASE, json_body=None, params=None, attempts: int = 6):
+    """One Exa API call with backoff. Raises on non-2xx after exhausting attempts.
+    `base` selects the host+prefix: EXA_BASE for core endpoints, WEBSETS_BASE for the Websets API."""
     import random
     import time
 
     import requests
 
-    url = f"{EXA_BASE}{path}"
+    url = f"{base}{path}"
     last = None
     for i in range(attempts):
         try:
@@ -555,7 +557,7 @@ def _tier_a_websets(*, run_id, search_prompt, count, entity_type, criteria, enri
         if capped:
             body["search"]["excludeDomains"] = capped
 
-    created = _exa_request("POST", "/v0/websets", json_body=body)
+    created = _exa_request("POST", "/websets", base=WEBSETS_BASE, json_body=body)
     webset_id = str(_g(created, "id"))
     print(f"  webset created: {webset_id} (status={_g(created, 'status')})")
 
@@ -566,7 +568,7 @@ def _tier_a_websets(*, run_id, search_prompt, count, entity_type, criteria, enri
         time.sleep(sleep)
         waited += sleep
         idx += 1
-        st = _g(_exa_request("GET", f"/v0/websets/{webset_id}"), "status")
+        st = _g(_exa_request("GET", f"/websets/{webset_id}", base=WEBSETS_BASE), "status")
         print(f"  poll +{int(waited)}s → status={st}")
         if st in ("idle", "completed", "paused"):
             terminal = "idle"
@@ -583,7 +585,7 @@ def _pull_items(webset_id: str) -> list:
         params = {"limit": 100}
         if cursor:
             params["cursor"] = cursor
-        page = _exa_request("GET", f"/v0/websets/{webset_id}/items", params=params)
+        page = _exa_request("GET", f"/websets/{webset_id}/items", base=WEBSETS_BASE, params=params)
         batch = _g(page, "data", "items", default=[]) or []
         items.extend(batch)
         cursor = _g(page, "nextCursor", "next_cursor")
@@ -697,7 +699,10 @@ def ingest_exa_webset(
     def _terminal(st, *, reraise_msg=None):
         """Single terminal path: ledger reconcile + ops row + callback."""
         finished = dt.datetime.now(dt.timezone.utc)
-        clean_release = st in ("success", "rejected", "dry_run")
+        # Release the reservation on any clean terminal, AND on a failure that occurred BEFORE a
+        # webset was created (exa_webset_id is None → nothing accrued on Exa's side). Hold it only
+        # when a webset exists and may still be accruing credits server-side.
+        clean_release = st in ("success", "rejected", "dry_run") or (st == "failed" and exa_webset_id is None)
         if reserved:
             _ledger_reconcile(credits_est, credits_act, release_reservation=clean_release)
         _record_run({
@@ -834,13 +839,13 @@ def ingest_exa_webset(
                        enrichment_json, linkedin_url, source_platform, raw_payload_uri,
                        raw_item_json, exa_webset_run_id, discovered_at, snapshot_date
                 FROM joined WHERE NOT is_known
-            """).arrow()
+            """).fetch_arrow_table()
             known_arrow = con.execute("""
                 SELECT discovered_domain AS normalized_domain, exa_webset_id, webset_label,
                        exa_item_id, verification_status, verification_json, raw_item_json,
                        exa_webset_run_id, discovered_at, source_platform
                 FROM joined WHERE is_known AND discovered_domain IS NOT NULL
-            """).arrow()
+            """).fetch_arrow_table()
 
             # Best-effort landing parquet (ZSTD) — full fidelity also lives in raw_item_json.
             try:
@@ -922,7 +927,11 @@ def verify() -> dict:
             ds = lance.dataset(uri, storage_options=so)
             idx = [ix.get("name", str(ix)) if isinstance(ix, dict) else getattr(ix, "name", str(ix))
                    for ix in ds.list_indices()]
-            out[ds_name] = {"uri": uri, "rows": ds.count_rows(), "indexes": sorted(idx)}
+            names = [f.name for f in ds.schema]
+            scols = [c for c in ("discovered_domain", "normalized_domain", "company_name",
+                                 "verification_status", "webset_label") if c in names]
+            sample = ds.to_table(columns=scols).slice(0, 5).to_pylist() if scols else []
+            out[ds_name] = {"uri": uri, "rows": ds.count_rows(), "indexes": sorted(idx), "sample": sample}
         except Exception as exc:  # noqa: BLE001 — not yet materialized
             out[ds_name] = {"uri": uri, "rows": 0, "error": str(exc)}
         print(f"{ds_name}: {out[ds_name]}")

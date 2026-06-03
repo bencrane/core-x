@@ -60,6 +60,10 @@ export const exaWebsetIngest = task({
   id: "exa-webset-ingest",
   // The durable wait consumes no compute while suspended; match the worker's 60-min ceiling.
   maxDuration: 3600,
+  // Credit-spending task: NO blind auto-retry. A retry reuses the same externalId and would
+  // re-reserve credits / risk a duplicate webset. A failed run is terminal; the operator
+  // re-triggers deliberately after inspecting ops.exa_webset_runs.
+  retry: { maxAttempts: 1 },
   run: async (payload: ExaWebsetPayload, { ctx }) => {
     // ── 1) Validate + clamp (control-plane gate; mirrors the spec §7 JSON Schema) ──────
     const identifier = (payload?.webset_identifier ?? "").trim();
