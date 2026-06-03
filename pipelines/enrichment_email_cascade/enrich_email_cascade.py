@@ -542,6 +542,70 @@ def verify(limit: int = 8) -> dict:
     return {"histogram": histogram, "recent_resolutions": resolutions, "recent_runs": runs}
 
 
+@app.function(secrets=SECRETS, timeout=120)
+def health() -> dict:
+    """Live key-wiring check for all three vendors before a real batch.
+    Icypeas via the gateway (~1 credit); MillionVerifier /credits and the LeadMagic
+    not_found probe are FREE. ``all_valid`` is the go/no-go signal."""
+    import requests
+
+    out: dict[str, Any] = {}
+
+    # Icypeas — delegate to the gateway (owner of ICYPEAS_API_KEY).
+    try:
+        out["icypeas"] = modal.Function.from_name(GATEWAY_APP, "key_check").remote()
+    except Exception as exc:  # noqa: BLE001
+        out["icypeas"] = {"valid": False, "error": str(exc)}
+
+    # MillionVerifier — free /credits endpoint confirms the key + remaining balance.
+    mv_key = os.environ.get("MILLIONVERIFIER_API_KEY")
+    if not mv_key:
+        out["millionverifier"] = {"valid": False, "error": "MILLIONVERIFIER_API_KEY absent"}
+    else:
+        try:
+            r = requests.get(MV_URL.rstrip("/") + "/credits", params={"api": mv_key}, timeout=20)
+            data = _safe_json(r)
+            out["millionverifier"] = {
+                "valid": r.status_code == 200 and isinstance(data, dict) and "credits" in data,
+                "http_status": r.status_code,
+                "credits": (data.get("credits") if isinstance(data, dict) else None)}
+        except Exception as exc:  # noqa: BLE001
+            out["millionverifier"] = {"valid": False, "error": str(exc)}
+
+    # LeadMagic — bogus name at a REAL (MX-bearing) domain ⇒ free not_found + HTTP 200,
+    # proving the key authenticates AND a real lookup is processed end-to-end.
+    lm_key = os.environ.get("LEADMAGIC_API_KEY")
+    if not lm_key:
+        out["leadmagic"] = {"valid": False, "error": "LEADMAGIC_API_KEY absent"}
+    else:
+        try:
+            r = requests.post(
+                LEADMAGIC_URL,
+                json={"first_name": "Zznonexistent", "last_name": "Qqhealthcheck", "domain": "microsoft.com"},
+                headers={"X-API-Key": lm_key, "Content-Type": "application/json"}, timeout=20)
+            data = _safe_json(r)
+            out["leadmagic"] = {
+                "valid": r.status_code == 200,   # 200 ⇒ processed (found|not_found); 401/403 ⇒ bad key
+                "http_status": r.status_code,
+                "status": (data.get("status") if isinstance(data, dict) else None),
+                "detail": (None if r.status_code == 200
+                           else str(data)[:200] if isinstance(data, dict) else None)}
+        except Exception as exc:  # noqa: BLE001
+            out["leadmagic"] = {"valid": False, "error": str(exc)}
+
+    out["all_valid"] = all(out[v].get("valid") for v in ("icypeas", "millionverifier", "leadmagic"))
+    print(f"health: all_valid={out['all_valid']} · {out}")
+    return out
+
+
+@app.local_entrypoint()
+def health_check() -> None:
+    """Live vendor key-wiring check. --> all_valid is the go/no-go."""
+    import json
+
+    print(json.dumps(health.remote(), indent=2, default=str))
+
+
 @app.local_entrypoint()
 def init_ops() -> None:
     """Apply the ops.email_resolutions + ops.email_cascade_runs DDL (HQX)."""
