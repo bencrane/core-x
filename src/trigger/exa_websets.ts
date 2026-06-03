@@ -78,7 +78,9 @@ export const exaWebsetIngest = task({
     if (!["company", "person"].includes(entityType)) {
       throw new Error(`invalid entity_type ${JSON.stringify(entityType)}`);
     }
-    const tier = payload?.tier ?? "precision";
+    // Default tier is 'harvest' (Tier B / `/search`) — the working path on the current plan.
+    // 'precision' (Tier A / Websets) is Pro-gated and disabled worker-side via EXA_TIER_A_ENABLED.
+    const tier = payload?.tier ?? "harvest";
     if (!["precision", "harvest"].includes(tier)) {
       throw new Error(`invalid tier ${JSON.stringify(tier)}`);
     }
