@@ -3,6 +3,8 @@
 **Status: RATIFIED & BUILT (Directive 22 sign-off, 2026-06-02). §11 locked — per-run ceiling 5,000 credits · month_cap 100,000 · contact enrichment globally forbidden · HARD_RESULT_CAP 1,000 · `webset_membership` shipped. Implemented: [`pipelines/exa_websets/ingest.py`](../../pipelines/exa_websets/ingest.py) · [`src/trigger/exa_websets.ts`](../../src/trigger/exa_websets.ts) · [`pipelines/exa_websets/ops_exa_webset_runs.sql`](../../pipelines/exa_websets/ops_exa_webset_runs.sql).**
 **Exa API surface verified against `exa.ai/docs` + `exa-labs/openapi-spec` as of 2026-06-02.**
 
+**Live validation (2026-06-03):** Tier B (`/search` harvest) validated end-to-end — 5/5 candidates landed in `discovered_websets` ($0.007), JIT dedup + BTREE indexes confirmed. **Tier A (Websets API) is blocked pending a Pro plan** (`POST /websets/v0/websets` → `401` on this account). Credit-safety hardening from the first runs: Trigger `retry.maxAttempts=1` (no blind auto-retry on a credit-spending task) and the credit reservation is released on pre-create failure (`exa_webset_id is None` → nothing accrued). Correct Websets base path is `…/websets/v0`, not root `/v0`.
+
 This document is the canonical contract for harvesting high-precision, custom industry websets
 (e.g. *OSHA Defense Law Firms*, *Maritime Logistics Providers*) from Exa.ai into Gen-3 Lance. It
 slots into the existing planes: Trigger.dev v4 control ([`04_trigger_orchestration.md`](04_trigger_orchestration.md)),
@@ -16,7 +18,7 @@ architectural primitive** — one worker, one Trigger task, two Lance datasets, 
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Websets API (`POST /v0/websets`) is the primary discovery engine.** Not `/search`. | `/search` and `/findSimilar` hard-cap at **100 results, no pagination/cursor**. The directive's own example `max_results_limit: 500` is *physically impossible* on the raw endpoints. Websets is async, unbounded by count, and verifies each item against criteria. |
+| D1 | **Websets API (`POST /websets/v0/websets`) is the primary discovery engine.** Not `/search`. | `/search` and `/findSimilar` hard-cap at **100 results, no pagination/cursor**. The directive's own example `max_results_limit: 500` is *physically impossible* on the raw endpoints. Websets is async, unbounded by count, and verifies each item against criteria. |
 | D2 | `/findSimilar` + `/search` are the **complementary cheap-harvest path** (Tier B), used only for seed-URL look-alike expansion and sub-100 sweeps where verification is deferred. | Dollar-priced (~$0.007–0.013/result) vs Websets credit-priced (~$0.045/verified item). Cheap top-of-funnel; no native verification. |
 | D3 | **Exa enrichments default to EMPTY (`enrichments: []`).** Downstream enrichment (Clay, firmographics_blitz, our own warehouse) is authoritative. | Enrichments are the dominant credit drain (+2/row, **+5/contact datapoint**). We already own firmographic + contact enrichment. Paying Exa for it is double-spend. Opt-in only, behind a separate sub-ceiling (§4). |
 | D4 | **Trigger.dev owns the wait; Modal does short compute bursts.** The worker creates the webset, polls to `idle`, ingests, and fires one callback — bounded by Modal `maxDuration`. No inbound Exa webhook in v1. | Mirrors the existing dispatch→callback pattern 1:1 (§2). Cadence/waiting is a control-plane concern per [`03_modal_compute.md`](03_modal_compute.md) ("workers expose zero endpoints"). The clay-style push endpoint is the documented scale-out for monitors (§2.4), not the v1 path. |
@@ -33,7 +35,7 @@ architectural primitive** — one worker, one Trigger task, two Lance datasets, 
 
 ### 1.1 The fork, decided
 
-| Capability | `/search` + `/findSimilar` (raw) | **Websets `/v0/websets` (chosen, D1)** |
+| Capability | `/search` + `/findSimilar` (raw) | **Websets `/websets/v0/websets` (chosen, D1)** |
 |---|---|---|
 | Max results / call | **100 hard cap, no cursor** | Unbounded (`search.count`, async) |
 | Satisfies `max_results_limit: 500`? | **No** | **Yes** |
@@ -47,7 +49,7 @@ architectural primitive** — one worker, one Trigger task, two Lance datasets, 
 
 ### 1.2 Tier A — Precision Webset (default)
 
-`POST https://api.exa.ai/v0/websets` — verified request contract:
+`POST https://api.exa.ai/websets/v0/websets` — verified request contract:
 
 ```jsonc
 {
@@ -86,8 +88,8 @@ Response `201` (fields we persist in **bold**):
 ```
 
 Then:
-- `GET /v0/websets/{id}` → poll `status` until `idle` (SDK: `exa.websets.wait_until_idle(id)`).
-- `GET /v0/websets/{id}/items` → **cursor-paginated** full item pull (SDK: `exa.websets.items.list(webset_id, cursor=…)`).
+- `GET /websets/v0/websets/{id}` → poll `status` until `idle` (SDK: `exa.websets.wait_until_idle(id)`).
+- `GET /websets/v0/websets/{id}/items` → **cursor-paginated** full item pull (SDK: `exa.websets.items.list(webset_id, cursor=…)`).
 
 **Item shape** (per-item, the payload we capture in full):
 
@@ -137,9 +139,9 @@ core/modal_dispatcher.py  → spawn() fire-and-forget → 202
         ▼
 Modal worker  pipelines/exa_websets/ingest.py  (exa-py + duckdb + lancedb + pyarrow + psycopg)
         │  a. budget pre-flight  (ops.exa_credit_ledger; reject if over ceiling — §4)
-        │  b. POST /v0/websets (externalId=run_id; idempotent re-create guard)
-        │  c. poll GET /v0/websets/{id} → idle   (bounded by maxDuration; partial-persist on timeout)
-        │  d. GET /v0/websets/{id}/items  (cursor) → capture FULL raw payload → R2 landing (ZSTD parquet)
+        │  b. POST /websets/v0/websets (externalId=run_id; idempotent re-create guard)
+        │  c. poll GET /websets/v0/websets/{id} → idle   (bounded by maxDuration; partial-persist on timeout)
+        │  d. GET /websets/v0/websets/{id}/items  (cursor) → capture FULL raw payload → R2 landing (ZSTD parquet)
         │  e. DuckDB: normalize domain, JIT LEFT JOIN vs active/companies → {new, known}  (§5)
         │  f. lance.write_dataset → active/discovered_websets (+ webset_membership)  (§6)
         │  g. create_scalar_index BTREE on resolution keys
@@ -173,14 +175,14 @@ For monitor-style or very large (>~2k item) websets that exceed the poll budget 
 
 ## 3. Exa API contract reference (verified — builder need not re-research)
 
-Base URL `https://api.exa.ai`. Auth header `x-api-key: $EXA_API_KEY`.
+Base URLs: core endpoints at `https://api.exa.ai` (e.g. `/search`); the **Websets API is namespaced at `https://api.exa.ai/websets/v0`** — NOT root `/v0` (a root POST 404s). Auth header `x-api-key: $EXA_API_KEY`. **The Websets API requires a Pro plan** — lower tiers return `401` on `/websets/*` ("Upgrade to a Pro plan to get access"); `/search` + `/findSimilar` work on the free/standard tier.
 
 | Endpoint | Method | Cap / note | Rate limit |
 |---|---|---|---|
-| `/v0/websets` | POST | async; `search.count` unbounded | control-plane, low volume |
-| `/v0/websets/{id}` | GET | status poll | — |
-| `/v0/websets/{id}/items` | GET | **cursor** pagination | — |
-| `/v0/websets/webhooks` | POST | scale-out only (§2.4) | — |
+| `/websets/v0/websets` | POST | async; `search.count` unbounded | control-plane, low volume |
+| `/websets/v0/websets/{id}` | GET | status poll | — |
+| `/websets/v0/websets/{id}/items` | GET | **cursor** pagination | — |
+| `/websets/v0/webhooks` | POST | scale-out only (§2.4) | — |
 | `/search` | POST | `numResults` **1–100**, no cursor | **10 QPS** |
 | `/findSimilar` | POST | `numResults` **1–100** | 10 QPS (shared) |
 | `/contents` | POST | `urls` **≤100**/call | **100 QPS** |
@@ -236,7 +238,7 @@ Optional, when expected overlap with `companies` is high: pre-upload the active-
 `enrichments:[]` by default. Contact enrichment (5 credits/datapoint) is **forbidden unconditionally** (D2 ratified): the worker strips every `email`/`phone` enrichment format before create — contacts come from Blitz-API, never Exa. Content options follow §1.4 (summary-schema first, never stack text+highlights+summary).
 
 ### 4.5 Rate governance & concurrency
-- Token-bucket limiter: **10 QPS** for `/search`+`/findSimilar` (shared bucket), **100 QPS** for `/contents`. Websets control-plane calls are low-volume; poll `GET /v0/websets/{id}` on a **fixed backoff cadence** (e.g. 5s→15s→30s, cap 30s), never a tight loop.
+- Token-bucket limiter: **10 QPS** for `/search`+`/findSimilar` (shared bucket), **100 QPS** for `/contents`. Websets control-plane calls are low-volume; poll `GET /websets/v0/websets/{id}` on a **fixed backoff cadence** (e.g. 5s→15s→30s, cap 30s), never a tight loop.
 - **429** body `{"error":"rate limit exceeded"}` → exponential backoff w/ full jitter, honor `Retry-After` if present, max 5 retries then surface a partial-run failure to the callback.
 - Modal concurrency: one webset = one worker invocation. Batch fan-out (many websets) is governed by **Trigger.dev queue concurrency**, not by spawning unbounded Modal functions. Higher Exa limits via `sales@exa.ai` (enterprise) — out of scope for v1.
 
