@@ -97,17 +97,25 @@ Then:
 
 ```jsonc
 {
-  "id": "witem_...", "websetId": "ws_abc123", "source": "search",
-  "properties": { "type": "company", "url": "https://acme-law.com", "name": "Acme Defense LLP",
-                  "description": "…", "entity": { /* company firmographics Exa resolved */ } },
-  "evaluations": [ { "criterion": "…", "reasoning": "…", "satisfied": "match|unclear|no" } ],
-  "enrichments": [ /* present only if enrichments requested */ ],
-  "createdAt": "…"
+  "id": "witem_...", "object": "webset_item", "websetId": "ws_abc123",
+  "source": "search", "sourceId": "...",
+  "properties": {
+    "type": "company", "url": "https://acme-law.com", "description": "…", "content": "…",
+    "company": { "name": "Acme Defense LLP", "location": "…", "employees": 42,
+                 "industry": "…", "about": "…", "logoUrl": "…" }   // sub-object keyed BY ENTITY TYPE
+  },
+  "evaluations": [ { "criterion": "…", "reasoning": "…", "satisfied": "yes|no|unclear", "references": [] } ],
+  "enrichments": [ { "enrichmentId": "…", "status": "completed", "format": "url",
+                     "result": ["…"], "reasoning": "…", "references": [] } ],
+  "createdAt": "…", "updatedAt": "…"
 }
 ```
-> Exact `evaluations[]` key names (`satisfied` enum, `confidence`) are the one field family not pinned from
-> static docs — confirm against a live `items.list` response during build and freeze here. Everything else is
-> contract-verified.
+> Pinned (2026-06-03) against `exa-labs/openapi-spec · exa-websets-spec.yaml` (`WebsetItem`): the verdict field
+> is **`satisfied` ∈ `"yes"|"no"|"unclear"`** (JSON strings), the entity sub-object is keyed by type
+> (`company`/`person`/`researchPaper`/…), and the company name is at **`properties.company.name`** (NOT
+> `properties.name`). List envelope is `{data, hasMore, nextCursor}`; poll terminal is webset `status=="idle"`.
+> The Tier A worker parses this via `_websets_item_to_record`, fully decoupled from the Tier B `/search` shape
+> (Directive 22-B).
 
 ### 1.3 Tier B — Seed expansion / bulk harvest (complementary, D2)
 
@@ -283,7 +291,7 @@ unless noted — mirrors the `companies` string-typed convention. Indexes via `d
 | Lance column | Type | Source (Exa item) | Index | Notes |
 |---|---|---|---|---|
 | `discovered_domain` | VARCHAR | `properties.url` → normalized | **BTREE** | resolution anchor; byte-identical to `companies.normalized_domain` |
-| `company_name` | VARCHAR | `properties.name` | | |
+| `company_name` | VARCHAR | Tier A `properties.<type>.name` · Tier B result title | | e.g. `properties.company.name` |
 | `company_url` | VARCHAR | `properties.url` | | original URL |
 | `exa_item_id` | VARCHAR | `id` | **BTREE** | idempotency key on re-pull/resume |
 | `exa_webset_id` | VARCHAR | `websetId` | **BTREE** | Exa-native collection id |
@@ -291,12 +299,12 @@ unless noted — mirrors the `companies` string-typed convention. Indexes via `d
 | `webset_identifier` | VARCHAR | payload slug | | `osha_defense_firms` |
 | `search_prompt` | VARCHAR | payload | | the query that produced this cohort |
 | `entity_type` | VARCHAR | `properties.type` | | `company` |
-| `verification_status` | VARCHAR | derived from `evaluations[]` | | `verified` (all criteria match) \| `partial` \| `unverified` (Tier B) |
+| `verification_status` | VARCHAR | derived from `evaluations[].satisfied` | | `verified` (all `="yes"`) \| `partial` (some) \| `unverified` (none / Tier B) |
 | `verification_json` | VARCHAR(JSON) | `evaluations[]` | | per-criterion reasoning + satisfied — full fidelity |
 | `match_criteria_json` | VARCHAR(JSON) | `search.criteria` | | criteria the cohort was verified against |
 | `description` | VARCHAR | `properties.description` / summary | | GTM blurb |
 | `enrichment_json` | VARCHAR(JSON) | `enrichments[]` | | null unless enrichments opted-in (D3) |
-| `linkedin_url` | VARCHAR | `properties.entity` if present | | best-effort |
+| `linkedin_url` | VARCHAR | person `properties.url` when it is a LinkedIn URL | | company items carry none |
 | `source_platform` | VARCHAR | const | | `'exa-websets'` (D6) |
 | `raw_payload_uri` | VARCHAR | R2 path | | pointer to the landing parquet (§5.1) |
 | `raw_item_json` | VARCHAR(JSON) | full item | | complete Exa item dumped verbatim — guarantees full fidelity in the SoR even if the landing write is skipped |
