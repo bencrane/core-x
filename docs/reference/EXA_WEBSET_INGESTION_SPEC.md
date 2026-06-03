@@ -1,6 +1,6 @@
 # Exa Webset Ingestion Engine — Architectural Specification
 
-**Status: BLUEPRINT — pending approval. No production code until this contract is ratified (Directive 22 mandate).**
+**Status: RATIFIED & BUILT (Directive 22 sign-off, 2026-06-02). §11 locked — per-run ceiling 5,000 credits · month_cap 100,000 · contact enrichment globally forbidden · HARD_RESULT_CAP 1,000 · `webset_membership` shipped. Implemented: [`pipelines/exa_websets/ingest.py`](../../pipelines/exa_websets/ingest.py) · [`src/trigger/exa_websets.ts`](../../src/trigger/exa_websets.ts) · [`pipelines/exa_websets/ops_exa_webset_runs.sql`](../../pipelines/exa_websets/ops_exa_webset_runs.sql).**
 **Exa API surface verified against `exa.ai/docs` + `exa-labs/openapi-spec` as of 2026-06-02.**
 
 This document is the canonical contract for harvesting high-precision, custom industry websets
@@ -23,10 +23,9 @@ architectural primitive** — one worker, one Trigger task, two Lance datasets, 
 | D5 | Warehouse dedup is **JIT against `s3://data-sink/active/companies/` on `normalized_domain`**, never against Exa-side state. New domains → `s3://data-sink/active/discovered_websets/`. | The directive. Our warehouse is the system of record; Exa's `exclude`/Imports is a *cost* lever (§4.3), not the dedup authority. |
 | D6 | `source_platform = 'exa-websets'`. | Extends the existing GTM lineage convention (`exa-all`, `prospeo-parallel.ai`, `sfnet`). |
 
-**Severable opinionated extension (approve or cut at the gate):** the `webset_membership` edge dataset (§6.2) —
-records that an *already-known* company matches an industry webset. The directive only requires routing *new*
-domains to `discovered_websets`; membership captures the GTM signal for the known overlap. Low cost, high
-composition value, but strictly beyond the literal mandate.
+**Ratified extension (D3 sign-off — SHIPPED):** the `webset_membership` edge dataset (§6.2) records that an
+*already-known* company matches an industry webset, so a known company can be stamped with its specific niche
+(e.g. "OSHA Defense Firm") without re-inserting into `companies`. New domains still route to `discovered_websets`.
 
 ---
 
@@ -153,7 +152,7 @@ Trigger resumes → returns summary to the Managed Agent
 ### 2.1 Reused, not rebuilt
 - **Dispatcher:** [`core/modal_dispatcher.py`](../../core/modal_dispatcher.py) `DispatchRequest{app_name, function_name, kwargs, trigger_callback_url}`. Unchanged.
 - **Trigger pattern:** `wait.createToken` → `fetch(MODAL_DISPATCHER_URL, {Modal-Key, Modal-Secret})` → `wait.forToken` — identical to [`src/trigger/gtm_companies_people.ts`](../../src/trigger/gtm_companies_people.ts).
-- **Worker image:** the canonical data-engineering image ([`03_modal_compute.md`](03_modal_compute.md) §2) **+ `exa-py>=1.0`**.
+- **Worker image:** the canonical data-engineering image ([`03_modal_compute.md`](03_modal_compute.md) §2). Exa is called over **raw `requests`** (already in the image) — not `exa-py` — so retries, rate-governance, and `costDollars` capture stay fully under our control.
 
 ### 2.2 New artifacts
 | Artifact | Path |
@@ -214,25 +213,27 @@ Exa bills two incompatible units. The middleware tracks **both** and converts to
 
 ### 4.1 Pre-flight ceiling gate (hard reject before any spend)
 ```
-clamped_count   = min(max_results_limit, HARD_RESULT_CAP)            # HARD_RESULT_CAP = 1000
-contact_pts     = (#email enrich) + (#phone enrich)                  # 0 by default (D3)
-text_enrich     = #non-contact enrichments                          # 0 by default (D3)
-projected_cred  = clamped_count * (10 + 2*text_enrich + 5*contact_pts)
+clamped_count   = min(max_results_limit, HARD_RESULT_CAP)            # HARD_RESULT_CAP = 1000 (D4)
+text_enrich     = #non-contact enrichments                          # 0 by default; every email/phone stripped (D2)
+projected_cred  = clamped_count * (10 + 2*text_enrich)              # contact credits never accrue (D2)
 projected_usd   = projected_cred * 0.00449
-REJECT (422) if  projected_cred > max_credits            (per-run ceiling, payload-overridable, default 25_000)
-REJECT (422) if  projected_cred > ledger.month_remaining (ops.exa_credit_ledger)
-REJECT (422) if  contact_pts > 0 AND not payload.allow_contact_enrichment  (separate explicit opt-in)
+effective_cap   = min(max_credits, PER_RUN_CREDIT_CEILING)          # PER_RUN_CREDIT_CEILING = 5000 (D1, hard)
+REJECT if  projected_cred > effective_cap            (per-run ceiling — payload may lower it, never raise past 5000)
+REJECT if  projected_cred > ledger.month_remaining   (ops.exa_credit_ledger; month_cap = 100_000, D1)
 ```
-`dry_run:true` returns the estimate and exits **without creating the webset** — the Managed Agent's safe pre-check.
+**Binding interaction:** at the ratified 5,000 ceiling with zero enrichment, the credit gate binds at **500 results**
+(5000 ÷ 10) — a 1,000-result request is *rejected* until `PER_RUN_CREDIT_CEILING` is raised in code. This is the
+intended runaway protection for initial testing. `dry_run:true` returns the estimate and exits **without creating
+the webset or reserving credits** — the Managed Agent's safe pre-check.
 
 ### 4.2 Monthly budget ledger — `ops.exa_credit_ledger`
-Single source of truth for spend. The worker (1) reserves `projected_cred` at create, (2) reconciles to **actual** at completion (Websets actual = items_returned × per-item rate; raw actual = `Σ costDollars.total`). A Doppler flag `EXA_ENGINE_ENABLED=false` is a global kill switch checked before step (b). Monthly cap default = plan allotment (100,000 credits) — **operator sets the real number at approval (§11)**.
+Single source of truth for spend. The worker (1) reserves `projected_cred` at create, (2) reconciles to **actual** at completion (Websets actual = items_returned × per-item rate; raw actual = `Σ costDollars.total`). A Doppler flag `EXA_ENGINE_ENABLED=false` is a global kill switch checked before step (b). Monthly cap = **100,000 credits** (D1, ratified); the hard per-run ceiling is **5,000 credits**.
 
 ### 4.3 Warehouse-aware suppression (credit lever, not dedup authority)
 Optional, when expected overlap with `companies` is high: pre-upload the active-domain set as an Exa **Import** and pass its id in `search.exclude` so already-known domains are not returned — **Exa charges per result returned, so suppressed domains cost zero**. Tier B equivalent: pass known domains in `excludeDomains` (≤1200). Toggle: `exclude_known_domains` (default `true`). This trims credits; it does **not** replace the JIT dedup in §5.
 
 ### 4.4 Enrichment & content minimalism (the dominant lever — D3)
-`enrichments:[]` by default. Contact enrichment (5 credits/datapoint) is the single most expensive option and is **forbidden unless** `allow_contact_enrichment:true` *and* under its own sub-ceiling. Content options follow §1.4 (summary-schema first, never stack text+highlights+summary).
+`enrichments:[]` by default. Contact enrichment (5 credits/datapoint) is **forbidden unconditionally** (D2 ratified): the worker strips every `email`/`phone` enrichment format before create — contacts come from Blitz-API, never Exa. Content options follow §1.4 (summary-schema first, never stack text+highlights+summary).
 
 ### 4.5 Rate governance & concurrency
 - Token-bucket limiter: **10 QPS** for `/search`+`/findSimilar` (shared bucket), **100 QPS** for `/contents`. Websets control-plane calls are low-volume; poll `GET /v0/websets/{id}` on a **fixed backoff cadence** (e.g. 5s→15s→30s, cap 30s), never a tight loop.
@@ -282,7 +283,7 @@ unless noted — mirrors the `companies` string-typed convention. Indexes via `d
 | `company_url` | VARCHAR | `properties.url` | | original URL |
 | `exa_item_id` | VARCHAR | `id` | **BTREE** | idempotency key on re-pull/resume |
 | `exa_webset_id` | VARCHAR | `websetId` | **BTREE** | Exa-native collection id |
-| `webset_label` | VARCHAR | `metadata.webset_label` | | **the directive's `webset_id: 'osha_defense_firms_2026'` origin flag** |
+| `webset_label` | VARCHAR | `<identifier>_<YYYY>` | | **the directive's `webset_id: 'osha_defense_firms_2026'` origin flag** |
 | `webset_identifier` | VARCHAR | payload slug | | `osha_defense_firms` |
 | `search_prompt` | VARCHAR | payload | | the query that produced this cohort |
 | `entity_type` | VARCHAR | `properties.type` | | `company` |
@@ -293,21 +294,23 @@ unless noted — mirrors the `companies` string-typed convention. Indexes via `d
 | `enrichment_json` | VARCHAR(JSON) | `enrichments[]` | | null unless enrichments opted-in (D3) |
 | `linkedin_url` | VARCHAR | `properties.entity` if present | | best-effort |
 | `source_platform` | VARCHAR | const | | `'exa-websets'` (D6) |
-| `raw_payload_uri` | VARCHAR | R2 path | | pointer to §5.1 landing parquet |
+| `raw_payload_uri` | VARCHAR | R2 path | | pointer to the landing parquet (§5.1) |
+| `raw_item_json` | VARCHAR(JSON) | full item | | complete Exa item dumped verbatim — guarantees full fidelity in the SoR even if the landing write is skipped |
 | `exa_webset_run_id` | VARCHAR | our `run_id` | | joins `ops.exa_webset_runs` |
 | `discovered_at` | VARCHAR | item `createdAt` / run ts | | ISO-8601 |
 | `snapshot_date` | VARCHAR | run date | | partition/recency |
 
-### 6.2 `s3://data-sink/active/webset_membership/` — known-company industry edges (severable, §0)
+### 6.2 `s3://data-sink/active/webset_membership/` — known-company industry edges (D3 — shipped)
 
 | Lance column | Type | Index | Notes |
 |---|---|---|---|
-| `normalized_domain` | VARCHAR | **BTREE** | FK to `companies.normalized_domain` |
+| `normalized_domain` | VARCHAR | **BTREE** | FK to `companies.normalized_domain` (NOT NULL) |
 | `exa_webset_id` | VARCHAR | **BTREE** | |
 | `webset_label` | VARCHAR | | industry tag, e.g. `osha_defense_firms_2026` |
-| `exa_item_id` | VARCHAR | | |
+| `exa_item_id` | VARCHAR | | idempotency key (NOT NULL) |
 | `verification_status` | VARCHAR | | |
 | `verification_json` | VARCHAR(JSON) | | |
+| `raw_item_json` | VARCHAR(JSON) | | full item verbatim |
 | `exa_webset_run_id` | VARCHAR | | |
 | `discovered_at` | VARCHAR | | |
 | `source_platform` | VARCHAR | | `'exa-websets'` |
@@ -340,16 +343,15 @@ Formal JSON Schema (validated in `src/trigger/exa_websets.ts` before dispatch �
     "criteria":          { "type": "array", "items": { "type": "string", "maxLength": 1000 }, "maxItems": 10, "default": [] },
     "tier":              { "enum": ["precision","harvest"], "default": "precision" }, // precision=Websets, harvest=Tier B
     "seed_urls":         { "type": "array", "items": { "type": "string", "format": "uri" }, "maxItems": 50, "default": [] }, // Tier B findSimilar
-    "enrichments":       { "type": "array", "items": { "type": "object" }, "default": [] }, // D3: empty
-    "allow_contact_enrichment": { "type": "boolean", "default": false },           // 5-credit gate (§4.1)
+    "enrichments":       { "type": "array", "items": { "type": "object" }, "default": [] }, // empty default; email/phone formats stripped (D2)
     "exclude_known_domains":    { "type": "boolean", "default": true },            // §4.3 cost lever
-    "max_credits":       { "type": "integer", "minimum": 0, "default": 25000 },    // per-run ceiling
+    "max_credits":       { "type": "integer", "minimum": 0, "default": 5000 },     // per-run; clamped to the 5000 ceiling worker-side (D1)
     "dry_run":           { "type": "boolean", "default": false }                   // estimate only, no spend
   }
 }
 ```
 
-**Server-side clamps (worker, non-negotiable):** `count = min(max_results_limit, 1000)`; `webset_label = "<webset_identifier>_<YYYY>"`; `externalId = "exa-webset-<run_id>"`; contact enrichment stripped unless `allow_contact_enrichment`. The Managed Agent cannot override the credit ledger or the kill switch.
+**Server-side clamps (worker, non-negotiable):** `count = min(max_results_limit, 1000)` (D4); `max_credits` clamped to the **5,000** per-run ceiling (D1 — payload may lower, never raise); `webset_label = "<webset_identifier>_<YYYY>"`; `externalId = "exa-webset-<run_id>"`; **every `email`/`phone` enrichment stripped unconditionally** (D2). The Managed Agent cannot override the credit ledger, the per-run ceiling, or the kill switch.
 
 **Callback payload (worker → Trigger waitpoint):**
 ```jsonc
@@ -415,12 +417,16 @@ CREATE TABLE IF NOT EXISTS ops.exa_credit_ledger (
 
 ---
 
-## 11. Decisions required at approval (operator input — cannot default safely)
+## 11. Ratified decisions (Directive 22 sign-off, 2026-06-02)
 
-1. **Exa plan tier & monthly credit cap** (`ops.exa_credit_ledger.month_cap`). Pro is $449/mo / 100,000 credits ≈ 10k verified items/mo at zero enrichment. Set the real ceiling and the per-run default (`max_credits`, drafted at 25,000).
-2. **Contact enrichment policy** — keep globally forbidden (D3), or allow opt-in with a contact sub-ceiling? (5 credits/datapoint is the steepest cost.)
-3. **`webset_membership` (§6.2)** — ship it (capture known-company industry signal) or cut to the literal directive (new-domains-only)?
-4. **`HARD_RESULT_CAP`** — drafted at 1,000 (2× the directive's 500 example). Raise/lower?
+| # | Ruling | Implemented as |
+|---|---|---|
+| D1 | Cost governance: `month_cap = 100,000`; **per-run ceiling restricted to 5,000 credits** to protect against runaway queries during initial testing. | `MONTH_CREDIT_CAP = 100_000`, `PER_RUN_CREDIT_CEILING = 5_000` (hard; payload `max_credits` clamped down only). Binds at 500 results/run. |
+| D2 | Contact enrichment **forbidden globally** — contacts come from Blitz-API; Exa is strictly domain/company discovery. | Worker strips every `email`/`phone` enrichment format before create; no opt-in flag exists. |
+| D3 | Build the `webset_membership` edge so known companies can be stamped with their niche. | `s3://data-sink/active/webset_membership/` (§6.2), BTREE on `normalized_domain` + `exa_webset_id`. |
+| D4 | Hard cap **1,000 results** max per webset run. | `HARD_RESULT_CAP = 1_000` (the credit ceiling binds first at 500). |
+
+**Operational constraint (operator-owned):** no automated/first test run. The task is manual-invoke only (no cron); the operator triggers the first webset to observe exact credit consumption.
 
 ---
 
