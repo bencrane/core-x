@@ -34,6 +34,17 @@ system-of-record at the control plane); per-run terminal state into
 ``ops.email_resolutions`` into a Lance dataset on its own cadence, exactly as
 ``firmographics-blitz`` does for the Blitz firmo task_types.
 
+RAW PAYLOAD PRESERVATION (Directive 28 doctrine). Every provider response is stored
+**verbatim, exactly as-is, with no interpretation imposed**: ``icypeas_raw`` (the
+Icypeas result item), ``leadmagic_raw`` (the LeadMagic response), and ``mv_raw``
+(EVERY MillionVerifier response — an array, since an ``unknown`` re-check and a
+multi-tier cascade produce several). These raw columns are the source of truth;
+``email`` / ``verification_status`` / ``mv_*`` / ``certainty`` are a convenience
+projection ON TOP of them, never a replacement. A discarded-by-MV or missed address
+still has its raw provider + MV payloads saved (only the derived ``email`` is nulled).
+The shared ``ops.email_resolutions`` table is co-written by the standalone Blitz email
+finder (``blitz_email_raw``); this worker owns the canonical DDL.
+
     modal deploy pipelines/enrichment_email_cascade/enrich_email_cascade.py
     modal run    pipelines/enrichment_email_cascade/enrich_email_cascade.py::init_ops
     modal run    pipelines/enrichment_email_cascade/enrich_email_cascade.py::run_manual \\
@@ -102,12 +113,27 @@ CREATE TABLE IF NOT EXISTS ops.email_resolutions (
     certainty           text,
     company_domain      text,
     person_linkedin_url text,
+    icypeas_raw         jsonb,
+    leadmagic_raw       jsonb,
+    blitz_email_raw     jsonb,
+    mv_raw              jsonb,
     attempts            jsonb       NOT NULL DEFAULT '[]'::jsonb,
     batch_label         text,
     resolved_at         timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT email_resolutions_status_chk
         CHECK (verification_status IN ('verified', 'risky', 'unresolved'))
 );
+-- Raw-payload preservation (Directive 28 doctrine, applied to the cascade). Every
+-- upstream response is persisted VERBATIM, exactly as-is, with no interpretation
+-- imposed: per-provider raw payloads (icypeas_raw / leadmagic_raw / blitz_email_raw)
+-- and mv_raw (every MillionVerifier response, an array). These raw columns are the
+-- source of truth; the derived columns above (email / verification_status / mv_* /
+-- certainty) are a convenience projection ON TOP of them, never a replacement. The
+-- shared table may predate any given column, so ADD COLUMN IF NOT EXISTS upgrades it.
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS icypeas_raw     jsonb;
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS leadmagic_raw   jsonb;
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS blitz_email_raw jsonb;
+ALTER TABLE ops.email_resolutions ADD COLUMN IF NOT EXISTS mv_raw          jsonb;
 CREATE INDEX IF NOT EXISTS email_resolutions_status_idx ON ops.email_resolutions (verification_status);
 CREATE INDEX IF NOT EXISTS email_resolutions_domain_idx ON ops.email_resolutions (company_domain);
 CREATE INDEX IF NOT EXISTS email_resolutions_email_idx  ON ops.email_resolutions (email);
@@ -211,53 +237,65 @@ def _leadmagic_find(first: str, last: str, domain: str | None,
         if sc // 100 != 2:
             return {"ok": False, "email": None,
                     "status": (data.get("code") if isinstance(data, dict) else None),
-                    "http_status": sc, "error": str(data)[:300]}
+                    "http_status": sc, "error": str(data)[:300], "raw": data}
         status = data.get("status") if isinstance(data, dict) else None
         email = data.get("email") if isinstance(data, dict) else None
         found = status in _LEADMAGIC_HIT and bool(email)
+        # LeadMagic's response, VERBATIM (kept on hit AND miss); the derived
+        # email/status are a projection on top of it, never a replacement.
         return {"ok": True, "email": email if found else None, "status": status,
-                "http_status": sc, "error": None}
+                "http_status": sc, "error": None, "raw": data}
     return {"ok": False, "email": None, "status": None, "http_status": 0,
             "error": last_err or "leadmagic retries exhausted"}
 
 
 def _mv_call(email: str, timeout: int) -> dict[str, Any]:
+    """Return MillionVerifier's response **EXACTLY as-is** (the JSON payload, untouched).
+    The rubric + derived columns read ``resultcode``/``result``/``quality``/``subresult``
+    straight off it; the full payload is persisted to ``mv_raw``. On a no-key / network
+    failure (no real payload exists) a synthetic ``{resultcode: None, error}`` is returned
+    — that synthetic is what gets stored, honestly recording the absence of a verdict."""
     import requests
 
     key = os.environ.get("MILLIONVERIFIER_API_KEY")
     if not key:
-        return {"resultcode": None, "result": None, "quality": None, "subresult": None,
-                "http_status": 0, "error": "MILLIONVERIFIER_API_KEY absent in email-cascade secret"}
+        return {"resultcode": None, "error": "MILLIONVERIFIER_API_KEY absent in email-cascade secret"}
     try:
         resp = requests.get(MV_URL, params={"api": key, "email": email, "timeout": timeout},
                             timeout=timeout + 10)
     except Exception as exc:  # noqa: BLE001 — network / timeout
-        return {"resultcode": None, "result": None, "quality": None, "subresult": None,
-                "http_status": 0, "error": str(exc)}
+        return {"resultcode": None, "error": str(exc)}
     data = _safe_json(resp)
-    return {"resultcode": data.get("resultcode") if isinstance(data, dict) else None,
-            "result": data.get("result") if isinstance(data, dict) else None,
-            "quality": data.get("quality") if isinstance(data, dict) else None,
-            "subresult": data.get("subresult") if isinstance(data, dict) else None,
-            "http_status": resp.status_code, "error": data.get("error") if isinstance(data, dict) else None}
+    # MillionVerifier's payload, verbatim. Non-dict bodies are wrapped so the caller
+    # still gets a dict while the raw text is preserved under "raw".
+    return data if isinstance(data, dict) else {"resultcode": None, "raw": data}
 
 
-def _millionverifier(email: str) -> dict[str, Any]:
-    """The sole deliverability arbiter. ``unknown`` (3) is transient → one slow retry."""
+def _millionverifier(email: str) -> tuple[dict[str, Any], list[dict]]:
+    """The sole arbiter. Returns ``(verdict, responses)``: ``verdict`` is the FINAL raw MV
+    payload (the rubric + derived columns read it); ``responses`` is the list of EVERY raw
+    MV payload for this email — 1, or 2 when an ``unknown`` (3) is re-checked at
+    timeout=60. Nothing is discarded: every MV response is preserved for ``mv_raw``."""
+    responses: list[dict] = []
     mv = _mv_call(email, 20)
-    if mv.get("resultcode") == 3:
+    responses.append(mv)
+    if mv.get("resultcode") == 3:  # unknown is transient → one slow retry
         mv = _mv_call(email, 60)
-    return mv
+        responses.append(mv)
+    return mv, responses
 
 
 # ── The cascade (Icypeas → LeadMagic, MV after every hit) ─────────────────────
 def _make_result(c: dict, email: str | None, status: str, vendor: str | None,
                  tier: int | None, mv: dict | None, certainty: str | None,
-                 attempts: list) -> dict:
+                 attempts: list, icypeas_raw: Any = None, leadmagic_raw: Any = None,
+                 mv_raw: list | None = None) -> dict:
     return {
         "contact_id": c.get("contact_id"),
         "email": email,
         "verification_status": status,
+        # Derived projections (convenience / indexed) — a view ON TOP of the raw payloads
+        # below, never a replacement. mv = the FINAL MV verdict payload of the winner.
         "source_vendor": vendor,
         "source_tier": tier,
         "mv_resultcode": (mv or {}).get("resultcode"),
@@ -267,12 +305,19 @@ def _make_result(c: dict, email: str | None, status: str, vendor: str | None,
         "certainty": certainty,
         "company_domain": _normalize_domain(c.get("company_domain")),
         "person_linkedin_url": (c.get("person_linkedin_url") or "").strip() or None,
+        # Raw upstream responses, VERBATIM — the source of truth, no interpretation imposed.
+        "icypeas_raw": icypeas_raw,          # Icypeas read item, as-is (None if not called)
+        "leadmagic_raw": leadmagic_raw,      # LeadMagic response, as-is (None if not called)
+        "mv_raw": mv_raw,                    # every MillionVerifier response, as-is (list)
         "attempts": attempts,
     }
 
 
 def _resolve_contact(c: dict, gw) -> dict:
-    """Run one contact through the Icypeas → LeadMagic cascade with MV governance."""
+    """Run one contact through the Icypeas → LeadMagic cascade with MV governance.
+    Every provider's raw payload is preserved VERBATIM (icypeas_raw / leadmagic_raw /
+    mv_raw), independent of the cascade's stop/hold/discard control flow — a discarded
+    or missed address still has its raw payloads saved; only the derived email is nulled."""
     first = (c.get("first_name") or "").strip()
     last = (c.get("last_name") or "").strip()
     domain = _normalize_domain(c.get("company_domain"))
@@ -281,6 +326,9 @@ def _resolve_contact(c: dict, gw) -> dict:
 
     attempts: list[dict] = []
     best_risky: dict | None = None
+    icypeas_raw: Any = None       # Icypeas read item, VERBATIM (set when Icypeas is called)
+    leadmagic_raw: Any = None     # LeadMagic response, VERBATIM (set when LeadMagic is called)
+    mv_all: list[dict] = []       # EVERY MillionVerifier response across the whole cascade
 
     for tier, vendor in ((1, "icypeas"), (2, "leadmagic")):
         # ── find an address (vendor-native status only detects hit vs miss) ──
@@ -290,6 +338,7 @@ def _resolve_contact(c: dict, gw) -> dict:
                 continue
             env = gw.remote(firstname=first, lastname=last,
                             domain_or_company=(domain or company), external_id=cid)
+            icypeas_raw = env.get("raw")     # provider payload, kept on hit AND miss
             email = env.get("email") if (env.get("ok") and env.get("found")) else None
             v_status, v_err, certainty = env.get("status"), env.get("error"), env.get("certainty")
         else:  # leadmagic — requires both names
@@ -297,6 +346,7 @@ def _resolve_contact(c: dict, gw) -> dict:
                 attempts.append({"vendor": vendor, "tier": tier, "outcome": "skipped"})
                 continue
             env = _leadmagic_find(first, last, domain, company)
+            leadmagic_raw = env.get("raw")   # provider payload, kept on hit AND miss
             email, v_status, v_err, certainty = env.get("email"), env.get("status"), env.get("error"), None
 
         if not email:
@@ -304,18 +354,20 @@ def _resolve_contact(c: dict, gw) -> dict:
                              "vendor_status": v_status, "error": v_err})
             continue
 
-        # ── MillionVerifier gate — the sole arbiter ──
-        mv = _millionverifier(email)
-        rc = mv.get("resultcode")
+        # ── MillionVerifier gate — the sole arbiter. Every MV response is preserved raw. ──
+        verdict, mv_responses = _millionverifier(email)
+        mv_all.extend(mv_responses)
+        rc = verdict.get("resultcode")
         attempts.append({"vendor": vendor, "tier": tier, "outcome": "hit", "email": email,
                          "vendor_status": v_status, "certainty": certainty,
-                         "mv_resultcode": rc, "mv_result": mv.get("result"),
-                         "mv_quality": mv.get("quality")})
+                         "mv_resultcode": rc, "mv_result": verdict.get("result"),
+                         "mv_quality": verdict.get("quality")})
 
         if rc in MV_OK:                                  # OK → STOP & SAVE (verified)
-            return _make_result(c, email, "verified", vendor, tier, mv, certainty, attempts)
+            return _make_result(c, email, "verified", vendor, tier, verdict, certainty,
+                                attempts, icypeas_raw, leadmagic_raw, mv_all or None)
         if rc in MV_RISKY:                               # catch_all/unknown → HOLD & cascade
-            cand = {"email": email, "vendor": vendor, "tier": tier, "mv": mv,
+            cand = {"email": email, "vendor": vendor, "tier": tier, "mv": verdict,
                     "certainty": certainty, "rank": _RISKY_RANK[rc]}
             if best_risky is None or cand["rank"] < best_risky["rank"]:
                 best_risky = cand
@@ -326,21 +378,26 @@ def _resolve_contact(c: dict, gw) -> dict:
     if best_risky is not None:                           # exhausted → accept-degraded, flagged
         b = best_risky
         return _make_result(c, b["email"], "risky", b["vendor"], b["tier"], b["mv"],
-                            b["certainty"], attempts)
-    return _make_result(c, None, "unresolved", None, None, None, None, attempts)
+                            b["certainty"], attempts, icypeas_raw, leadmagic_raw, mv_all or None)
+    return _make_result(c, None, "unresolved", None, None, None, None, attempts,
+                        icypeas_raw, leadmagic_raw, mv_all or None)
 
 
 # ── Sink writers ──────────────────────────────────────────────────────────────
 def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
     from psycopg.types.json import Jsonb
 
+    def _j(v):  # jsonb bind, or SQL NULL when there is no payload (provider not called)
+        return Jsonb(v) if v is not None else None
+
     cur.execute(
         """
         INSERT INTO ops.email_resolutions
             (contact_id, email, verification_status, source_vendor, source_tier,
              mv_resultcode, mv_result, mv_quality, mv_subresult, certainty,
-             company_domain, person_linkedin_url, attempts, batch_label, resolved_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+             company_domain, person_linkedin_url, icypeas_raw, leadmagic_raw, mv_raw,
+             attempts, batch_label, resolved_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
         ON CONFLICT (contact_id) DO UPDATE SET
             email               = EXCLUDED.email,
             verification_status = EXCLUDED.verification_status,
@@ -353,6 +410,9 @@ def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
             certainty           = EXCLUDED.certainty,
             company_domain      = EXCLUDED.company_domain,
             person_linkedin_url = EXCLUDED.person_linkedin_url,
+            icypeas_raw         = EXCLUDED.icypeas_raw,
+            leadmagic_raw       = EXCLUDED.leadmagic_raw,
+            mv_raw              = EXCLUDED.mv_raw,
             attempts            = EXCLUDED.attempts,
             batch_label         = EXCLUDED.batch_label,
             resolved_at         = now()
@@ -360,6 +420,7 @@ def _upsert_resolution(cur, r: dict, batch_label: str | None) -> None:
         (r["contact_id"], r["email"], r["verification_status"], r["source_vendor"],
          r["source_tier"], r["mv_resultcode"], r["mv_result"], r["mv_quality"],
          r["mv_subresult"], r["certainty"], r["company_domain"], r["person_linkedin_url"],
+         _j(r.get("icypeas_raw")), _j(r.get("leadmagic_raw")), _j(r.get("mv_raw")),
          Jsonb(r["attempts"]), batch_label),
     )
 
@@ -518,7 +579,7 @@ def verify(limit: int = 8) -> dict:
         cur = conn.cursor()
         cur.execute(
             """SELECT contact_id, email, verification_status, source_vendor, source_tier,
-                      mv_result, resolved_at
+                      mv_result, icypeas_raw, leadmagic_raw, mv_raw, resolved_at
                FROM ops.email_resolutions ORDER BY resolved_at DESC LIMIT %s""",
             (limit,),
         )
