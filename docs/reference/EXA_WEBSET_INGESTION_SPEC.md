@@ -5,6 +5,8 @@
 
 **Live validation (2026-06-03):** Tier B (`/search` harvest) validated end-to-end — 5/5 candidates landed in `discovered_websets` ($0.007), JIT dedup + BTREE indexes confirmed. **Tier A (Websets API) is blocked pending a Pro plan** (`POST /websets/v0/websets` → `401` on this account). Credit-safety hardening from the first runs: Trigger `retry.maxAttempts=1` (no blind auto-retry on a credit-spending task) and the credit reservation is released on pre-create failure (`exa_webset_id is None` → nothing accrued). Correct Websets base path is `…/websets/v0`, not root `/v0`.
 
+**Operating default (2026-06-03):** `tier` now defaults to **`harvest`** (Tier B / `/search`) — the working path on the current plan. Tier A (Websets precision) code is intact but **disabled** behind `EXA_TIER_A_ENABLED=false`; requesting `tier:"precision"` while disabled returns a clean `rejected`. Flip the flag (no code change) after a Pro upgrade.
+
 This document is the canonical contract for harvesting high-precision, custom industry websets
 (e.g. *OSHA Defense Law Firms*, *Maritime Logistics Providers*) from Exa.ai into Gen-3 Lance. It
 slots into the existing planes: Trigger.dev v4 control ([`04_trigger_orchestration.md`](04_trigger_orchestration.md)),
@@ -343,7 +345,7 @@ Formal JSON Schema (validated in `src/trigger/exa_websets.ts` before dispatch �
     "max_results_limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }, // → search.count (clamped HARD_RESULT_CAP)
     "entity_type":       { "enum": ["company","person"], "default": "company" },   // → search.entity.type
     "criteria":          { "type": "array", "items": { "type": "string", "maxLength": 1000 }, "maxItems": 10, "default": [] },
-    "tier":              { "enum": ["precision","harvest"], "default": "precision" }, // precision=Websets, harvest=Tier B
+    "tier":              { "enum": ["precision","harvest"], "default": "harvest" }, // DEFAULT harvest (Tier B); precision (Tier A/Websets) is Pro-gated, disabled via EXA_TIER_A_ENABLED
     "seed_urls":         { "type": "array", "items": { "type": "string", "format": "uri" }, "maxItems": 50, "default": [] }, // Tier B findSimilar
     "enrichments":       { "type": "array", "items": { "type": "object" }, "default": [] }, // empty default; email/phone formats stripped (D2)
     "exclude_known_domains":    { "type": "boolean", "default": true },            // §4.3 cost lever
@@ -369,7 +371,7 @@ Formal JSON Schema (validated in `src/trigger/exa_websets.ts` before dispatch �
 
 ## 8. Secrets, config, modules
 
-- **Modal secret `exa-api`** → `EXA_API_KEY` (Doppler `hq-x/prd` → `modal secret create`). Worker: `secrets=[Secret.from_name("r2-credentials"), Secret.from_name("hqx-postgres"), Secret.from_name("exa-api")]`.
+- **Modal secret `exa-api`** → `EXA_API_KEY` + two flags: `EXA_ENGINE_ENABLED` (global kill switch, default `true`) and `EXA_TIER_A_ENABLED` (Websets precision gate, default `false`). Sourced from Doppler `core-x/prd` → `modal secret create`. Worker: `secrets=[Secret.from_name("r2-credentials"), Secret.from_name("hqx-postgres"), Secret.from_name("exa-api")]`. **To enable Tier A after a Pro upgrade:** `modal secret create exa-api --force EXA_API_KEY=… EXA_ENGINE_ENABLED=true EXA_TIER_A_ENABLED=true` (no code change).
 - **No new Trigger env vars.** The Exa key lives Modal-side only; Trigger keeps `MODAL_DISPATCHER_URL`/`MODAL_KEY`/`MODAL_SECRET` (existing `syncEnvVars`). The key never transits the control plane.
 - **Worker image** = canonical data image **+ `exa-py>=1.0`**.
 - **New files:** `pipelines/exa_websets/ingest.py`, `src/trigger/exa_websets.ts`.

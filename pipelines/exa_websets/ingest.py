@@ -662,7 +662,7 @@ def ingest_exa_webset(
     max_results_limit: int = 100,
     entity_type: str = "company",
     criteria: list | None = None,
-    tier: str = "precision",
+    tier: str = "harvest",
     seed_urls: list | None = None,
     enrichments: list | None = None,
     exclude_known_domains: bool = True,
@@ -737,6 +737,15 @@ def ingest_exa_webset(
             return _terminal(status) or {"status": status, "reason": reason}
         if not (search_prompt and len(search_prompt) >= 8):
             status, reason = "rejected", "search_prompt too short (min 8 chars)"
+            return _terminal(status) or {"status": status, "reason": reason}
+
+        # Tier A (Websets precision) is DISABLED BY DEFAULT — the Websets API is Pro-plan-gated.
+        # The full Tier A path stays intact below; flip EXA_TIER_A_ENABLED=true on the exa-api
+        # secret once the account is upgraded to enable it. Default operational tier is 'harvest'.
+        if tier == "precision" and os.environ.get("EXA_TIER_A_ENABLED", "false").lower() != "true":
+            status, reason = "rejected", (
+                "Tier A (Websets precision) is disabled — requires a Pro plan. Set "
+                "EXA_TIER_A_ENABLED=true on the exa-api secret to enable. Default tier is 'harvest'.")
             return _terminal(status) or {"status": status, "reason": reason}
 
         count = max(1, min(int(max_results_limit), HARD_RESULT_CAP))  # D4
