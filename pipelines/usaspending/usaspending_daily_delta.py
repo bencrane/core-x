@@ -131,6 +131,19 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
 app = modal.App("usaspending-daily-delta", image=image)
 
 
+class USASpendingDataLagException(RuntimeError):
+    """A delta window returned 0 award rows (Directive 34b — lag tolerance).
+
+    Federal award activity is never empty for a real window, so 0 rows means
+    USAspending's warehouse has not yet landed this window's ``last_modified_date``
+    modifications — a processing lag, NOT a clean sync. Treating it as success and
+    advancing the watermark would PERMANENTLY skip the awards that land later under
+    that same date stamp (the window would have already moved past it). Raising this
+    FREEZES the watermark: the run is recorded ``stalled`` (not ``success``), so
+    ``max(feed_date) WHERE status='success'`` is unchanged and the next cron fire
+    re-attempts the identical window until the backlog clears and rows return."""
+
+
 # ─────────────────────────── R2 / S3 plumbing ───────────────────────────
 
 def _r2_storage_options() -> dict[str, str]:
@@ -637,7 +650,13 @@ def _run_delta(mode, window_start, window_end, trigger_callback_url, dry_run: bo
     """Shared core. FETCH is retryable (raises bare → modal.Retries recycles the
     container = fresh egress IP per the F5 lesson). TRANSFORM+MERGE is terminal:
     it records the ops row + posts the callback and does NOT re-raise, so a compute
-    error fails the Trigger run once without triggering a full Modal re-run."""
+    error (or a lag stall) fails the Trigger run once without triggering a full Modal
+    re-run.
+
+    LAG TOLERANCE (Directive 34b): a window that yields 0 award rows is NOT a clean
+    sync — it is a federal-warehouse processing lag. It raises
+    USASpendingDataLagException → recorded ``stalled`` (never ``success``) → the
+    watermark is frozen → the next cron fire re-attempts the identical window."""
     import datetime as dt
 
     started_at = dt.datetime.now(dt.timezone.utc)
@@ -676,24 +695,38 @@ def _run_delta(mode, window_start, window_end, trigger_callback_url, dry_run: bo
             _local, raw_uri = _land_cold_raw(con, csv_glob, feed_date, upload=not dry_run)
             grain = _build_delta_award_grain(con, _local, _COLD_PROJECTION)
         elif not steady_rows:
-            # Quiet last_modified day — successful no-op; the watermark still advances.
-            print("0 awards in window; no-op merge.")
-            grain, raw_uri = 0, None
+            grain, raw_uri = 0, None   # empty fetch → caught by the lag guard below
         else:
             _local, raw_uri = _land_steady_raw(steady_rows, feed_date, upload=not dry_run)
             grain = _build_delta_award_grain(con, _local, _STEADY_PROJECTION)
 
         print(f"award-grain delta rows: {grain:,}")
-        if grain > 0 and not dry_run:
+
+        # LAG TOLERANCE (Directive 34b). A 0-row window is a federal-warehouse lag,
+        # never a real empty day. HALT — do not record success, do not advance the
+        # watermark; the next cron fire re-attempts the identical window. (Raised here,
+        # in the terminal phase, so it is recorded as a 'stalled' run rather than
+        # re-fetched 5× by modal.Retries — the data is simply not in the warehouse yet.)
+        if grain == 0:
+            raise USASpendingDataLagException(
+                "API returned 0 rows. Assuming federal warehouse lag. Halting watermark.")
+
+        if not dry_run:
             so = _r2_storage_options()
             rows_upserted = _merge_delta(con, so)
             total = lance_count(AWARD_SEARCH_URI, so)
             print(f"merge_insert: {rows_upserted:,} awards upserted; "
                   f"award_search now {total:,} rows")
-        elif grain > 0:
+        else:
             print(f"[dry-run] would upsert {grain:,} award-grain rows (no merge)")
-        # Reached only on the no-exception path → success (incl. a 0-row no-op window).
         status = "success"
+    except USASpendingDataLagException as exc:
+        # Terminal STALL — not a code error and not retryable within this run. Recorded
+        # 'stalled' so the success-only watermark stays frozen; surfaced to Trigger as a
+        # failure (visible). Not re-raised → no futile modal.Retries storm.
+        error = str(exc)
+        status = "stalled"
+        print(f"STALL (watermark frozen): {error}")
     except Exception as exc:  # noqa: BLE001 — terminal compute error: callback + return
         error = f"{type(exc).__name__}: {exc}"
         status = "error"
@@ -705,11 +738,16 @@ def _run_delta(mode, window_start, window_end, trigger_callback_url, dry_run: bo
                         rows_upserted=int(rows_upserted), api_calls=int(api_calls),
                         raw_landing_uri=raw_uri, status=status, error=error,
                         started_at=started_at, completed_at=completed_at)
+            # Trigger callback is binary (success|error); a stall is a non-success the
+            # cron must see. The 'stalled' flag distinguishes a lag halt from a real error.
             _post_callback(trigger_callback_url, {
-                "status": status, "rows": int(rows_upserted), "feed": FEED,
+                "status": "success" if status == "success" else "error",
+                "rows": int(rows_upserted), "feed": FEED,
                 "dataset_uri": AWARD_SEARCH_URI, "run_mode": run_mode,
                 "window_start": ws.isoformat(), "window_end": we.isoformat(),
-                "api_calls": int(api_calls)})
+                "api_calls": int(api_calls),
+                "stalled": status == "stalled",
+                "message": error if status != "success" else None})
 
     return {"feed": FEED, "run_mode": run_mode, "rows_upserted": int(rows_upserted),
             "api_calls": int(api_calls), "status": status, "raw_landing_uri": raw_uri,
