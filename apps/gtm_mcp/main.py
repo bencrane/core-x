@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .src.tools import audience, catalog, dmaas, hydration, ops
+from .src.tools import audience, catalog, corex, dmaas, hydration, ops
 
 # Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
 # rejects any non-localhost Host header with `421 Invalid Host header` — which
@@ -57,6 +57,7 @@ catalog.register(mcp)
 dmaas.register(mcp)
 ops.register(mcp)  # Directive 18: hq-x ops.* upsert + Postgres schema introspection
 hydration.register(mcp)  # Directive 20-Final: launch Waterfall ICP contact hydration (Trigger trigger)
+corex.register(mcp)  # GTM control surface: initiative→campaign→lead→send (corex schema)
 
 
 async def _info(request):  # noqa: ANN001 — Starlette endpoint
