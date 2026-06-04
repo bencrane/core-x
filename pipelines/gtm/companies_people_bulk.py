@@ -28,10 +28,14 @@ SOURCE (live Postgres, read-only via the DuckDB postgres scanner):
     Modal secret as ``HQX_DB_URL_POOLED`` — the same DB that already receives ops.* run rows.
     DuckDB ATTACHes it READ_ONLY — no server-side compute, transform is 100% local DuckDB.
 
-TARGET (Gen-3 system of record — native Lance v2.1, full-snapshot overwrite):
-    s3://data-sink/active/companies/
-    s3://data-sink/active/people/
-    s3://data-sink/active/company_target_industries/
+TARGET (Gen-3 system of record — native Lance v2.1):
+    s3://data-sink/active/company_target_industries/   ← full-snapshot overwrite (dexarchive-fed)
+
+    SEVERED from dexarchive — NO LONGER overwritten by this worker:
+    s3://data-sink/active/companies/   ── standalone SoR: manual seeds + exa.ai websets + Waterfall ICP
+    s3://data-sink/active/people/      ── standalone SoR: Waterfall ICP hydration + manual seeds
+    ingest_gtm_company_people REFUSES these two grains so a stray run can never wipe
+    non-dexarchive rows. Existing rows stay frozen at their last snapshot; new rows append.
 
 MINIMAL SCHEMAS (every identifier is STRICT VARCHAR — uuid rendered as its canonical
 hyphenated text, the fleet convention; string equality is the join semantics):
@@ -114,6 +118,16 @@ import modal
 # Gen-3 target sink (active tier). Net-new datasets land directly here.
 _ACTIVE = "s3://data-sink/active"
 DATASETS = ("companies", "people", "company_target_industries")
+
+# ── dexarchive SEVERED (companies + people) ──────────────────────────────────
+# companies + people are NO LONGER sourced/overwritten from dexarchive: the Lance
+# `companies` / `people` datasets are the standalone system of record — grown by
+# manual seeds, exa.ai websets, and Waterfall ICP hydration, NOT a dexarchive
+# snapshot. ingest_gtm_company_people REFUSES these grains so a stray run can never
+# wipe non-dexarchive rows. Only `company_target_industries` stays dexarchive-fed.
+SEVERED_FROM_DEXARCHIVE = frozenset({"companies", "people"})
+INGEST_DATASETS = tuple(d for d in DATASETS if d not in SEVERED_FROM_DEXARCHIVE)
+
 DATASET_URI = {
     "companies": os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/"),
     "people": os.environ.get("GTM_PEOPLE_URI", f"{_ACTIVE}/people/"),
@@ -466,10 +480,11 @@ def ingest_gtm_company_people(
     only: str = "",
     trigger_callback_url: str | None = None,
 ) -> dict:
-    """Migrate dexarchive.companies + dexarchive.people → Gen-3 Lance. ATTACH the HQX Postgres READ_ONLY,
-    project/cast each grain in DuckDB → Arrow → Lance overwrite → BTREE indexes. Then record
-    ops.* state and wake the Trigger run. ``only`` restricts to one dataset. Re-raises on
-    failure so the Modal call is marked failed."""
+    """Materialize the dexarchive-fed grain (company_target_industries) → Gen-3 Lance. companies
+    and people are SEVERED from dexarchive and REFUSED here (see module docstring). ATTACH the HQX
+    Postgres READ_ONLY, project/cast each grain in DuckDB → Arrow → Lance overwrite → BTREE indexes.
+    Then record ops.* state and wake the Trigger run. ``only`` restricts to one dataset; passing a
+    severed grain raises. Re-raises on failure so the Modal call is marked failed."""
     import datetime as dt
     import gc
 
@@ -477,7 +492,14 @@ def ingest_gtm_company_people(
     import lance  # noqa: F401 — imported so a missing dep fails early, not mid-write
 
     started_at = dt.datetime.now(dt.timezone.utc)
-    targets = [only] if only else list(DATASETS)
+    targets = [only] if only else list(INGEST_DATASETS)
+    severed = [t for t in targets if t in SEVERED_FROM_DEXARCHIVE]
+    if severed:
+        raise RuntimeError(
+            f"{severed} is SEVERED from dexarchive — the Lance companies/people datasets are the "
+            "standalone system of record (manual seeds + exa.ai websets + Waterfall ICP), never "
+            "overwritten from dexarchive. Only company_target_industries remains dexarchive-fed."
+        )
     for t in targets:
         if t not in DATASET_URI:
             raise ValueError(f"unknown dataset {t!r}; expected one of {list(DATASETS)}")
