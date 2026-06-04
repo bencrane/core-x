@@ -25,9 +25,12 @@ from __future__ import annotations
 import datetime as dt
 import io
 import os
+import json
 import re
 import sys
 import tarfile
+import time
+import urllib.parse
 
 REPO = "fedspendingtransparency/usaspending-api"
 TARBALL = f"https://github.com/{REPO}/archive/refs/heads/master.tar.gz"
@@ -36,8 +39,20 @@ CATALOG_URI = os.environ.get(
     "USASPENDING_API_CATALOG_URI", "s3://data-sink/active/usaspending_api_catalog/")
 DATA_STORAGE_VERSION = "2.1"
 
+# Live response-sampling (--live-sample): fills endpoints whose contract defines the
+# response via MSON attribute references, so no literal JSON example exists upstream to
+# extract. We call the real endpoint and capture the actual JSON.
+API_HOST = "https://api.usaspending.gov"
+SAMPLE_VALUES = {
+    "fiscal_year": "2025", "fy": "2025", "fips": "06", "code": "541512",
+    "naics": "541512", "duns_or_uei": "TP7EK8DZV6N5", "group": "all",
+    "limit": "10", "page": "1",
+}
+SAMPLE_DELAY_SECONDS = 1.2   # polite spacing for USAspending's per-IP throttle
+
 # API-Blueprint extraction patterns.
-_PATH_RE = re.compile(r"(/api/v\d+/[A-Za-z0-9_/{}.-]+)")                          # /api/v2/search/spending_by_award/
+_TEMPLATE_RE = re.compile(r"\[(/api/v\d+/[^\]\s]*)\]")          # full URI template inside [ ]
+_PATH_FALLBACK_RE = re.compile(r"(/api/v\d+/[A-Za-z0-9_/{}.-]+)")
 _METHOD_HEAD_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s*(GET|POST|PUT|DELETE|PATCH)\b")  # '## POST'
 _METHOD_BRKT_RE = re.compile(r"\[(GET|POST|PUT|DELETE|PATCH)\b")                     # '[POST /api/…]'
 _VER_RE = re.compile(r"/contracts/(v\d+)/")
@@ -114,8 +129,18 @@ def _indented_blocks(md: str, marker_prefix: str, want_json: bool) -> list[tuple
 def _parse(rel_path: str, md: str) -> dict:
     """Best-effort parse of one API-Blueprint contract → catalog row. Full fidelity is
     preserved in contract_md; the extracted fields are query conveniences."""
-    paths = _PATH_RE.findall(md)
-    endpoint_path = paths[0] if paths else None
+    tmpl_m = _TEMPLATE_RE.search(md)
+    if tmpl_m:
+        uri_template = tmpl_m.group(1)
+    else:
+        fb = _PATH_FALLBACK_RE.search(md)
+        uri_template = fb.group(1) if fb else None
+    # callable base path = template minus the {?query}/{&query} suffix and any stray '{'
+    endpoint_path = None
+    if uri_template:
+        endpoint_path = re.split(r"\{[?&]", uri_template)[0].rstrip()
+        if endpoint_path.endswith("{"):
+            endpoint_path = endpoint_path[:-1]
     methods = sorted(set(_METHOD_HEAD_RE.findall(md)) | set(_METHOD_BRKT_RE.findall(md)))
     ver_m = _VER_RE.search(rel_path)
     after = rel_path.split("/contracts/", 1)[1] if "/contracts/" in rel_path else rel_path
@@ -146,6 +171,7 @@ def _parse(rel_path: str, md: str) -> dict:
 
     return {
         "endpoint_path": endpoint_path,
+        "uri_template": uri_template,
         "methods": ",".join(methods) or None,
         "api_version": ver_m.group(1) if ver_m else None,
         "group_name": group,
@@ -160,21 +186,128 @@ def _parse(rel_path: str, md: str) -> dict:
     }
 
 
+def _bootstrap_ids() -> dict:
+    """Best-effort: fetch a real agency id + federal_account_id to fill the path/query
+    params some GET endpoints require. Failures are non-fatal — those endpoints just stay
+    unsampled (their full spec remains in contract_md)."""
+    import requests
+
+    out: dict = {}
+    try:
+        r = requests.get(API_HOST + "/api/v2/references/toptier_agencies/", timeout=(15, 60))
+        if r.ok:
+            res = r.json().get("results") or []
+            if res:
+                aid = res[0].get("agency_id") or res[0].get("toptier_agency_id")
+                if aid:
+                    out["awarding_agency_id"] = out["funding_agency_id"] = out["agency"] = str(aid)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  bootstrap agencies failed: {exc}", flush=True)
+    try:
+        r = requests.post(API_HOST + "/api/v2/federal_accounts/",
+                          json={"limit": 1, "page": 1, "filters": {"fy": "2025"}}, timeout=(15, 60))
+        if r.ok:
+            res = r.json().get("results") or []
+            if res:
+                faid = res[0].get("account_id") or res[0].get("id") or res[0].get("federal_account_id")
+                if faid:
+                    out["federal_account_id"] = str(faid)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  bootstrap federal_accounts failed: {exc}", flush=True)
+    return out
+
+
+def _sample_one(row: dict, samples: dict):
+    """One best-effort live call for a gap endpoint. Returns (status:int|None, text|None).
+    POST → replay the documented request body. GET → substitute path params + fill query
+    params from the sample values. status=-1 marks a transport error; None marks skipped."""
+    import requests
+
+    path = row.get("endpoint_path")
+    methods = row.get("methods") or ""
+    if not path:
+        return None, None
+    try:
+        if "POST" in methods:
+            if not row.get("request_example"):
+                return None, None
+            body = json.loads(row["request_example"])
+            r = requests.post(API_HOST + path, json=body, timeout=(15, 90))
+            return r.status_code, r.text
+        if "GET" in methods:
+            url_path = path
+            for p in re.findall(r"\{([^}?&]+)\}", url_path):       # required path params
+                if samples.get(p):
+                    url_path = url_path.replace("{%s}" % p, urllib.parse.quote(str(samples[p]), safe=""))
+                else:
+                    return None, None                               # no sample → skip
+            q = {}
+            mq = re.search(r"\{[?&]([^}]*)\}", row.get("uri_template") or "")
+            if mq:
+                for name in (n.strip() for n in mq.group(1).split(",")):
+                    if samples.get(name):
+                        q[name] = samples[name]
+            url = API_HOST + url_path + (("?" + urllib.parse.urlencode(q)) if q else "")
+            r = requests.get(url, timeout=(15, 90))
+            return r.status_code, r.text
+    except Exception as exc:  # noqa: BLE001
+        return -1, f"__error__: {exc}"
+    return None, None
+
+
+def _live_sample(rows: list[dict], now: str) -> int:
+    """Fill response_example for gap rows (no contract example) by calling the real
+    endpoint. Polite per-IP spacing; each call isolated so one failure never aborts the
+    pass. Records response_source='live', the HTTP status, and the sample timestamp."""
+    samples = dict(SAMPLE_VALUES)
+    samples.update(_bootstrap_ids())
+    n_ok = 0
+    for row in rows:
+        if row.get("response_example") or row.get("response_schema") or not row.get("endpoint_path"):
+            continue
+        status, text = _sample_one(row, samples)
+        if status is None:
+            continue
+        row["response_sampled_at"] = now
+        row["response_http_status"] = status if (isinstance(status, int) and status > 0) else None
+        ok = (isinstance(status, int) and 200 <= status < 300
+              and bool(text) and text.lstrip()[:1] in ("{", "["))
+        if ok:
+            row["response_example"] = text[:40000]
+            row["response_source"] = "live"
+            n_ok += 1
+            print(f"  ✓ {status} {row.get('methods'):<5} {row['endpoint_path']}", flush=True)
+        else:
+            snippet = (text or "").replace("\n", " ")[:80]
+            print(f"  · {status} {row.get('methods'):<5} {row['endpoint_path']}  {snippet!r}", flush=True)
+        time.sleep(SAMPLE_DELAY_SECONDS)
+    print(f"live-sampled {n_ok} real 2xx responses", flush=True)
+    return n_ok
+
+
 def main() -> int:
     import lance
     import pyarrow as pa
 
+    live = "--live-sample" in sys.argv
     contracts, _top = _fetch_contracts()
-    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
     rows = []
     for rel, md in sorted(contracts):
         row = _parse(rel, md)
         row["source_repo"] = REPO
-        row["fetched_at"] = fetched_at
+        row["fetched_at"] = now
+        row["response_source"] = "contract" if row.get("response_example") else None
+        row["response_http_status"] = None
+        row["response_sampled_at"] = None
         rows.append(row)
 
     with_path = sum(1 for r in rows if r["endpoint_path"])
     print(f"parsed {len(rows)} contracts; {with_path} with an /api endpoint path", flush=True)
+
+    if live:
+        print("live-sampling gap endpoints (no contract response example)…", flush=True)
+        _live_sample(rows, now)
 
     table = pa.Table.from_pylist(rows)
     so = _r2_storage_options()
@@ -184,15 +317,17 @@ def main() -> int:
     ds.create_scalar_index("endpoint_path", index_type="BTREE")
     print(f"landed {ds.count_rows()} rows → {CATALOG_URI} (BTREE on endpoint_path)", flush=True)
 
-    # quick read-back proof
+    # read-back: response coverage by provenance
     import duckdb
     con = duckdb.connect(":memory:")
-    con.register("src", ds.scanner(columns=["endpoint_path", "methods", "group_name"]).to_reader())
+    con.register("src", ds.scanner(
+        columns=["response_example", "response_schema", "response_source"]).to_reader())
     con.execute("CREATE TABLE c AS SELECT * FROM src")
-    print("\nby group:")
-    for g, n in con.execute(
-        "SELECT group_name, count(*) FROM c GROUP BY 1 ORDER BY 2 DESC LIMIT 12").fetchall():
-        print(f"  {n:>3}  {g}")
+    cov = con.execute("""SELECT count(*),
+        count(*) FILTER (WHERE response_example IS NOT NULL OR response_schema IS NOT NULL),
+        count(*) FILTER (WHERE response_source='contract'),
+        count(*) FILTER (WHERE response_source='live') FROM c""").fetchone()
+    print(f"response coverage: {cov[1]}/{cov[0]}  (contract {cov[2]}, live {cov[3]})", flush=True)
     con.close()
     return 0
 
