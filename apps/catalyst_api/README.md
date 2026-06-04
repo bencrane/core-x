@@ -95,7 +95,7 @@ Injected via Doppler (`core-x/prd`) locally and on Render.
 | `FIRMOGRAPHICS_LANCE_URI` | override (default `s3://data-sink/active/firmographics_blitz/`) |
 | `CONTRACTOR_AWARD_SUMMARY_LANCE_URI` | override (default `s3://data-sink/active/contractor_award_summary/`) |
 | `AWARD_SEARCH_LANCE_URI` | override (default `s3://data-sink/active/usaspending/award_search/`) |
-| `PORT` | injected by Render; defaults to `8080` locally |
+| `PORT` / `HOST` | Railway service pins `8080` / `::`; default `8080` / `::` locally |
 
 ## Local dev
 
@@ -119,8 +119,29 @@ pytest apps/catalyst_api/tests          # pure composition + normalization, no n
 
 ## Deployment
 
-Render Web Service (Python buildpack), same shape as `apps/gtm_mcp`:
+Railway service **co-located with the platform-api BFF** (Railway project
+`rare-structure-hq`, env `production`) on the project's **private network** — no
+public domain. The BFF reaches it at `http://catalyst-api.railway.internal:8080`.
+This is what satisfies the "not exposed to the public web" mandate: the service
+is unreachable from the public internet, *and* gated by the bearer token.
 
-- **Build:** `pip install -r apps/catalyst_api/requirements.txt`
-- **Start:** `python -m apps.catalyst_api.main`
-- Binds `0.0.0.0:$PORT`. Set `CATALYST_API_TOKEN` + `R2_*` in the service env.
+Build/run is the `apps/catalyst_api/Dockerfile` (Doppler CLI + `doppler run --
+python -m apps.catalyst_api.main`), context = core-x repo root.
+
+Create the service (GitHub-connected, auto-redeploys on `core-x` main):
+
+```bash
+# from a dir linked to the rare-structure-hq Railway project (env: production)
+railway add --service catalyst-api --repo bencrane/core-x \
+  --variables "RAILWAY_DOCKERFILE_PATH=apps/catalyst_api/Dockerfile" \
+  --variables "HOST=::" \
+  --variables "PORT=8080" \
+  --variables "DOPPLER_TOKEN=<core-x/prd service token>"
+```
+
+`DOPPLER_TOKEN` is a Doppler service token scoped to `core-x/prd`
+(`doppler configs tokens create catalyst-railway --project core-x --config prd --plain`);
+`doppler run` then injects `R2_*` + `CATALYST_API_TOKEN` at startup.
+
+> **IPv6:** Railway's private network is IPv6-only, so the service binds `::`
+> (set via `HOST`). Binding `0.0.0.0` would make it invisible to the BFF.

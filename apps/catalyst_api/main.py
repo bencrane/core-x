@@ -6,13 +6,15 @@ capability: resolve a web domain to its federal contracting profile via native
 ``contractor_award_summary.recipient_uei``), with prime award line items from
 ``usaspending/award_search`` available as an opt-in detail.
 
-Run (locally and on Render, from the repo root):
+Run (locally and on Railway, from the repo root):
 
     python -m apps.catalyst_api.main
 
-Render binds the process to ``$PORT`` on ``0.0.0.0``. Every ``/api/v1`` route is
-gated by an operator bearer token (``CATALYST_API_TOKEN``) that the platform-api
-BFF presents — the service is NOT exposed to the public web; the BFF is the only
+Deployed as a Railway service co-located with the platform-api BFF, on the
+project's PRIVATE network (no public domain) — it binds ``::`` (IPv6; Railway's
+private net is IPv6-only) on a fixed ``$PORT`` (8080). Every ``/api/v1`` route is
+gated by an operator bearer token (``CATALYST_API_TOKEN``) that the BFF presents
+as Bearer — the service is NOT exposed to the public web; the BFF is the only
 caller. ``/healthz`` and ``/`` stay open for liveness probes.
 """
 
@@ -133,7 +135,7 @@ def main() -> None:
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
-    uvicorn.run(app, host="0.0.0.0", port=config.port())
+    uvicorn.run(app, host=config.host(), port=config.port())
 
 
 if __name__ == "__main__":

@@ -67,5 +67,14 @@ def operator_token() -> str | None:
 
 
 def port() -> int:
-    """Render (and local docker) inject ``$PORT``; default for a bare local run."""
+    """Railway injects ``$PORT`` (the service pins it to 8080); default for a bare
+    local run."""
     return int(os.environ.get("PORT", "8080"))
+
+
+def host() -> str:
+    """Bind address. Defaults to ``::`` — Railway's private network is IPv6-only,
+    so the co-located BFF can only reach an IPv6-bound listener (``0.0.0.0`` would
+    be invisible on the private net). Dual-stack also accepts IPv4 for local runs.
+    Override with ``HOST`` if a deploy target needs IPv4-only."""
+    return os.environ.get("HOST", "::")
