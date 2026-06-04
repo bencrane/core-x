@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# scope-status — one-shot table of active /scope sessions.
+#
+# INSTALLATION
+#   Add ~/hq-all/scripts to your PATH:
+#     export PATH="$HOME/hq-all/scripts:$PATH"
+#   Then run: scope-status
+#
+# Or invoke directly:
+#   ~/hq-all/scripts/scope-status
+#
+# OUTPUT COLUMNS
+#   slug | stage | age | blocked? | current_action
+#
+# BEHAVIOR
+#   - Reads all ~/Desktop/hq/scope-status/*.json files.
+#   - Prints one row per active session.
+#   - GC: deletes status files whose last_heartbeat is >10 min old (stale sessions).
+#   - 'age' is time since last_heartbeat, humanized (12s, 4m, 2h).
+#   - 'blocked?' is 'yes' if blocked_on is non-null, else 'no'.
+
+set -uo pipefail
+
+STATUS_DIR="$HOME/Desktop/hq/scope-status"
+STALE_THRESHOLD=600  # 10 minutes in seconds
+
+if [[ ! -d "$STATUS_DIR" ]]; then
+  echo "(no scope-status directory — nothing running)"
+  exit 0
+fi
+
+NOW=$(date +%s)
+
+python3 - "$STATUS_DIR" "$NOW" "$STALE_THRESHOLD" <<'PYEOF'
+import json, sys, os, glob
+from datetime import datetime, timezone
+
+status_dir = sys.argv[1]
+now_epoch = int(sys.argv[2])
+stale_threshold = int(sys.argv[3])
+
+files = sorted(glob.glob(os.path.join(status_dir, "*.json")))
+
+if not files:
+    print("(no active scope sessions)")
+    sys.exit(0)
+
+rows = []
+header = ["slug", "stage", "age", "blocked?", "current_action"]
+sep =    ["----", "-----", "---", "--------", "--------------"]
+
+for path in files:
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except Exception as e:
+        continue
+
+    slug = d.get("slug", "?")
+    stage = d.get("stage", "?")
+    last_hb_str = d.get("last_heartbeat", "")
+    current_action = d.get("current_action", "?")
+    blocked_on = d.get("blocked_on")
+
+    # Parse last_heartbeat
+    try:
+        hb_str = last_hb_str.replace("Z", "+00:00")
+        hb = datetime.fromisoformat(hb_str)
+        hb_epoch = int(hb.timestamp())
+    except Exception:
+        hb_epoch = 0
+
+    age_secs = now_epoch - hb_epoch
+
+    # GC stale files
+    if age_secs > stale_threshold:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        continue
+
+    # Humanize age
+    if age_secs < 60:
+        age_str = f"{age_secs}s"
+    elif age_secs < 3600:
+        age_str = f"{age_secs // 60}m"
+    else:
+        age_str = f"{age_secs // 3600}h"
+
+    blocked_str = "yes" if blocked_on else "no"
+    action = current_action[:60] + "…" if len(current_action) > 60 else current_action
+
+    rows.append([slug, stage, age_str, blocked_str, action])
+
+if not rows:
+    print("(no active scope sessions)")
+    sys.exit(0)
+
+all_rows = [header, sep] + rows
+
+# Compute column widths
+widths = [len(h) for h in header]
+for r in rows:
+    for i, cell in enumerate(r):
+        widths[i] = max(widths[i], len(cell))
+
+fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+for r in all_rows:
+    print(fmt.format(*r))
+PYEOF
