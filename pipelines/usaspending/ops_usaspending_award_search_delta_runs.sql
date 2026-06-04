@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS ops.usaspending_award_search_delta_runs (
     api_calls       integer,                -- spending_by_award page calls (steady) / bulk poll count (cold)
     raw_landing_uri text,                   -- s3://dex-raw-landing-zone/usaspending/award_search/api-delta/date=.../...
     dataset_uri     text,                   -- merge target (award_search Lance)
-    status          text        NOT NULL,   -- 'success' | 'error' | 'no_data' | 'skipped'
+    status          text        NOT NULL,   -- 'success' | 'stalled' (0-row warehouse-lag halt; freezes the watermark) | 'error' | 'skipped'
     error_message   text,
     started_at      timestamptz,
     executed_at     timestamptz NOT NULL DEFAULT now(),  -- terminal-state completion time
