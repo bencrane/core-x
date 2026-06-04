@@ -77,9 +77,10 @@ def _fetch_contracts() -> tuple[list[tuple[str, str]], str]:
     return out, top
 
 
-def _bodies(md: str) -> list[tuple[int, str]]:
-    """(char_pos, json_text) for each indented '+ Body' block. API Blueprint bodies are
-    indented code blocks (4+ spaces), not ``` fences."""
+def _indented_blocks(md: str, marker_prefix: str, want_json: bool) -> list[tuple[int, str]]:
+    """(char_pos, text) for each indented block under a line starting with marker_prefix
+    (e.g. '+ Body', '+ Parameters', '+ Schema'). API Blueprint uses 4+-space-indented
+    blocks, not ``` fences. want_json keeps only blocks that begin with { or [."""
     lines = md.splitlines(keepends=True)
     offs, c = [], 0
     for ln in lines:
@@ -87,7 +88,7 @@ def _bodies(md: str) -> list[tuple[int, str]]:
         c += len(ln)
     out, i = [], 0
     while i < len(lines):
-        if lines[i].strip().startswith("+ Body"):
+        if lines[i].strip().startswith(marker_prefix):
             base = len(lines[i]) - len(lines[i].lstrip())
             j, block = i + 1, []
             while j < len(lines):
@@ -102,7 +103,7 @@ def _bodies(md: str) -> list[tuple[int, str]]:
                 else:
                     break
             text = "".join(block).strip()
-            if text[:1] in ("{", "["):
+            if text and (not want_json or text[:1] in ("{", "[")):
                 out.append((offs[i], text[:20000]))
             i = j
         else:
@@ -129,10 +130,19 @@ def _parse(rel_path: str, md: str) -> dict:
             title = re.sub(r"\s*\[.*$", "", s.lstrip("# ")).strip() or None
             break
 
-    bodies = _bodies(md)
     resp_pos = md.find("+ Response")
-    req_example = next((t for p, t in bodies if resp_pos < 0 or p < resp_pos), None)
-    resp_example = next((t for p, t in bodies if resp_pos >= 0 and p >= resp_pos), None)
+    if resp_pos < 0:
+        resp_pos = len(md)
+    bodies = _indented_blocks(md, "+ Body", want_json=True)
+    params = _indented_blocks(md, "+ Parameters", want_json=False)
+    schemas = _indented_blocks(md, "+ Schema", want_json=True)
+    # Request side = before the first + Response; response side = at/after it.
+    req_example = next((t for p, t in bodies if p < resp_pos), None)
+    resp_example = next((t for p, t in bodies if p >= resp_pos), None)
+    # GETs carry no body — their "payload" is query/path params; this fills that gap.
+    request_parameters = next((t for p, t in params if p < resp_pos), None)
+    # When a response has no literal JSON body, its JSON Schema (if any) is the shape.
+    response_schema = next((t for p, t in schemas if p >= resp_pos), None)
 
     return {
         "endpoint_path": endpoint_path,
@@ -141,7 +151,9 @@ def _parse(rel_path: str, md: str) -> dict:
         "group_name": group,
         "title": title,
         "request_example": req_example,
+        "request_parameters": request_parameters,
         "response_example": resp_example,
+        "response_schema": response_schema,
         "contract_md": md,
         "contract_path": rel_path,
         "github_url": f"https://github.com/{REPO}/blob/master/{rel_path}",
