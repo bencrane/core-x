@@ -27,7 +27,25 @@ export default defineConfig({
     // deploy`); they are never committed to the repo.
     extensions: [
       syncEnvVars(() =>
-        ["MODAL_DISPATCHER_URL", "MODAL_KEY", "MODAL_SECRET"]
+        [
+          // Universal Dispatcher proxy-auth (data-plane tasks)
+          "MODAL_DISPATCHER_URL",
+          "MODAL_KEY",
+          "MODAL_SECRET",
+          // proposal-send: Anvil e-sign + Resend delivery
+          "APP_ENV",
+          "ANVIL_API_KEY_DEV",
+          "ANVIL_API_KEY",
+          "ANVIL_FORCE_TEST",
+          "ANVIL_WEBHOOK_URL",
+          "RESEND_API_KEY",
+          "PROPOSAL_FROM_EMAIL",
+          "PROPOSAL_PROVIDER_NAME",
+          "PROPOSAL_PROVIDER_COMPANY",
+          "PROPOSAL_PROVIDER_EMAIL",
+          "PROPOSAL_PROVIDER_ADDRESS",
+          "PROPOSAL_PROVIDER_WEBSITE",
+        ]
           .filter((k) => process.env[k])
           .map((k) => ({ name: k, value: process.env[k] as string })),
       ),
