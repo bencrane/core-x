@@ -76,7 +76,11 @@ MAX_ROWS_PER_FILE = 1048576
 MAX_BYTES_PER_FILE = 90 * 1024**3
 
 # recipient_uei = the single forward spine lookup the frontend point-queries (§6.1).
-BTREE_INDEXES = ["recipient_uei"]
+# primary_naics / primary_psc = cohort-selection codes — indexed so gtm-mcp industry
+# cohorts (WHERE primary_naics IN (...) / sector-prefix range) are index lookups, not
+# 578k full scans. Built live on R2 2026-06-03 (v8->v10); listed here so a future
+# re-materialize (overwrite) rebuilds them. Verified: cohort filter 14.9k rows scanned vs 578.9k.
+BTREE_INDEXES = ["recipient_uei", "primary_naics", "primary_psc"]
 
 DUCKDB_MEMORY_LIMIT = "48GB"
 DUCKDB_THREADS = 8
