@@ -1,0 +1,7 @@
+# catalyst_api — Gen-3 read API. Render Web Service (Python buildpack):
+#   build:  pip install -r apps/catalyst_api/requirements.txt
+#   start:  python -m apps.catalyst_api.main
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+pylance>=7        # provides `import lance` (lancedb does not re-export it)
+pyarrow>=17       # Arrow bridge for the Lance scanner → to_pylist()
