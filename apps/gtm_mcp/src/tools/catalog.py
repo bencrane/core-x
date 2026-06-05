@@ -31,6 +31,21 @@ _schema_cache: dict[str, list[dict[str, str]]] | None = None  # manifest: name �
 _lance_cache: dict[str, list[dict[str, str]] | None] = {}      # per-dataset Lance schema, memoized
 
 
+def invalidate() -> None:
+    """Clear the module-level schema caches so the next ``list_datasets`` /
+    ``describe_dataset`` re-reads fresh. Necessary because ``database.get_registry(
+    refresh=True)`` re-lists the sink but does NOT touch these caches: a
+    ``describe_dataset`` call made *before* a dataset landed memoizes ``None`` in
+    ``_lance_cache`` (and would survive a registry refresh → restart-only), and
+    ``_schema_cache`` holds the stale ``active/catalog.json`` manifest (so a new
+    dataset shows no ``column_count``). ``refresh_catalog`` calls this together with
+    the registry refresh so a just-landed Parallel dataset is fully visible (Directive
+    24 §4.2). Idempotent; safe to call anytime."""
+    global _schema_cache
+    _schema_cache = None
+    _lance_cache.clear()
+
+
 def _catalog_schema() -> dict[str, list[dict[str, str]]]:
     """``dataset_name → [{"name", "type"}]`` parsed from ``active/catalog.json`` (a
     maintained manifest, grouped by domain). Cached for the process; best-effort — an
