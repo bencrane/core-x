@@ -14,16 +14,16 @@ Datasets (2):
   epa_air_facilities  ← ICIS-AIR_downloads.zip::ICIS-AIR_FACILITIES.csv  (REGISTRY_ID inline)
                         grain 1 row / PGM_SYS_ID · BTREE REGISTRY_ID, PGM_SYS_ID, normalized_facility_name
   epa_rcra_handlers   ← rcra_downloads.zip::RCRA_FACILITIES.csv ⋈ epa_program_links(RCRAINFO)
-                        grain 1 row / ID_NUMBER · BTREE REGISTRY_ID, ID_NUMBER, normalized_facility_name
+                        grain 1 row / RCRA_ID · BTREE REGISTRY_ID, RCRA_ID, normalized_facility_name
 
 Both: clean-room data plane — boto3 random-access extract of ONE member (central-directory
 seek), raw-deflate→gzip rewrap to /tmp (only the COMPRESSED member touches disk), DuckDB
 read_csv(all_varchar=true) does 100% of the transform, fetch→ZSTD-parquet→STREAM to
 lance.write_dataset(s3://data-sink/active/<name>/, data_storage_version="2.1"), then
-create_scalar_index BTREE/BITMAP direct-to-R2. Source headers are passed through VERBATIM
-(ID_NUMBER kept as-is, not relabeled) PLUS a derived normalized_facility_name = core.name_norm(
-FACILITY_NAME), the fleet blocking-key rule applied to the site label (BTREE-indexed); only the
-two RCRA geocodes are typed DOUBLE.
+create_scalar_index BTREE/BITMAP direct-to-R2. Source columns pass through verbatim except the
+RCRA handler key, projected ID_NUMBER → RCRA_ID (namespaced to avoid presentation/routing
+collisions), PLUS a derived normalized_facility_name = core.name_norm(FACILITY_NAME), the fleet
+blocking-key rule applied to the site label (BTREE-indexed); only the two RCRA geocodes are typed DOUBLE.
 
 Control plane (Trigger v4 durable callback): the orchestrator accepts ``trigger_callback_url``
 and, on terminal state, (1) writes run rows to ``ops.epa_ingest_runs`` via psycopg and (2) POSTs
@@ -185,16 +185,17 @@ QUALIFY row_number() OVER (PARTITION BY {_t('PGM_SYS_ID')} ORDER BY {_t('REGISTR
 
 def rcra_select(gz_token: str) -> str:
     """epa_rcra_handlers — verbatim passthrough of all 15 RCRA_FACILITIES columns + the resolved
-    REGISTRY_ID + a derived normalized_facility_name = core.name_norm(FACILITY_NAME). ID_NUMBER
-    (the EPA Handler ID) keeps its literal source header — NOT relabeled. INNER JOIN to pl_rcra
+    REGISTRY_ID + a derived normalized_facility_name = core.name_norm(FACILITY_NAME). The EPA
+    Handler ID (source header ID_NUMBER) is projected as RCRA_ID — namespaced to avoid downstream
+    presentation/routing collisions with other datasets' generic ID_NUMBER. INNER JOIN to pl_rcra
     binds the hub key and drops the ~1.20% unlinked handlers. Source ID_NUMBER is unique and
-    pl_rcra is unique on pgm → exactly one row per ID_NUMBER (strictly lossless). FACILITY_NAME is
-    a site label, not a legal entity → the derived key is normalized_facility_name. Only the two
+    pl_rcra is unique on pgm → exactly one row per RCRA_ID (strictly lossless). FACILITY_NAME is a
+    site label, not a legal entity → the derived key is normalized_facility_name. Only the two
     geocodes are typed DOUBLE; every other source column is verbatim text."""
     return f"""
 SELECT
     pl.rid                            AS REGISTRY_ID,
-    {_t('r.ID_NUMBER')}               AS ID_NUMBER,
+    {_t('r.ID_NUMBER')}               AS RCRA_ID,
     {_t('r.FACILITY_NAME')}           AS FACILITY_NAME,
     {_t('r.ACTIVITY_LOCATION')}       AS ACTIVITY_LOCATION,
     {_t('r.FULL_ENFORCEMENT')}        AS FULL_ENFORCEMENT,
@@ -224,8 +225,8 @@ SPECS = {
         bitmap=["STATE", "AIR_OPERATING_STATUS_CODE", "CURRENT_HPV", "AIR_POLLUTANT_CLASS_CODE"],
     ),
     "epa_rcra_handlers": dict(
-        archive="rcra_downloads.zip", member="RCRA_FACILITIES.csv", key="ID_NUMBER",
-        btree=["REGISTRY_ID", "ID_NUMBER", "normalized_facility_name"],
+        archive="rcra_downloads.zip", member="RCRA_FACILITIES.csv", key="RCRA_ID",
+        btree=["REGISTRY_ID", "RCRA_ID", "normalized_facility_name"],
         bitmap=["STATE_CODE", "ACTIVE_SITE", "OPERATING_TSDF", "FED_WASTE_GENERATOR"],
     ),
 }
