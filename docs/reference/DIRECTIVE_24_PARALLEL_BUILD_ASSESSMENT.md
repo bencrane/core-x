@@ -1,0 +1,78 @@
+# Directive 24 — Parallel.ai Three-Workflow Build — Adversarial Assessment
+
+**Date:** 2026-06-04 · **Reviewer:** adversarial code review (read-only) · **Branch:** `claude/gallant-hypatia-6e9f00`
+**Scope:** `core/parallel_client.py`, `pipelines/parallel/{enrich,deep_research,search}.py`, `pipelines/parallel/ops_parallel_*.sql`, `src/trigger/parallel_*.ts`, `apps/gtm_mcp/src/tools/parallel.py`, `apps/gtm_mcp/src/tools/catalog.py`, `apps/gtm_mcp/main.py`.
+**Ground truth:** §0 of `DIRECTIVE_24_PARALLEL_ENRICHMENT_CAPABILITY.md` (authoritative Parallel contract; obeyed, not re-derived).
+
+---
+
+## Overall verdict: **FIX-BEFORE-MERGE**
+
+The mandate is satisfied (three genuinely separate trigger→Modal workflows; one purpose-named gtm-mcp tool each; no surviving single mode-flag tool; §0 byte-unchanged). The integration seam (trigger kwargs ↔ Modal worker params ↔ `app_name`/`function_name`) is correct on all three pairs. The cost cap and idempotency are real and double-enforced. `py_compile` is clean on all Python; `tsc` was not re-run here but the TS reads as type-correct.
+
+**But one defect is data-destroying and must not merge:** the Lance writers infer Arrow `null`-typed columns whenever a batch's values are all-None (routine on the `test_limit=3` first run, on sparse fields, and on empty `_basis`/`basis`). A later run with the same field populated changes the column type (`null`→`string`), `merge_insert` raises, the **bare `except` swallows it and overwrites the whole dataset** — silently destroying every previously-enriched row and re-billing nothing-flagged. This breaks the directive's core "compounding per-spec dataset / merge_insert / never re-bill" contract (§4.1). Fix B1 + B2, then merge.
+
+---
+
+## Per-area table (stress-test items 1–10)
+
+| # | Area | Verdict | Evidence (file:line) |
+|---|---|---|---|
+| 1 | **Integration seam** (trigger kwargs ↔ worker params ↔ app/fn names) | **CONFIRMED-OK** | enrich: TS `app_name:"parallel-enrich"`/`function_name:"enrich_companies"` (`parallel_enrich.ts:131-132`) ↔ `modal.App("parallel-enrich")` (`enrich.py:172`) + `def enrich_companies(...)` (`enrich.py:583`). kwargs keys `run_id,spec_id,audience_id,output_schema,processor,run_kind,max_runs,idempotency_key,cost_cap` (`parallel_enrich.ts:100-110`) all match the worker signature (`enrich.py:583-594`). deep_research: `parallel-deep-research`/`deep_research` (`parallel_deep_research.ts:137-138`) ↔ `enrich.py`-style app/def (`deep_research.py:115,391`); kwargs match (`parallel_deep_research.ts:104-116` ↔ `deep_research.py:391-404`). search: `parallel-search`/`web_search` (`parallel_search.ts:103-104`) ↔ (`search.py:86,225`); kwargs match (`parallel_search.ts:72-82` ↔ `search.py:225-236`). Dispatcher spreads `**kwargs` (`modal_dispatcher.py:53`); no key collides with `trigger_callback_url`. gtm-mcp camelCase payload → TS `payload` interface fields line up per workflow. |
+| 2 | **§0 fidelity in workers** (envelopes, group flow, bounded loop) | **CONFIRMED-OK** | enrich envelope json-wrapped (`parallel_client.py:137-141`, used `enrich.py:661,683`); deep_research text/auto (`parallel_client.py:144-155`, `deep_research.py:463`). Group flow create→add(≤1000)→poll `is_active==false`→counts→`get_group_runs(include_output)` (`enrich.py:678-694`, client `200-277`). `add_group_runs` hard-rejects >1000 (`parallel_client.py:213-216`); worker chunks at 1000 (`enrich.py:684`). Loop budget fits fn timeout: enrich poll budget 3000 s < fn `timeout=3600` (`enrich.py:80,579`); deep_research per-run deadline 3000 s < fn 3600 (`deep_research.py:63,387`). No hallucinated endpoints/fields. |
+| 3 | **enrich.py landing** | **BUG (B1, B3) + rest OK** | keyed `company_id` BTREE + `merge_insert("company_id")` present (`enrich.py:396,412`); `<field>__confidence` matched from `basis[].confidence` by field name (`enrich.py:531,550`); drift null-fill `content.get(f, None)` never throws (`enrich.py:543`); confidence gate writes null/low/medium → `ops.parallel_review` (`enrich.py:552-554,455-476`); partial-failure persists failed ids (`enrich.py:703-708`); null-domain → name-only + counted (`enrich.py:664-669`); tier ceiling `core` enforced (`enrich.py:640`). **BUG B1:** all-None batch → Arrow `null` column → cross-run `merge_insert` type conflict → bare-except overwrite clobbers dataset (`enrich.py:392-403,558-569`). **BUG B3:** BTREE on a `null`-typed key column fails silently (`enrich.py:413-419`). |
+| 4 | **deep_research.py** | **BUG (B2) + rest OK** | grain topic→key run_id, per_entity→key company_id, correct merge key select (`deep_research.py:304`); `ultra` rejected worker-side (`deep_research.py:446`) and TS (`parallel_deep_research.ts:76`); blocking loop bounded (`deep_research.py:270`). **BUG B2:** topic rows set `company_id/normalized_domain/basis = None` → `null`-typed columns (`deep_research.py:478-481,305`); topic-first dataset then conflicts with a later per_entity write (string `company_id`) → bare-except overwrite (`deep_research.py:306-314`); BTREE on null col fails. Minor: `_await_report` 408 branch has no sleep (`deep_research.py:272-274`) — paced only by the server hold; hot-loops if 408 returns fast. |
+| 5 | **search.py** | **SUSPECT (latent) + rest OK** | sync `POST /v1/search` (`parallel_client.py:281-296`, `search.py:278`); inline excerpts capped 50 (`search.py:268`); `persist=true` lands keyed `run_id` BTREE (`search.py:139-163`). **SUSPECT S1:** `parallel_client.search` puts `max_results` **top-level** (`parallel_client.py:294-295`); the diagnostic (`2026-06-02-…-diagnostic.md:215`) says v1 REST nests sizing under `advanced_settings` and names the knobs `max_chars_per_result`/`max_chars_total` (`:36`) — there is no top-level `max_results` in v1 REST. **Not live** — no caller passes `max_results` (worker calls `parallel_search(...)` without it, `search.py:278`), so the key is never emitted today. Wrong-if-used dead param. |
+| 6 | **gtm-mcp parallel.py** | **CONFIRMED-OK** | mirrors hydration.py (urllib, `TRIGGER_SECRET_KEY`, `{"payload":…}`, `register`) (`parallel.py:128-154,438-447`); audience resolved via `corex.audience` source_sql/result_key (`parallel.py:85-98`, worker `enrich.py:218-256`); spec persisted to `ops.parallel_specs` (`parallel.py:101-125`). **Hard cap + idempotency real, pre-dispatch:** TS clamps `maxRuns=min(requestedCap,1000)` then ships `max_runs` (`parallel_enrich.ts:95-96,107`); worker applies it as the audience-resolve `limit` (`enrich.py:651,654`). idempotencyKey `f"{spec}:{aud}:{run_kind}"` set tool-side (`parallel.py:251`) and on the waitpoint token (`parallel_enrich.ts:97,115-118`). `refresh_catalog` calls BOTH `get_registry(refresh=True)` AND `catalog.invalidate()` (`parallel.py:408-409`). All 5 tools registered (`parallel.py:440-447`, `main.py:61`). |
+| 7 | **catalog.invalidate()** | **CONFIRMED-OK** | clears `_schema_cache` (=None) and `_lance_cache` (.clear()) (`catalog.py:34-46`); `_catalog_schema` reads `_schema_cache` only (`catalog.py:49-71`) — no separate `_catalog_schema` cache to miss. |
+| 8 | **ops SQL ↔ worker writes** | **CONFIRMED-OK** | every INSERTed column exists in DDL (enrich `enrich.py:436-447` ↔ `ops_parallel_runs.sql:9-33`; search omits `cost_estimate`/`processor` via literal NULL, `search.py:180-185`, both nullable; review `enrich.py:468-473` ↔ `ops_parallel_review.sql`). All DDL `CREATE … IF NOT EXISTS`, additive. `workflow`/`grain` columns present (`ops_parallel_specs.sql:11-12,16`; `ops_parallel_runs.sql:12-13`). Worker `OPS_DDL` mirrors the `.sql` (enrich superset incl. `dataset_uri`, which the `.sql` also has). |
+| 9 | **Deploy-time** | **CONFIRMED-OK** | `py_compile` clean (all workers + tools). `add_local_python_source("core.parallel_client")` in all three (`enrich.py:164`, `deep_research.py:112`, `search.py:83`). Distinct app names `parallel-enrich`/`parallel-deep-research`/`parallel-search`. `Secret.from_name("parallel-api")` referenced, not created (`enrich.py:575`, `deep_research.py:383`, `search.py:217`). `trigger.config.ts:32-34` syncs `MODAL_DISPATCHER_URL`/`MODAL_KEY`/`MODAL_SECRET` (workers read the Modal secret, so `PARALLEL_API_KEY` need not sync). |
+| 10 | **Bills/mutates/silent-fail/nondeterminism** | **BUG (B1/B2 silent) + minor** | B1/B2 overwrite is the silent-failure path (bare-except → overwrite, run still reports success). `Date.now()`/nondeterminism: none in the workers; TS uses `ctx.run.id` (deterministic per run) for `run_id`. Billing guarded by `retry:{maxAttempts:1}` on all three tasks + idempotencyKey. Minor: worker `max_runs=0` fallback is 1 048 576 (`enrich.py:651`) vs TS cap 1000 — unreachable via trigger (TS always sends ≥1), only a direct-`.remote()` defense gap. |
+
+---
+
+## Bugs to fix (ordered by severity)
+
+### B1 — FIX-BEFORE-MERGE — enrich Arrow null-type → cross-run dataset clobber
+`pipelines/parallel/enrich.py:558-569` (table build) + `:392-403` (`_write_enrichment` bare-except → overwrite).
+**Defect:** `pa.Table.from_pylist(records)` infers a column as Arrow `null` type when every value in the batch is None — happens on the `test_limit=3` first run, on a field the processor left null for all sampled companies, and on `_basis` when no citations. A later run with that field populated yields a `string` column; `ds.merge_insert(...).execute(table)` raises on the type change; the `except Exception:` at `:397` falls through to `lance.write_dataset(mode="overwrite")` at `:399`, **destroying all previously-enriched rows** and reporting success.
+**Fix:** build the Arrow table from an explicit, run-stable schema derived from `output_schema` — every declared field → `pa.string()` for array/object/JSON columns and confidence columns, scalar JSON types → their Arrow scalar (`boolean`/`int64`/`double`/`string`), plus fixed `company_id/normalized_domain/spec_id/run_id/processor/enriched_at/_basis = string`. Pass `schema=` to `pa.Table.from_pylist`/`.cast()` so column types never depend on null density. Separately: in `_write_enrichment`, only fall back to `write_dataset` when the dataset genuinely does not exist (catch the not-found case, not every exception) so a real merge error never silently overwrites.
+
+### B2 — FIX-BEFORE-MERGE — deep_research topic/per_entity null-type collision + clobber
+`pipelines/parallel/deep_research.py:478-481` (topic rows None) + `:296-314` (`_write_research` bare-except → overwrite) + `:305` (`from_pylist`).
+**Defect:** topic-grain rows set `company_id=None, normalized_domain=None, basis=None`; `from_pylist` makes those columns Arrow `null`-typed. If a topic run creates the dataset first, a later per_entity run (string `company_id`) conflicts on `merge_insert(company_id)`; the bare-except at `:309` overwrites the dataset. `basis` is `null`-typed whenever the first batch has empty basis. BTREE on a `null` `company_id`/`run_id` fails.
+**Fix:** same explicit-schema approach — write topic and per_entity rows with a fixed schema (`company_id,normalized_domain,run_id,objective,report_md,basis,processor,spec_id,grain,created_at` all `string`, `company_id`/`normalized_domain` nullable-string not null-typed). Gate the `write_dataset` fallback on dataset-absent only.
+
+### B3 — SHIP-WITH-FIX — BTREE silently skipped on null-typed key (rolls up into B1/B2)
+`pipelines/parallel/enrich.py:406-419`, `pipelines/parallel/deep_research.py:316-324`.
+**Defect:** when a key column lands as Arrow `null` type (first all-null batch), `create_scalar_index(... BTREE)` raises; caught and logged → the directive's mandatory BTREE is silently absent on that dataset until a later non-null write. Resolved once B1/B2 enforce typed-string keys; keep the index step but it will then succeed.
+
+### S1 — SHIP-WITH-FIX (latent) — Search `max_results` wrong nesting, currently dead
+`core/parallel_client.py:294-295`.
+**Defect:** sends `body["max_results"]` top-level; v1 REST Search nests result-sizing under `advanced_settings` and the knobs are `max_chars_per_result`/`max_chars_total` (per diagnostic `:36,:215`) — top-level `max_results` is the v1beta/SDK surface, not v1 REST. No caller passes it today, so nothing breaks now.
+**Fix:** either drop the `max_results` param entirely (it is unused) or, if a result cap is wanted, send `advanced_settings` with the correct documented field. Do not ship a wrong-shape param even unused.
+
+### N1 — NIT — deep_research 408 hot-loop guard
+`pipelines/parallel/deep_research.py:272-274`. `if res.get("_status")==408: continue` has no backoff; it is paced only by the server holding the GET ~300 s. If Parallel ever returns 408 quickly, this busy-loops the API until the 3000 s deadline. Add a small `time.sleep` (e.g. 2–5 s) on the 408 branch. (enrich's group poll already backs off, `enrich.py:355-360`.)
+
+### N2 — NIT — worker max_runs=0 fallback ceiling
+`pipelines/parallel/enrich.py:651`, `deep_research.py:490`. Worker fallback when `max_runs<=0` is `MAX_ROWS_PER_FILE` (1 048 576). Unreachable via the trigger (TS clamps to ≥1, ≤1000) but a direct `.remote()` would resolve up to 1M companies and bill them. Default the worker fallback to a sane small ceiling (e.g. 1000) for defense-in-depth.
+
+---
+
+## Mandate confirmation
+
+- **Three separate workflows:** confirmed — three Trigger tasks, three Modal apps, three workers, three gtm-mcp launch tools.
+- **No surviving single mode-flag tool:** confirmed — `grep` for `launch_parallel*` / a `mode`-dial enrich tool returns nothing; the only `mode` param is Search's `advanced|base` (a Search-API arg, not a workflow selector).
+- **§0 byte-unchanged:** confirmed — the capability doc (incl. §0) is untracked/new on this branch (`git status: ?? …CAPABILITY.md`); nothing edited a prior committed §0. Contents match the spawning diagnostic's contract.
+
+---
+
+## Could not verify (no live calls; read-only mandate)
+
+1. **Per-input `metadata` round-trip on the group-runs record (HIGHEST residual).** Enrichment keys every result by reading `run.metadata.company_id` (`enrich.py:380-381`) from `GET /groups/{id}/runs?include_output=true`. §0 lists `metadata` as a valid `TaskRunInput` field but does **not** state it is echoed back on the run record; the prior assessment's "could not verify" list (`DIRECTIVE_24_PARALLEL_ENRICHMENT_ASSESSMENT.md:62`) flags the create-run body schema was never re-fetched field-by-field. If Parallel does **not** echo per-input metadata, `_extract_run_record` returns `company_id=None`, every row is skipped, and all companies land in `failed_ids` — degrades safely (no corruption, visible on the ledger) but yields **zero enriched rows**. Confirm with one cheap live group run before trusting enrichment output. If metadata is not echoed, switch keying to input order or the returned `input` payload.
+2. **Group terminal semantics** — that `is_active==false` + `task_run_status_counts.{completed,failed}` reliably marks done (no live call; the doc's own §10/§12 open item).
+3. **`get_group_runs` response shape** — the parser handles array / `{runs|data|results}` / SSE-NDJSON (`parallel_client.py:248-277`), but the actual live envelope/field path for `output.content`/`output.basis` per run record was not observed.
+4. **Search API response shape** — `_flatten_excerpts` is defensive across `results|data` and `excerpts|excerpt|snippets` (`search.py:113-136`); the real field names were not confirmed live.
+5. **`TRIGGER_SECRET_KEY` present on the gtm-mcp service env** — Doppler holds `TRIGGER_SHARED_SECRET`; same prerequisite as hydration.py (`parallel.py:132-138`). Deploy-blocking if unaliased.
+6. **`tsc --noEmit`** not re-run in this review (claimed clean in the doc); the three TS files read as type-correct.
