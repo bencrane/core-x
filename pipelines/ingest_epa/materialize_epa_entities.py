@@ -12,16 +12,17 @@ Dispatcher (core/modal_dispatcher.py) or run manually via ``modal run``. No web 
 
 Datasets (2):
   epa_air_facilities  ← ICIS-AIR_downloads.zip::ICIS-AIR_FACILITIES.csv  (REGISTRY_ID inline)
-                        grain 1 row / PGM_SYS_ID · BTREE REGISTRY_ID, PGM_SYS_ID
+                        grain 1 row / PGM_SYS_ID · BTREE REGISTRY_ID, PGM_SYS_ID, normalized_legal_name
   epa_rcra_handlers   ← rcra_downloads.zip::RCRA_FACILITIES.csv ⋈ epa_program_links(RCRAINFO)
-                        grain 1 row / HANDLER_ID · BTREE REGISTRY_ID, HANDLER_ID
+                        grain 1 row / HANDLER_ID · BTREE REGISTRY_ID, HANDLER_ID, normalized_legal_name
 
 Both: clean-room data plane — boto3 random-access extract of ONE member (central-directory
 seek), raw-deflate→gzip rewrap to /tmp (only the COMPRESSED member touches disk), DuckDB
 read_csv(all_varchar=true) does 100% of the transform, fetch→ZSTD-parquet→STREAM to
 lance.write_dataset(s3://data-sink/active/<name>/, data_storage_version="2.1"), then
 create_scalar_index BTREE/BITMAP direct-to-R2. Verbatim passthrough of every source column
-(geographic + operational-status); only the two RCRA geocodes are typed DOUBLE.
+(geographic + operational-status) PLUS a derived normalized_legal_name = core.name_norm(
+FACILITY_NAME) (the fleet blocking key, BTREE-indexed); only the two RCRA geocodes are typed DOUBLE.
 
 Control plane (Trigger v4 durable callback): the orchestrator accepts ``trigger_callback_url``
 and, on terminal state, (1) writes run rows to ``ops.epa_ingest_runs`` via psycopg and (2) POSTs
@@ -40,6 +41,11 @@ from __future__ import annotations
 import os
 
 import modal
+
+# Canonical cross-spine blocking-key macro (THE single source of truth). A pure DuckDB-SQL
+# expression builder — imported here and shipped into the container via add_local_python_source,
+# so normalized_legal_name is byte-identical to the SoS / PPP / SAM blocking key (zero drift).
+from core.name_norm import name_norm
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -73,6 +79,7 @@ image = (
         "psycopg[binary]>=3.2",  # terminal state → ops.epa_ingest_runs
     )
     .env({"LANCE_BYPASS_SPILLING": "true"})  # in-memory BTREE sort for high-card string keys
+    .add_local_python_source("core.name_norm")  # canonical blocking-key macro → /root/core/
 )
 
 app = modal.App("epa-entity-pipelines", image=image)
@@ -125,7 +132,8 @@ def _t(c: str) -> str:                      # trimmed, '' → NULL
 
 
 def air_select(gz_token: str) -> str:
-    """epa_air_facilities — verbatim passthrough of all 19 ICIS-AIR_FACILITIES columns.
+    """epa_air_facilities — verbatim passthrough of all 19 ICIS-AIR_FACILITIES columns, plus a
+    derived normalized_legal_name = core.name_norm(FACILITY_NAME) (the fleet blocking key).
     REGISTRY_ID is inline (direct hub bind); filter to non-null REGISTRY_ID (drops ~0.10%).
     Grain is one row per PGM_SYS_ID (source is already unique on it — no dedup, strictly lossless)."""
     return f"""
@@ -148,7 +156,8 @@ SELECT
     {_t('AIR_OPERATING_STATUS_DESC')} AS AIR_OPERATING_STATUS_DESC,
     {_t('CURRENT_HPV')}               AS CURRENT_HPV,
     {_t('LOCAL_CONTROL_REGION_CODE')} AS LOCAL_CONTROL_REGION_CODE,
-    {_t('LOCAL_CONTROL_REGION_NAME')} AS LOCAL_CONTROL_REGION_NAME
+    {_t('LOCAL_CONTROL_REGION_NAME')} AS LOCAL_CONTROL_REGION_NAME,
+    {name_norm('FACILITY_NAME')}      AS normalized_legal_name
 FROM {read_csv_expr(gz_token)}
 WHERE {_t('REGISTRY_ID')} IS NOT NULL
 """
@@ -171,10 +180,11 @@ QUALIFY row_number() OVER (PARTITION BY {_t('PGM_SYS_ID')} ORDER BY {_t('REGISTR
 
 def rcra_select(gz_token: str) -> str:
     """epa_rcra_handlers — verbatim passthrough of all 15 RCRA_FACILITIES columns + the resolved
-    REGISTRY_ID. ID_NUMBER is emitted as HANDLER_ID (its canonical EPA name; same value). INNER
-    JOIN to pl_rcra binds the hub key and drops the ~1.20% unlinked handlers. Source ID_NUMBER is
-    unique and pl_rcra is unique on pgm → exactly one row per HANDLER_ID (strictly lossless).
-    Only the two geocodes are typed DOUBLE; every other column is verbatim text."""
+    REGISTRY_ID + a derived normalized_legal_name = core.name_norm(FACILITY_NAME). ID_NUMBER is
+    emitted as HANDLER_ID (its canonical EPA name; same value). INNER JOIN to pl_rcra binds the
+    hub key and drops the ~1.20% unlinked handlers. Source ID_NUMBER is unique and pl_rcra is
+    unique on pgm → exactly one row per HANDLER_ID (strictly lossless). Only the two geocodes are
+    typed DOUBLE; every other source column is verbatim text."""
     return f"""
 SELECT
     pl.rid                            AS REGISTRY_ID,
@@ -192,7 +202,8 @@ SELECT
     {_t('r.FED_WASTE_GENERATOR')}     AS FED_WASTE_GENERATOR,
     {_t('r.TRANSPORTER')}             AS TRANSPORTER,
     {_t('r.ACTIVE_SITE')}             AS ACTIVE_SITE,
-    {_t('r.OPERATING_TSDF')}          AS OPERATING_TSDF
+    {_t('r.OPERATING_TSDF')}          AS OPERATING_TSDF,
+    {name_norm('r.FACILITY_NAME')}    AS normalized_legal_name
 FROM {read_csv_expr(gz_token)} r
 JOIN pl_rcra pl ON pl.pgm = {_t('r.ID_NUMBER')}
 """
@@ -203,12 +214,12 @@ JOIN pl_rcra pl ON pl.pgm = {_t('r.ID_NUMBER')}
 SPECS = {
     "epa_air_facilities": dict(
         archive="ICIS-AIR_downloads.zip", member="ICIS-AIR_FACILITIES.csv", key="PGM_SYS_ID",
-        btree=["REGISTRY_ID", "PGM_SYS_ID"],
+        btree=["REGISTRY_ID", "PGM_SYS_ID", "normalized_legal_name"],
         bitmap=["STATE", "AIR_OPERATING_STATUS_CODE", "CURRENT_HPV", "AIR_POLLUTANT_CLASS_CODE"],
     ),
     "epa_rcra_handlers": dict(
         archive="rcra_downloads.zip", member="RCRA_FACILITIES.csv", key="HANDLER_ID",
-        btree=["REGISTRY_ID", "HANDLER_ID"],
+        btree=["REGISTRY_ID", "HANDLER_ID", "normalized_legal_name"],
         bitmap=["STATE_CODE", "ACTIVE_SITE", "OPERATING_TSDF", "FED_WASTE_GENERATOR"],
     ),
 }
