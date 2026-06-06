@@ -143,6 +143,11 @@ INDEX_PLAN: list[tuple[str, str]] = [
     ("EXTERNAL_PERMIT_NMBR", "BTREE"),          # hub key — high-card string (the heavy spill)
     ("MONITORING_PERIOD_END_DATE", "BTREE"),    # period lookup — date32
     ("FISCAL_YEAR", "BITMAP"),                  # ~45 distinct values (FY1982–FY2026)
+    # GTM-predicate columns — without these, "permits with violations" / "discharges of <parameter>"
+    # scan all 422 M rows (~2.5 s warm/WAN). Indexed, they push down through DuckDB to sub-second.
+    ("PARAMETER_CODE", "BTREE"),                # ~2,600 distinct analyte codes (equality + IN)
+    ("VIOLATION_CODE", "BITMAP"),               # low-card violation codes (filter + bitmap-AND with FY)
+    ("NODI_CODE", "BITMAP"),                    # low-card no-data-indicator codes
 ]
 
 
