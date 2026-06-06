@@ -79,7 +79,11 @@ MAX_ROWS_PER_FILE = 1_048_576
 PARQUET_ROW_GROUP = 1_048_576              # bounded COPY memory (streaming sink, not a buffer)
 LANCE_READ_BATCH = 100_000                 # parquet→Lance streaming batch (size-independent)
 DUCKDB_THREADS = 4
-DUCKDB_MEMORY_LIMIT = "24GB"               # streaming COPY→parquet; bounded by row-group, not file size
+# 48 GB (in a 64 GB container): the prefy2009 member is a 23.6 GB single gzip (non-splittable →
+# single-threaded all_varchar read of 57 columns), 1.5× the fleet's previous giant (15.9 GB EFF).
+# Measured: this file's in-memory transform needs ~42 GB, so 24 GB OOMs the COPY. The other 15
+# archives (≤9.4 GB) clear this with wide margin.
+DUCKDB_MEMORY_LIMIT = "48GB"
 SPILL_DIR = "/tmp/duckdb_spill"            # LOCAL scratch on the append workers (DuckDB temp)
 SCRATCH_DIR = "/tmp/epa"                   # LOCAL scratch on the append workers (gz + parquet)
 
@@ -445,7 +449,8 @@ def _record_run(*, run_id, source_archives, rows_written, indexes_built, status,
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=60 * 180,
-    memory=49152,        # 48 GB — the COPY→parquet→Lance path is row-group-bounded, not file-bounded
+    memory=65536,        # 64 GB — headroom for the prefy2009 23.6 GB single-gzip transform (DuckDB
+                         # capped at 48 GB; leaves ~16 GB for decode buffers + the Lance write step)
     cpu=4.0,
 )
 def append_one(src: dict, run_id: str, force: bool = False) -> dict:
@@ -680,7 +685,7 @@ def status() -> dict:
     return out
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=600, memory=8192)
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=600, memory=16384)
 def verify() -> dict:
     """Read-back proof over the LIVE dataset: row count, index manifest, FISCAL_YEAR span.
     The FY span is a streaming DuckDB aggregate over the projected column (constant memory —
