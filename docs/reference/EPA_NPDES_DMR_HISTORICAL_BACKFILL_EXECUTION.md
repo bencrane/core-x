@@ -66,12 +66,21 @@ step (the disk-spilled index rebuild).
    via the `ops.epa_ingest_runs` ledger guard. Landed `78,674,846 → 422,447,436`. `prefy2009`'s
    per-row `FISCAL_YEAR` derivation (FY1982–FY2008) committed without error.
 
-3. **Index rebuild — `::reindex`.** Single full `create_scalar_index(replace=True)` over all
-   422,447,436 rows, on a standard 48 GB container with the BTREE external sort **spilled to a
-   mounted `modal.Volume`** at `/mnt/spill`. Preflight confirmed live:
-   `TMPDIR=/mnt/spill · LANCE_MAX_TEMP_DIRECTORY_SIZE=268435456000 · LANCE_MEM_POOL_SIZE=25769803776 ·
-   LANCE_BYPASS_SPILLING=None (absent=good)`. Indices: `EXTERNAL_PERMIT_NMBR` BTREE,
-   `MONITORING_PERIOD_END_DATE` BTREE, `FISCAL_YEAR` BITMAP.
+3. **Index rebuild — `modal run --detach …::reindex`.** Single full
+   `create_scalar_index(replace=True)` over all 422,447,436 rows: `EXTERNAL_PERMIT_NMBR` BTREE,
+   `MONITORING_PERIOD_END_DATE` BTREE, `FISCAL_YEAR` BITMAP. The external sort spills to the
+   worker's **local NVMe** (`TMPDIR=/tmp`, `ephemeral_disk=524288` MiB) on a standard 48 GB
+   container — RAM is not the sort budget, disk is. Preflight confirmed live:
+   `LANCE_MAX_TEMP_DIRECTORY_SIZE=268435456000 · LANCE_MEM_POOL_SIZE=25769803776 ·
+   LANCE_BYPASS_SPILLING=None (absent=good)`.
+
+   > **First attempt used a networked `modal.Volume` spill** (`/mnt/spill`); it ran 40+ min on the
+   > heavy index and was **preempted** mid-build — `create_scalar_index` has no checkpoint, so a
+   > preemption restarts from zero. Re-cut to **local-NVMe spill** (far faster → finishes inside a
+   > preemption-free window), `retries=2` (idempotent `replace=True`), and run **detached** so it
+   > survives client disconnect and Modal completes it server-side. The function is
+   > **self-finalizing**: it re-reads the dataset (count, index manifest, `FISCAL_YEAR` span) and
+   > writes a terminal `ops.epa_ingest_runs` row + prints `DONE — VERIFIED`. (`PR #167`)
 
 > **Append-only safety held throughout.** Every append was a new-fragment Lance commit; the
 > pre-existing FY2024–FY2026 fragments were never rewritten. The ledger guard makes the whole
@@ -136,10 +145,26 @@ the resumability source of truth.
 
 ---
 
-## 6. Verification gate
+## 6. Verification gate & how to confirm completion
 
-Post-reindex read-back (`::verify`): expect `count_rows() = 422,447,436`; three indices present
-(`EXTERNAL_PERMIT_NMBR` BTREE, `MONITORING_PERIOD_END_DATE` BTREE, `FISCAL_YEAR` BITMAP);
-`FISCAL_YEAR ∈ [1982, 2026]`. The appended data is queryable now; the index rebuild only restores
-indexed-scan performance over the new fragments — a failure there is re-runnable via `::reindex`
-without touching the durable row data.
+Expected terminal state: `count_rows() = 422,447,436`; three indices present (`EXTERNAL_PERMIT_NMBR`
+BTREE, `MONITORING_PERIOD_END_DATE` BTREE, `FISCAL_YEAR` BITMAP); `FISCAL_YEAR ∈ [1982, 2026]`. The
+appended data is queryable now; the index rebuild only restores indexed-scan performance over the
+new fragments — a failure there is re-runnable via `::reindex` without touching the durable rows.
+
+The detached `::reindex` is **self-finalizing** — it verifies and records its own terminal state, so
+completion is provable without re-running anything:
+
+```sql
+-- terminal reindex row (status, verified rows/indices/FY-span in metrics->'verify')
+SELECT status, indexes_built, metrics->'verify', completed_at
+FROM ops.epa_ingest_runs
+WHERE dataset='epa_npdes_dmrs' AND source_archives='(reindex)'
+ORDER BY recorded_at DESC LIMIT 1;
+```
+
+- **`status='success'`** with `metrics->'verify'` showing `rows=422447436` and three `indices` ⇒ **done**.
+- Modal logs also print a `[reindex] ✅ DONE — VERIFIED {...}` banner (`modal app logs <app-id>`).
+- If preempted, `retries=2` + detached lets Modal re-run it server-side; `replace=True` makes that
+  idempotent. If all retries are exhausted, re-issue `modal run --detach …::reindex` — the appended
+  rows are untouched and the rebuild simply starts over.
