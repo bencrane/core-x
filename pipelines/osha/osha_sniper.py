@@ -32,9 +32,11 @@ Data plane (clean-room — no Iceberg, no Polaris, Arrow-only interchange):
       → lance.merge_insert(trigger_uid)  →  s3://data-sink/active/osha_daily_triggers/
 
 Load-bearing design (see the block comments inline):
-  • Step 1 — one call: severe violations sorted by issuance_date DESC (the freshest
-    severe citations; the top row defines the data frontier).
-  • Step 2 — up to (MAX_API_CALLS-1) calls: the parent inspections for the recent
+  • Step 1 — two calls: (A) a 1-row frontier probe (issuance_date DESC) reads the true
+    data frontier, then (B) a server-side ``issuance_date > frontier - lookback`` pull
+    fetches EXACTLY the window. No full-page scan: the returned row count IS the true
+    in-window total, and a full page (page_full) signals a genuine >ROW_LIMIT overflow.
+  • Step 2 — up to (MAX_API_CALLS-2) calls: the parent inspections for the recent
     activity_nrs, batched so each request URL stays under the gateway length limit.
   • Dedup — synthetic ``trigger_uid = activity_nr || '-' || citation_id`` is the
     primary key; daily windows overlap, so we UPSERT (merge_insert), never append
@@ -88,13 +90,18 @@ VIOLATION_FIELDS = [
     "gravity", "current_penalty", "issuance_date",
 ]
 
-# ── Quota governor — the hard circuit breaker (directive: MAX_API_CALLS = 5) ────
-# Every DOL HTTP call is charged against this budget BEFORE it leaves the process.
-# The 6th attempt aborts instantly, protecting the ~20-call/day usage plan.
-MAX_API_CALLS = 5
+# ── Quota governor — the hard circuit breaker ─────────────────────────────────
+# Every DOL HTTP call is charged against this budget BEFORE it leaves the process;
+# the (MAX_API_CALLS+1)th attempt aborts instantly, protecting the ~20-call/day plan.
+# Budget split: Step 1 spends 2 (frontier probe + server-side windowed pull), leaving
+# (MAX_API_CALLS-2) for Step-2 inspection batches (~90 activity_nrs each → ~900/day at
+# 12). A normal day lands in ~7 calls; the rest is headroom for backfill spikes.
+MAX_API_CALLS = 12
 
-# DOL per-request hard cap (10k rows OR 5 MB, whichever first). The freshest 7-day
-# slice of severe violations sits far under 10k, so Step 1 is a single call.
+# DOL per-request hard cap (10k rows OR 5 MB, whichever first). Step 1 now filters
+# issuance_date server-side, so a FULL page (== ROW_LIMIT) is no longer routine — it
+# means the in-window severe set itself overflows one page (page_full → truncated),
+# the real early-warning that lookback_days must tighten or Step 1 must paginate.
 ROW_LIMIT = 10000
 
 # apiprod.dol.gov sits behind AWS WAF, whose Core Rule Set blocks any QUERY STRING
@@ -139,6 +146,8 @@ CREATE TABLE IF NOT EXISTS ops.osha_sniper_runs (
     inspections_pulled bigint,
     rows_upserted      bigint,
     truncated          boolean,
+    dropped            int,
+    page_full          boolean,
     status             text        NOT NULL,
     error              text,
     started_at         timestamptz,
@@ -146,6 +155,8 @@ CREATE TABLE IF NOT EXISTS ops.osha_sniper_runs (
     recorded_at        timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE ops.osha_sniper_runs ADD COLUMN IF NOT EXISTS frontier_date date;
+ALTER TABLE ops.osha_sniper_runs ADD COLUMN IF NOT EXISTS dropped       int;
+ALTER TABLE ops.osha_sniper_runs ADD COLUMN IF NOT EXISTS page_full     boolean;
 CREATE INDEX IF NOT EXISTS osha_sniper_runs_status_idx      ON ops.osha_sniper_runs (status);
 CREATE INDEX IF NOT EXISTS osha_sniper_runs_recorded_at_idx ON ops.osha_sniper_runs (recorded_at DESC);
 """
@@ -230,17 +241,44 @@ def _dol_csv_get(endpoint: str, params: dict, budget: _CallBudget) -> str:
     return resp.text
 
 
-def _filter_object_violations(severe_only: bool) -> str | None:
-    """Step-1 filter_object: gate to severe viol_types server-side (DOL `in` takes a
-    JSON array). None when severe_only is False (pull every type, recency-sorted)."""
+def _filter_object_window(severe_only: bool, cutoff_iso: str | None) -> str | None:
+    """Step-1 filter_object: severe viol_types (server-side `in`) AND/OR issuance_date
+    `gt` the frontier-anchored cutoff (server-side recency). The {"and": [...]} compound
+    is the DOL v4 idiom — live-confirmed against apiprod.dol.gov, and the pre-violations-
+    first sniper used the same shape on open_date. Returns None only when neither
+    predicate applies (severe_only False AND no cutoff)."""
     import json
 
-    if not severe_only:
+    preds: list[dict] = []
+    if severe_only:
+        preds.append({"field": VIOL_TYPE_FIELD, "operator": "in", "value": SEVERE_VIOL_TYPES})
+    if cutoff_iso:
+        preds.append({"field": VIOL_DATE_FIELD, "operator": "gt", "value": cutoff_iso})
+    if not preds:
         return None
-    return json.dumps(
-        {"field": VIOL_TYPE_FIELD, "operator": "in", "value": SEVERE_VIOL_TYPES},
-        separators=(",", ":"),
-    )
+    obj = preds[0] if len(preds) == 1 else {"and": preds}
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def _probe_frontier(api_key: str, severe_only: bool, budget: _CallBudget) -> str | None:
+    """Step-1 Call A — the cheapest possible pull (limit=1, issuance_date DESC) to read
+    the true data frontier: the single most-recent severe issuance_date (ISO date), or
+    None if the severe feed is empty. One DOL call; charges the breaker."""
+    import csv
+    import io
+
+    params: dict = {
+        "limit": 1, "offset": 0, "sort": "desc", "sort_by": VIOL_DATE_FIELD,
+        "fields": ",".join(["activity_nr", VIOL_DATE_FIELD]), "X-API-KEY": api_key,
+    }
+    fo = _filter_object_window(severe_only, None)
+    if fo:
+        params["filter_object"] = fo
+    text = _dol_csv_get(VIOLATION_ENDPOINT, params, budget)
+    for row in csv.DictReader(io.StringIO(text)):
+        raw = (row.get(VIOL_DATE_FIELD) or "").strip()
+        return raw[:10] or None        # DOL returns 'YYYY-MM-DD 00:00:00'
+    return None
 
 
 def _nonempty_csv(path: str) -> bool:
@@ -478,15 +516,17 @@ def _record_run(metrics: dict, status: str, error, started_at, completed_at) -> 
                 INSERT INTO ops.osha_sniper_runs
                     (feed, snapshot_date, lookback_days, frontier_date, api_calls_used,
                      violations_pulled, activity_nrs, inspections_pulled,
-                     rows_upserted, truncated, status, error, started_at, completed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     rows_upserted, truncated, dropped, page_full,
+                     status, error, started_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     FEED, metrics.get("snapshot_date"), metrics.get("lookback_days"),
                     metrics.get("frontier_date"), metrics.get("api_calls_used"),
                     metrics.get("violations_pulled"), metrics.get("activity_nrs"),
                     metrics.get("inspections_pulled"), metrics.get("rows_upserted"),
-                    metrics.get("truncated"), status, error, started_at, completed_at,
+                    metrics.get("truncated"), metrics.get("dropped"), metrics.get("page_full"),
+                    status, error, started_at, completed_at,
                 ),
             )
             conn.commit()
@@ -564,7 +604,7 @@ def osha_sniper(
         "snapshot_date": snapshot_iso, "lookback_days": lookback_days,
         "frontier_date": None, "api_calls_used": 0, "violations_pulled": 0,
         "activity_nrs": 0, "inspections_pulled": 0, "rows_upserted": 0,
-        "truncated": False,
+        "truncated": False, "page_full": False, "dropped": 0,
     }
     status, error = "error", None
 
@@ -574,14 +614,27 @@ def osha_sniper(
             raise RuntimeError("DOL_API_KEY not set (Modal secret 'dol-api').")
         so = _r2_storage_options()
 
-        # ── Step 1 — the freshest SEVERE violations (one call). Sorted by
-        #    issuance_date DESC so the top rows define the data frontier; the
-        #    severity gate is pushed server-side. fields= keeps the payload lean. ──
+        # ── Step 1 — Call A: probe the true data frontier (1 row, issuance_date DESC).
+        #    Call B: pull EXACTLY the frontier-anchored window via a server-side
+        #    issuance_date filter. No full-page scan, so violations_pulled is the true
+        #    in-window count and a full page (page_full) means the window itself
+        #    overflows ROW_LIMIT — the real clip signal, not the old pre-trim artifact. ──
+        frontier = _probe_frontier(api_key, severe_only, budget)
+        if not frontier:
+            print("Step 1A: severe violation feed is empty — nothing to materialize.")
+            metrics["rows_upserted"] = 0
+            status = "success"
+            raise _Done()
+        metrics["frontier_date"] = frontier
+        cutoff_iso = (
+            dt.date.fromisoformat(frontier) - dt.timedelta(days=lookback_days)
+        ).isoformat()
+
         v_params: dict = {
             "limit": ROW_LIMIT, "offset": 0, "sort": "desc", "sort_by": VIOL_DATE_FIELD,
             "X-API-KEY": api_key,
         }
-        fo = _filter_object_violations(severe_only)
+        fo = _filter_object_window(severe_only, cutoff_iso)   # severe `in` AND issuance_date `gt` cutoff
         if fo:
             v_params["filter_object"] = fo
         if not os.environ.get("OSHA_REQUEST_ALL_FIELDS"):
@@ -590,23 +643,30 @@ def osha_sniper(
             fh.write(_dol_csv_get(VIOLATION_ENDPOINT, v_params, budget))
 
         if not _nonempty_csv(viol_path):
-            print("Step 1 returned no severe violations — nothing to materialize.")
+            # Frontier row exists but the windowed pull is empty — only reachable on a
+            # frontier shift between calls A and B. Clean no-op; self-corrects next run.
+            print("Step 1B: windowed severe pull returned no rows — nothing to materialize.")
             metrics["rows_upserted"] = 0
             status = "success"
             raise _Done()
 
-        # Frontier-trim + recency-ordered distinct activity_nrs (control-flow list).
+        # Recency-ordered DISTINCT activity_nrs (control-flow list). The pull is already
+        # server-side windowed, so the SQL's frontier-trim is a defensive confirmation.
         con = duckdb.connect(":memory:")
         try:
             con.execute("PRAGMA threads=4;")
-            row = con.execute(
-                f"SELECT count(*), CAST(max(TRY_CAST(issuance_date AS DATE)) AS VARCHAR) "
-                f"FROM read_csv('{viol_path}', all_varchar=true, header=true, "
-                f"sample_size=-1, ignore_errors=true)"
-            ).fetchone()
-            metrics["violations_pulled"] = int(row[0] or 0)
-            frontier = row[1]
-            metrics["frontier_date"] = frontier
+            metrics["violations_pulled"] = int(con.execute(
+                f"SELECT count(*) FROM read_csv('{viol_path}', all_varchar=true, "
+                f"header=true, sample_size=-1, ignore_errors=true)"
+            ).fetchone()[0] or 0)
+            # A full page now means the IN-WINDOW severe set exceeds the DOL row cap — a
+            # genuine overflow clipping the oldest in-window citations. Flag it loudly.
+            if metrics["violations_pulled"] >= ROW_LIMIT:
+                metrics["page_full"] = True
+                metrics["truncated"] = True
+                print(f"WARN: in-window severe violations hit ROW_LIMIT={ROW_LIMIT}; the "
+                      f"{lookback_days}d window overflows one page — oldest in-window "
+                      f"citations clipped. Tighten lookback_days or add offset pagination.")
             ids_tbl = con.execute(
                 _recent_activity_nrs_sql(viol_path, severe_only, lookback_days)
             ).to_arrow_table()
@@ -614,8 +674,9 @@ def osha_sniper(
             con.close()
         activity_nrs = ids_tbl.column("activity_nr").to_pylist()
         metrics["activity_nrs"] = len(activity_nrs)
-        print(f"Step 1: frontier issuance_date={frontier}; "
-              f"{len(activity_nrs)} distinct activity_nrs within {lookback_days}d of frontier.")
+        print(f"Step 1: frontier issuance_date={frontier}; cutoff>{cutoff_iso}; "
+              f"{metrics['violations_pulled']} in-window severe violations across "
+              f"{len(activity_nrs)} distinct activity_nrs.")
 
         # ── Step 2 — parent inspections for those activity_nrs, batched under the URL
         #    budget and remaining call budget. No silent cap: log any dropped ids. ──
@@ -627,8 +688,9 @@ def osha_sniper(
                 base_params["fields"] = ",".join(INSPECTION_FIELDS)
             batches, dropped = _pack_activity_batches(
                 activity_nrs, budget.remaining, base_params)
-            metrics["truncated"] = dropped > 0
+            metrics["dropped"] = dropped
             if dropped:
+                metrics["truncated"] = True   # never clear a page_full-set truncation
                 print(f"WARN: {dropped}/{len(activity_nrs)} activity_nrs dropped — "
                       f"{budget.remaining} call(s) × query-string budget cannot cover all this run "
                       f"(oldest dropped first; they resurface as the window rolls).")
@@ -692,6 +754,9 @@ def osha_sniper(
                 "feed": FEED,
                 "api_calls_used": budget.used,
                 "truncated": bool(metrics["truncated"]),
+                "dropped": int(metrics.get("dropped") or 0),
+                "page_full": bool(metrics.get("page_full")),
+                "in_window": int(metrics.get("violations_pulled") or 0),
             },
         )
 
