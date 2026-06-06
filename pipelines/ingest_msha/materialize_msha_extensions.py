@@ -23,12 +23,14 @@ WHAT THIS WORKER DOES
                                                   (UNION ALL BY NAME → unified firmographic master)
         s3://data-sink/active/msha_accidents/     Accidents (one row per DOCUMENT_NO)
 
-CRITICAL GUARDRAIL — NO BRIDGING (inherits Directive 29).
-    Landed in isolation on native keys. No core.name_norm, no normalized_legal_name, no
-    bridge column to sos_normalized_master / companies / PPP. Names are landed VERBATIM
-    (dequoted/trimmed only). Verbatim-naming compliance: every source column keeps its
-    exact UPPERCASE spelling and native underscores; the ONLY non-native columns are the
-    two provenance fields (source_file, ingested_at) — identical to the base worker.
+ENTITY-NAME NORMALIZATION (Directive-29 isolation exception — AUTHORIZED, parity w/ base).
+    Landed on native keys (no JOIN to sos_normalized_master / companies / PPP at ingest),
+    but the "no name_norm" guardrail is LIFTED for crosswalk readiness: each entity legal-
+    name key gets a persisted ``<COL>_norm`` sibling via core.name_norm at write-time
+    (msha_contractors → CONTRACTOR_NAME; msha_accidents → CONTROLLER_NAME, OPERATOR_NAME).
+    Equipment/manufacturer names (EQUIP_MFR_NAME) are NOT normalized — entity legal names
+    only. Every source column otherwise keeps its exact UPPERCASE spelling; the non-native
+    columns are the two provenance fields (source_file, ingested_at) + the _norm siblings.
 
 PARSING HYGIENE — the Directive-26 recipe (quote='' + CP1252→UTF-8), verbatim parity with
     materialize_msha.py so the five shipped datasets and these two share one read contract:
@@ -98,6 +100,8 @@ import os
 
 import modal
 
+from core.name_norm import name_norm  # canonical blocking-key macro (write-time _norm keys)
+
 BUCKET = "data-sink"
 LANDING_PREFIX = os.environ.get("MSHA_LANDING_PREFIX", "landing/msha").strip("/") + "/"
 FEED = "msha"
@@ -157,22 +161,35 @@ DATASETS: dict[str, dict] = {
     },
 }
 
+# Entity legal-name keys normalized at write-time (Directive-29 isolation exception, parity
+# with the base worker). Each gets a persisted ``<COL>_norm`` sibling via core.name_norm.
+NORM_COLS: dict[str, list[str]] = {
+    "msha_contractors": ["CONTRACTOR_NAME"],
+    "msha_accidents": ["CONTROLLER_NAME", "OPERATOR_NAME"],
+}
+
 # Scalar index plan. BTREE = high-cardinality resolution / range-scan keys; BITMAP =
-# low-cardinality categoricals frequently filtered.
+# low-cardinality categoricals frequently filtered. BTREE lists now also carry the RAW
+# entity-name keys; every ``<COL>_norm`` is appended from NORM_COLS below so a normalized
+# column can never ship unindexed.
 INDEX_PLAN: dict[str, dict[str, list[str]]] = {
     "msha_contractors": {
-        "BTREE": ["CONTRACTOR_ID"],
+        "BTREE": ["CONTRACTOR_ID", "CONTRACTOR_NAME"],
         # No STATE/FIPS column exists in the contractor sources (live-confirmed) — these are
         # the only low-cardinality categoricals available.
         "BITMAP": ["COAL_METAL_IND", "SUBUNIT_CD"],
     },
     "msha_accidents": {
         "BTREE": ["DOCUMENT_NO", "MINE_ID", "CONTROLLER_ID", "OPERATOR_ID",
-                  "CONTRACTOR_ID", "ACCIDENT_DT"],
+                  "CONTRACTOR_ID", "ACCIDENT_DT", "CONTROLLER_NAME", "OPERATOR_NAME"],
         "BITMAP": ["DEGREE_INJURY_CD", "CLASSIFICATION_CD", "ACCIDENT_TYPE_CD",
                    "FIPS_STATE_CD", "COAL_METAL_IND"],
     },
 }
+
+# Every normalized key column is BTREE-indexed — derived from NORM_COLS so the two can't drift.
+for _ds, _ncols in NORM_COLS.items():
+    INDEX_PLAN[_ds]["BTREE"].extend(c + "_norm" for c in _ncols)
 
 # ── ops.msha_ingest_runs DDL — verbatim mirror of the base worker (same feed-scoped ledger).
 # Applied by ``init_ops`` and (defensively) before each terminal write. ──
@@ -211,7 +228,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # Lance BTREE spill-sorter under-sizes its DataFusion pool and OOMs on high-cardinality
     # string columns over millions of rows (lance#2650). Force the in-memory sort.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # canonical blocking-key macro → /root/core/
 
 app = modal.App("msha-extensions-pipelines", image=image)
 
@@ -362,6 +379,18 @@ def _union_sql(parts: list[str]) -> str:
     """UNION ALL BY NAME of N typed projections. BY NAME aligns the shared columns and
     NULL-fills each side's non-overlapping columns (verbatim names, types reconciled)."""
     return "\nUNION ALL BY NAME\n".join(f"({p})" for p in parts)
+
+
+def _with_norm(inner_sql: str, norm_cols: list[str]) -> str:
+    """Wrap a typed projection, appending ``core.name_norm(col) AS col_norm`` for each
+    entity legal-name key. Applied to the already-dequoted aliased column, so ``col_norm``
+    is byte-identical to name_norm over the raw dequoted source and NULL-safe. Raw columns
+    are preserved verbatim; the _norm siblings are appended at the end of the schema."""
+    if not norm_cols:
+        return inner_sql
+    extras = ",\n    ".join(
+        f"{name_norm(_q(c))} AS {_q(c + '_norm')}" for c in norm_cols)
+    return f"SELECT base.*,\n    {extras}\nFROM (\n{inner_sql}\n) AS base"
 
 
 def _spine_count(con, path: str) -> int:
@@ -526,6 +555,7 @@ def _materialize_one(con, s3, ds_name: str, so: dict) -> dict:
         else:
             raise ValueError(f"unknown kind {spec['kind']!r} for {ds_name}")
 
+        sql = _with_norm(sql, NORM_COLS.get(ds_name, []))
         reader = con.execute(sql).to_arrow_reader(READ_BATCH_ROWS)
         n_cols = len(reader.schema)
         _write_lance(reader, uri, so)
