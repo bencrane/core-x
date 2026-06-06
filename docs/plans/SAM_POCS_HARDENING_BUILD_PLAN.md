@@ -503,7 +503,7 @@ modal run    pipelines/sam_gov/sam_pocs.py::verify_sam_pocs
 ## 10. Next cycles (do NOT do here)
 
 1. **Staging + atomic promote** — write to a staging URI, gate there, promote on PASS; eliminates the §8 destructive window. The natural successor once these gates are proven.
-2. **Wire the alert channel** — point `OPS_ALERT_WEBHOOK` at the real Telegram/Slack endpoint (operator config); add a warn-band alert (Δ in the outer half of tolerance) so degraded-but-passing builds still surface.
+2. **Alert channel — DONE** (`core/ops_alert.py` → Telegram `corex_ops_alerts_bot`; Modal secret `ops-alerts`, canonical in Doppler `core-x/prd`; `sam_pocs` fires on terminal error/rollback). Remaining: attach `core.ops_alert` to the other feed workers as they're touched, and add a **warn-band alert** (Δ in the outer half of tolerance) so degraded-but-passing builds also surface.
 3. **Single-source `_snap_key_sql`** → `pipelines/sam_gov/reference/sam_labels.py`, imported by `sam_master` + `sam_pocs` (needs the `add_local_python_source` mount; regression-gate `sam_master` still stamps `20260503`).
 4. **Promote the re-baseline policy** — schedule a floor review on any ±20% universe shift; the per-family Δ-guard already auto-tracks growth/shrink.
 5. **Adjacent SAM cleanups** — `sam_master_contacts` retirement, Gen-A `sam_entity_master` deletion, master→sidecar freshness automation.
