@@ -452,6 +452,53 @@ def reindex_normalized_companies() -> dict:
     return {"dataset": DATASET_URI, "built": built}
 
 
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 10, memory=8192, cpu=2.0)
+def probe_pushdown() -> dict:
+    """READ-ONLY in-region predicate-pushdown probe. Measures BTREE point-lookup cost
+    (ScalarIndexQuery, parts_loaded, index_comparisons, search_time, wall) for the sidecar's
+    company_name_norm index against control BTREEs (pdl_company_id, linkedin_slug) and the base
+    pdl_companies.linkedin_url — to isolate whether a cold-WAN parts_loaded anomaly reproduces
+    in-region (peered R2). NO write_dataset, NO create_scalar_index, NO delete, NO publish."""
+    import re
+    import time
+
+    import lance
+
+    so = _r2_storage_options()
+
+    def measure(uri: str, col: str, label: str) -> dict:
+        ds = lance.dataset(uri, storage_options=so)
+        v = ds.scanner(columns=[col], filter=f"{col} IS NOT NULL",
+                       limit=1).to_table().column(0)[0].as_py()
+        lit = str(v).replace("'", "''")
+        filt = f"{col} = '{lit}'"
+        sc = ds.scanner(filter=filt, columns=["pdl_company_id"])
+        plan = sc.explain_plan(verbose=True)
+        t0 = time.time()
+        ap = sc.analyze_plan()
+        wall = (time.time() - t0) * 1000
+
+        def grab(metric: str):
+            m = re.search(rf"{metric}=([0-9.]+\s*[KMB]?)", ap)
+            return m.group(1).strip() if m else None
+
+        return {"label": label, "predicate": filt,
+                "scalar_index_query": "ScalarIndexQuery" in plan,
+                "parts_loaded": grab("parts_loaded"),
+                "index_comparisons": grab("index_comparisons"),
+                "search_time": grab("search_time"),
+                "rows_scanned": grab("rows_scanned"),
+                "fragments_scanned": grab("fragments_scanned"),
+                "wall_ms": round(wall, 1)}
+
+    return {
+        "company_name_norm": measure(DATASET_URI, "company_name_norm", "sidecar company_name_norm (suspect)"),
+        "pdl_company_id": measure(DATASET_URI, "pdl_company_id", "sidecar pdl_company_id (control)"),
+        "linkedin_slug": measure(DATASET_URI, "linkedin_slug", "sidecar linkedin_slug (control)"),
+        "base_linkedin_url": measure(SRC_URI, "linkedin_url", "base linkedin_url (control)"),
+    }
+
+
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=60 * 5)
 def ledger(limit: int = 5) -> list:
     """Most-recent ops.pdl_normalized_runs rows."""
@@ -491,6 +538,14 @@ def reindex() -> None:
     import json
 
     print(json.dumps(reindex_normalized_companies.remote(), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def probe() -> None:
+    """In-region read-only pushdown measurement (company_name_norm vs control BTREEs)."""
+    import json
+
+    print(json.dumps(probe_pushdown.remote(), indent=2, default=str))
 
 
 @app.local_entrypoint()

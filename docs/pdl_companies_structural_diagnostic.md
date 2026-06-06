@@ -153,12 +153,14 @@ proofs are the plan shape, fragment pruning, and `rows_scanned`.
 resolves in <1 s and emits `refine_filter=--`. In-region (Modal, peered R2) this collapses by 1–2
 orders of magnitude. The 9.01 M `united states` count exactly matches the prior diagnostic.
 
-² **The one anomaly.** The `company_name_norm` BTREE point-lookup loaded **270 index parts / 1.11 M
-comparisons** for a single-row exact match, vs `linkedin_url`'s **1 part / 4.1 K comparisons** —
-equivalent near-unique BTREEs, a 270× page-load disparity. The lookup is *correct* (1 row, 1
-fragment, `ScalarIndexQuery`, `refine_filter=--`); only the page-load count is anomalous. This is a
-**watch item**: re-measure in-region before acting — it is most likely a cold-cache prefetch artifact,
-but if it reproduces in-region, the `company_name_norm` index is the one rebuild candidate (§5.5).
+² **Anomaly — RESOLVED (no action).** Cold-WAN, the `company_name_norm` BTREE point-lookup loaded
+**270 index parts / 1.11 M comparisons** vs `linkedin_url`'s **1 part / 4.1 K**. **In-region
+re-measure** (Modal, peered R2, via the codified `::probe` entrypoint) returned **`parts_loaded=1`** —
+identical to all three controls (`pdl_company_id`, `linkedin_slug`, base `linkedin_url`, each 1 part)
+— so the 270-part load was a **cold-WAN prefetch artifact, not structural**. The residual is
+`index_comparisons=1.11 M` / `search_time ≈ 295 ms` (vs controls' 4.1 K / ~2 ms) — a minor CPU-side
+cost tied to the column's 3.1% NULLs; sub-second, 1-part, single-row-correct. **Verdict: no reindex**
+(§5.5).
 
 ---
 
@@ -326,11 +328,12 @@ explicit decision. **All index/data mutations follow the existing isolation rule
    the docstring should say so. If multi-snapshot history is ever wanted, the publish model must
    change to a non-wiping `append`/`merge_insert` + `cleanup_old_versions(retain_versions=…)`.
 
-5. **[measure-first] In-region re-measure the `company_name_norm` BTREE point-lookup** (§2.3-C: 270
-   parts / 1.11 M comparisons cold-WAN vs `linkedin_url`'s 1 part). Run the same `analyze_plan` from a
-   Modal worker (peered R2). If parts-loaded stays ~1, it was a cold-cache artifact — no action. If it
-   reproduces, rebuild that single index (`reindex`, local-NVMe sort, boto3 republish) under the §4.2
-   envelope. Do **not** rebuild speculatively on a cold-WAN sample.
+5. **[RESOLVED — no action] `company_name_norm` BTREE point-lookup.** In-region re-measure (Modal,
+   peered R2, via the new `pdl_normalized_companies.py::probe` read-only entrypoint) returned
+   **`parts_loaded=1`**, identical to the `pdl_company_id` / `linkedin_slug` / base-`linkedin_url`
+   controls — the cold-WAN 270-part load did **not** reproduce and was a prefetch artifact. Residual
+   `index_comparisons=1.11 M` / `search ≈ 295 ms` (the column's 3.1% NULLs) is sub-second and 1-part.
+   **No reindex performed.** The probe is codified for future re-measurement (`modal run … ::probe`).
 
 6. **[non-structural · noted, out of scope] Data-quality sentinels.** `year_founded` min `1001` is
    implausible, and `company_name` junk modes (`x`/`closed`/`test`) still flow into
