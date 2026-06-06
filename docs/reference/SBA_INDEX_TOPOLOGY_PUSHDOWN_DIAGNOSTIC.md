@@ -250,3 +250,61 @@ Every script calls only `lance.dataset()`, `list_indices()`, `stats.index_stats(
 `scanner().explain_plan()/analyze_plan()/count_rows()`, bounded column scans, and lazy DuckDB
 over the Arrow stream. **Zero mutation:** no `write_dataset`, no `create_scalar_index`, no
 `add_columns`, no `delete`, no `.restore`.
+
+---
+
+## 6. Read-Time Routing Contract — verified 2026-06-05 (live `ppp`, v37)
+
+The §4.1 remediation is "route resolution through the flat indexed columns." This section
+is the **enforced contract** for every SBA read, each rule proven against the live 11,468,210-row
+`ppp` dataset (`verify_routing.py` / `verify_v6.py`; probe row `SUMTER COATINGS INC` / ZIP `29150`,
+1 match). All figures are warm point-lookup latency from a **non-in-region** client — the
+in-region gateway (Render ⟷ R2) runs lower; the `rows_scanned` differential is the
+location-independent proof.
+
+### 6.1 The three rules + the empirical verdict
+
+| # | Rule | Compliant form | Live result |
+|--:|---|---|---|
+| 1 | **Target materialized keys; never a macro in `WHERE`** | `normalized_legal_name = 'X'` | ✅ `ScalarIndexQuery@normalized_legal_name_idx`, **rows_scanned=1**, **78 ms**. Macro `name_norm(borrower_name)='X'` → no index, **11.47 M scanned, 5,483 ms (~69×)**. |
+| 1 | **Composite name + geo (the canonical resolution form)** | `normalized_legal_name = 'X' AND zip_code = 'Y'` | ✅ **both** BTREEs intersect (`normalized_legal_name_idx` + `zip_code_idx`), **rows_scanned=1**, **75 ms**. |
+| 2 | **PPP raw-name ban** | use `normalized_legal_name`, never `borrower_name` | ✅ raw `borrower_name='X'` → unindexed, **11.47 M scanned, 2,631 ms (~33×)**. |
+| 3 | **Bare identifiers in the Lance scanner filter** | `normalized_legal_name = 'X'` | 🛑 `"normalized_legal_name" = 'X'` (double-quoted) **constant-folds to `Boolean(false)` → returns 0 rows for a name that truly has 1.** Not slow — **silently wrong.** |
+
+### 6.2 Rule 3 is engine-specific — the quote semantics INVERT between the two access paths
+
+The gateway exposes the SBA plane through two engines with **opposite identifier-quoting rules**.
+Verified: the *same* double-quoted predicate that returns 0 rows on the Lance scanner returns the
+correct 1 row through DuckDB.
+
+| Concern | **Lance scanner** `open_dataset(name).scanner(filter=…)` | **DuckDB SQL** `execute_audience_query` / `query()` |
+|---|---|---|
+| Engine dialect | DataFusion filter expr | DuckDB ANSI SQL |
+| `"col"` (double-quoted) | **string literal** → `'col' = 'X'` folds to false → **0 rows, silent** 🛑 | **identifier** (correct); **required** for namespaced datasets, e.g. `FROM "usaspending/award_search"` ✅ |
+| Bare `col` | ✅ correct identifier | ✅ correct identifier |
+| Rule 1 (materialized key) | index pushdown → `ScalarIndexQuery` | **index pushdown confirmed** — predicate pushed into the Lance scan |
+| Rule 1 (macro in `WHERE`) | full scan | full scan (`func(col)` non-sargable in either engine) |
+| Rule 2 (PPP raw name) | full scan | full scan |
+
+**DuckDB-path proof (`con.register(name, lance.dataset(...))`, mirroring `database._register_datasets`):**
+indexed `normalized_legal_name = 'X'` → **71 ms**; unindexed `borrower_name = 'X'` → **2,250 ms**
+(**31.6× ratio**); `EXPLAIN ANALYZE` shows `ARROW_SCAN … Filters: normalized_legal_name='…'` emitting
+**1 row**, not 11.47 M. The BTREE **is** used through the DuckDB escape hatch.
+
+> **Net rule for agents:** always target `normalized_legal_name` / `zip_code` (Rule 1) and never
+> `ppp.borrower_name` (Rule 2) — these hold on **both** engines. For quoting (Rule 3): **bare
+> identifiers in a Lance `scanner(filter=…)` string** (double-quotes there = silent 0 rows);
+> **standard DuckDB quoting in `execute_audience_query`** (double-quote identifiers as needed,
+> mandatory for `"namespace/dataset"` names).
+
+### 6.3 Codebase compliance (audited 2026-06-05)
+
+The shipped read consumers already comply — no fix required:
+`apps/catalyst_api/src/lance_store.py` and the `apps/gtm_mcp/src/tools/audience.py` point-lookups
+(`search_company_by_domain` / `search_people_by_domain` / `lookup_awards_by_uei`) all build
+**bare-identifier** Lance filters on **materialized index columns** with narrow projections and
+fresh per-call opens. `apps/gtm_mcp/src/database.py` registers the `LanceDataset` directly (not a
+one-shot reader), preserving the filter pushdown proven in §6.2. There is currently **no typed
+SBA point-lookup tool** — SBA resolution today goes through `execute_audience_query` (DuckDB),
+which honors the BTREE per §6.2; a typed `open_dataset('ppp').scanner(filter='normalized_legal_name = …')`
+tool would be the lower-latency path if SBA borrower lookups become a hot route.
