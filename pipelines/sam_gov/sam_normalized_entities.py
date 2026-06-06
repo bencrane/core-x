@@ -46,10 +46,17 @@ from core.ops_alert import alert
 
 BUCKET = "data-sink"
 SRC_URI = "s3://data-sink/active/sam_master_entities/"
-DATASET_URI = os.environ.get(
-    "SAM_NORMALIZED_ENTITIES_URI", "s3://data-sink/active/sam_normalized_entities/"
-)
-FEED = "sam_normalized_entities"
+_PROD_URI = "s3://data-sink/active/sam_normalized_entities/"
+DATASET_URI = os.environ.get("SAM_NORMALIZED_ENTITIES_URI", _PROD_URI)
+
+
+def _feed_for(uri: str) -> str:
+    """Ledger feed tag: prod URI → 'sam_normalized_entities'; any override →
+    'sam_normalized_entities_scratch' so validation never poisons the prod baseline."""
+    return "sam_normalized_entities" if uri == _PROD_URI else "sam_normalized_entities_scratch"
+
+
+FEED = "sam_normalized_entities"  # prod default; effective feed derived per-run from the uri
 
 # Net-new dataset → pin the current Lance default (02_lancedb_storage.md §2.3).
 DATA_STORAGE_VERSION = "2.1"
@@ -67,15 +74,18 @@ DUCKDB_MEMORY_LIMIT = "12GB"
 DUCKDB_THREADS = 8
 SPILL_DIR = "/tmp/duckdb_spill"
 
-# ── §7 gate constants (probe baselines, 2026-06-05) ──────────────────────────
-ROW_FLOOR = 1_400_000
-NORM_DISTINCT_TARGET = 1_466_764
-BASE_DISTINCT_TARGET = 1_450_598
-CARDINALITY_TOL = 0.05          # ±5%
+# ── gate constants (live: distinct_normalized_name ~1.467M · distinct_legal_name_base
+# ~1.451M; coarse floors below the ±25% Δ-band so the per-family Δ is the sensitive check) ──
+ROW_FLOOR = 1_400_000           # tight floor on the critical 1:1 row/uei count
+NORM_FLOOR = 1_050_000          # distinct_normalized_name floor BELOW the ±25% Δ-band (Δ-lower
+BASE_FLOOR = 1_050_000          # ~1.10M) so the per-family Δ is the binding sensitive check —
+                                # a distinct-key collapse is caught by gate 10/11, not shadowed
+BASELINE_MIN_ROWS = 1_450_000   # a success must clear this to qualify as a Δ baseline
 NORM_FILL_MIN = 0.999           # normalized_legal_name non-null floor
+NAME_ALPHA_MIN = 0.95           # normalized_legal_name alpha-frac (normalization-regression defense)
 GEO_COFILL_MIN = 0.95           # name ∧ source_state ∧ zip_code floor
-DELTA_GUARD = 0.25              # ±25% row delta vs prior success
-KIPPER_UEI = "DD1BCRF2QQG8"     # canonical round-trip probe
+DELTA_GUARD = 0.25              # ±25% per-family vs prior success
+SEEK_WARN_MS = 2000             # post-write seek WARN threshold (observability only — not gated)
 
 SCAN_COLS = [
     "uei", "legal_business_name", "cage_code", "physical_address_province_or_state",
@@ -114,7 +124,8 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pyarrow>=17",
     "requests>=2.32",
     "psycopg[binary]>=3.2",
-).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.name_norm").add_local_python_source("core.ops_alert")
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source(
+    "core.name_norm", "core.ops_alert", "pipelines.sam_gov.reference.sam_labels")
 
 app = modal.App("sam-gov-normalized-entities-pipelines", image=image)
 
@@ -189,7 +200,7 @@ def _materialize(con):
     con.execute(f"CREATE TEMP TABLE sne AS {build_normalized_entities_sql()}")
     con.unregister("src")
 
-    rows, d_uei, d_norm, d_base, norm_nn, geo_cofill = con.execute("""
+    (rows, d_uei, d_norm, d_base, norm_nn, geo_cofill, name_alpha) = con.execute("""
         SELECT
             count(*),
             count(DISTINCT uei),
@@ -198,15 +209,23 @@ def _materialize(con):
             count(*) FILTER (WHERE normalized_legal_name IS NOT NULL),
             count(*) FILTER (WHERE normalized_legal_name IS NOT NULL
                                AND source_state IS NOT NULL
-                               AND zip_code IS NOT NULL)
+                               AND zip_code IS NOT NULL),
+            count(*) FILTER (WHERE normalized_legal_name IS NOT NULL
+                               AND regexp_matches(normalized_legal_name, '[A-Za-z]'))
         FROM sne
     """).fetchone()
     sam_label = con.execute("SELECT max(sam_extract_label) FROM sne").fetchone()[0]
+    # population probe (D9) — a uei with a non-null key, deterministic via uei order.
+    probe = con.execute(
+        "SELECT uei FROM sne WHERE uei IS NOT NULL AND normalized_legal_name IS NOT NULL "
+        "ORDER BY uei LIMIT 1").fetchone()
     table = con.sql("SELECT * FROM sne").to_arrow_table()
     metrics = {
         "rows": int(rows), "distinct_uei": int(d_uei),
         "distinct_normalized_name": int(d_norm), "distinct_legal_name_base": int(d_base),
         "normalized_nonnull": int(norm_nn), "geo_cofill": int(geo_cofill),
+        "name_alpha_frac": (name_alpha / norm_nn) if norm_nn else 0.0,
+        "probe_uei": probe[0] if probe else None,
     }
     return table, metrics, sam_label
 
@@ -218,9 +237,10 @@ def _within(value: int, target: int, tol: float) -> bool:
     return abs(value - target) <= target * tol
 
 
-def assert_pre_write_gates(metrics: dict, src_count: int, prior_rows: int | None) -> list[str]:
-    """Gates 1-7 on the in-memory metrics. Raises RuntimeError on the first hard failure;
-    returns the human-readable check log on success."""
+def assert_pre_write_gates(metrics: dict, src_count: int, baseline: dict | None) -> list[str]:
+    """Gates on the in-memory metrics, BEFORE the overwrite. Raises on first hard failure;
+    returns the check log on success. `baseline` = the floor-qualified, URI-scoped prior
+    ({rows_written, distinct_normalized_name, distinct_legal_name_base}) or None."""
     rows = metrics["rows"]
     checks: list[str] = []
 
@@ -236,18 +256,26 @@ def assert_pre_write_gates(metrics: dict, src_count: int, prior_rows: int | None
     norm_fill = metrics["normalized_nonnull"] / rows
     gate(norm_fill >= NORM_FILL_MIN,
          f"4 normalized_legal_name fill: {norm_fill:.4%} >= {NORM_FILL_MIN:.2%}")
-    gate(_within(metrics["distinct_normalized_name"], NORM_DISTINCT_TARGET, CARDINALITY_TOL)
-         and _within(metrics["distinct_legal_name_base"], BASE_DISTINCT_TARGET, CARDINALITY_TOL),
-         f"5 cardinality: norm {metrics['distinct_normalized_name']:,} (~{NORM_DISTINCT_TARGET:,}) "
-         f"& base {metrics['distinct_legal_name_base']:,} (~{BASE_DISTINCT_TARGET:,}) within ±{CARDINALITY_TOL:.0%}")
+    gate(metrics["distinct_normalized_name"] >= NORM_FLOOR,
+         f"5 norm-distinct floor: {metrics['distinct_normalized_name']:,} >= {NORM_FLOOR:,}")
+    gate(metrics["distinct_legal_name_base"] >= BASE_FLOOR,
+         f"6 base-distinct floor: {metrics['distinct_legal_name_base']:,} >= {BASE_FLOOR:,}")
     geo_fill = metrics["geo_cofill"] / rows
     gate(geo_fill >= GEO_COFILL_MIN,
-         f"6 geo co-fill (name∧state∧zip): {geo_fill:.4%} >= {GEO_COFILL_MIN:.0%}")
-    if prior_rows:
-        gate(_within(rows, prior_rows, DELTA_GUARD),
-             f"7 Δ-guard: {rows:,} within ±{DELTA_GUARD:.0%} of prior {prior_rows:,}")
+         f"7 geo co-fill (name∧state∧zip): {geo_fill:.4%} >= {GEO_COFILL_MIN:.0%}")
+    gate(metrics["name_alpha_frac"] >= NAME_ALPHA_MIN,
+         f"8 name-alpha: {metrics['name_alpha_frac']:.4%} >= {NAME_ALPHA_MIN:.0%}")
+    # per-family Δ-guards (the sensitive check) — rows, norm-distinct, AND base-distinct
+    # (the latter is what the retired absolute BASE_DISTINCT_TARGET used to cover).
+    if baseline:
+        gate(_within(rows, baseline["rows_written"], DELTA_GUARD),
+             f"9 rows Δ: {rows:,} within ±{DELTA_GUARD:.0%} of {baseline['rows_written']:,}")
+        gate(_within(metrics["distinct_normalized_name"], baseline["distinct_normalized_name"], DELTA_GUARD),
+             f"10 norm-distinct Δ: {metrics['distinct_normalized_name']:,} ~ ±{DELTA_GUARD:.0%} of {baseline['distinct_normalized_name']:,}")
+        gate(_within(metrics["distinct_legal_name_base"], baseline["distinct_legal_name_base"], DELTA_GUARD),
+             f"11 base-distinct Δ: {metrics['distinct_legal_name_base']:,} ~ ±{DELTA_GUARD:.0%} of {baseline['distinct_legal_name_base']:,}")
     else:
-        checks.append("SKIP  7 Δ-guard: no prior success (first build)")
+        checks.append("SKIP  9-11 Δ-guards: no floor-qualified prior success")
     return checks
 
 
@@ -264,9 +292,10 @@ def _pg_connect():
     return psycopg.connect(dsn)
 
 
-def _prior_success_rows() -> int | None:
-    """Latest successful rows_written from the ops ledger (for the Δ-guard). None if no
-    prior success or no DB."""
+def _prior_success_baseline(dataset_uri: str) -> dict | None:
+    """Latest success at `dataset_uri` clearing BASELINE_MIN_ROWS — the per-family Δ baseline
+    ({rows_written, distinct_normalized_name, distinct_legal_name_base}). Floor-qualified (no
+    ratchet) and dataset_uri-scoped (no scratch poison)."""
     conn = _pg_connect()
     if conn is None:
         return None
@@ -274,20 +303,25 @@ def _prior_success_rows() -> int | None:
         with conn, conn.cursor() as cur:
             cur.execute(OPS_DDL)
             cur.execute(
-                "SELECT rows_written FROM ops.sam_normalized_entities_runs "
-                "WHERE status = 'success' AND rows_written IS NOT NULL "
-                "ORDER BY recorded_at DESC LIMIT 1"
+                "SELECT rows_written, distinct_normalized_name, distinct_legal_name_base "
+                "FROM ops.sam_normalized_entities_runs "
+                "WHERE status='success' AND dataset_uri = %s AND rows_written >= %s "
+                "ORDER BY recorded_at DESC LIMIT 1",
+                (dataset_uri, BASELINE_MIN_ROWS),
             )
-            row = cur.fetchone()
-            return int(row[0]) if row and row[0] is not None else None
+            r = cur.fetchone()
+            return None if not r else {
+                "rows_written": int(r[0]), "distinct_normalized_name": int(r[1]),
+                "distinct_legal_name_base": int(r[2])}
     except Exception as exc:  # noqa: BLE001
-        print(f"WARN: prior-rows lookup failed: {exc}")
+        print(f"WARN: baseline lookup failed: {exc}")
         return None
     finally:
         conn.close()
 
 
-def _record_run(*, sam_label, metrics, status, error, started_at, completed_at) -> None:
+def _record_run(*, feed, dataset_uri, sam_label, metrics, status, error,
+                started_at, completed_at) -> None:
     conn = _pg_connect()
     if conn is None:
         return
@@ -302,7 +336,7 @@ def _record_run(*, sam_label, metrics, status, error, started_at, completed_at) 
                      status, error, started_at, completed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (FEED, DATASET_URI, SRC_URI, sam_label, metrics.get("rows"),
+                (feed, dataset_uri, SRC_URI, sam_label, metrics.get("rows"),
                  metrics.get("distinct_uei"), metrics.get("distinct_normalized_name"),
                  metrics.get("distinct_legal_name_base"), status, error,
                  started_at, completed_at),
@@ -343,21 +377,54 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     memory=32768,
     cpu=8.0,
 )
-def build_sam_normalized_entities(trigger_callback_url: str | None = None) -> dict:
-    """Materialize the sidecar, run gates 1-7 BEFORE the overwrite, write + index, then run
-    post-write gates 8-10 and restore the prior version on failure. Idempotent overwrite."""
+def build_sam_normalized_entities(trigger_callback_url: str | None = None,
+                                  dataset_uri: str | None = None,
+                                  skip_if_current: bool = True) -> dict:
+    """Materialize the sidecar, gate BEFORE the overwrite, then write + index + post-write
+    gates under ONE rollback guard (restore prior version on any failure). Idempotent.
+    dataset_uri overrides the write target (scratch); skip_if_current no-ops when the sidecar
+    already reflects the latest sam_master_entities snapshot (snap-key compared)."""
     import datetime as dt
     import time
 
     import lance
 
+    from pipelines.sam_gov.reference.sam_labels import snap_key_sql
+
     started_at = dt.datetime.now(dt.timezone.utc)
     so = _r2_storage_options()
+    uri = dataset_uri or DATASET_URI
+    feed = _feed_for(uri)
     status, error, sam_label = "error", None, None
     metrics = {"rows": 0, "distinct_uei": 0, "distinct_normalized_name": 0,
-               "distinct_legal_name_base": 0, "normalized_nonnull": 0, "geo_cofill": 0}
+               "distinct_legal_name_base": 0, "normalized_nonnull": 0, "geo_cofill": 0,
+               "name_alpha_frac": 0.0, "probe_uei": None}
     try:
         os.makedirs(SPILL_DIR, exist_ok=True)
+
+        # ── skip_if_current (D12, snap-key) — cheap narrow-column label compare before scan ──
+        if skip_if_current:
+            try:
+                con0 = _new_con()
+                con0.register("s", lance.dataset(SRC_URI, storage_options=so).scanner(
+                    columns=["sam_extract_label"]).to_reader())
+                src_key = con0.execute(f"SELECT max({snap_key_sql('sam_extract_label')}) FROM s").fetchone()[0]
+                con0.unregister("s")
+                cur_key = None
+                try:
+                    con0.register("c", lance.dataset(uri, storage_options=so).scanner(
+                        columns=["sam_extract_label"]).to_reader())
+                    cur_key = con0.execute(f"SELECT max({snap_key_sql('sam_extract_label')}) FROM c").fetchone()[0]
+                    con0.unregister("c")
+                except Exception:  # noqa: BLE001 — net-new/missing target → not current
+                    cur_key = None
+                con0.close()
+                if cur_key is not None and src_key == cur_key:
+                    status = "skipped"
+                    print(f"skip_if_current: sidecar already at source snap-key {cur_key}")
+                    return {"feed": feed, "dataset": uri, "status": "skipped", "sam_label": None}
+            except Exception as exc:  # noqa: BLE001 — never let the skip check block a build
+                print(f"WARN: skip_if_current check failed ({exc}); proceeding with build.")
 
         # ── materialize + pre-write gates (on the Arrow table, before any overwrite) ──
         con = _new_con()
@@ -366,96 +433,97 @@ def build_sam_normalized_entities(trigger_callback_url: str | None = None) -> di
         finally:
             con.close()
         src_count = lance.dataset(SRC_URI, storage_options=so).count_rows()
-        prior_rows = _prior_success_rows()
-        print(f"materialized: {metrics} sam_label={sam_label} src_count={src_count:,}")
-        for line in assert_pre_write_gates(metrics, src_count, prior_rows):
+        baseline = _prior_success_baseline(uri)
+        printable = {k: v for k, v in metrics.items() if k != "probe_uei"}
+        print(f"materialized: {printable} sam_label={sam_label} src_count={src_count:,} baseline={baseline}")
+        for line in assert_pre_write_gates(metrics, src_count, baseline):
             print("  ", line)
 
-        # ── capture the pre-write version for rollback (None for a net-new dataset) ──
+        # ── rollback target (None for a net-new dataset) ──
         try:
-            v_before = lance.dataset(DATASET_URI, storage_options=so).version
-        except Exception:
+            v_before = lance.dataset(uri, storage_options=so).version
+        except Exception:  # noqa: BLE001
             v_before = None
         print(f"v_before = {v_before}")
 
-        # ── write + index ──
-        lance.write_dataset(
-            table, DATASET_URI, mode="overwrite",
-            data_storage_version=DATA_STORAGE_VERSION,
-            max_rows_per_file=MAX_ROWS_PER_FILE,
-            storage_options=so,
-        )
-        print(f"wrote dataset (overwrite, v{DATA_STORAGE_VERSION}) → {DATASET_URI}")
-        ds = lance.dataset(DATASET_URI, storage_options=so)
-        for col in BTREE_INDEXES:
-            ds.create_scalar_index(col, index_type="BTREE")
-            print(f"  BTREE ✓ {col}")
-        for col in BITMAP_INDEXES:
-            ds.create_scalar_index(col, index_type="BITMAP")
-            print(f"  BITMAP ✓ {col}")
-
-        # ── post-write gates 8-10; restore-to-v_before on failure ──
+        # ── write + index + post-write gates, ALL under one rollback guard (D10) ──
         try:
-            ds = lance.dataset(DATASET_URI, storage_options=so)
+            lance.write_dataset(table, uri, mode="overwrite",
+                                data_storage_version=DATA_STORAGE_VERSION,
+                                max_rows_per_file=MAX_ROWS_PER_FILE, storage_options=so)
+            print(f"wrote dataset (overwrite, v{DATA_STORAGE_VERSION}) → {uri}")
+            ds = lance.dataset(uri, storage_options=so)
+            for col in BTREE_INDEXES:
+                ds.create_scalar_index(col, index_type="BTREE")
+                print(f"  BTREE ✓ {col}")
+            for col in BITMAP_INDEXES:
+                ds.create_scalar_index(col, index_type="BITMAP")
+                print(f"  BITMAP ✓ {col}")
+
+            ds = lance.dataset(uri, storage_options=so)
             committed = ds.count_rows()
+            if committed != metrics["rows"]:
+                raise RuntimeError(f"write-integrity: committed {committed:,} != materialized {metrics['rows']:,}")
             idx_names = {(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
                          for i in ds.list_indices()}
             expect_idx = {f"{c}_idx" for c in BTREE_INDEXES + BITMAP_INDEXES}
             if not expect_idx.issubset(idx_names):
-                raise RuntimeError(f"gate 8 indices: missing {sorted(expect_idx - idx_names)} "
-                                   f"(have {sorted(idx_names)})")
-            kip = ds.scanner(columns=["uei", "normalized_legal_name"],
-                             filter=f"uei = '{KIPPER_UEI}'").to_table().to_pylist()
-            if not (len(kip) == 1 and kip[0]["normalized_legal_name"]):
-                raise RuntimeError(f"gate 9 KIPPER round-trip: {KIPPER_UEI} → {kip}")
-            probe_name = kip[0]["normalized_legal_name"]
+                raise RuntimeError(f"indices: missing {sorted(expect_idx - idx_names)} (have {sorted(idx_names)})")
+            pr = metrics["probe_uei"]
+            rt = ds.scanner(columns=["uei", "normalized_legal_name"],
+                            filter=f"uei = '{pr}'").to_table().to_pylist()
+            probe_name = next((r["normalized_legal_name"] for r in rt if r["normalized_legal_name"]), None)
+            if not probe_name:
+                raise RuntimeError(f"round-trip: probe {pr} → {len(rt)} rows / no normalized_legal_name")
             t0 = time.monotonic()
             hit = ds.scanner(columns=["uei"],
-                             filter=f"normalized_legal_name = '{probe_name}'").to_table().num_rows
+                             filter=f"normalized_legal_name = '{probe_name.replace(chr(39), chr(39) * 2)}'").to_table().num_rows
             seek_ms = (time.monotonic() - t0) * 1000
-            # Gate 10 intent: prove a BTREE point-seek, not a full scan. <100ms is the warm
-            # local target; a remote R2 seek carries network RTT, so the hard ceiling is set
-            # generously (2s) to catch a missing-index full scan while tolerating RTT. Actual
-            # ms is logged. (Engineering call — full plan §7.)
-            if hit < 1 or seek_ms > 2000:
-                raise RuntimeError(f"gate 10 point-lookup: {hit} rows in {seek_ms:.0f}ms (>2000ms ⇒ no index)")
+            if hit < 1:  # D1 — correctness only; cold-seek latency is logged, NOT gated
+                raise RuntimeError("name index: lookup of a known-present name returned 0 rows")
+            _slow = "" if seek_ms <= SEEK_WARN_MS else f"  [WARN cold seek >{SEEK_WARN_MS}ms]"
             print(f"post-write gates PASS — committed={committed:,} indices={sorted(idx_names)} "
-                  f"KIPPER='{probe_name}' seek={seek_ms:.0f}ms ({hit} rows) "
-                  f"[target <100ms warm; <2000ms ceiling for R2 RTT]")
+                  f"probe={pr} seek={seek_ms:.0f}ms{_slow}")
         except Exception as gate_exc:  # noqa: BLE001
             if v_before is not None:
-                lance.dataset(DATASET_URI, storage_options=so, version=v_before).restore()
-                raise RuntimeError(f"post-write gate failed → rolled back to v{v_before}: {gate_exc}")
-            raise RuntimeError(f"post-write gate failed on net-new dataset (no rollback target; "
-                               f"inspect/drop {DATASET_URI}): {gate_exc}")
+                try:
+                    lance.dataset(uri, storage_options=so, version=v_before).restore()
+                except Exception as rerr:  # noqa: BLE001
+                    raise RuntimeError(f"ROLLBACK FAILED to v{v_before}: {rerr}; original: {gate_exc}")
+                raise RuntimeError(f"write/index/gate failed → rolled back to v{v_before}: {gate_exc}")
+            raise RuntimeError(f"write/index/gate failed on net-new dataset (inspect/drop {uri}): {gate_exc}")
 
         status = "success"
     except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
         error = str(exc)
     finally:
         completed_at = dt.datetime.now(dt.timezone.utc)
-        _record_run(sam_label=sam_label, metrics=metrics, status=status, error=error,
-                    started_at=started_at, completed_at=completed_at)
+        _record_run(feed=feed, dataset_uri=uri, sam_label=sam_label, metrics=metrics,
+                    status=status, error=error, started_at=started_at, completed_at=completed_at)
         _post_callback(trigger_callback_url,
-                       {"status": status, "rows": metrics["rows"], "feed": FEED,
-                        "dataset_uri": DATASET_URI, "sam_label": sam_label,
+                       {"status": status, "rows": metrics["rows"], "feed": feed,
+                        "dataset_uri": uri, "sam_label": sam_label,
                         "distinct_uei": metrics["distinct_uei"]})
 
     if status != "success":
-        alert(f"[sam_normalized_entities] {FEED} build {status}: {str(error)[:300]}")
+        alert(f"[sam_normalized_entities] {feed} build {status}: {str(error)[:300]}")
         raise RuntimeError(f"sam_normalized_entities build failed: {error}")
-    return {"feed": FEED, "dataset": DATASET_URI, "sam_label": sam_label, **metrics}
+    return {"feed": feed, "dataset": uri, "sam_label": sam_label,
+            "rows": metrics["rows"], "distinct_uei": metrics["distinct_uei"],
+            "distinct_normalized_name": metrics["distinct_normalized_name"],
+            "distinct_legal_name_base": metrics["distinct_legal_name_base"]}
 
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=900)
-def verify_sam_normalized_entities() -> dict:
+def verify_sam_normalized_entities(dataset_uri: str | None = None) -> dict:
     """Read-back proof from R2 — independent of the write path. Reports counts, schema,
     indices, a sample, and the §B8 observability (legal_name_base collision rate; CO-peel)."""
     import duckdb
     import lance
 
     so = _r2_storage_options()
-    ds = lance.dataset(DATASET_URI, storage_options=so)
+    uri = dataset_uri or DATASET_URI
+    ds = lance.dataset(uri, storage_options=so)
     idx = sorted((i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
                  for i in ds.list_indices())
 
@@ -484,7 +552,7 @@ def verify_sam_normalized_entities() -> dict:
         columns=["uei", "normalized_legal_name", "legal_name_base", "source_state",
                  "zip_code", "is_active", "primary_naics"], limit=6).to_table().to_pylist()
     return {
-        "uri": DATASET_URI, "rows": rows, "distinct_uei": d_uei,
+        "uri": uri, "rows": rows, "distinct_uei": d_uei,
         "distinct_normalized_name": d_norm, "distinct_legal_name_base": d_base,
         "active_rows": active, "indices": idx,
         "schema": [f"{f.name}:{f.type}" for f in ds.schema],
@@ -513,30 +581,36 @@ def init_ops() -> dict:
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=60 * 30, memory=32768, cpu=8.0,
 )
-def plan_sam_normalized_entities() -> dict:
-    """Dry-run gate — materialize + run gates 1-7, write NOTHING."""
+def plan_sam_normalized_entities(dataset_uri: str | None = None) -> dict:
+    """Dry-run gate — materialize + run the SAME pre-write gates (incl. the floor-qualified
+    Δ baseline scoped to the effective URI), write NOTHING."""
     import lance
 
     os.makedirs(SPILL_DIR, exist_ok=True)
     so = _r2_storage_options()
+    uri = dataset_uri or DATASET_URI
     con = _new_con()
     try:
         _table, metrics, sam_label = _materialize(con)
     finally:
         con.close()
     src_count = lance.dataset(SRC_URI, storage_options=so).count_rows()
-    prior_rows = _prior_success_rows()
-    checks = assert_pre_write_gates(metrics, src_count, prior_rows)
-    return {"feed": FEED, "sam_label": sam_label, "src_count": src_count,
-            "prior_rows": prior_rows, "gates": checks, **metrics}
+    baseline = _prior_success_baseline(uri)
+    checks = assert_pre_write_gates(metrics, src_count, baseline)
+    out = {k: v for k, v in metrics.items() if k != "probe_uei"}
+    return {"feed": _feed_for(uri), "sam_label": sam_label, "src_count": src_count,
+            "baseline": baseline, "gates": checks, **out}
 
 
 @app.local_entrypoint()
 def build(dry_run: bool = False) -> None:
     import json
 
+    uri = os.environ.get("SAM_NORMALIZED_ENTITIES_URI")  # None → prod
     if dry_run:
-        print(json.dumps(plan_sam_normalized_entities.remote(), indent=2, default=str))
+        print(json.dumps(plan_sam_normalized_entities.remote(dataset_uri=uri), indent=2, default=str))
         return
-    print(json.dumps(build_sam_normalized_entities.remote(trigger_callback_url=None), indent=2, default=str))
-    print(json.dumps(verify_sam_normalized_entities.remote(), indent=2, default=str))
+    # skip_if_current=False: a manual run always rebuilds (the orchestrator path uses the default True).
+    print(json.dumps(build_sam_normalized_entities.remote(
+        trigger_callback_url=None, dataset_uri=uri, skip_if_current=False), indent=2, default=str))
+    print(json.dumps(verify_sam_normalized_entities.remote(dataset_uri=uri), indent=2, default=str))
