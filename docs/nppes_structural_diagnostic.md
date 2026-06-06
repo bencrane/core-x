@@ -143,13 +143,13 @@ Hardware envelope (the deployed worker, `pipelines/nppes/ingest.py`): **32 GiB R
 ```sql
 PRAGMA threads=8;                            -- = vCPU count
 SET memory_limit='20GB';                     -- ~62% of 32 GiB; leaves RAM for Lance pool + Arrow + OS
-SET temp_directory='/mnt/nvme/duck_spill';   -- local NVMe — NOT the '/' root FS
+SET temp_directory='/tmp/duckdb_spill';      -- local scratch on the 512 GiB ephemeral disk (fleet convention; mkdir at entry)
 SET max_temp_directory_size='64GB';          -- cap spill
 SET preserve_insertion_order=false;          -- streaming aggregates don't need order; lowers peak RSS
 ```
 ```bash
 export LANCE_MEM_POOL_SIZE=4294967296        # 4 GiB Lance IO/buffer pool — R2 read throughput within envelope
-export TMPDIR=/mnt/nvme/duck_spill           # belt-and-suspenders: keep any library temp off '/'
+export TMPDIR=/tmp/duckdb_spill              # belt-and-suspenders: keep any library temp on the ephemeral disk too
 ```
 - **Force index pushdown:** pass the predicate *into the Lance scanner*, not into a post-materialization DuckDB filter — `ds.scanner(columns=[…only needed…], filter="npi IN ('…','…')", batch_size=131072)`. This guarantees the BTREE/BITMAP prefilter fires; a `SELECT * FROM <lance> WHERE …` that relies on replacement-scan pushdown can silently degrade to a full column scan.
 - **Project narrowly.** A `SELECT *` materializes 334 columns including 819.81 MiB of provenance ballast and 275 mostly-null slots. List only the columns the query needs.
@@ -169,7 +169,7 @@ export LANCE_BYPASS_SPILLING=true            # REQUIRED — Lance's bounded spil
 ```sql
 PRAGMA threads=8;
 SET memory_limit='24GB';                     -- keep more of the sort hot in RAM
-SET temp_directory='/mnt/nvme/duck_spill';   -- the ORDER BY spills the DECODED payload — must be high-I/O NVMe
+SET temp_directory='/tmp/duckdb_spill';      -- the ORDER BY spills the DECODED payload — needs the 512 GiB ephemeral disk
 SET max_temp_directory_size='128GB';         -- decoded sort spill ≈ 25–35 GiB (2–3× the 11.46 GiB on-disk); size generously
 SET preserve_insertion_order=true;           -- preserve the ORDER BY npi ordering into the Lance write
 ```
@@ -269,7 +269,7 @@ A primary-slot-only index (the §5 Tier-1 `BITMAP` on `taxonomy_code_1`) is a pa
 
 ### 6.5 Out-of-core & memory — measured, confirms §4
 
-The full 334-column null+NDV pass (9.55M rows, 668 streaming aggregates) completed in **121 s inside a 10 GiB `memory_limit` with zero spill** — HLL/count states are tiny, so *aggregation* is not the memory risk. The §4-A read config (`threads=8`, `memory_limit≈20 GB`, `temp_directory` on NVMe, narrow projection, push predicates into the scanner) is confirmed sufficient for query/scan workloads. The memory/disk pressure lives entirely in the **Tier-2 `ORDER BY npi` global re-sort** (§4-C): that external sort spills the *decoded* payload (≈25–35 GiB), and its `temp_directory` **must** be high-I/O local NVMe — on the container root FS it either exhausts disk or throttles.
+The full 334-column null+NDV pass (9.55M rows, 668 streaming aggregates) completed in **121 s inside a 10 GiB `memory_limit` with zero spill** — HLL/count states are tiny, so *aggregation* is not the memory risk. The §4-A read config (`threads=8`, `memory_limit≈20 GB`, `temp_directory` on the ephemeral disk, narrow projection, push predicates into the scanner) is confirmed sufficient for query/scan workloads. The memory/disk pressure lives entirely in the **Tier-2 `ORDER BY npi` global re-sort** (§4-C): that external sort spills the *decoded* payload (≈25–35 GiB), so its `temp_directory` **must** point at the 512 GiB ephemeral disk (`/tmp/…`), sized via `max_temp_directory_size` — an undersized scratch location exhausts disk or throttles.
 
 ### 6.6 I/O bottlenecks — DuckDB ⋈ Lance COPY/INSERT (write path)
 
@@ -277,7 +277,7 @@ Three memory/I-O hazards on writes into the Lance SoR, in rising severity:
 
 1. **R2 multipart `400 InvalidPart` (already mitigated).** A direct Lance write to R2 trips R2's "all non-trailing parts equal length" rule once a scalar-index `page_data.lance` is large enough to escalate object_store's adaptive multipart mid-upload. NPPES is squarely in range — the address BTREE `page_data.lance` is **126 MB**, and the proposed name BTREEs (§5 Tier-1) are the same class. Mandatory pattern (already in the pipeline): **build local → boto3 publish (uniform parts)**. Never write indices straight to R2.
 2. **BTREE-train OOM / `LANCE_BYPASS_SPILLING` scaling cliff.** The high-cardinality string BTREEs (`provider_first_line_business_practice_location_address` 2.9M distinct; the proposed `provider_organization_name_legal_business_name` 1.15M, `provider_last_name_legal_name` 0.8M) train by sorting the column. Lance's bounded spill sorter under-sizes and OOMs on these, so the pipeline sets `LANCE_BYPASS_SPILLING=true` (in-RAM sort). Safe at 9.55M rows (each key set <1 GiB ≪ 32 GiB), and trains run **sequentially** so peak is one-at-a-time — but this trades OOM-safety for speed and is a **scaling cliff**: at multi-month accumulation or a larger registry the in-RAM sort is the first thing to blow the 32 GiB envelope. Watch it as index count and row count grow.
-3. **Tier-2 re-sort spill (the real ceiling).** The `ORDER BY npi` rewrite is the heaviest COPY-class op: decoded sort spill ≈25–35 GiB to `temp_directory`, plus the new local Lance stage (~12 GiB) and `READ_BATCH_ROWS`-bounded write RSS. Size `ephemeral_disk ≥ 64 GiB`, `max_temp_directory_size ≥ 128 GiB`, NVMe temp, and run isolated from the monthly capture (blast-radius containment).
+3. **Tier-2 re-sort spill (the real ceiling).** The `ORDER BY npi` rewrite is the heaviest COPY-class op: decoded sort spill ≈25–35 GiB to `temp_directory`, plus the new local Lance stage (~12 GiB) and `READ_BATCH_ROWS`-bounded write RSS. Size `ephemeral_disk ≥ 64 GiB`, `max_temp_directory_size ≥ 128 GiB`, `temp_directory` on the ephemeral disk (`/tmp/…`), and run isolated from the monthly capture (blast-radius containment).
 
 ---
 
