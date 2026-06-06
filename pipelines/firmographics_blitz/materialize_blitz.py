@@ -271,8 +271,16 @@ def _source_row_count_sql() -> str:
 
 # ── Source DSN + R2 plumbing ─────────────────────────────────────────────────────────────
 def _hqx_dsn() -> str:
-    """The hq-x Postgres DSN (pooled/Supavisor session mode) with SSL enforced. The DuckDB
-    postgres scanner hands this to libpq; Supabase requires TLS."""
+    """The hq-x Postgres DSN (pooled/Supavisor SESSION mode, :5432) with SSL enforced. The
+    DuckDB postgres scanner hands this to libpq; Supabase requires TLS.
+
+    Deliberately stays on the SESSION pooler — NOT the transaction pooler (:6543) the
+    enrichment-blitz workers moved to. The DuckDB postgres scanner opens multiple backend
+    connections and leans on session-scoped state (SET, multi-statement transactions,
+    cursors) that transaction-mode pooling breaks. This is also a single-container,
+    low-frequency materializer (one run at a time, ~2 brief psycopg connections at the
+    tail), so it does not pressure the session pool_size=15 ceiling that the
+    horizontally-scaled enrichment workers do."""
     dsn = os.environ.get("HQX_DB_URL_POOLED")
     if not dsn:
         raise RuntimeError("HQX_DB_URL_POOLED not set in the hqx-postgres Modal secret.")
