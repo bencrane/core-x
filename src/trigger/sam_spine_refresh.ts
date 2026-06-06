@@ -78,11 +78,16 @@ async function dispatch(
   return result.output;
 }
 
+// ⚠️ CRON DISABLED. The orchestrator's skip-check runs INSIDE the 128 GB build_sam_master
+// container (a full no-op rebuild ~daily — entity_registrations is a MONTHLY source). The
+// `cron` property is removed pending a lightweight staleness pre-check redesign (a micro/CPU
+// function that reads only the snapshot labels and dispatches the heavy builds only when stale).
+// The task is intentionally KEPT (manually triggerable); no `cron` = no declarative schedule =
+// no auto-fire. Do NOT re-add `cron` until the heavy-skip defect is fixed.
 export const samSpineRefresh = schedules.task({
   id: "sam-spine-refresh",
-  cron: { pattern: "30 18 * * *", timezone: "UTC" },
   queue: { concurrencyLimit: 1 },
-  maxDuration: 18000, // 5h — comfortably covers both waitpoint timeouts (3h + 1.5h) + slack
+  maxDuration: 18000,
   run: async (_payload, { ctx }) => {
     logger.info("sam-spine-refresh: dispatching master", { triggerRunId: ctx.run.id });
 
