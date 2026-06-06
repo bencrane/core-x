@@ -43,8 +43,9 @@ Spill configuration (source-verified against lance-format/lance
     asserts its absence at runtime and refuses to run otherwise.
   • Spill path — with spilling on, Lance builds ``DiskManagerBuilder::default()`` →
     ``DiskManagerMode::OsTmpDirectory`` → ``tempfile::tempdir()`` → ``std::env::temp_dir()`` →
-    honors **TMPDIR**. The Volume is mounted at ``/tmp`` and ``TMPDIR=/tmp`` routes every
-    DiskManager spill onto the Volume instead of the container root disk.
+    honors **TMPDIR**. Modal RESERVES ``/tmp`` (a Volume cannot mount there), so the Volume is
+    mounted at ``/mnt/spill`` and ``TMPDIR=/mnt/spill`` routes every DiskManager spill onto the
+    Volume instead of the container root disk.
   • Spill cap — ``LANCE_MAX_TEMP_DIRECTORY_SIZE`` and ``LANCE_MEM_POOL_SIZE`` parse via
     ``s.parse::<u64>()`` = **RAW BYTES**. A "250GB" string fails the parse and silently reverts to
     the 100 GB default. Both are passed as integer byte strings below.
@@ -83,7 +84,11 @@ SPILL_DIR = "/tmp/duckdb_spill"            # LOCAL scratch on the append workers
 SCRATCH_DIR = "/tmp/epa"                   # LOCAL scratch on the append workers (gz + parquet)
 
 # Index-worker spill onto a mounted Volume ------------------------------------ #
-SPILL_MOUNT = "/tmp"                        # Volume mount == TMPDIR (DataFusion OsTmpDirectory target)
+# Modal RESERVES /tmp and refuses to mount a Volume there (mount_utils.validate_mount_points
+# raises InvalidError for abs_path == "/tmp"). The spill target need not BE /tmp — DataFusion's
+# DiskManager(OsTmpDirectory) follows TMPDIR — so mount the Volume at a dedicated path and point
+# TMPDIR at it. Same guarantee (spill lands on the Volume), legal mount point.
+SPILL_MOUNT = "/mnt/spill"                  # Volume mount == TMPDIR (DataFusion OsTmpDirectory target)
 _GiB = 1024 ** 3
 # RAW BYTES (parse::<u64>): a "250GB"/"24GB" string would fail the parse and revert to defaults.
 LANCE_MAX_TEMP_BYTES = str(250 * _GiB)     # 268435456000  — raise the 100 GB DataFusion cap
