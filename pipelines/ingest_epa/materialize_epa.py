@@ -795,17 +795,19 @@ def build_bridge(run_id: str, trigger_callback_url: str | None = None) -> dict:
             print(f"[bridge] commercial candidates rows={n_cand[0]:,} distinct_registry={n_cand[1]:,}")
 
             # 3) Spine blocking sets (one scan of sos_normalized_master, projected).
+            # v9 sos_normalized_master persists legal_name_base (BTREE-indexed) — it is the SAME
+            # canonical legal_name_base(normalized_legal_name) the spine side used to re-derive,
+            # verified byte-identical on live data (0 / 17,926,543 rows differ). Read the stored
+            # column directly instead of recomputing the suffix-strip per row. The EPA candidate
+            # side still derives lnb from the raw EPA name (cand_ok below) — EPA carries no
+            # precomputed base — so the Tier-B base-name join stays byte-identical on both sides.
             con.register("sos_rdr", lance.dataset(SOS_MASTER_URI, storage_options=so).scanner(
-                columns=["normalized_legal_name", "zip_code",
+                columns=["normalized_legal_name", "legal_name_base", "zip_code",
                          "state", "source_state", "original_entity_id"]).to_reader())
-            # The LIVE sos_normalized_master does not persist a legal_name_base column (only
-            # normalized_legal_name + zip_code + state + identity). Derive the suffix-stripped
-            # base on the spine side via the SAME canonical macro applied to its already
-            # name_norm'd value, so the Tier-B base-name join is byte-identical on both sides.
             con.execute(f"""
                 CREATE TEMP TABLE spine_raw AS
                 SELECT normalized_legal_name AS nln,
-                       {legal_name_base('normalized_legal_name')} AS lnb,
+                       legal_name_base AS lnb,
                        {_zip5('zip_code')} AS zip5, upper(trim(state)) AS st,
                        source_state || {SEP} || original_entity_id AS rep
                 FROM sos_rdr WHERE normalized_legal_name IS NOT NULL
