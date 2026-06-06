@@ -70,6 +70,14 @@ DUCKDB_MEMORY_LIMIT = "24GB"          # headroom for the single-threaded read of
 SPILL_DIR = "/tmp/duckdb_spill"
 SCRATCH_DIR = "/tmp/epa"
 
+# Backfill-protection floor (Directive 30). epa_npdes_dmrs accumulates the full
+# FY1982–FYnow DMR history (appended by materialize_epa_history.py). The monthly
+# spec below carries only the rolling FY window and writes source[0] with
+# mode="overwrite", which would truncate that history. materialize_one refuses any
+# DMR overwrite while the live table already exceeds this floor. The rolling window
+# alone is ~67.6M rows; the unified table is ~422M — 350M cleanly separates them.
+DMR_HISTORICAL_FLOOR = 350_000_000
+
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
@@ -476,6 +484,16 @@ def _new_con():
     return con
 
 
+def _dataset_exists(uri: str, so: dict) -> bool:
+    import lance
+
+    try:
+        lance.dataset(uri, storage_options=so)
+        return True
+    except Exception:  # noqa: BLE001 — absent / not-found
+        return False
+
+
 def _build_indexes(uri: str, btree: list[str], bitmap: list[str], so: dict) -> list[str]:
     import lance
 
@@ -585,6 +603,24 @@ def materialize_one(spec: dict, run_id: str) -> dict:
 
     try:
         import pyarrow.dataset as pds
+
+        # Backfill-protection guard (Directive 30) — see DMR_HISTORICAL_FLOOR.
+        # epa_npdes_dmrs accumulates the full FY1982+ history (appended by
+        # materialize_epa_history.py). This spec carries only the rolling FY window and
+        # writes source[0] with mode="overwrite" (below), which would truncate that
+        # history. Refuse the write whenever the live table already holds history.
+        # Genuine cold build (dataset absent) is a no-op. Raised here → caught by the
+        # except below → clean 'error' ledger row; the orchestrator marks the batch
+        # 'partial'. Removed once the partition-replace path (commit 2) lands.
+        if name == "epa_npdes_dmrs" and _dataset_exists(uri, so):
+            live_rows = lance.dataset(uri, storage_options=so).count_rows()
+            if live_rows >= DMR_HISTORICAL_FLOOR:
+                raise RuntimeError(
+                    f"GUARD: epa_npdes_dmrs holds {live_rows:,} rows (>= floor "
+                    f"{DMR_HISTORICAL_FLOOR:,}); the monthly mode='overwrite' rebuild "
+                    f"would truncate accumulated FY1982+ history. Use the partition-"
+                    f"replace path (delete FISCAL_YEAR>=window_floor, then append)."
+                )
 
         for i, src in enumerate(spec["sources"]):
             gz = f"{SCRATCH_DIR}/{name}_{i}.csv.gz"
