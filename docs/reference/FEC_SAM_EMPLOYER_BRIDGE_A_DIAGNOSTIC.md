@@ -5,6 +5,19 @@ Read-only diagnostic resolving **which SAM entity master is canonical** and what
 (person). Companion to [`FEC_SAM_PERSONNEL_BRIDGE_DIAGNOSTIC.md`](FEC_SAM_PERSONNEL_BRIDGE_DIAGNOSTIC.md)
 (Bridge B, person↔person).
 
+> **⚠️ CORRECTION (2026-06-05) — the §3 geo-join semantics were wrong.** This doc originally asserted
+> ZIP is a *hard tiebreaker* because "both sides are the corporate address." **False.** FEC
+> `state`/`zip_code` are the **contributor's residence**, not the employer's address — the exact
+> home-vs-corp locus this doc's own companion (Bridge B) identified correctly, then this doc
+> contradicted. The adversarial review
+> [`SAM_NORMALIZED_ENTITIES_BUILD_PLAN_REVIEW.md`](../plans/SAM_NORMALIZED_ENTITIES_BUILD_PLAN_REVIEW.md)
+> §B2 probed it: **32.67% of true name-matches have donor-home ≠ employer-HQ state** (55.5% for
+> national employers). **For the employer bridge, geo is a confirmatory SCORE, never a hard JOIN
+> predicate.** The probe *facts* in this doc (schemas, fills, distinct counts) are verified and
+> unaffected — the error was an interpretive design claim carried over by analogy from the FEC×MSHA
+> org bridge. The FEC bridge itself is **deferred / out of scope** (`fec_individual_contributions` is
+> being rebuilt); this note preserves correctness, it does not authorize the bridge build.
+
 - **As-of:** probe **2026-06-05**, `s3://data-sink/active/`. **Zero data-plane mutation** — pylance
   schema read + DuckDB aggregate scans; ephemeral `uv` env; Doppler `core-x/prd`; `core.name_norm`
   imported (blocking key byte-identical to the fleet). Harness: `/tmp/probe_master.py`.
@@ -99,13 +112,19 @@ SELECT f.sub_id, e.uei, e.cage_code, e.legal_business_name, e.primary_naics, e.i
 FROM   fec f
 JOIN   sam_master_entities e
   ON   e.normalized_legal_name = f.emp_key                       -- BTREE exact (after §2)
- AND   e.physical_address_province_or_state = f.state2;          -- State discriminant
+ AND   e.physical_address_province_or_state = f.state2;          -- ⚠️ WRONG (review §B2): geo SCORES, not gates — see correction below
 -- e.uei → joins crosswalk_sam_usaspending, contractor_award_summary, sam_pocs, ffata_exec_comp, …
 -- Pass-2 drift: legal_name_base(emp_key) ↔ e.legal_name_base recovers LLC/INC suffix variance.
 ```
 
-ZIP here is a **hard tiebreaker** (both sides are the corporate address — unlike Bridge B, where FEC
-home vs POC corp addr forced ZIP to be confirmatory-only).
+> **⚠️ CORRECTED — do not use the §3 join as written.** The original claim here ("ZIP is a *hard
+> tiebreaker*, both sides corporate address") is **false**: FEC `state`/`zip_code` are the donor's
+> **residence**, not the employer's. Review §B2 probed **32.67%** donor-home ≠ employer-HQ (55.5% for
+> national employers), so the `= f.state2` predicate above is a false-negative gate — **geo must score,
+> not filter.** Review §B1/§B3 further correct it: block on `legal_name_base` first (free-text donors
+> omit LLC/INC), treat `normalized_legal_name` as the precision tier, and resolve name→uei multiplicity
+> (max 2,184 uei/name) with a candidate set + confidence — never a silent fan-out. The corrected join
+> belongs to the **deferred FEC-bridge plan**, not here.
 
 ---
 
