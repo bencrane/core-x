@@ -47,22 +47,28 @@ Reconnaissance (verified live against the metastore + the 2018 / 2023 / 2024 pay
      INTEGER. Everything else (NPIs, profile/record/payment IDs, codes) stays VARCHAR.
 
 Topology — SINGLE sequential orchestrator (``refresh_all``), the directive's model:
-  one container, one ephemeral disk. Per family, for each year in catalog order:
+  one container. Per family, for each year in catalog order:
       download CSV → /tmp (UTF-8-sanitised stream)  [Python: I/O only, no transform]
         → DuckDB read_csv(all_varchar, quote-aware, parallel=false) → dynamic project/cast
         → to_arrow_reader (streaming; never materialise the 8 GB General file)
-        → Lance append to the LOCAL family dataset (v2.1, on ephemeral disk)
+        → Lance append to the LOCAL family dataset (v2.1)
         → rm the local CSV   [bounded disk: one CSV at a time, never concurrent]
-  After a family's years land locally, build its BTREE + BITMAP scalar indexes ONCE, then
-  PUBLISH the whole dataset to R2 via boto3 (uniform-part multipart). Direct Lance→R2 writes
-  are NOT used: object_store emits variable-size multipart parts, which R2 rejects ("all
-  non-trailing parts must have the same length"); boto3 does not. The publish is HARDENED
-  (ARCHITECTURE.md "Giants — Volume-staged, append-only"): a from-scratch rebuild stages to
-  a sibling __staging prefix, verifies object set + per-file sizes == local, then swaps over
-  the live prefix (manifest uploaded LAST) — the live copy is never wiped before the
-  replacement is staged + verified; staged-from-R2 ops (reindex / single-year) publish
-  append-only (only new files, never re-pushing the multi-GB data tree). See
-  _publish_full_swap / _publish_incremental. A full refresh rebuilds each family cleanly.
+  GIANTS (general) stage on a Modal Volume (ARCHITECTURE.md "Giants — Volume-staged,
+  append-only"): off ephemeral_disk (so the job is NOT forced onto preemptible spot capacity)
+  and CHECKPOINTED per landed year (vol.commit), so an interrupted backfill resumes
+  (resume=True) and re-ingests only the missing years instead of restarting from 2018. Small
+  families stage on ephemeral scratch. After a family's years land, build its BTREE + BITMAP
+  scalar indexes ONCE, then PUBLISH to R2 via boto3 (uniform-part multipart). Direct Lance→R2
+  writes are NOT used: object_store emits variable-size multipart parts, which R2 rejects ("all
+  non-trailing parts must have the same length"); boto3 does not. The publish is HARDENED: a
+  from-scratch rebuild stages to a sibling __staging prefix, verifies object set + per-file
+  sizes == local, then swaps over the live prefix (manifest uploaded LAST) — the live copy is
+  never wiped before the replacement is staged + verified; staged-from-R2 ops (reindex /
+  single-year) publish append-only (only new files, never re-pushing the multi-GB data tree).
+  Every publish path then passes a READ-BACK VERIFY GATE (_verify_published): the dataset is
+  reopened FRESH from R2 and its row + index counts asserted before success is recorded — the
+  check whose absence let run #58 record a 'success' over a corpse. See _publish_full_swap /
+  _publish_incremental / _verify_published. A full refresh rebuilds each family cleanly.
 
 Control plane (Trigger v4 durable callback): ``refresh_all`` accepts ``trigger_callback_url``
 and, on terminal state, (1) writes per-unit run rows to ``ops.cms_open_payments_runs`` via
@@ -100,6 +106,17 @@ METASTORE_URL = os.environ.get(
 )
 
 SCRATCH_DIR = "/tmp/cms_open_payments"
+
+# Giant staging (ARCHITECTURE.md "Giants — Volume-staged, append-only"). General's ~15 GiB
+# dataset stages on a Modal Volume, NOT a large ephemeral_disk (a large ephemeral_disk request
+# is what forces a worker onto preemptible spot capacity — the documented cause of giant-job
+# preemption). The Volume also PERSISTS landed years across a container restart, so an
+# interrupted backfill resumes (refresh_all resume=True) instead of restarting from 2018 —
+# the recovery the partial-publish corpse and the run #59-64 mid-giant death both needed.
+# Small families (research/ownership) stay on ephemeral scratch (fast, nothing to resume).
+cms_vol = modal.Volume.from_name("cms-op-staging", create_if_missing=True)
+VOL_DIR = "/vol"
+_RESUMABLE_FAMILIES = {"general"}  # giants → Volume-staged + per-year resume
 
 # Lance fragment sizing (fleet constants). max_rows_per_file = the Lance default;
 # max_bytes_per_file = 90 GiB (the documented Lance default; every other worker uses it).
@@ -429,9 +446,43 @@ def _family_prefix(family: str) -> str:
     return FAMILIES[family]["uri"].split(f"s3://{BUCKET}/", 1)[1]
 
 
-def _local_ds(family: str) -> str:
-    """Local Lance staging directory for a family (accumulated across years, then published)."""
-    return os.path.join(SCRATCH_DIR, f"{family}_lance")
+def _local_ds(family: str, *, on_volume: bool = False) -> str:
+    """Local Lance staging directory for a family (accumulated across years, then published).
+    Giants stage on the Modal Volume (durable across restarts → resumable); small families
+    stage on ephemeral scratch. on_volume defaults False so every existing caller is unchanged."""
+    base = VOL_DIR if on_volume else SCRATCH_DIR
+    return os.path.join(base, f"{family}_lance")
+
+
+def _dataset_exists(local_ds: str) -> bool:
+    """True if a readable Lance dataset (a committed manifest) exists at local_ds."""
+    import lance
+
+    try:
+        lance.dataset(local_ds)
+        return True
+    except Exception:  # noqa: BLE001 — absent / no manifest ⇒ does not exist yet
+        return False
+
+
+def _landed_years(local_ds: str, years: list[int]) -> set[int]:
+    """Subset of `years` already present (row count > 0) in the local dataset — the resume
+    skip-set. Empty when no dataset exists. A per-year count (not a bare existence check) so a
+    half-written year is NOT treated as complete: only years with committed rows are 'landed',
+    and anything else is re-ingested (the per-year delete+append is idempotent)."""
+    import lance
+
+    if not _dataset_exists(local_ds):
+        return set()
+    ds = lance.dataset(local_ds)
+    out: set[int] = set()
+    for y in years:
+        try:
+            if ds.count_rows(filter=f"payment_year = {int(y)}") > 0:
+                out.add(int(y))
+        except Exception:  # noqa: BLE001 — unreadable year ⇒ re-ingest it
+            pass
+    return out
 
 
 # ── Hardened R2 publish (root-cause fix for the general partial-publish corpse) ──────────
@@ -670,6 +721,45 @@ def _publish_full_swap(s3, live_prefix: str, local_dir: str) -> int:
         print(f"  WARN: staging cleanup failed (harmless): {str(exc)[:160]}")
     print(f"  published {len(local_sizes)} files (staged-swap) → s3://{BUCKET}/{live_prefix}")
     return len(local_sizes)
+
+
+# ── Read-back verify gate (O1/O2) ────────────────────────────────────────────────────────
+# The check whose ABSENCE let run #58 record a 'successful' publish over a corpse: after the
+# swap commits, OPEN THE DATASET FRESH FROM R2 and assert it is whole (rows + full index plan
+# + a BTREE point-probe) before "success" is recorded. The size-census inside _publish_full_swap
+# proves the bytes match local; this proves the committed manifest actually opens and resolves.
+EXPECTED_INDEX_COUNT = {"general": 10, "research": 10, "ownership": 8}
+# Defensive: the explicit gate must track the registry (BTREE + BITMAP per family). A future
+# index-plan edit that forgets to update this constant trips here at import, not silently in prod.
+assert all(
+    EXPECTED_INDEX_COUNT[f] == len(c["btree"]) + len(c["bitmap"]) for f, c in FAMILIES.items()
+), "EXPECTED_INDEX_COUNT out of sync with the FAMILIES index plan"
+
+
+def _verify_published(uri: str, expected_rows: int, expected_indices: int | None,
+                      npi_col: str, storage_options: dict) -> dict:
+    """Open the just-published dataset FRESH from R2 and assert wholeness. Raises on any
+    disagreement (the caller records verify=error and leaves the published bytes for
+    inspection — they are valid, this is an alarm, not corruption). R2 is strongly
+    read-after-write consistent, so a successful open reflects the manifest the swap just
+    committed. expected_indices=None skips the index assertion (an index-less ingest path)."""
+    import lance
+
+    ds = lance.dataset(uri, storage_options=storage_options)
+    rows = ds.count_rows()
+    if rows != expected_rows:
+        raise RuntimeError(f"verify {uri}: R2 rows={rows:,} != expected {expected_rows:,}")
+    healthy = [i for i in _list_committed_indices(ds) if "error" not in i]
+    nidx = len(healthy)
+    if expected_indices is not None and nidx != expected_indices:
+        raise RuntimeError(
+            f"verify {uri}: R2 indices={nidx} != expected {expected_indices} "
+            f"(committed: {[i.get('name') for i in healthy]})")
+    probe = ds.scanner(filter=f"{npi_col} IS NOT NULL", columns=[npi_col],
+                       limit=1, prefilter=True).to_table().num_rows
+    if probe < 1:
+        raise RuntimeError(f"verify {uri}: BTREE probe on {npi_col} returned 0 rows")
+    return {"rows": rows, "indices": nidx}
 
 
 def _download_r2_prefix(s3, prefix: str, local_dir: str) -> int:
@@ -1145,8 +1235,15 @@ def ingest_family_year(
             built = _build_indexes_local(local_ds, family)
         # Local dataset was staged FROM R2 → append-only publish (only new files, never wipe).
         published = _publish_incremental(s3, prefix, local_ds)
+        # Read-back gate (O1): open fresh from R2 and assert wholeness before success. Assert
+        # the full index plan only when this run (re)built it; otherwise verify rows only.
+        total_rows = lance.dataset(local_ds).count_rows()
+        _verify_published(cfg["uri"], total_rows,
+                          EXPECTED_INDEX_COUNT[family] if build_index else None,
+                          cfg["npi_col"], _r2_storage_options())
         status = "success"
-        print(f"[{family} {year}] published {published} files → {cfg['uri']} ({rows:,} rows this year)")
+        print(f"[{family} {year}] published {published} files, verified {total_rows:,} rows on R2 "
+              f"→ {cfg['uri']} ({rows:,} rows this year)")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         status = "error"
@@ -1172,27 +1269,39 @@ def ingest_family_year(
 
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    volumes={VOL_DIR: cms_vol},  # giants (general) stage here, off ephemeral_disk → off spot
     timeout=60 * 60 * 10,  # full historical backfill across all families/years, sequential
     memory=49152,          # 48 GiB — sized for general's in-RAM BTREE build over 82M rows
                            # (LANCE_BYPASS_SPILLING; diagnostic §4.3). Matches reindex_family;
                            # memory does NOT force spot capacity (only ephemeral_disk does).
     cpu=8.0,
-    ephemeral_disk=524288,  # Modal floor (512 GiB); only one year resides on disk at a time
-    retries=0,             # a 10 h job must not silently restart from scratch; re-run is idempotent
+    ephemeral_disk=524288,  # 512 GiB — Modal's HARD FLOOR (requests <512 GiB are rejected), so
+                            # the plan's "lower to 128 GiB to dodge spot" is infeasible here. The
+                            # Volume's value is therefore RESUME, not a smaller disk: a preempted
+                            # run re-runs with resume=True and reuses checkpointed years. Only the
+                            # ~8 GB CSV + DuckDB spill use this disk; general's dataset is on /vol.
+    retries=0,             # a 10 h job must not silently restart from scratch; re-run resumes
 )
 def refresh_all(
     only_family: str | None = None, only_year: int | None = None,
-    skip_index: bool = False, trigger_callback_url: str | None = None,
+    skip_index: bool = False, resume: bool = False,
+    trigger_callback_url: str | None = None,
 ) -> dict:
-    """THE dispatched orchestrator (Trigger → Universal Dispatcher → here). One container,
-    one ephemeral disk. For each family, SEQUENTIALLY (download → transform → append-LOCAL →
-    rm CSV) accumulate every year into a local Lance dataset (never two years' CSVs on disk
-    at once), then build scalar indexes ONCE and publish the whole family to R2 via boto3
-    (uniform-part multipart — the R2-compliant write the direct Lance→R2 path cannot do).
-    Per-unit failures are recorded and skipped (one bad year must not sink the family); the
-    family still indexes + publishes whatever landed. Posts ONE flat-JSON summary callback."""
+    """THE dispatched orchestrator (Trigger → Universal Dispatcher → here). One container.
+    For each family, SEQUENTIALLY (download → transform → append-LOCAL → rm CSV) accumulate
+    every year into a local Lance dataset (never two years' CSVs on disk at once), then build
+    scalar indexes ONCE, publish the whole family to R2 via boto3 (uniform-part multipart —
+    the R2-compliant write the direct Lance→R2 path cannot do), and READ-BACK VERIFY it before
+    success. Per-unit failures are recorded and skipped (one bad year must not sink the family).
+
+    Giants (general) stage on a Modal Volume and CHECKPOINT each landed year (vol.commit), so a
+    preempted/killed run re-runs with resume=True and re-ingests only the MISSING years instead
+    of restarting from 2018 (the recovery run #59-64 needed). resume defaults False — every
+    quarterly refresh is a clean from-scratch rebuild. Posts ONE flat-JSON summary callback."""
     import datetime as dt
     import shutil
+
+    import lance
 
     started_at = dt.datetime.now(dt.timezone.utc)
     units = _resolve_units(only_family, only_year)
@@ -1208,20 +1317,42 @@ def refresh_all(
     s3 = _s3_client()
 
     for family, fam_units in by_family.items():
-        local_ds = _local_ds(family)
-        shutil.rmtree(local_ds, ignore_errors=True)
-        landed: list[int] = []
+        on_volume = family in _RESUMABLE_FAMILIES  # giant → Volume-staged + per-year resume
+        local_ds = _local_ds(family, on_volume=on_volume)
+        fam_years = [u["year"] for u in fam_units]
+
+        # Resume (giant recovery): keep years already checkpointed on the Volume from a prior
+        # interrupted run and re-ingest only the rest. A fresh run (default; every quarterly
+        # refresh) wipes and rebuilds from scratch — CMS revises prior years, so fresh is correct.
+        if on_volume and resume:
+            already = _landed_years(local_ds, fam_years)
+            if already:
+                print(f"[{family}] resume: years {sorted(already)} already on Volume — skipping re-ingest")
+        else:
+            shutil.rmtree(local_ds, ignore_errors=True)
+            if on_volume:
+                cms_vol.commit()  # persist the wipe so resume never sees a stale partial
+            already = set()
+
+        landed: list[int] = sorted(already)
         for unit in fam_units:
+            if unit["year"] in already:
+                continue  # resume: already landed + checkpointed
             try:
-                # create on the first LANDED year (a leading failure keeps create=True).
-                per_unit.append(_ingest_year_local(unit, local_ds, create=(len(landed) == 0)))
+                # create only when no local dataset exists yet (first landed year, or a fresh
+                # family); append once it does — including a resume onto already-landed years.
+                per_unit.append(
+                    _ingest_year_local(unit, local_ds, create=not _dataset_exists(local_ds)))
                 landed.append(unit["year"])
+                if on_volume:
+                    cms_vol.commit()  # CHECKPOINT: a preemption after this keeps the year
             except Exception as exc:  # noqa: BLE001 — record + continue; re-run is idempotent
                 failures.append({"family": family, "year": unit["year"], "error": str(exc)})
 
         built: list[str] = []
         published = 0
         publish_status = "skipped"
+        fam_rows = 0
         if landed:
             if not skip_index:
                 try:
@@ -1229,11 +1360,14 @@ def refresh_all(
                     built = _build_indexes_local(local_ds, family)
                 except Exception as exc:  # noqa: BLE001
                     built = [f"ERROR: {exc}"]
+            # Authoritative family row count from the dataset itself — robust to resume, where
+            # per_unit holds only THIS run's years but the dataset holds every landed year.
+            fam_rows = lance.dataset(local_ds).count_rows() if _dataset_exists(local_ds) else 0
             pub_started = dt.datetime.now(dt.timezone.utc)
-            fam_rows = sum(r["rows_processed"] for r in per_unit if r["family"] == family)
             try:
-                # From-scratch rebuild → stage to __staging, verify == local, then swap over
-                # the live prefix. Live is never wiped before the new copy is verified.
+                # From-scratch rebuild → stage to __staging, verify == local, then swap over the
+                # live prefix. Live is never wiped before the new copy is verified; for general's
+                # restore the swap also reclaims the orphaned partial-publish corpse cleanly.
                 published = _publish_full_swap(s3, _family_prefix(family), local_ds)
                 publish_status = "success"
                 print(f"[{family}] published {published} files → {FAMILIES[family]['uri']}")
@@ -1245,11 +1379,42 @@ def refresh_all(
                         fam_rows, 0, publish_status,
                         None if publish_status == "success" else "boto3 publish failed",
                         pub_started, dt.datetime.now(dt.timezone.utc))
-        shutil.rmtree(local_ds, ignore_errors=True)  # free disk before the next family
+
+            # Read-back verify gate (O1/O2): only NOW is the family truly done. Records a
+            # distinct 'verify' ledger row; a failure downgrades the family (bytes stay for
+            # inspection — this is the alarm whose absence let run #58 'succeed' over a corpse).
+            if publish_status == "success":
+                ver_started = dt.datetime.now(dt.timezone.utc)
+                try:
+                    vinfo = _verify_published(
+                        FAMILIES[family]["uri"], fam_rows,
+                        None if skip_index else EXPECTED_INDEX_COUNT[family],
+                        FAMILIES[family]["npi_col"], _r2_storage_options())
+                    print(f"[{family}] verify OK: rows={vinfo['rows']:,} indices={vinfo['indices']}")
+                    _record_run("verify", family, FAMILIES[family]["uri"], None, None, None,
+                                vinfo["rows"], 0, "success", None, ver_started,
+                                dt.datetime.now(dt.timezone.utc))
+                except Exception as exc:  # noqa: BLE001
+                    publish_status = "verify_failed"
+                    failures.append({"family": family, "year": "verify", "error": str(exc)})
+                    print(f"[{family}] VERIFY FAILED: {exc}")
+                    _record_run("verify", family, FAMILIES[family]["uri"], None, None, None,
+                                fam_rows, 0, "error", str(exc)[:2000], ver_started,
+                                dt.datetime.now(dt.timezone.utc))
+
+        # Free disk before the next family. A giant's Volume copy is RETAINED across a failed
+        # run (publish/verify/ingest) so a resume reuses its landed years; it is cleared only
+        # after a clean publish+verify. Small families always clear (nothing to resume).
+        if on_volume:
+            if publish_status == "success":
+                shutil.rmtree(local_ds, ignore_errors=True)
+                cms_vol.commit()
+        else:
+            shutil.rmtree(local_ds, ignore_errors=True)
 
         by_family_summary[family] = {
-            "rows": sum(r["rows_processed"] for r in per_unit if r["family"] == family),
-            "years": sorted(r["year"] for r in per_unit if r["family"] == family),
+            "rows": fam_rows,
+            "years": sorted(landed),
             "indices": built,
             "files_published": published,
             "publish": publish_status,
@@ -1266,7 +1431,7 @@ def refresh_all(
         "phase": "refresh_all",
         "units_total": len(units),
         "units_succeeded": len(ok),
-        "units_failed": len([f for f in failures if f["year"] != "publish"]),
+        "units_failed": len([f for f in failures if f["year"] not in ("publish", "verify")]),
         "rows_processed": sum(r["rows_processed"] for r in ok),
         "by_family": by_family_summary,
         "failures": failures,
@@ -1315,8 +1480,12 @@ def reindex_family(family: str) -> dict:
         # files; the multi-GB data tree is reused in place, never re-pushed).
         published = _publish_incremental(s3, prefix, local_ds)
         ds = lance.dataset(local_ds)
-        out = {"family": family, "dataset_uri": cfg["uri"], "rows": ds.count_rows(),
-               "built": built, "files_published": published,
+        local_rows = ds.count_rows()
+        # Read-back gate (O1/O2): the reindex always (re)builds the full plan → assert it.
+        verified = _verify_published(cfg["uri"], local_rows, EXPECTED_INDEX_COUNT[family],
+                                     cfg["npi_col"], _r2_storage_options())
+        out = {"family": family, "dataset_uri": cfg["uri"], "rows": local_rows,
+               "built": built, "files_published": published, "verified": verified,
                "committed_indices": _list_committed_indices(ds)}
     finally:
         shutil.rmtree(local_ds, ignore_errors=True)
@@ -1404,12 +1573,15 @@ def ingest_one(family: str, year: int, url: str = "", no_index: bool = False) ->
 
 
 @app.local_entrypoint()
-def backfill(only_family: str = "", only_year: int = 0, skip_index: bool = False) -> None:
-    """Full historical backfill (or a filtered slice). Sequential, one container."""
+def backfill(only_family: str = "", only_year: int = 0, skip_index: bool = False,
+             resume: bool = False) -> None:
+    """Full historical backfill (or a filtered slice). Sequential, one container.
+    --resume re-uses years already checkpointed on the Volume from a prior interrupted run
+    (giant recovery); default is a clean from-scratch rebuild (the quarterly-refresh posture)."""
     import json
 
     print(json.dumps(
-        refresh_all.remote(only_family or None, only_year or None, skip_index, None),
+        refresh_all.remote(only_family or None, only_year or None, skip_index, resume, None),
         indent=2, default=str,
     ))
 
