@@ -122,7 +122,7 @@ NAME_FILL_MIN       = 0.999       # name_key fill — invariant tripwire (NOT a 
 NAME_ALPHA_MIN      = 0.95        # first_name alpha-char fraction — confirm vs 6A, set a few pts below
 ZIP_NUMERIC_MIN     = 0.95        # zip5 numeric fraction      — confirm vs 6A, set a few pts below
 MANDATORY_SLOTS     = ("government_business", "electronic_business")  # the always-populated pair
-SEEK_CEILING_MS     = 2000        # R2-RTT-tolerant indexed point-seek ceiling
+SEEK_CEILING_MS     = 2000        # post-write seek WARN threshold (observability only — a cold R2 first-seek of a fresh index can exceed this)
 ```
 
 ### 4.2 WS-B — snap-key label helper (module level)
@@ -344,9 +344,10 @@ try:
     t0 = time.monotonic()
     hit = ds.scanner(columns=["uei"], filter=f"name_key = '{probe_name.replace(chr(39), chr(39)*2)}'").to_table().num_rows
     seek_ms = (time.monotonic() - t0) * 1000
-    if hit < 1 or seek_ms > SEEK_CEILING_MS:
-        raise RuntimeError(f"gate 17 point-seek: {hit} rows in {seek_ms:.0f}ms (>{SEEK_CEILING_MS} ⇒ no index)")
-    print(f"post-write gates PASS — committed={committed:,} idx={sorted(idx)} probe={pr} seek={seek_ms:.0f}ms")
+    if hit < 1:   # correctness only — a cold R2 first-seek of a fresh index is slow; latency is logged, not gated
+        raise RuntimeError("gate 17 name_key index: lookup of a known-present name returned 0 rows")
+    _slow = "" if seek_ms <= SEEK_CEILING_MS else f"  [WARN cold seek >{SEEK_CEILING_MS}ms]"
+    print(f"post-write gates PASS — committed={committed:,} idx={sorted(idx)} probe={pr} name_key_hits={hit} seek={seek_ms:.0f}ms{_slow}")
 except Exception as werr:  # noqa: BLE001
     if v_before is not None:
         try:
@@ -408,7 +409,7 @@ def plan_sam_pocs() -> dict:
 | 14 | post | committed count == materialized | — | **restore `v_before`** |
 | 15 | post | all 6 `*_idx` present | — | restore |
 | 16 | post | population probe round-trips to a POC w/ `name_key` | — | restore |
-| 17 | post | indexed point-seek ≤ ceiling | `SEEK_CEILING_MS` | restore |
+| 17 | post | `name_key` index returns the known-present probe (`hit ≥ 1`); seek latency logged, **not** gated (a cold R2 first-seek is slow and noisy) | — | restore |
 
 The historical 6.39M partial fails **2** (uei 888k < 1.3M), **6** (v2 −38%), **7** (uei −42%). The 0-row build fails **1, 2, 3, 4**. An offset shift fails **12 & 13**.
 

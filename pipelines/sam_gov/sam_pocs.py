@@ -112,7 +112,8 @@ NAME_FILL_MIN = 0.999            # name_key fill — invariant tripwire (NOT a c
 NAME_ALPHA_MIN = 0.95            # first_name alpha-char fraction (positional-offset defense)
 ZIP_NUMERIC_MIN = 0.95           # zip5 numeric fraction (positional-offset defense)
 MANDATORY_SLOTS = ("government_business", "electronic_business")  # always-populated pair
-SEEK_CEILING_MS = 2000           # R2-RTT-tolerant indexed point-seek ceiling
+SEEK_CEILING_MS = 2000           # post-write seek WARN threshold (observability only — a cold
+                                 # R2 first-seek of a freshly-written index can exceed this)
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -602,14 +603,20 @@ def build_sam_pocs(trigger_callback_url: str | None = None,
             probe_name = next((r["name_key"] for r in rt if r["name_key"]), None)
             if not probe_name:
                 raise RuntimeError(f"gate 16 round-trip: probe {pr} → {len(rt)} rows / no name_key")
+            # Gate 17 — the name_key reverse index returns the known-present probe (correctness).
+            # Seek LATENCY is logged, not gated: a cold first-seek of a freshly-written R2 index
+            # is slow (~4s on prod) and not representative of whether the index is used. Gate 15
+            # already proves the index exists; gating on cold-seek time was a false-positive that
+            # rolled back a good build, so timing is observability only (WARN above the ceiling).
+            _esc = probe_name.replace(chr(39), chr(39) * 2)
             t0 = time.monotonic()
-            hit = ds.scanner(columns=["uei"],
-                             filter=f"name_key = '{probe_name.replace(chr(39), chr(39) * 2)}'").to_table().num_rows
+            hit = ds.scanner(columns=["uei"], filter=f"name_key = '{_esc}'").to_table().num_rows
             seek_ms = (time.monotonic() - t0) * 1000
-            if hit < 1 or seek_ms > SEEK_CEILING_MS:
-                raise RuntimeError(f"gate 17 point-seek: {hit} rows in {seek_ms:.0f}ms (>{SEEK_CEILING_MS} ⇒ no index)")
+            if hit < 1:
+                raise RuntimeError(f"gate 17 name_key index: lookup of a known-present name returned 0 rows")
+            _slow = "" if seek_ms <= SEEK_CEILING_MS else f"  [WARN cold seek >{SEEK_CEILING_MS}ms]"
             print(f"post-write gates PASS — committed={committed:,} idx={sorted(idx)} "
-                  f"probe={pr} seek={seek_ms:.0f}ms ({hit} rows)")
+                  f"probe={pr} name_key_hits={hit} seek={seek_ms:.0f}ms{_slow}")
         except Exception as werr:  # noqa: BLE001
             if v_before is not None:
                 try:
