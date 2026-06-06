@@ -248,6 +248,8 @@ def build_crosswalk_sql() -> str:
             legal_name_base                                  AS sos_legal_name_base  -- materialized v9 column
         FROM sos_src
         WHERE normalized_legal_name IS NOT NULL
+          AND nullif(trim(source_state), '') IS NOT NULL          -- key components must exist —
+          AND nullif(trim(original_entity_id), '') IS NOT NULL    -- a null sos_entity_key is unusable (Gate 3)
         QUALIFY row_number() OVER (
             PARTITION BY source_state, original_entity_id
             ORDER BY snapshot_date DESC NULLS LAST) = 1          -- 1 row/entity (latest snapshot)
