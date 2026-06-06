@@ -45,7 +45,7 @@ export const oshaSniperDispatcher = schedules.task({
     });
 
     // 2) Fire the Universal Dispatcher and return immediately (202). Empty kwargs
-    //    → the worker's defaults (lookback 7d, severe-only, merge, max 5 calls).
+    //    → the worker's defaults (lookback 7d, severe-only, merge, its own call budget).
     const res = await fetch(requireEnv("MODAL_DISPATCHER_URL"), {
       method: "POST",
       headers: {

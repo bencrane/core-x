@@ -98,6 +98,12 @@ VIOLATION_FIELDS = [
 # 12). A normal day lands in ~7 calls; the rest is headroom for backfill spikes.
 MAX_API_CALLS = 12
 
+# Per-DAY plan ceiling. The per-run breaker above cannot see sibling runs, so before any
+# DOL call the worker sums today's api_calls_used from ops.osha_sniper_runs and caps this
+# run's budget so cumulative daily calls stay under the DOL plan — held at 18 (margin
+# under ~20/day). Counts ledgered worker runs only (ad-hoc curls are not tracked).
+DAILY_DOL_CALL_BUDGET = int(os.environ.get("OSHA_DAILY_DOL_BUDGET", "18"))
+
 # DOL per-request hard cap (10k rows OR 5 MB, whichever first). Step 1 now filters
 # issuance_date server-side, so a FULL page (== ROW_LIMIT) is no longer routine — it
 # means the in-window severe set itself overflows one page (page_full → truncated),
@@ -499,6 +505,30 @@ def _build_indexes(so: dict) -> None:
         print(f"  WARN cleanup_old_versions failed: {exc}")
 
 
+def _daily_calls_used(snapshot_iso: str) -> int:
+    """Cumulative DOL calls already charged TODAY by prior osha_sniper runs — sum of
+    ops.osha_sniper_runs.api_calls_used for the current UTC date. Drives the per-DAY
+    budget cap (the per-run breaker cannot see sibling runs). Best-effort: any ledger
+    error returns 0 (fail-open to the per-run breaker — a DB hiccup never blocks ingest;
+    a missing table on the first-ever run also lands here and returns 0)."""
+    import psycopg
+
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    if not dsn:
+        return 0
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(sum(api_calls_used), 0) FROM ops.osha_sniper_runs "
+                "WHERE feed = %s AND (recorded_at AT TIME ZONE 'UTC')::date = %s::date",
+                (FEED, snapshot_iso),
+            )
+            return int(cur.fetchone()[0] or 0)
+    except Exception as exc:  # noqa: BLE001 — guard must not block the ingest
+        print(f"WARN: daily-budget probe failed ({exc}); per-run breaker only.")
+        return 0
+
+
 def _record_run(metrics: dict, status: str, error, started_at, completed_at) -> None:
     """Terminal run row → ops.osha_sniper_runs (psycopg). Best-effort: an audit-write
     failure must never mask an otherwise-good ingest."""
@@ -583,7 +613,9 @@ def osha_sniper(
                      (max issuance_date in the pull), NOT wall-clock today.
       site_states:   optional high-value-state scope applied to the joined site_state.
       severe_only:   gate to severe viol_types (exclude Other-than-Serious).
-      max_api_calls: hard circuit-breaker ceiling (default MAX_API_CALLS = 5).
+      max_api_calls: per-run circuit-breaker ceiling (default MAX_API_CALLS); the per-day
+                     guard caps it further so cumulative daily calls stay within the DOL
+                     plan (DAILY_DOL_CALL_BUDGET).
       mode:          "merge" (dedup upsert on trigger_uid) | "overwrite" (rebuild).
 
     Terminal behaviour (success AND failure): write ops.osha_sniper_runs and POST
@@ -599,7 +631,14 @@ def osha_sniper(
     snapshot_iso = started_at.date().isoformat()
     viol_path = os.path.join(SCRATCH_DIR, "osha_violation.csv")
 
-    budget = _CallBudget(max_api_calls)
+    # Per-day guard: cap this run so cumulative ledgered DOL calls today stay under the
+    # plan. Fail-open (day_used=0) on any ledger error → degrades to the per-run breaker.
+    day_used = _daily_calls_used(snapshot_iso)
+    effective_budget = min(max_api_calls, max(0, DAILY_DOL_CALL_BUDGET - day_used))
+    if effective_budget < max_api_calls:
+        print(f"Per-day guard: {day_used}/{DAILY_DOL_CALL_BUDGET} DOL calls already used "
+              f"today; capping this run at {effective_budget} (per-run ceiling {max_api_calls}).")
+    budget = _CallBudget(effective_budget)
     metrics: dict = {
         "snapshot_date": snapshot_iso, "lookback_days": lookback_days,
         "frontier_date": None, "api_calls_used": 0, "violations_pulled": 0,
@@ -609,6 +648,12 @@ def osha_sniper(
     status, error = "error", None
 
     try:
+        if budget.max_calls <= 0:
+            raise RuntimeError(
+                f"Per-day DOL budget exhausted: {day_used}/{DAILY_DOL_CALL_BUDGET} calls "
+                f"already charged today; deferring this run (idempotent — the window "
+                f"resumes on the next dispatch)."
+            )
         api_key = os.environ.get("DOL_API_KEY")
         if not api_key:
             raise RuntimeError("DOL_API_KEY not set (Modal secret 'dol-api').")
@@ -626,9 +671,14 @@ def osha_sniper(
             status = "success"
             raise _Done()
         metrics["frontier_date"] = frontier
-        cutoff_iso = (
-            dt.date.fromisoformat(frontier) - dt.timedelta(days=lookback_days)
-        ).isoformat()
+        try:
+            frontier_date = dt.date.fromisoformat(frontier)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"DOL frontier date {frontier!r} is not ISO YYYY-MM-DD — the violation "
+                f"feed's date format may have changed; refusing to compute a bogus window."
+            ) from exc
+        cutoff_iso = (frontier_date - dt.timedelta(days=lookback_days)).isoformat()
 
         v_params: dict = {
             "limit": ROW_LIMIT, "offset": 0, "sort": "desc", "sort_by": VIOL_DATE_FIELD,
