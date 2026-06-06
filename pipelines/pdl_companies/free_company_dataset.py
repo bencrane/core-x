@@ -495,6 +495,20 @@ def ingest_pdl_companies(key: str = LANDING_KEY,
 
     if status != "success":
         raise RuntimeError(f"pdl_companies ingest failed for {key}: {error}")
+
+    # Fan out the derived-sidecar rebuild so a new base snapshot cannot leave
+    # pdl_normalized_companies silently stale (the staleness-trigger contract —
+    # docs/plans/PDL_NORMALIZED_COMPANIES_SIDECAR_PLAN.md §9). Best-effort: the base ingest
+    # has already succeeded and published; a fan-out miss must not fail it (the consumer
+    # contract's source_version fail-closed assert is the backstop).
+    try:
+        modal.Function.from_name(
+            "pdl-normalized-companies", "ingest_normalized_companies"
+        ).spawn(trigger_callback_url=None)
+        print("Fanned out pdl_normalized_companies rebuild.")
+    except Exception as exc:  # noqa: BLE001 — fan-out is additive; never fail the base ingest
+        print(f"WARN: could not fan out pdl_normalized_companies rebuild: {exc}")
+
     return {"feed": FEED, "source_file": source_file, "rows_processed": int(rows),
             "distinct_ids": distinct_ids, "write_path": write_path,
             "dataset_uri": DATASET_URI, "snapshot_date": snapshot_date,
