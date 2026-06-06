@@ -6,7 +6,28 @@
 
 ---
 
-## Headline Verdict: **BLOCK**
+## v1.1 Re-Verification Addendum (2026-06-06) — Original BLOCK is **CLEARED**
+
+The directive was revised to v1.1 to remediate the BLOCKER/MAJOR findings. Re-verified the five remediation-checklist items (1–5) adversarially against the on-disk v1.1 doc, same harness/stack. **All five PASS.** One **minor prose regression** found (non-blocking). Overall: the original **BLOCK is CLEARED**; the directive is now **SHIP WITH ONE MINOR DOC FIX** (Phase-3 line + the already-known deferred minors F6/F8/F9/F10).
+
+| Item | v1.0 sev | v1.1 status | One-line evidence |
+|---|---|---|---|
+| **1 / F1** bbox recipe | BLOCKER | **PASS** | §9.3 is now the exact lon/lat predicate; no corner-derived `hilbert BETWEEN`. Live western slice (lon[-115,-100]): lon/lat predicate == brute force (42,550==42,550, id-set equal), 5/9 frags pruned; rejected corner-range lost rows. §4 + §3 impact table no longer present the corner-range as valid. |
+| **2 / F5** acceptance criterion | MINOR (gate) | **PASS** | §7 now asserts bbox "identical to a brute-force lon/lat scan (count and id-set equality, not just non-empty)"; `hilbert BETWEEN` scoped as "cell-range lookup, *not* a bbox." |
+| **3 / F2** streaming metadata | MAJOR | **PASS** | Embedded `optimize.py` stream path = `write_dataset(rdr, schema=rdr.schema, …)` then `update_schema_metadata(dict(metadata))`. Verified: all 7 metadata keys persist **through the index build** and the `_verify_local` gate passes (old `schema=`-kwarg path persisted `[]`). `places.py` 5.3d carries the identical fix. |
+| **4 / F3** goal↔design | MAJOR | **PASS** | §1.2/§3/D3 reconciled: the win is attributed to *dropping the lon/lat BTREEs* (removing the 38.9 s AND-intersect), not the sort; "bbox correctness is independent of the sort" stated explicitly; zero "kill the bbox" claims; D3 carries the measured 2/16 vs 10/16 trade-off. |
+| **5 / F4** idempotency | MAJOR | **PASS** | `AlreadyV2` class + guard checks **columns** (`hilbert` present, `country`/`release_tag` absent) **before** any read/transform; raises → handled into `{"mode":"noop","already_v2":True,"mutated":False}`. Verified: fires on a v2-shaped dataset (clean no-op), silent on v1 (proceeds). Replaces the v1.0 `ValueError: No field named country` crash. |
+
+**Regression found (1, minor):**
+- **§6 Phase 3, line 751** still reads *"a bbox-via-hilbert-range returns in well under a second."* This is a v1.0 leftover that contradicts the corrected §9.3 (do **not** use a hilbert range for bbox) and §7 (use the lon/lat predicate). It instructs the executor to validate via the recipe the directive now forbids. **Not** code-breaking and **not** gate-breaking (the §7 acceptance criterion is authoritative and correct), but it should be fixed for internal consistency. **Fix:** change to *"…and a bbox via the §9.3 lon/lat predicate returns rows identical to a brute-force scan and prunes fragments."*
+
+**No other regressions:** both embedded files `py_compile` clean; markdown fences balanced (20 markers, even); the materialize happy-path still passes the full gate on real data; `update_schema_metadata` emits 0 deprecation warnings (F7 folded in). The deferred minors (F6 category NDV 2,019 vs cited 1,574; F8 weak post-publish `region='CA'>0`; F9 `/tmp` vs `/mnt/nvme`; F10 Modal-import deploy confirmation) are unchanged and correctly acknowledged in the v1.1 revision banner.
+
+**Re-verification commands (this round):** `reverify_f1.py`, `reverify_f1_exact.py` (live, read-only — F1), `reverify_f2.py` (F2 stream metadata), `reverify_f4.py` (F4 guard), `ast_check.py` (AST wiring of `optimize.py`), `reverify_regression.py` (live materialize gate + deprecation sweep), all under `/tmp/ovt_review/` on `/tmp/overture_diag/venv/bin/python`.
+
+---
+
+## Headline Verdict (v1.0, superseded by the addendum above): **BLOCK**
 
 The structural decisions (Hilbert key, constant demotion, region normalization, confidence recast, type gate, prefix-collision safety) are largely sound and independently verified. But the directive ships **one mathematically wrong consumer recipe**, **one non-functional write path that the gate will reject**, and **one internal goal↔design contradiction** — each load-bearing. Two of these (the bbox recipe and the streaming-metadata loss) are *verified broken*, not hypothetical. Ship is blocked until the three BLOCKER/MAJOR items are remediated. None of the defects can corrupt the SoR (the gate is fail-safe), so the risk is "publishes a dataset that silently returns wrong query results" + "fallback path aborts the migration," not "destroys data."
 

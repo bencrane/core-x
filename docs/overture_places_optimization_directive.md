@@ -748,7 +748,7 @@ modal run pipelines/overture_maps/optimize.py::apply
 Backs up the current prefix → `active/overture_places__bak_<release>_<ts>/`, wipes + publishes the v2 dataset, runs the post-publish verify against R2 (auto-restores from backup on failure), and writes the ledger row. On success the SoR is v2 at the same URI.
 
 **Phase 3 — independent confirmation**
-- Re-run the structural diagnostic's probes (or a subset) against the live SoR: confirm fragment zone-maps are now region/spatially tight, the `hilbert` range predicate hits `ScalarIndexQuery`, and a bbox-via-hilbert-range returns in well under a second.
+- Re-run the structural diagnostic's probes (or a subset) against the live SoR: confirm fragment zone-maps are now region/spatially tight, a `region='XX'` predicate hits `ScalarIndexQuery@region_idx`, and a **bbox via the §9.3 lon/lat predicate** returns rows identical to a brute-force scan (exactness) while touching fewer than all fragments. (A *direct* `hilbert` range hitting `ScalarIndexQuery@hilbert_idx` validates that index for cell-range lookups — not the bbox path.)
 - `modal run pipelines/overture_maps/places.py::show_ledger` → confirm the `optimize` row, status `success`.
 
 **Phase 4 — ship the code**
