@@ -139,7 +139,7 @@ TARGET_COLS = {"master": MASTER_COLS, "events": EVENTS_COLS}
 # Scalar index plan (approved). BTREE for high-cardinality resolution keys; BITMAP for
 # low-cardinality categoricals. Built post-write.
 INDEX_PLAN: dict[str, dict[str, list[str]]] = {
-    "master": {"btree": ["document_number", "corporate_name"],
+    "master": {"btree": ["document_number", "corporate_name", "registered_agent_name"],
                "bitmap": ["status", "filing_type"]},
     "events": {"btree": ["document_number"], "bitmap": ["event_code"]},
 }

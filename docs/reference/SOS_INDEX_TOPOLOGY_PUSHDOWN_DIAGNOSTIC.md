@@ -1,5 +1,12 @@
 # SoS Corporate Registry — Index Topology & Predicate-Pushdown Diagnostic
 
+> **UPDATE 2026-06-06 — DATA-PLANE DEFECTS REMEDIATED & VERIFIED.** The stale materialized
+> `normalized_legal_name` (§3.4), the declared-but-absent `legal_name_base` key, and the
+> missing `fl_sos_corporations.registered_agent_name` BTREE (§2 / §3.3) are fixed and
+> independently re-verified read-only. Exact-transform drift **8.036% → 0**; see
+> [§6 — Remediation applied](#6-remediation-applied--2026-06-06) for the rebuild + evidence.
+> §0–§5 below are preserved as the as-of-2026-06-05 read-only snapshot that pinned the defects.
+
 Read-only, mathematically-grounded interrogation of the **live R2-backed Lance system of
 record** for the state-level Secretary-of-State corporate registry — the exact index
 manifest committed to each dataset, the trained-row truth of every index, the
@@ -291,3 +298,39 @@ and dash→space pre-steps, proving the stored column is byte-exact to the pre-f
 > dialect treats **double-quoted identifiers as string literals** — `"corporate_name" = 'X'`
 > constant-folds to `false` → 0-row full scan, which would wrongly read as "indexes never used."
 > All filters above use **bare identifiers** (`corporate_name = 'X'`).
+
+---
+
+## 6. Remediation applied — 2026-06-06 (write-side closure of §3.4 + the `legal_name_base` gap)
+
+§0–§5 are preserved as the as-of-2026-06-05 read-only snapshot. The data-plane defects they
+pinned (§0 / §3.4 / §4.1) have since been remediated and **independently re-verified read-only**.
+
+| Defect (diagnostic) | Fix executed | Verified result |
+|---|---|---|
+| **Stale `normalized_legal_name`** — 8.036% / 1,440,646 rows materialized on the *old* `&`/dash rule; 8.12% distinct-key silent join-loss | Re-ran `pipelines/sos_normalized/normalize.py::run_normalize` (`mode=overwrite`); it already imports the current `core.name_norm`. No code change. | Stored key now byte-equals the current canonical transform: **exact-transform drift = 0** for CA/NY/FL/CO (per-state **and** total), down from 1,440,646. `BARNES & NOBLE, INC.`→`BARNES AND NOBLE INC`; `COCA-COLA …`→`COCA COLA …`. |
+| **`legal_name_base` declared-but-absent** — live v4 master had 11 cols, no column, no index | Same rebuild projects `legal_name_base` and builds its declared BTREE. | Master is now **12 cols incl `legal_name_base`**; its BTREE is present and fully trained (17,926,543 indexed / 0 unindexed). |
+| **`fl_sos_corporations.registered_agent_name` unindexed** — 968,025 distinct (76.8%); 1.26 M-row full scan (§3.3) | Added `registered_agent_name` to `pipelines/fl_sos/sunbiz.py::INDEX_PLAN["master"]["btree"]`; rebuilt FL master indices (`reindex --target master`). | BTREE present, fully trained (1,260,599 / 0). `registered_agent_name = '…'` now emits `ScalarIndexQuery@registered_agent_name_idx(BTree)` (398 matches) — the §3.3 full scan is closed. |
+
+**CO drift nuance (verified, expected).** A naïve `normalized_legal_name IS DISTINCT FROM
+name_norm(source_entity_name)` flags **1,812,865** CO rows — this is the *status-decoration
+scrub axis*, not a defect: CO appends `… DELINQUENT MAY 1 2016`-style clauses to the raw name,
+which `pipelines/sos_normalized/normalize.py::_co_status_scrub` strips **before** `name_norm`
+(by design — Task A). Comparing against the exact pipeline transform (scrub → `name_norm`)
+yields **drift = 0** for CO. CA/NY/FL carry no scrub, so their naïve and exact drift are both 0.
+
+**Post-remediation manifest (live, re-read).**
+- `sos_normalized_master` → Lance **v9** (overwrite + 4 index commits), **17,926,543 rows, 12 cols, 4 indices**: BTREE `normalized_legal_name` · BTREE `legal_name_base` · BTREE `zip_code` · BITMAP `source_state` — every one `num_indexed_rows = 17,926,543`, `num_unindexed_rows = 0`.
+- `fl_sos_corporations` → **5 indices**: BTREE `document_number` · BTREE `corporate_name` · BTREE `registered_agent_name` · BITMAP `status` · BITMAP `filing_type`.
+
+**Downstream follow-through (flagged, not actioned here).** Any consumer that *materialized* an
+exact-join against the pre-fix master (e.g. `epa_to_sos_bridge`, name→UEI crosswalks) was built
+against the stale key and silently dropped the ~8.12% conjunction/hyphen entities; those outputs
+should be rebuilt to pick them up. They already import the current `core.name_norm`, which now
+agrees with the master, so a plain re-run suffices — no code change.
+
+**Verification harness (read-only, zero further mutation).** pylance 7.0.0 / duckdb 1.5.3 over the
+Arrow stream; `list_indices()` · `stats.index_stats()` (trained-row truth) · `explain_plan(verbose=True)`
+(ScalarIndexQuery proof) · full-scan drift recompute against `core.name_norm`. Creds via
+`doppler run --project core-x --config prd`. Spine-currency was gated pre-overwrite
+(`run_probe`: CA 9,389,688 · NY 4,219,360 · FL 1,260,599 · CO 3,056,896 = 17,926,543, exact).
