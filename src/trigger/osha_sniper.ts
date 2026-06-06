@@ -13,7 +13,10 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
  *   4. resumes when the worker POSTs its terminal metadata, and resolves/fails.
  *
  * The worker is quota-governed (hard MAX_API_CALLS circuit breaker); once-daily
- * dispatch keeps the whole feed at ≤5 DOL calls/day, well under the ~20/day plan.
+ * dispatch keeps the whole feed well under the DOL ~20-calls/day plan (a normal day is
+ * ~7: a frontier probe, a server-side windowed pull, and a few inspection batches).
+ * `truncated` in the callback means the day's window was clipped — surfaced as a WARN
+ * below so a backfill spike can't silently shed citations.
  */
 
 // The body Modal POSTs to the waitpoint url becomes this run's output.
@@ -23,6 +26,9 @@ interface IngestCallback {
   feed: string;
   api_calls_used?: number;
   truncated?: boolean;
+  dropped?: number;
+  page_full?: boolean;
+  in_window?: number;
 }
 
 export const oshaSniperDispatcher = schedules.task({
@@ -75,6 +81,18 @@ export const oshaSniperDispatcher = schedules.task({
     // ok:true still carries the worker's payload — inspect business status.
     if (result.output.status !== "success") {
       throw new Error(`OSHA sniper failed in Modal: ${JSON.stringify(result.output)}`);
+    }
+
+    // Data landed, but a clipped window is a real signal — emit a WARN (alertable in
+    // the Trigger dashboard) rather than failing a run that successfully materialized.
+    if (result.output.truncated) {
+      logger.warn("OSHA sniper TRUNCATED — in-window citations clipped this run", {
+        dropped: result.output.dropped ?? null,
+        pageFull: result.output.page_full ?? null,
+        inWindow: result.output.in_window ?? null,
+        rows: result.output.rows,
+        apiCallsUsed: result.output.api_calls_used ?? null,
+      });
     }
 
     logger.info("OSHA sniper complete", { ...result.output });
