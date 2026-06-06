@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse
 
 from .src import config
 from .src.db import close_pool, init_pool
+from .src.mcp.doppler import mcp as doppler_mcp
 from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
@@ -62,6 +63,8 @@ log = logging.getLogger("edge_api")
 _mcp_bearer = os.environ.get("DMAAS_MCP_BEARER_TOKEN")
 _trigger_mcp_inner = trigger_mcp.http_app(path="/")
 _trigger_mcp_app = bearer_token_app(_trigger_mcp_inner, bearer_token=_mcp_bearer)
+_doppler_mcp_inner = doppler_mcp.http_app(path="/")
+_doppler_mcp_app = bearer_token_app(_doppler_mcp_inner, bearer_token=_mcp_bearer)
 
 
 @asynccontextmanager
@@ -81,11 +84,11 @@ async def lifespan(app_: FastAPI):
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
     # ledger) inside it and drain on shutdown.
-    async with _trigger_mcp_inner.lifespan(app_):
+    async with _trigger_mcp_inner.lifespan(app_), _doppler_mcp_inner.lifespan(app_):
         await init_pool()       # edge_api pool (agent-runs ledger)
         await hqx_init_pool()   # vendored app.db pool (pipeline)
         try:
-            log.info("edge_api: boot ok (mounts: trigger; routes: agent-runs, pipeline; DB pools up)")
+            log.info("edge_api: boot ok (mounts: trigger, doppler; routes: agent-runs, pipeline; DB pools up)")
             yield
         finally:
             await hqx_close_pool()
@@ -101,6 +104,7 @@ app = FastAPI(title="edge_api", version="0.3.0", lifespan=lifespan)
 # trailing slash (.../mcp/trigger/). Starlette mounts 307-redirect the slash-less
 # form to an insecure URL the managed-agents platform blocks.
 app.mount("/mcp/trigger", _trigger_mcp_app)  # Trigger.dev task control
+app.mount("/mcp/doppler", _doppler_mcp_app)  # core-x Doppler secret reads
 
 # agent-runs: the BFF-facing SSE surface (mint session, stream events, ledger).
 # Each route is gated by EDGE_API_SERVICE_TOKEN (require_service_token) in-router.
@@ -118,7 +122,7 @@ def _info() -> dict:
         "status": "ok",
         "phase": "4-pipeline",
         "mounts": {
-            "mcp": ["trigger"],
+            "mcp": ["trigger", "doppler"],
             "agent_runs": True,   # /api/v1/agent-runs/* (SSE)
             "pipeline": True,     # /internal/gtm/initiatives/{id}/run-step
         },
