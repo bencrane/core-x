@@ -35,8 +35,10 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 
 from .src import config
+from .src.db import close_pool, init_pool
 from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
+from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.service_token import require_service_token
 
 log = logging.getLogger("edge_api")
@@ -68,13 +70,18 @@ async def lifespan(app_: FastAPI):
             "(local dev only). Set it in core-x/prd for every deployed environment."
         )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
-    # starts/stops with the parent app.
+    # starts/stops with the parent app; open the Postgres pool (agent-runs
+    # ledger) inside it and drain on shutdown.
     async with _trigger_mcp_inner.lifespan(app_):
-        log.info("edge_api: boot ok (mounts: trigger)")
-        yield
+        await init_pool()
+        try:
+            log.info("edge_api: boot ok (mounts: trigger; routes: agent-runs; DB pool up)")
+            yield
+        finally:
+            await close_pool()
 
 
-app = FastAPI(title="edge_api", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="edge_api", version="0.3.0", lifespan=lifespan)
 
 # Mount the MCP servers. Managed agents authenticate via
 # Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
@@ -84,15 +91,19 @@ app = FastAPI(title="edge_api", version="0.2.0", lifespan=lifespan)
 # form to an insecure URL the managed-agents platform blocks.
 app.mount("/mcp/trigger", _trigger_mcp_app)  # Trigger.dev task control
 
+# agent-runs: the BFF-facing SSE surface (mint session, stream events, ledger).
+# Each route is gated by EDGE_API_SERVICE_TOKEN (require_service_token) in-router.
+app.include_router(agent_runs_router)
+
 
 def _info() -> dict:
     return {
         "service": "edge_api",
         "status": "ok",
-        "phase": "1-trigger",
+        "phase": "3-streaming",
         "mounts": {
-            "mcp": ["trigger"],   # Phase 2 adds "lob"
-            "agent_runs": False,  # Phase 3
+            "mcp": ["trigger"],
+            "agent_runs": True,   # /api/v1/agent-runs/* (SSE)
             "pipeline": False,    # Phase 4
         },
     }
