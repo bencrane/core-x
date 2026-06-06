@@ -510,7 +510,8 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
 # Core build
 # --------------------------------------------------------------------------- #
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("ops-alerts")],
     timeout=60 * 60,
     memory=32768,
     cpu=8.0,
