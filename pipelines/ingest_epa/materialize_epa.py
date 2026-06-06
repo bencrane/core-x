@@ -70,6 +70,14 @@ DUCKDB_MEMORY_LIMIT = "24GB"          # headroom for the single-threaded read of
 SPILL_DIR = "/tmp/duckdb_spill"
 SCRATCH_DIR = "/tmp/epa"
 
+# Backfill-protection floor (Directive 30). epa_npdes_dmrs accumulates the full
+# FY1982–FYnow DMR history (appended by materialize_epa_history.py). The monthly
+# spec below carries only the rolling FY window and writes source[0] with
+# mode="overwrite", which would truncate that history. materialize_one refuses any
+# DMR overwrite while the live table already exceeds this floor. The rolling window
+# alone is ~67.6M rows; the unified table is ~422M — 350M cleanly separates them.
+DMR_HISTORICAL_FLOOR = 350_000_000
+
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
@@ -220,6 +228,12 @@ def build_specs() -> list[dict]:
         ],
         sql=_retype(dmr_excl, dmr_recasts, extra={"FISCAL_YEAR": "CAST(__FY__ AS INTEGER)"}),
         btree=["EXTERNAL_PERMIT_NMBR", "MONITORING_PERIOD_END_DATE"], bitmap=["FISCAL_YEAR"],
+        # Rolling window over accumulated history: the live SoR carries FY1982+ (appended
+        # by materialize_epa_history.py); these sources are only the recent FY window.
+        # materialize_one replaces the window in place (delete FISCAL_YEAR>=min(source FY),
+        # then append) instead of overwriting — history is never truncated. THE ONLY spec
+        # with this marker; every other spec is a correct full cumulative-snapshot overwrite.
+        replace_partition="FISCAL_YEAR",
     ))
 
     # 4) epa_npdes_qncr_history ← NPDES_QNCR_HISTORY (quarterly trend baseline)
@@ -476,6 +490,16 @@ def _new_con():
     return con
 
 
+def _dataset_exists(uri: str, so: dict) -> bool:
+    import lance
+
+    try:
+        lance.dataset(uri, storage_options=so)
+        return True
+    except Exception:  # noqa: BLE001 — absent / not-found
+        return False
+
+
 def _build_indexes(uri: str, btree: list[str], bitmap: list[str], so: dict) -> list[str]:
     import lance
 
@@ -586,6 +610,33 @@ def materialize_one(spec: dict, run_id: str) -> dict:
     try:
         import pyarrow.dataset as pds
 
+        # Write-mode routing (Directive 30). A spec carrying `replace_partition` is a
+        # rolling window over an accumulated-history dataset (epa_npdes_dmrs): the live SoR
+        # holds FY1982+ appended by materialize_epa_history.py, while this spec's sources
+        # are only the recent FY window. Overwriting would truncate that history. So when
+        # the dataset already exists, REPLACE the window in place — delete FISCAL_YEAR>=floor
+        # (floor=min source FY), then append every source. History (FISCAL_YEAR<floor) is
+        # never touched; the op is idempotent on re-run; this is the fleet idiom
+        # (hmda/cms/fec/sba). Cold build (no dataset) falls through to the standard overwrite
+        # path. Every other spec is a full cumulative-snapshot overwrite.
+        replace_col = spec.get("replace_partition")
+        existed = _dataset_exists(uri, so)
+        if replace_col and existed:
+            floor_fy = min(int(s["fy"]) for s in spec["sources"])
+            print(f"[{name}] partition-replace: delete {replace_col}>={floor_fy}, then append "
+                  f"{len(spec['sources'])} source(s) (history < {floor_fy} preserved)")
+            lance.dataset(uri, storage_options=so).delete(f"{replace_col} >= {floor_fy}")
+        elif name == "epa_npdes_dmrs" and existed:
+            # Belt-and-suspenders: only reachable if replace_partition were removed from the
+            # spec. Refuse rather than overwrite an existing populated DMR table.
+            live_rows = lance.dataset(uri, storage_options=so).count_rows()
+            if live_rows >= DMR_HISTORICAL_FLOOR:
+                raise RuntimeError(
+                    f"GUARD: epa_npdes_dmrs holds {live_rows:,} rows (>= floor "
+                    f"{DMR_HISTORICAL_FLOOR:,}) but replace_partition is unset; refusing to "
+                    f"overwrite accumulated FY1982+ history."
+                )
+
         for i, src in enumerate(spec["sources"]):
             gz = f"{SCRATCH_DIR}/{name}_{i}.csv.gz"
             unc, comp = _member_to_gz(src["archive"], src["member"], gz)
@@ -614,9 +665,12 @@ def materialize_one(spec: dict, run_id: str) -> dict:
 
             # Stream parquet → Lance (bounded by LANCE_READ_BATCH, independent of file size).
             reader = pds.dataset(pq).scanner(batch_size=LANCE_READ_BATCH).to_reader()
+            # replace-mode: the window FYs were deleted above → every source appends.
+            # otherwise the first source overwrites (full snapshot) and the rest append.
+            write_mode = "append" if (replace_col and existed) else ("overwrite" if i == 0 else "append")
             lance.write_dataset(
                 reader, uri,
-                mode="overwrite" if i == 0 else "append",
+                mode=write_mode,
                 data_storage_version=DATA_STORAGE_VERSION,
                 max_rows_per_file=MAX_ROWS_PER_FILE,
                 storage_options=so,
@@ -628,7 +682,23 @@ def materialize_one(spec: dict, run_id: str) -> dict:
             print(f"[{name}] wrote source {i + 1}/{len(spec['sources'])} ({src['member']})")
 
         rows = lance.dataset(uri, storage_options=so).count_rows()
-        built = _build_indexes(uri, spec.get("btree", []), spec.get("bitmap", []), so)
+        if replace_col and existed:
+            # Incremental index refresh — extends the EXISTING indices (all of them, incl.
+            # any added out-of-band) to the appended fragments. NOT a full rebuild: a
+            # create_scalar_index over the whole table trips R2 multipart at this scale
+            # (the cause of the 2026-06 reindex failures) and would drop indices absent from
+            # the spec lists. optimize_indices touches only the new/changed fragments.
+            lance.dataset(uri, storage_options=so).optimize.optimize_indices()
+            built = [ix["name"] for ix in lance.dataset(uri, storage_options=so).list_indices()]
+            if name == "epa_npdes_dmrs" and rows < DMR_HISTORICAL_FLOOR:
+                # Tripwire: a normal replace leaves history (≥350M) intact, so rows<floor means
+                # history is missing — surface loudly rather than publish a silently-truncated SoR.
+                raise RuntimeError(
+                    f"POST-WRITE FLOOR BREACH: epa_npdes_dmrs={rows:,} < floor "
+                    f"{DMR_HISTORICAL_FLOOR:,} after partition-replace — investigate."
+                )
+        else:
+            built = _build_indexes(uri, spec.get("btree", []), spec.get("bitmap", []), so)
         print(f"[{name}] committed rows={rows:,} indexes={built}")
         status = "success"
     except Exception as exc:  # noqa: BLE001
