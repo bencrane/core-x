@@ -1,6 +1,33 @@
 # MSHA Remaining-Archive Ingest Plan (12 un-ingested → 11 new Lance datasets)
 
-**Status:** ready-to-execute directive. A fresh executor agent can run this end-to-end.
+> ⚠️ **CORRECTED IN PART — do not execute the flagged sections verbatim.** An adversarial
+> review ([`MSHA_REMAINING_INGEST_PLAN_ADVERSARIAL_REVIEW.md`](MSHA_REMAINING_INGEST_PLAN_ADVERSARIAL_REVIEW.md))
+> live-probed this plan and found **3 BLOCKERs, independently re-verified** against R2 (2026-06-06):
+>
+> 1. **§1 MinesProd union is wrong.** `MinesProd{Q,Y}` share only **3 of 13/11** column names —
+>    the same fields are renamed twins (`STATE`/`STATE_ABBR`, `CAL_YR`/`CALENDAR_YR`,
+>    `COAL_METAL_IND`/`C_M_IND`, `HOURS_WORKED`/`ANNUAL_HRS`, …), so `UNION ALL BY NAME` yields a
+>    21-col sparse-NULL table — the exact anti-pattern this plan forbids for samples. It does **not**
+>    mirror ContractorProd (which shares 6 natively). **Corrected: ship Q and Y as two separate
+>    verbatim datasets** (`msha_mine_production_quarterly`, `_yearly`), no blind union.
+> 2. **§0/§1 grain keys are wrong for ≥4 datasets.** `VIOLATION_NO` is absent from ContestedViolations
+>    (real key `CITATION_NO`); `EVENT_NO` is absent from Conferences (`CONFERENCE_NO`) and OrdersIssued;
+>    `DOCKET_NO` and `EVENT_NO` are 1:many; "sample id" differs per sample file. **Re-derive every key
+>    from live `DESCRIBE` before locking `INDEX_PLAN`** — for single-file ingests `lance_rows==spine_rows`
+>    does NOT prove grain (add an explicit `count(*)==count(DISTINCT key)` check in Phase 0).
+> 3. **§4 OrdersIssued is mis-specified and redundant.** Every value is tab-prefixed (`"\t3605466"` —
+>    the `"`-only dequote leaves the tab and breaks the join key) and columns carry spaces/parens/`@`;
+>    it duplicates the live `msha_enforcement_ledger` (`CIT_ORD_SAFE='Order'`). **Corrected: drop it
+>    from scope.** (`skip=3` per §4 is also a verified no-op.)
+>
+> Also: patch the cloned `verify_datasets` for non-`[A-Z0-9_]` columns (Inspections has `SUM(...)`
+> columns), and add a `worker` column to `ops.msha_ingest_runs` for per-worker provenance.
+> **Net corrected shape: 11 archives → 11 datasets (OrdersIssued excluded), 5 → 16 active, 19/20
+> archives represented.** Everything else verified **sound** — inventory, arithmetic,
+> overwrite-idempotency defense, sub-Giants/resource config, the `single`-path clone recipe, and the
+> no-bridge guardrail. **Read the review before executing.**
+
+**Status:** corrected directive — execute per the review's remediations, not the flagged sections verbatim.
 **Scope:** materialize the 12 MSHA landing archives that have **zero** active representation
 into the Gen-3 Lance SoR, bringing MSHA from **5 → 16** active datasets and **8/20 → 20/20**
 archives represented.
