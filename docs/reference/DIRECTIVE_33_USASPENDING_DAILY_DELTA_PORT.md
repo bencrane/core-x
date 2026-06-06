@@ -1,6 +1,18 @@
 # Directive 33 — USAspending Daily Delta: Legacy Investigation & Gen-3 Port Spec
 
-**Status:** investigation + architecture spec (no implementation yet, per directive).
+> **⛔ SUPERSEDED / ABANDONED (2026-06-06).** The in-SoR daily-delta approach specified here —
+> `merge_insert` of API rows directly into the 78.4M-row `award_search` Lance SoR, followed by
+> `_optimize_indices` — was implemented (`usaspending_daily_delta.py` + `usaspending_daily_delta.ts`),
+> **never once succeeded** (2 runs, both `error`, 0 rows upserted, no watermark ever set), and has been
+> **removed from the repo.** The "append/merge into the 78M-row bulk SoR" pattern is explicitly rejected:
+> daily `merge_insert` + `optimize` in place on a multi-GiB R2 Lance dataset is structurally fragile.
+> Replacement architecture: the separate API landing tier (`usaspending_api_landing.py`, **retained**)
+> feeding a materialized resolving mirror. See
+> [`docs/plans/USASPENDING_SUBSYSTEM_REBUILD_PLAN.md`](../plans/USASPENDING_SUBSYSTEM_REBUILD_PLAN.md).
+> Retained for historical context only — **do NOT implement this.** The `ops.usaspending_award_search_delta_runs`
+> Postgres table is retained (frozen) for audit history; its DDL file was removed with the feed.
+
+**Status:** ABANDONED — superseded by the rebuild plan (was: investigation + architecture spec).
 **Scope:** close the ~6-week staleness gap between the monthly 175 GB bulk dump and "today" by porting the Gen-2 daily-delta API ingest into core-x (Gen-3).
 **Target dataset:** `s3://data-sink/active/usaspending/award_search/` (Lance, system of record).
 
