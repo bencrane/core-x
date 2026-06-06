@@ -45,6 +45,9 @@ export default defineConfig({
           "PROPOSAL_PROVIDER_EMAIL",
           "PROPOSAL_PROVIDER_ADDRESS",
           "PROPOSAL_PROVIDER_WEBSITE",
+          // gtm post-payment pipeline driver tasks -> edge-api /run-step
+          "EDGE_API_BASE_URL",
+          "TRIGGER_SHARED_SECRET",
         ]
           .filter((k) => process.env[k])
           .map((k) => ({ name: k, value: process.env[k] as string })),
