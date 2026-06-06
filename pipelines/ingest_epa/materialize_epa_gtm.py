@@ -63,6 +63,7 @@ DMR_URI = ACTIVE_BASE + "epa_npdes_dmrs/"
 PERMITS_URI = ACTIVE_BASE + "epa_permits/"
 PERMIT_SUMMARY_URI = ACTIVE_BASE + "epa_permit_compliance/"
 ENTITY_SUMMARY_URI = ACTIVE_BASE + "epa_entity_compliance/"
+PARAM_SUMMARY_URI = ACTIVE_BASE + "epa_permit_parameter_compliance/"
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -470,6 +471,78 @@ def build_permit_summary(run_id: str = "manual") -> dict:
                    so=so, started=started, rows=rows)
 
 
+# ════════ 2b) epa_permit_parameter_compliance — per-(PERMIT × PARAMETER) ═══════
+# Pollutant-specific targeting: "who discharges <parameter> above limit, with violations, in
+# <state>" as an instant indexed filter instead of an aggregate scan of the matched raw subset.
+# Grain: one row per (EXTERNAL_PERMIT_NMBR, PARAMETER_CODE), entity attached. ~2–4 M rows.
+PARAM_SUMMARY_SQL = """
+WITH agg AS (
+    SELECT
+        EXTERNAL_PERMIT_NMBR, PARAMETER_CODE,
+        any_value(PARAMETER_DESC)                                        AS PARAMETER_DESC,
+        count(*)                                                         AS n_rows,
+        count(DMR_VALUE_NMBR)                                            AS n_measured,
+        count(VIOLATION_CODE)                                           AS n_violations,
+        count(*) FILTER (WHERE EXCEEDENCE_PCT IS NOT NULL AND EXCEEDENCE_PCT > 0) AS n_exceedances,
+        max(EXCEEDENCE_PCT)                                              AS max_exceedence_pct,
+        min(MONITORING_PERIOD_END_DATE)                                 AS first_period,
+        max(MONITORING_PERIOD_END_DATE)                                 AS last_period,
+        max(FISCAL_YEAR)                                                AS last_fy,
+        max(CASE WHEN VIOLATION_CODE IS NOT NULL THEN MONITORING_PERIOD_END_DATE END) AS last_violation_period
+    FROM dmr
+    WHERE EXTERNAL_PERMIT_NMBR IS NOT NULL AND PARAMETER_CODE IS NOT NULL
+    GROUP BY 1, 2
+),
+permit_latest AS (
+    SELECT EXTERNAL_PERMIT_NMBR, REGISTRY_ID, PERMIT_NAME, normalized_legal_name, FAC_STATE_CODE
+    FROM permits
+    QUALIFY row_number() OVER (PARTITION BY EXTERNAL_PERMIT_NMBR ORDER BY VERSION_NMBR DESC NULLS LAST) = 1
+)
+SELECT
+    a.EXTERNAL_PERMIT_NMBR, a.PARAMETER_CODE, a.PARAMETER_DESC,
+    p.REGISTRY_ID, p.PERMIT_NAME, p.normalized_legal_name, p.FAC_STATE_CODE AS FAC_STATE,
+    a.n_rows, a.n_measured, a.n_violations, a.n_exceedances, a.max_exceedence_pct,
+    a.first_period, a.last_period, a.last_fy, a.last_violation_period,
+    (a.n_violations > 0)                                                AS has_violations,
+    (a.n_exceedances > 0)                                              AS has_exceedances,
+    (a.last_fy >= 2024)                                                AS is_active
+FROM agg a
+LEFT JOIN permit_latest p ON p.EXTERNAL_PERMIT_NMBR = a.EXTERNAL_PERMIT_NMBR
+"""
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60 * 3, memory=65536, cpu=16.0, ephemeral_disk=524288, retries=2,
+)
+def build_param_summary(run_id: str = "manual") -> dict:
+    """2b) epa_permit_parameter_compliance — per-(permit × parameter) resume for pollutant targeting."""
+    import datetime as dt
+
+    import lance
+
+    so = _r2_storage_options()
+    started = dt.datetime.now(dt.timezone.utc)
+    os.makedirs(SPILL_DIR, exist_ok=True)
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    con = _new_con()
+    try:
+        con.register("dmr", lance.dataset(DMR_URI, storage_options=so))
+        con.register("permits", lance.dataset(PERMITS_URI, storage_options=so))
+        pq = f"{SCRATCH_DIR}/epa_permit_parameter_compliance.parquet"
+        print("[param_summary] aggregating 422M DMR rows by (EXTERNAL_PERMIT_NMBR, PARAMETER_CODE) …")
+        con.execute(f"COPY ({PARAM_SUMMARY_SQL}) TO '{pq}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {PARQUET_ROW_GROUP})")
+        rows = con.execute(f"SELECT count(*) FROM read_parquet('{pq}')").fetchone()[0]
+    finally:
+        con.close()
+    _write_lance_from_parquet(PARAM_SUMMARY_URI, pq, so)
+    print(f"[param_summary] wrote {rows:,} rows → {PARAM_SUMMARY_URI}")
+    return _finish(run_id, "epa_permit_parameter_compliance", PARAM_SUMMARY_URI, "epa_npdes_dmrs+epa_permits",
+                   btree=["EXTERNAL_PERMIT_NMBR", "REGISTRY_ID", "normalized_legal_name"],
+                   bitmap=["PARAMETER_CODE", "FAC_STATE", "has_violations", "has_exceedances", "is_active"],
+                   so=so, started=started, rows=rows)
+
+
 # ═══════════════ 3) epa_entity_compliance — per-ENTITY rollup ══════════════════
 ENTITY_SUMMARY_SQL = """
 SELECT
@@ -541,6 +614,7 @@ def verify_all() -> dict:
     so = _r2_storage_options()
     out = {}
     for name, uri in (("epa_permits", PERMITS_URI), ("epa_permit_compliance", PERMIT_SUMMARY_URI),
+                      ("epa_permit_parameter_compliance", PARAM_SUMMARY_URI),
                       ("epa_entity_compliance", ENTITY_SUMMARY_URI)):
         try:
             out[name] = _verify(uri, so)
@@ -570,13 +644,20 @@ def entity_summary():
 
 
 @app.local_entrypoint()
+def param_summary():
+    import datetime as dt
+    print(build_param_summary.remote(dt.datetime.now(dt.timezone.utc).strftime("epa_gtm_%Y%m%dT%H%M%SZ")))
+
+
+@app.local_entrypoint()
 def all():
-    """Build all three in dependency order: permits → permit_compliance → entity_compliance."""
+    """Build in dependency order: permits → permit_compliance → param_compliance → entity_compliance."""
     import datetime as dt
 
     run_id = dt.datetime.now(dt.timezone.utc).strftime("epa_gtm_%Y%m%dT%H%M%SZ")
     print(build_permits.remote(run_id))
     print(build_permit_summary.remote(run_id))
+    print(build_param_summary.remote(run_id))
     print(build_entity_summary.remote(run_id))
 
 
