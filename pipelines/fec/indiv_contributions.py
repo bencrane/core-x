@@ -696,43 +696,102 @@ def _integrity_gate(so: dict, v_before: int) -> dict:
     return {"rows_checked": n, "employer_mismatch": 0, "name_mismatch": 0, "passed": True}
 
 
-def _btree_trained(ds, col: str, total: int) -> bool:
-    """True iff a BTREE on `col` is committed AND fully trained (idempotent rebuild skip)."""
-    name = f"{col}_idx"
-    if name not in {ix.get("name") for ix in ds.list_indices()}:
-        return False
-    try:
-        st = ds.stats.index_stats(name)
-    except Exception:  # noqa: BLE001
-        return False
-    return (str(st.get("index_type", "")).lower().startswith("btree")
-            and st.get("num_indexed_rows") == total
-            and (st.get("num_unindexed_rows") or 0) == 0)
+# R2-safe index build (local round-trip). A direct create_scalar_index to R2 trips R2's
+# "all non-trailing parts must have the same length" multipart rule once page_data.lance is
+# large enough that object_store ESCALATES its adaptive part size mid-upload (HTTP 400
+# InvalidPart) — which the 282.9M-row sub_id/name/employer BTREEs do. The BITMAP indices and
+# the add_columns column writes stay under the threshold and commit to R2 fine; the heavy
+# BTREEs do not. Fix (mirrors pipelines/hmda::reindex_local + pipelines/pdl_companies): stage
+# the dataset to LOCAL disk, build every BTREE there (no multipart), then publish ONLY the new
+# files (index dirs + new manifest) via boto3 — s3transfer uses uniform parts, which R2 accepts.
+# Data fragments are untouched.
+_FEC_PREFIX = "active/fec_individual_contributions/"
 
 
-def _rebuild_btree_indexes(so: dict) -> list[dict]:
-    """(C) Rebuild every BTREE in FEC_BTREE_INDEXES (6 raw + 2 norm) across the COMPLETE
-    dataset with replace=True so num_indexed_rows == table cardinality. Skips any BTREE
-    already fully trained (resumable). Sequential — one writer per dataset, no OCC conflict;
-    LANCE_BYPASS_SPILLING (image env) keeps the 282.9M-row string sorts in-memory."""
+def _download_r2_prefix(s3, prefix: str, local_dir: str) -> set[str]:
+    """Stage every object under an R2 prefix to local disk. Returns the relative keys already
+    in R2 so the publish step skips re-uploading the unchanged data fragments."""
+    import os.path
+    import shutil
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    existing: set[str] = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if not rel:
+                continue
+            lp = os.path.join(local_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], lp)
+            existing.add(rel)
+    return existing
+
+
+def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> int:
+    """Upload local files whose relative key is NOT already in R2 (the freshly-built index
+    files + the new manifest version). boto3/s3transfer = uniform-part multipart → R2-safe.
+    Manifest/version files upload LAST so the new dataset version only becomes resolvable once
+    every index + data file it references is already present — an interrupt-safe publish (a
+    kill mid-upload leaves the prior committed version intact, never a dangling manifest)."""
+    import os
+
+    new: list[tuple[str, str]] = []
+    for root, _, files in os.walk(local_dir):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            if rel not in existing:
+                new.append((rel, lp))
+    # False (index/data) sorts before True (manifest) → manifests upload last.
+    new.sort(key=lambda t: ("_versions/" in t[0] or t[0].endswith(".manifest"), t[0]))
+    for rel, lp in new:
+        s3.upload_file(lp, BUCKET, prefix + rel)
+    return len(new)
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=60 * 60 * 6,
+    memory=65536,            # 282.9M-row in-memory BTREE sorts (LANCE_BYPASS_SPILLING)
+    cpu=16.0,
+    ephemeral_disk=524288,   # ~20 GiB dataset clone + the local index files
+)
+def reindex_local_fec() -> dict:
+    """(C) R2-safe BTREE build via local round-trip: stage the dataset to LOCAL disk, build
+    every BTREE in FEC_BTREE_INDEXES (6 raw + 2 norm) there — replace=True, no R2 multipart —
+    then publish only the new index dirs + manifest via boto3. Idempotent: re-running rebuilds
+    locally and re-publishes (manifest last → interrupt-safe). Requires the norm columns to be
+    committed in R2 first (Phase A)."""
     import time
 
     import lance
 
-    total = lance.dataset(DATASET_URI, storage_options=so).count_rows()
-    out: list[dict] = []
+    s3 = _s3_client()
+    local = "/tmp/fec_local"
+
+    existing = _download_r2_prefix(s3, _FEC_PREFIX, local)
+    print(f"staged {len(existing)} files from s3://{BUCKET}/{_FEC_PREFIX} → {local}", flush=True)
+
+    ds = lance.dataset(local)  # LOCAL — index writes go to disk, never R2 multipart
+    cols = set(ds.schema.names)
+    total = ds.count_rows()
+    built: list[dict] = []
     for col in FEC_BTREE_INDEXES:
-        ds = lance.dataset(DATASET_URI, storage_options=so)  # refresh committed view
-        if _btree_trained(ds, col, total):
-            out.append({"col": col, "status": "already-trained", "secs": 0.0})
-            print(f"  BTREE · {col}: already trained ({total:,}) — skip", flush=True)
+        if col not in cols:
+            print(f"  BTREE · {col}: column absent — skip", flush=True)
             continue
         t0 = time.time()
         ds.create_scalar_index(col, "BTREE", replace=True)
         secs = round(time.time() - t0, 1)
-        out.append({"col": col, "status": "rebuilt", "secs": secs})
-        print(f"  BTREE ✓ {col} rebuilt in {secs}s", flush=True)
-    return out
+        built.append({"col": col, "secs": secs})
+        print(f"  BTREE ✓ {col} (local) in {secs}s", flush=True)
+
+    published = _upload_new_files(s3, _FEC_PREFIX, local, existing)
+    print(f"published {published} new files (index + manifest) → s3://{BUCKET}/{_FEC_PREFIX}", flush=True)
+    return {"built": [b["col"] for b in built], "timings": built,
+            "published": published, "rows": total}
 
 
 def _validate_pushdown(so: dict) -> dict:
@@ -799,8 +858,9 @@ def harden() -> dict:
     print("=== (B) integrity gate (stored == macro, all rows) ===", flush=True)
     gate = _integrity_gate(so, int(mat["v_before"]))
     print(gate, flush=True)
-    print("=== (C) rebuild BTREE indexes (replace=True) ===", flush=True)
-    idx = _rebuild_btree_indexes(so)
+    print("=== (C) rebuild BTREE indexes (R2-safe local round-trip) ===", flush=True)
+    idx = reindex_local_fec.remote()
+    print(idx, flush=True)
     print("=== (D) validate pushdown ===", flush=True)
     val = _validate_pushdown(so)
     print(f"scalar_index_query={val['scalar_index_query']} sub_50ms={val['sub_50ms']} "
