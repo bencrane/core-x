@@ -1,0 +1,9 @@
+# edge_api — public Anthropic Managed-Agents edge service.
+# Railway (Docker, see Dockerfile) or Render (Python buildpack):
+#   build:  pip install -r apps/edge_api/requirements.txt
+#   start:  python -m apps.edge_api.main
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+httpx>=0.27                 # MCP clients (trigger_dev_client) + Anthropic session proxy (Phase 1+/3)
+fastmcp>=2.0                # the /mcp/* FastMCP mounts (Phase 1+)
+psycopg[binary,pool]>=3.2   # business.agent_runs ledger + pipeline (Phase 3+)
