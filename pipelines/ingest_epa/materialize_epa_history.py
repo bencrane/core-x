@@ -30,16 +30,20 @@ Build contract (the three authorized constraints):
      ``append_one.remote()`` at a time → no Lance manifest-version collision). Each archive is
      **ledger-guarded** against ``ops.epa_ingest_runs`` for resumable idempotency.
 
-  3. INDEX — a SINGLE full rebuild (``create_scalar_index(replace=True)``) AFTER all 16 appends
-     (no incremental optimize between appends). The ~422 M-row BTREE external sort is **spilled
-     to disk on a mounted modal.Volume**, NOT held in RAM, on a standard 48 GB container.
+  3. INDEX — a SINGLE full rebuild (``create_scalar_index(replace=True)``) AFTER all 16 appends, via
+     the R2-SAFE LOCAL ROUND-TRIP (``reindex_local``): stage the dataset → local disk, build the
+     index there, publish only the new index+manifest files via boto3. A DIRECT Lance→R2 index write
+     trips R2's "all non-trailing parts must have the same length" multipart rule once page_data.lance
+     is large enough that object_store escalates its part size mid-upload (HTTP 400 InvalidPart; AWS
+     S3 tolerates it, R2 does not). boto3/s3transfer uses uniform parts → R2-compliant. The local
+     build's DataFusion sort also spills to local NVMe (fast), so this fixes the R2 write AND the spill.
 
 Spill configuration (source-verified against lance-format/lance
 ``rust/lance-datafusion/src/exec.rs`` and apache/datafusion ``disk_manager.rs``):
 
   • ``LANCE_BYPASS_SPILLING`` — Lance keys on **PRESENCE, not value**
     (``env::var(...).map(|_| false).unwrap_or(true)``). ANY value — including "false" — forces an
-    in-memory sort. It is therefore **completely ABSENT** from the index image. ``rebuild_indexes``
+    in-memory sort. It is therefore **completely ABSENT** from the index image. ``reindex_local``
     asserts its absence at runtime and refuses to run otherwise.
   • Spill path — with spilling on, Lance builds ``DiskManagerBuilder::default()`` →
     ``DiskManagerMode::OsTmpDirectory`` → ``tempfile::tempdir()`` → ``std::env::temp_dir()`` →
@@ -385,13 +389,21 @@ CREATE INDEX IF NOT EXISTS epa_ingest_runs_recorded_idx ON ops.epa_ingest_runs (
 
 
 def _pg_connect():
+    """Best-effort pooled connection. Returns None (never raises) if the DSN is unset OR the
+    connection fails — e.g. the Supabase pooler hitting `EMAXCONNSESSION max clients ... pool_size`.
+    The ops ledger is audit state, not the system of record; a pool hiccup must never fail or mask
+    the ingest/index work."""
     import psycopg
 
     dsn = os.environ.get("HQX_DB_URL_POOLED")
     if not dsn:
         print("WARN: HQX_DB_URL_POOLED not set; skipping ops.* access.")
         return None
-    return psycopg.connect(dsn)
+    try:
+        return psycopg.connect(dsn, connect_timeout=10)
+    except Exception as exc:  # noqa: BLE001 — ledger is best-effort; never raise from here
+        print(f"WARN: ops DB connect failed ({type(exc).__name__}); skipping ops.* write.")
+        return None
 
 
 def _archive_done(archive: str) -> bool:
@@ -533,69 +545,125 @@ def append_one(src: dict, run_id: str, force: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Index worker — single full rebuild AFTER all appends, sort SPILLED to the Volume.
+# R2-safe index build — LOCAL round-trip.
+# Writing a scalar index DIRECTLY to R2 trips R2's "all non-trailing parts must have the same
+# length" multipart rule once page_data.lance is large enough that object_store ESCALATES its
+# adaptive part size mid-upload (HTTP 400 InvalidPart). AWS S3 tolerates unequal parts; R2 does
+# NOT. At 67.6 M rows the index stayed under that threshold; at 422 M it does not. Proven fleet
+# fix (pipelines/hmda, pdl_companies, cms_open_payments, fmcsa, sam): stage the dataset → LOCAL
+# disk, build the index there (no multipart), then publish ONLY the new files (index dirs + new
+# manifest) via boto3 — whose s3transfer uses UNIFORM parts, which R2 accepts. The 57.8 GB data
+# fragments are already in R2 and unchanged, so they are never re-uploaded. The local build's
+# DataFusion sort also spills to local NVMe (fast), so this fixes the R2 write AND the spill.
 # --------------------------------------------------------------------------- #
+_ACTIVE_PREFIX = "active/" + DATASET + "/"            # key prefix within LANDING_BUCKET ("data-sink")
+
+
+def _download_r2_prefix(s3, prefix: str, local_dir: str, workers: int = 8) -> set[str]:
+    """Stage every object under an R2 prefix → local disk (parallel). Returns the relative keys
+    already in R2 so the publish step skips re-uploading unchanged data fragments."""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=LANDING_BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if rel:
+                keys.append(rel)
+
+    def _dl(rel: str) -> None:
+        lp = os.path.join(local_dir, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(lp), exist_ok=True)
+        s3.download_file(LANDING_BUCKET, prefix + rel, lp)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_dl, keys))
+    return set(keys)
+
+
+def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> int:
+    """Upload local files whose relative key is NOT already in R2 (the freshly-built index files +
+    the new manifest). boto3/s3transfer = uniform-part multipart → R2-safe. Manifest/version files
+    upload LAST so the new version only resolves once every file it references is present — a kill
+    mid-upload leaves the prior committed version intact, never a dangling manifest."""
+    new: list[tuple[str, str]] = []
+    for root, _, files in os.walk(local_dir):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            if rel not in existing:
+                new.append((rel, lp))
+    # False (index/data) sorts before True (manifest/version) → manifests upload last.
+    new.sort(key=lambda t: ("_versions/" in t[0] or t[0].endswith(".manifest"), t[0]))
+    for rel, lp in new:
+        s3.upload_file(lp, LANDING_BUCKET, prefix + rel)
+    return len(new)
+
+
 @app.function(
-    image=index_image,                                   # carries TMPDIR + cap + pool; NO bypass var
+    image=index_image,                                   # TMPDIR=/tmp + cap + pool for the LOCAL sort spill; NO bypass var
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    timeout=60 * 60 * 6,                                 # local-NVMe spill is fast; 6 h is ample headroom
-    memory=49152,                                        # standard 48 GB — RAM is NOT the sort budget; local disk is
-    cpu=8.0,
-    ephemeral_disk=524288,                               # 512 GiB local NVMe (Modal's explicit floor) — the
-                                                         # ~tens-of-GB sort spill fits with huge margin
+    timeout=60 * 60 * 6,
+    memory=65536,                                        # 64 GB; the LOCAL create_scalar_index sort spills to local disk
+    cpu=16.0,
+    ephemeral_disk=524288,                               # 512 GiB — holds the 57.8 GB dataset + index-build scratch
     retries=2,                                           # idempotent (replace=True) → safe to retry on preemption/transient
 )
-def rebuild_indexes(run_id: str) -> dict:
-    """Full ``create_scalar_index(replace=True)`` over the unified ~422 M-row dataset, the DataFusion
-    external sort spilling to LOCAL NVMe (TMPDIR=/tmp). SELF-FINALIZING: after the build it re-reads
-    the dataset (row count, index manifest, FISCAL_YEAR span) and records a terminal ledger row, so a
-    single detached run proves completion with no follow-up. Preflights the spill config and REFUSES
-    to run in-memory (which would OOM a 48 GB box on the EXTERNAL_PERMIT_NMBR BTREE). Run DETACHED
-    (``modal run --detach``) so it survives client disconnect and Modal completes it server-side."""
+def reindex_local(run_id: str) -> dict:
+    """R2-SAFE full index rebuild. Stage active/epa_npdes_dmrs/ → local disk, build all 3 indices
+    LOCALLY (no R2 multipart), publish ONLY the new index + manifest files via boto3 (uniform-part
+    multipart → R2-compliant). SELF-FINALIZING: re-reads R2 (count, index manifest, FISCAL_YEAR
+    span), records a terminal ledger row, prints DONE — VERIFIED. Run DETACHED so it survives client
+    disconnect and Modal completes it server-side."""
     import datetime as dt
 
     import lance
 
-    # ── spill-config preflight — fail loud, never silently sort in RAM ──────────────────────────
     bypass = os.environ.get("LANCE_BYPASS_SPILLING")
     if bypass is not None:
-        raise RuntimeError(
-            f"LANCE_BYPASS_SPILLING is set to {bypass!r}. Lance keys on PRESENCE, not value: any "
-            "value (including 'false') forces an in-memory sort. It MUST be ABSENT for disk spilling."
-        )
-    tmpdir = os.environ.get("TMPDIR")
-    if tmpdir != SPILL_MOUNT:
-        raise RuntimeError(f"TMPDIR={tmpdir!r}; expected {SPILL_MOUNT!r} (the local NVMe spill dir).")
-    if not os.path.isdir(SPILL_MOUNT):
-        raise RuntimeError(f"spill dir {SPILL_MOUNT!r} not present.")
+        raise RuntimeError(f"LANCE_BYPASS_SPILLING set to {bypass!r}; must be ABSENT for disk spilling.")
     os.makedirs(SPILL_MOUNT, exist_ok=True)
+    os.makedirs(SPILL_DIR, exist_ok=True)
+
+    uri = ACTIVE_BASE + DATASET + "/"
+    so = _r2_storage_options()
+    s3 = _s3_client()
+    local = "/tmp/epa_npdes_dmrs_local"
+    started = dt.datetime.now(dt.timezone.utc)
+    status, error, built, verify_out = "error", None, [], {}
     print(
-        "[reindex] spill preflight OK | "
-        f"TMPDIR={tmpdir} "
+        f"[reindex_local] preflight | TMPDIR={os.environ.get('TMPDIR')} "
         f"LANCE_MAX_TEMP_DIRECTORY_SIZE={os.environ.get('LANCE_MAX_TEMP_DIRECTORY_SIZE')} "
         f"LANCE_MEM_POOL_SIZE={os.environ.get('LANCE_MEM_POOL_SIZE')} "
         f"LANCE_BYPASS_SPILLING={bypass!r} (absent=good)"
     )
-
-    uri = ACTIVE_BASE + DATASET + "/"
-    so = _r2_storage_options()
-    started = dt.datetime.now(dt.timezone.utc)
-    status, error, built, verify_out = "error", None, [], {}
     try:
-        ds = lance.dataset(uri, storage_options=so)
+        print(f"[reindex_local] staging s3://{LANDING_BUCKET}/{_ACTIVE_PREFIX} → {local} …")
+        existing = _download_r2_prefix(s3, _ACTIVE_PREFIX, local)
+        print(f"[reindex_local] staged {len(existing)} files to local disk")
+
+        ds = lance.dataset(local)              # LOCAL — index writes go to disk, never R2 multipart
         total = ds.count_rows()
-        print(f"[reindex] {DATASET} rows={total:,} — full rebuild (replace=True), local-NVMe spill")
+        cols = set(ds.schema.names)
+        print(f"[reindex_local] local dataset rows={total:,} — building indices on local NVMe")
         for col, kind in INDEX_PLAN:
-            print(f"[reindex] building {kind} on {col} …")
+            if col not in cols:
+                raise RuntimeError(f"index column {col!r} absent from local schema")
+            print(f"[reindex_local] building {kind} on {col} …")
             ds.create_scalar_index(col, index_type=kind, replace=True)
             built.append(f"{col}:{kind}")
-            print(f"[reindex]   {kind} ✓ {col}")
+            print(f"[reindex_local]   {kind} ✓ {col} (local)")
+
+        published = _upload_new_files(s3, _ACTIVE_PREFIX, local, existing)
+        print(f"[reindex_local] published {published} new files (index + manifest) via boto3 → R2")
         status = "success"
 
-        # ── self-verify (best-effort read-back; the indices are already committed) ───────────────
+        # ── self-verify against the published R2 version ─────────────────────────────────────────
         try:
-            os.makedirs(SPILL_DIR, exist_ok=True)
-            ds2 = lance.dataset(uri, storage_options=so)   # fresh manifest read
+            ds2 = lance.dataset(uri, storage_options=so)
             idx = [i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i))
                    for i in ds2.list_indices()]
             con = _new_con()
@@ -604,25 +672,25 @@ def rebuild_indexes(run_id: str) -> dict:
                 fy_min, fy_max = con.execute("SELECT min(FISCAL_YEAR), max(FISCAL_YEAR) FROM dmr_fy").fetchone()
             finally:
                 con.close()
-            verify_out = {"rows": ds2.count_rows(), "indices": idx,
+            verify_out = {"rows": ds2.count_rows(), "indices": idx, "published": published,
                           "fiscal_year_min": fy_min, "fiscal_year_max": fy_max}
-            print(f"[reindex] ✅ DONE — VERIFIED {verify_out}")
-        except Exception as vexc:  # noqa: BLE001 — verify is a read-back proof, not the build itself
-            verify_out = {"verify_error": str(vexc)}
-            print(f"[reindex] indices built OK; read-back verify hiccup: {vexc}")
+            print(f"[reindex_local] ✅ DONE — VERIFIED {verify_out}")
+        except Exception as vexc:  # noqa: BLE001 — verify is a read-back proof, not the publish itself
+            verify_out = {"verify_error": str(vexc), "published": published}
+            print(f"[reindex_local] published OK; read-back verify hiccup: {vexc}")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
-        print(f"[reindex] FAILED: {error}")
+        print(f"[reindex_local] FAILED: {error}")
     finally:
         completed = dt.datetime.now(dt.timezone.utc)
         _record_run(run_id=run_id, source_archives="(reindex)", rows_written=0,
                     indexes_built=",".join(built), status=status, error=error,
-                    metrics={"reindex": True, "index_plan": [f"{c}:{k}" for c, k in INDEX_PLAN],
-                             "verify": verify_out},
+                    metrics={"reindex": True, "r2_safe_local_roundtrip": True,
+                             "index_plan": [f"{c}:{k}" for c, k in INDEX_PLAN], "verify": verify_out},
                     started_at=started, completed_at=completed)
 
     if status != "success":
-        raise RuntimeError(f"reindex failed: {error}")
+        raise RuntimeError(f"reindex_local failed: {error}")
     return {"dataset": DATASET, "indexes": built, "status": status, "verify": verify_out}
 
 
@@ -656,7 +724,7 @@ def run_backfill(only: list[str] | None = None, skip_index: bool = False, force:
 
     index_result = None
     if not skip_index:
-        index_result = rebuild_indexes.remote(run_id)
+        index_result = reindex_local.remote(run_id)   # R2-safe local round-trip (not direct-to-R2)
 
     completed = dt.datetime.now(dt.timezone.utc)
     summary = {
@@ -772,7 +840,7 @@ def reindex() -> None:
     import datetime as dt
 
     run_id = dt.datetime.now(dt.timezone.utc).strftime("epa_dmr_hist_reindex_%Y%m%dT%H%M%SZ")
-    print(rebuild_indexes.remote(run_id))
+    print(reindex_local.remote(run_id))
 
 
 @app.local_entrypoint()
