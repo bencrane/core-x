@@ -18,6 +18,7 @@ Built by `pipelines/ingest_epa/materialize_epa_gtm.py` (datasets) and
 | `epa_npdes_dmrs` | one DMR form-value | **422,447,436** | the raw discharge-event trove (FY1982–FY2026) |
 | `epa_permits` | permit-version | **1,686,705** | **the bridge**: `EXTERNAL_PERMIT_NMBR → REGISTRY_ID + PERMIT_NAME + geo` |
 | `epa_permit_compliance` | one **reporting permit** | **156,014** | per-permit compliance resume (DMR rolled up + entity attached) |
+| `epa_permit_parameter_compliance` | permit × **parameter** | **1,884,617** | per-pollutant resume — pollutant-specific targeting |
 | `epa_entity_compliance` | one **entity** (`REGISTRY_ID`) | **142,933** | per-company NPDES footprint (the GTM-actionable grain) |
 
 Only **156,014** of the 1.69 M master permits ever submitted a DMR — that reporting set (resolving
@@ -64,6 +65,9 @@ the GTM analytics instant. Same analytic, two worlds:
   BITMAP `FAC_STATE_CODE`, `PERMIT_STATUS_CODE`, `MAJOR_MINOR_STATUS_FLAG`, `PERMIT_TYPE_CODE`.
 - **`epa_permit_compliance`** — BTREE `EXTERNAL_PERMIT_NMBR`, `REGISTRY_ID`, `normalized_legal_name`;
   BITMAP `FAC_STATE`, `PERMIT_STATUS_CODE`, `has_violations`, `is_active`, `violation_tier`, `entity_resolved`.
+- **`epa_permit_parameter_compliance`** — BTREE `EXTERNAL_PERMIT_NMBR`, `REGISTRY_ID`, `normalized_legal_name`;
+  BITMAP `PARAMETER_CODE`, `FAC_STATE`, `has_violations`, `has_exceedances`, `is_active`. (Pollutant ∧ geo ∧
+  exceedance bitmap-AND.)
 - **`epa_entity_compliance`** — BTREE `REGISTRY_ID`, `normalized_legal_name`;
   BITMAP `FAC_STATE`, `has_violations`, `is_active`, `violation_tier`.
 
@@ -127,6 +131,14 @@ SELECT MONITORING_PERIOD_END_DATE, PARAMETER_CODE, DMR_VALUE_NMBR, VIOLATION_COD
 FROM epa_npdes_dmrs
 WHERE EXTERNAL_PERMIT_NMBR = 'TX0123456' AND VIOLATION_CODE IS NOT NULL
 ORDER BY MONITORING_PERIOD_END_DATE DESC;
+
+-- E) Pollutant-specific targeting: active dischargers of a parameter, over limit, in a state
+--    (PARAMETER_CODE ∧ FAC_STATE ∧ has_exceedances ∧ is_active — pure bitmap-AND, ~150 ms)
+SELECT PERMIT_NAME, REGISTRY_ID, normalized_legal_name, FAC_STATE, n_violations, max_exceedence_pct
+FROM epa_permit_parameter_compliance
+WHERE PARAMETER_CODE = '00556'   -- Oil & Grease (00400 pH, 00530 TSS, 00610 Ammonia, 01092 Zinc, …)
+  AND FAC_STATE = 'TX' AND has_exceedances AND is_active
+ORDER BY max_exceedence_pct DESC NULLS LAST;
 ```
 
 All four datasets are committed under `active/` and are **auto-discovered** by any consumer that
