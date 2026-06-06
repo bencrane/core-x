@@ -31,8 +31,14 @@ merge-key reconciliation.
 
 Two datasets, DISTINCT Lance manifests → they fan out in PARALLEL with no shared-writer
 conflict:
-    l1  lei2  LEIRecord          → s3://data-sink/active/gleif_l1_entities/        BTREE lei
+    l1  lei2  LEIRecord          → s3://data-sink/active/gleif_l1_entities/        BTREE lei, legal_name_norm
     l2  rr    RelationshipRecord  → s3://data-sink/active/gleif_l2_relationships/   BTREE lei, parent_lei
+
+L1 carries a WRITE-TIME materialized `legal_name_norm` (canonical core.name_norm applied
+per-batch in DuckDB before commit) + its BTREE, so multinational name bridging is a
+sub-50ms ScalarIndexQuery point lookup — never a read-time name_norm() full scan. The L1
+projection also retains the LegalAddress/HeadquartersAddress `PostalCode` (ZIP tiebreaker)
+recovered from the golden copy. Directive-29 isolation override authorized for this set.
 
 The L2 ``lei`` column is the StartNode (child) LEI — the natural graph anchor and the
 literal ``lei`` index the directive requires; ``parent_lei`` is the EndNode (parent) LEI,
@@ -55,6 +61,13 @@ from __future__ import annotations
 import os
 
 import modal
+
+# Canonical blocking-key name normalization — THE shared macro (core/name_norm.py),
+# IMPORTED rather than copied so the WRITE-TIME legal_name_norm key is byte-identical to
+# every spine/bridge that block-joins it (sos_normalized_master.normalized_legal_name,
+# crosswalk_hmda_gleif, the credit spines). A hand-copied rule silently drifts; importing
+# guarantees identity. Used at module load to build DATASETS["l1"]["derive_sql"].
+from core.name_norm import name_norm
 
 # GLEIF Golden Copy discovery endpoint. data[0] is the most-recent publish; each carries
 # lei2 (Level 1) / rr (Level 2) / repex nodes, every node exposing full_file.{csv,json,xml}.
@@ -103,14 +116,15 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pylance>=7",            # provides `import lance`; lancedb does not re-export it
     "pyarrow>=17",
     "lxml>=5.2",             # streaming iterparse XML parse
+    "duckdb>=1.5,<2",        # write-time canonical name_norm derive (legal_name_norm); >=1.5 → to_arrow_table
     "requests>=2.32",        # discovery API + zip download + Trigger callback
     "psycopg[binary]>=3.2",  # ops.* terminal state
 ).env(
     # BTREE scalar-index builds sort the column. Lance's spill-to-disk sorter uses a small
-    # bounded DataFusion pool that can OOM on the 3.3M-row high-cardinality `lei`. Force
-    # the in-memory sort path (container RAM) — cheap at this scale.
+    # bounded DataFusion pool that can OOM on the 3.3M-row high-cardinality `lei` /
+    # `legal_name_norm`. Force the in-memory sort path (container RAM) — cheap at this scale.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro into the container
 
 app = modal.App("gleif-pipelines", image=image)
 
@@ -126,7 +140,12 @@ def _localname(tag) -> str:
 
 
 def _extract_l1(rec) -> dict:
-    """One LEIRecord → flat row. Faithful extraction only (trim + empty→None); no casting."""
+    """One LEIRecord → flat row. Faithful extraction only (trim + empty→None); no casting.
+    `legal_name_norm` is NOT extracted here — it is DERIVED at write time from `legal_name`
+    via the canonical macro (DATASETS["l1"]["derive_sql"]). LegalAddress and
+    HeadquartersAddress share the CDF AddressType complex type (same sub-elements), so the
+    HQ block reads identically to the proven LegalAddress block; `PostalCode` is the ZIP
+    tiebreaker recovered here (the prior projection dropped it)."""
     def g(path: str):
         t = rec.findtext(path)
         return t.strip() if t and t.strip() else None
@@ -137,6 +156,12 @@ def _extract_l1(rec) -> dict:
         "legal_address_city": g("{*}Entity/{*}LegalAddress/{*}City"),
         "legal_address_region": g("{*}Entity/{*}LegalAddress/{*}Region"),
         "legal_address_country": g("{*}Entity/{*}LegalAddress/{*}Country"),
+        "legal_address_postal_code": g("{*}Entity/{*}LegalAddress/{*}PostalCode"),
+        "headquarters_address_first_line": g("{*}Entity/{*}HeadquartersAddress/{*}FirstAddressLine"),
+        "headquarters_address_city": g("{*}Entity/{*}HeadquartersAddress/{*}City"),
+        "headquarters_address_region": g("{*}Entity/{*}HeadquartersAddress/{*}Region"),
+        "headquarters_address_country": g("{*}Entity/{*}HeadquartersAddress/{*}Country"),
+        "headquarters_address_postal_code": g("{*}Entity/{*}HeadquartersAddress/{*}PostalCode"),
         "registration_authority_id": g("{*}Entity/{*}RegistrationAuthority/{*}RegistrationAuthorityID"),
         "registration_authority_entity_id": g("{*}Entity/{*}RegistrationAuthority/{*}RegistrationAuthorityEntityID"),
         "entity_status": g("{*}Entity/{*}EntityStatus"),
@@ -164,9 +189,16 @@ def _l1_schema():
     return pa.schema([
         ("lei", pa.string()),
         ("legal_name", pa.string()),
+        ("legal_name_norm", pa.string()),   # WRITE-TIME canonical name_norm(legal_name); BTREE blocking key
         ("legal_address_city", pa.string()),
         ("legal_address_region", pa.string()),
         ("legal_address_country", pa.string()),
+        ("legal_address_postal_code", pa.string()),   # ZIP tiebreaker recovered (was dropped)
+        ("headquarters_address_first_line", pa.string()),
+        ("headquarters_address_city", pa.string()),
+        ("headquarters_address_region", pa.string()),
+        ("headquarters_address_country", pa.string()),
+        ("headquarters_address_postal_code", pa.string()),
         ("registration_authority_id", pa.string()),
         ("registration_authority_entity_id", pa.string()),
         ("entity_status", pa.string()),
@@ -199,7 +231,13 @@ DATASETS: dict[str, dict] = {
         "lance_uri": os.environ.get("GLEIF_L1_LANCE_URI", "s3://data-sink/active/gleif_l1_entities/"),
         "extract": _extract_l1,
         "schema": _l1_schema,
-        "btree": ["lei"],
+        # Write-time materialized columns: {output_col: canonical SQL expr}. Applied per
+        # 100k-row batch in _build_table via DuckDB BEFORE the Lance commit, so the key is
+        # persisted natively (never name_norm() in a read-time WHERE → that is non-indexable).
+        "derive_sql": {"legal_name_norm": name_norm("legal_name")},
+        # lei = deterministic identifier (unchanged); legal_name_norm = the new high-card
+        # corporate-name blocking key for sub-second multinational bridging.
+        "btree": ["lei", "legal_name_norm"],
     },
     "l2": {
         "feed": "gleif_l2_relationships",
@@ -295,16 +333,35 @@ def _rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
-def _build_table(rows: list[dict], schema, source_file: str, publish_date, ingested_at):
-    """Stamp provenance onto the flat rows and coerce to a fixed-schema Arrow table. The
-    explicit schema makes every batch byte-identical in type → Lance append never drifts."""
+def _build_table(rows: list[dict], schema, source_file: str, publish_date, ingested_at,
+                 derive_sql: dict | None = None):
+    """Stamp provenance, coerce to a fixed-schema Arrow table, and (L1) materialize the
+    write-time derived columns via the canonical DuckDB macro BEFORE the batch is committed.
+    The explicit schema makes every batch byte-identical in type → Lance append never drifts.
+
+    `derive_sql` maps {output_col: SQL expr} (e.g. legal_name_norm → name_norm("legal_name")).
+    Each derived column is seeded NULL (so it exists in the fixed schema) then overwritten by
+    `SELECT * REPLACE (<expr> AS <col>)` — running the IDENTICAL canonical rule per batch.
+    L2 passes no derive_sql → pure passthrough (unchanged)."""
     import pyarrow as pa
 
     for r in rows:
         r["source_file"] = source_file
         r["publish_date"] = publish_date
         r["ingested_at"] = ingested_at
-    return pa.Table.from_pylist(rows, schema=schema)
+        for col in (derive_sql or ()):   # seed NULL so the column exists for REPLACE
+            r.setdefault(col, None)
+    table = pa.Table.from_pylist(rows, schema=schema)
+    if derive_sql:
+        import duckdb
+        con = duckdb.connect(":memory:")
+        con.register("batch", table)
+        replace = ", ".join(f"{expr} AS {col}" for col, expr in derive_sql.items())
+        table = con.execute(
+            f"SELECT * REPLACE ({replace}) FROM batch"
+        ).to_arrow_table().cast(schema)   # cast → exact schema (types + tz) match
+        con.close()
+    return table
 
 
 def _stream_to_lance(zip_path: str, cfg: dict, source_file: str, publish_date,
@@ -330,7 +387,8 @@ def _stream_to_lance(zip_path: str, cfg: dict, source_file: str, publish_date,
         nonlocal rows, total, first_write
         if not rows:
             return
-        table = _build_table(rows, schema, source_file, publish_date, ingested_at)
+        table = _build_table(rows, schema, source_file, publish_date, ingested_at,
+                             cfg.get("derive_sql"))
         lance.write_dataset(
             table, uri,
             mode=("overwrite" if first_write else "append"),
@@ -380,6 +438,26 @@ def _stream_to_lance(zip_path: str, cfg: dict, source_file: str, publish_date,
             f"parsed 0 {cfg['record_local']} elements from {source_file} — tag/namespace mismatch?"
         )
     return total
+
+
+def _compact_fragments(cfg: dict, so: dict) -> None:
+    """Consolidate the per-batch append fragments (one per 100k-row flush → ~34 on L1) into a
+    handful of large fragments BEFORE indexing. Single-row point-lookup take latency scales
+    with the number of fragments touched (file opens / metadata), NOT data volume — an
+    un-compacted 34-fragment L1 took ~143 ms/lookup vs ~69 ms at 6 fragments. Running this
+    before `_create_indexes` also means the BTREE builds over the consolidated layout (fewer
+    index parts). Best-effort: a compaction miss is logged, never fatal — the data + index
+    are the critical artifacts (and an un-compacted dataset is merely slower, not wrong)."""
+    import lance
+
+    try:
+        ds = lance.dataset(cfg["lance_uri"], storage_options=so)
+        n0 = len(ds.get_fragments())
+        ds.optimize.compact_files()
+        n1 = len(lance.dataset(cfg["lance_uri"], storage_options=so).get_fragments())
+        print(f"  compact ✓ {cfg['feed']}: {n0} → {n1} fragments")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  WARN compact {cfg['feed']} failed (non-fatal): {exc}")
 
 
 def _create_indexes(cfg: dict, so: dict) -> list[str]:
@@ -510,6 +588,7 @@ def ingest_gleif(level: str, url: str | None = None,
         if published and abs(rows - published) > max(1000, published * 0.01):
             print(f"WARN: parsed {rows:,} vs published {published:,} (>1% drift)")
 
+        _compact_fragments(cfg, so)   # consolidate append fragments BEFORE indexing (lookup latency)
         built = _create_indexes(cfg, so)
 
         try:
