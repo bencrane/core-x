@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -40,6 +41,14 @@ from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.service_token import require_service_token
+
+# ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
+# The copied tree under src/_hqx/app keeps its original ``app.*`` imports; shim
+# it onto sys.path so they resolve, then pull the /run-step router + its DB pool.
+# config.py boots under core-x/prd (needs only APP_ENV + HQX_DB_* + HQX_SUPABASE_*).
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src", "_hqx"))
+from app.db import close_pool as hqx_close_pool, init_pool as hqx_init_pool  # noqa: E402
+from app.routers.internal.gtm_pipeline import router as pipeline_router  # noqa: E402
 
 log = logging.getLogger("edge_api")
 
@@ -73,11 +82,13 @@ async def lifespan(app_: FastAPI):
     # starts/stops with the parent app; open the Postgres pool (agent-runs
     # ledger) inside it and drain on shutdown.
     async with _trigger_mcp_inner.lifespan(app_):
-        await init_pool()
+        await init_pool()       # edge_api pool (agent-runs ledger)
+        await hqx_init_pool()   # vendored app.db pool (pipeline)
         try:
-            log.info("edge_api: boot ok (mounts: trigger; routes: agent-runs; DB pool up)")
+            log.info("edge_api: boot ok (mounts: trigger; routes: agent-runs, pipeline; DB pools up)")
             yield
         finally:
+            await hqx_close_pool()
             await close_pool()
 
 
@@ -95,16 +106,21 @@ app.mount("/mcp/trigger", _trigger_mcp_app)  # Trigger.dev task control
 # Each route is gated by EDGE_API_SERVICE_TOKEN (require_service_token) in-router.
 app.include_router(agent_runs_router)
 
+# Pipeline: the post-payment GTM pipeline /run-step surface, vendored from hq-x.
+# Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
+# /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
+app.include_router(pipeline_router, prefix="/internal")
+
 
 def _info() -> dict:
     return {
         "service": "edge_api",
         "status": "ok",
-        "phase": "3-streaming",
+        "phase": "4-pipeline",
         "mounts": {
             "mcp": ["trigger"],
             "agent_runs": True,   # /api/v1/agent-runs/* (SSE)
-            "pipeline": False,    # Phase 4
+            "pipeline": True,     # /internal/gtm/initiatives/{id}/run-step
         },
     }
 
