@@ -3,6 +3,7 @@
 **Owner of record:** Principal Data Engineer (this directive is the spec; execute against it verbatim).
 **Repo:** `core-x` · **Doppler:** `core-x/prd` · **Mode:** BUILD — append-only, idempotent, per-snapshot. Mutates only NEW derived prefixes; the raw NPPES SoR is read-only and untouched.
 **Descends from:** [`docs/nppes_structural_diagnostic.md`](nppes_structural_diagnostic.md) (#208, #211). Every decision below traces to a measured finding there — section references are inline as `(diag §N)`.
+**Hardened by:** [`docs/nppes_analytical_plan_adversarial_review.md`](nppes_analytical_plan_adversarial_review.md). This revision folds in every verified finding from that adversarial pass — the `/mnt/nvme`→`/tmp` path fix (B1), explicit schema-metadata persistence (M1), the corrected join/pruning mechanics + recalibrated latency gates (M2/M3), the `is_active` stub-hardening (m1), `FM/MH/PW` (m2), exact NDV citations (m3), and partial-publish detection (n3). The model decisions were verified correct against live data and are unchanged.
 
 ---
 
@@ -128,26 +129,36 @@ The raw NPPES SoR at `s3://data-sink/active/nppes/snapshot=YYYY-MM/` is **physic
 ### 3.1 Stage projected raw once (D8, out-of-core)
 
 ```python
-con = duckdb.connect('/mnt/nvme/nppes_build.duckdb')   # NVMe-backed, out-of-core
+# Modal mounts ephemeral disk at the container root; the fleet spills under /tmp
+# (ingest.py:130 = "/tmp/nppes"). There is NO /mnt/nvme mount — never hardcode it.
+SCRATCH_DIR = "/tmp/nppes_analytical"
+SPILL_DIR   = os.path.join(SCRATCH_DIR, "duck_spill")
+os.makedirs(SPILL_DIR, exist_ok=True)
+
+con = duckdb.connect(os.path.join(SCRATCH_DIR, "nppes_build.duckdb"))   # out-of-core, on the 512 GiB ephemeral disk
 con.execute("PRAGMA threads=8;")
 con.execute("SET memory_limit='20GB';")
-con.execute("SET temp_directory='/mnt/nvme/duck_spill';")
+con.execute(f"SET temp_directory='{SPILL_DIR}';")
 con.execute("SET max_temp_directory_size='128GB';")
 con.register("raw", lance.dataset(RAW_URI, storage_options=so))   # snapshot=2026-05
 # single R2 read → local out-of-core table; project all source cols EXCEPT the §D9 noise
 con.execute(f"CREATE TABLE rawstage AS SELECT {PROJECTED_COLS} FROM raw")
 ```
 
+> **B1 (was BLOCKER):** the `@app.function` keeps `ephemeral_disk=524288` (the 512 GiB fleet floor; the staging `.duckdb` + ~35 GiB sort spill live on that root volume). All local Lance stages go under `SCRATCH_DIR` too — never `/mnt/nvme`, which does not exist in the Modal runtime and is used by zero pipelines.
+
 `PROJECTED_COLS` = every source column needed by §2 (npi, entity/name/address/mailing/date/flag/authorized-official/parent-org cols + `*_taxonomy_code_1..15`, `*_primary_taxonomy_switch_1..15`, `provider_license_number_1..15`, `provider_license_number_state_code_1..15`, `*_taxonomy_group_1..15`, `other_provider_identifier_1..50` + `_type_code_/_state_/_issuer_`). Exclude `npi_deactivation_reason_code`, the three `'<UNAVAIL>'` columns, `source_file/source_member/ingested_at`.
 
 ### 3.2 Cleaning helpers (DuckDB SQL macros)
 
 ```sql
--- USPS-valid 2-letter state, else NULL. Set = 50 states + DC + territories + military.
+-- USPS-valid 2-letter state, else NULL. Set = 50 states + DC + territories + military +
+-- the Compact-of-Free-Association states (FM/MH/PW — present in the data, valid USPS; m2).
 -- AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH
--- NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC AS GU MP PR VI UM AA AE AP
+-- NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC AS GU MP PR VI UM
+-- FM MH PW AA AE AP   (63 codes total; everything else — BC/ON/QC/MX/UK/… — is foreign → NULL)
 CREATE MACRO clean_state(s) AS (
-  CASE WHEN list_contains(['AL','AK',/* …full set… */'AA','AE','AP'], upper(trim(s)))
+  CASE WHEN list_contains(['AL','AK',/* …full set incl FM,MH,PW… */'AA','AE','AP'], upper(trim(s)))
        THEN upper(trim(s)) ELSE NULL END);
 CREATE MACRO zip5(z) AS nullif(regexp_extract(z, '^\s*(\d{5})', 1), '');
 CREATE MACRO d(x) AS try_strptime(x, '%m/%d/%Y')::DATE;   -- MM/DD/YYYY -> date32, NULL on fail
@@ -161,8 +172,13 @@ SELECT
   npi,
   entity_type_code,
   CASE entity_type_code WHEN '1' THEN 'individual' WHEN '2' THEN 'organization' END AS entity_type,
+  -- m1: the `entity_type_code IS NOT NULL` clause makes this robust to a future
+  -- re-deactivated stub (deact→react→deact, latest react>=deact but descriptive fields
+  -- cleared). On snapshot=2026-05 it is exactly the 343,321 deactivation-stub cohort.
   (d(npi_deactivation_date) IS NULL
-    OR (d(npi_reactivation_date) IS NOT NULL AND d(npi_reactivation_date) >= d(npi_deactivation_date))) AS is_active,
+    OR (d(npi_reactivation_date) IS NOT NULL
+        AND d(npi_reactivation_date) >= d(npi_deactivation_date)
+        AND entity_type_code IS NOT NULL)) AS is_active,
   CASE WHEN entity_type_code='2' THEN provider_organization_name_legal_business_name
        WHEN entity_type_code='1' THEN concat_ws(', ', provider_last_name_legal_name,
                                        trim(concat_ws(' ', provider_first_name, provider_middle_name)))
@@ -239,7 +255,19 @@ def identifier_union(n=50):
 
 ### 3.5 Write each table → local Lance stage → index → publish
 
-For each of `provider`, `taxonomy`, `identifier`: stream the sorted DuckDB table to a local Lance dataset via `to_arrow_reader(131072)` (bounded RSS), build the table's scalar indices **locally**, then `boto3` publish (wipe + uniform-part upload) to `…/<name>/snapshot=YYYY-MM/`. Identical transport pattern to `pipelines/nppes/ingest.py` (the R2 multipart-safe path).
+For each of `provider`, `taxonomy`, `identifier`: stream the sorted DuckDB table to a local Lance dataset via `to_arrow_reader(131072)` (bounded RSS), **persist provenance metadata explicitly (M1, below)**, build the table's scalar indices **locally**, then `boto3` publish (wipe + uniform-part upload) to `…/<name>/snapshot=YYYY-MM/`. Identical transport pattern to `pipelines/nppes/ingest.py` (the R2 multipart-safe path).
+
+> **M1 — schema-metadata provenance must be set explicitly (D9).** A DuckDB `to_arrow_reader` schema carries **no** key-value metadata, so passing it to `write_dataset` persists none — provenance vanishes silently with no error (verified, pylance 7.0.0). After the streaming write and **before** index/publish, set it on the committed dataset (the non-deprecated API; `replace_schema_metadata` is deprecated in pylance 7.0.0):
+> ```python
+> ds = lance.dataset(local_stage)
+> ds.update_schema_metadata({
+>     "source_snapshot_uri": RAW_URI,
+>     "source_member":       source_member,
+>     "pipeline":            "materialize_analytical",
+>     "snapshot_month":      snapshot_month,
+> }, replace=True)   # verified to round-trip through write + index + boto3 publish + reopen
+> ```
+> The `verify` gate (§8) reopens each published dataset and asserts `schema.metadata` contains a non-empty `source_snapshot_uri`. The `ops.nppes_analytical_runs` ledger row is the secondary provenance carrier.
 
 ---
 
@@ -262,14 +290,14 @@ INDEX_PLAN = {
 }
 ```
 
-Rationale anchored to cardinality (diag §3): BTREE for high-card resolution/range keys (npi, names, address, zip5, dates); BITMAP for the low/medium-card categorical filters (entity_type NDV 2, taxonomy_code NDV ~1,104, state ~57 clean, enumeration_year ~30). `is_active`/`is_primary` are boolean → BITMAP. Clustering sorts (§2) make the hot predicate prune fragments.
+Rationale anchored to cardinality (exact, measured on the live raw — m3): BTREE for high-card resolution/range keys (npi, names, address, zip5, dates); BITMAP for the low/medium-card categorical filters (`entity_type_code` NDV **2**, `taxonomy_code` NDV **873** [exact long-form; the diagnostic's ~1,104 was the +14%-biased HLL slot-1 estimate], cleaned `practice_state` NDV **59**, `identifier_type_code` NDV **2**, `enumeration_year` ~22 [2005–2026]). `is_active`/`is_primary` are boolean → BITMAP. All remain squarely in BITMAP territory. Clustering sorts (§2) make the hot predicate prune fragments.
 
 ---
 
 ## 5. Out-of-core, memory, I/O (the §4/§6 learnings, applied)
 
 - **Envelope:** Modal `memory=32768, cpu=8.0, ephemeral_disk=524288` (same as the raw ingest). The derived tables are *smaller* than raw (null sprawl dropped), so this is comfortable.
-- **DuckDB:** `threads=8`, `memory_limit='20GB'`, `temp_directory` + the staging `.duckdb` on **NVMe** (never the root FS). The three `ORDER BY` sorts are the only spill-heavy steps; tables are ≤~12M rows so spill is modest, but size `max_temp_directory_size='128GB'` defensively (diag §6.5).
+- **DuckDB:** `threads=8`, `memory_limit='20GB'`, `temp_directory` + the staging `.duckdb` under `SCRATCH_DIR="/tmp/nppes_analytical"` on the **Modal ephemeral disk** (B1 — *not* `/mnt/nvme`, which does not exist there; `/tmp` is the fleet convention, `ingest.py:130`). The three `ORDER BY` sorts are the only spill-heavy steps; tables are ≤~12M rows so spill is modest, but size `max_temp_directory_size='128GB'` defensively (diag §6.5).
 - **`LANCE_BYPASS_SPILLING=true`** for the BTREE trains on the high-card string columns (`last_name`, `practice_address_line1`, `identifier_value`) — Lance's bounded spill sorter OOMs on these (diag §6.6); in-RAM sort is <1 GiB each ≪ 32 GiB. Trains run sequentially.
 - **Egress:** one projected R2 read of the raw (~10 GiB; the populated columns dominate, nulls are cheap). Do **not** re-scan R2 per output table — stage local once (D8).
 - **Write transport:** local Lance build → `boto3` uniform-part publish. A direct Lance-to-R2 write trips R2 `400 InvalidPart` once an index `page_data.lance` escalates multipart part size (diag §6.6). Non-negotiable.
@@ -278,8 +306,8 @@ Rationale anchored to cardinality (diag §3): BTREE for high-card resolution/ran
 
 ## 6. Idempotency, ledger, blast radius
 
-- **Ledger:** `ops.nppes_analytical_runs` (mirror file `pipelines/nppes/ops_nppes_analytical_runs.sql`, applied by an `init_state` entrypoint). One row per build run: `snapshot_month`, `source_dataset_uri`, `source_version`, per-table `{provider,taxonomy,identifier}_rows`, `date_parse_failures`, `dirty_state_nulled`, per-table `dataset_uri`, `indices_built`, `status`, `error`, `started_at`, `completed_at`. Best-effort write (never mask a good build).
-- **Idempotent:** re-running a month wipes + republishes that month's three prefixes (the `_replace_r2_prefix` pattern). Distinct months accrete.
+- **Ledger:** `ops.nppes_analytical_runs` (mirror file `pipelines/nppes/ops_nppes_analytical_runs.sql`, applied by an `init_state` entrypoint). One row per build run: `snapshot_month`, `source_dataset_uri`, `source_version`, per-table `{provider,taxonomy,identifier}_rows`, `date_parse_failures`, `dirty_state_nulled`, per-table `dataset_uri`, `indices_built`, `g3_cold_ms`/`g6_cold_ms` (recorded, not gated — M3), `status` (`success` | `partial` | `error`), `error`, `started_at`, `completed_at`. Best-effort write (never mask a good build).
+- **Idempotent + partial-publish detection (n3):** re-running a month wipes + republishes that month's three prefixes (the `_replace_r2_prefix` pattern); distinct months accrete. The three datasets publish to independent prefixes, so a crash after publishing 1 of 3 leaves a *torn* cross-dataset state until the (healing) re-run. Make it detectable, not silent: on any mid-run failure write the ledger row `status='partial'` with the published-vs-pending set (mirror `materialize_epa.py`'s partial/error status), and have `verify` (§8 G10) reject a torn state — all three prefixes must share the same `snapshot_month` and the child npis must be ⊆ provider npis.
 - **Blast radius:** a NEW Modal function/app, separate from the raw ingest. Reads raw read-only; writes only the three derived prefixes. A failure here **cannot corrupt the raw SoR**. The heavy sorts are isolated from the raw monthly capture.
 
 ---
@@ -306,21 +334,24 @@ Entrypoints (mirror `ingest.py`): `init_state`, `materialize --snapshot-month 20
 
 ## 8. Acceptance gate (mirror the diagnostic — this is how "done" is proven)
 
-The `verify` entrypoint MUST run these against the freshly published layer and **fail the build if any assertion fails**. Each maps to a measured raw-shape failure (diag §6) that this cycle must reverse.
+The `verify` entrypoint MUST run these against the freshly published layer. **Correctness gates (G1–G5, G8–G12) are ABSOLUTE — any failure fails the build.** Latency is **measured-and-recorded, not absolute-fail** (M3): cold R2 round-trips alone exceed sub-second (measured 552 ms open + 862 ms cold BITMAP count / 3,011 ms cold projection), so gating on cold sub-second would fail a *correct* build. Protocol: open the dataset + run one warm-up `count` per indexed column, then time the warm query; assert the **warm** thresholds and record the cold figure to the ledger.
 
 | # | Assertion | Raw baseline (diag) | Required post-build |
 |---|---|---|---|
-| G1 | `nppes_provider` row count == raw distinct `npi` | — | **== 9,551,447** (no loss) |
-| G2 | `count(DISTINCT npi)` in provider == row count | — | unique (PK preserved) |
-| G3 | Taxonomy long: `count(*) WHERE taxonomy_code = '106S00000X'` matches the raw any-of-15 count | 582,200 (6.65 s scan) | **== 582,200**, **< 800 ms**, index used |
-| G4 | Taxonomy: `count(*) WHERE is_primary` == raw `count(switch_*='Y')` | — | exact match; ≤1 primary per npi |
-| G5 | Date range: `count(*) WHERE enumeration_date >= DATE '2020-01-01'` | naive raw = **0 (wrong)** | **== 3,292,670** (correct, via `date32`) |
-| G6 | Specialty×geo: `provider ⋈ taxonomy WHERE taxonomy_code=X AND practice_state='TX'` | 8.73 s on raw | **< 1.5 s**, both predicates indexed |
-| G7 | Fragment pruning: a 1,000-`npi` batch join touches < all fragments | all 10 (raw) | pruned (sorted by npi) |
-| G8 | `date_parse_failures / source_non_null` per date col | — | **< 0.0001** (else fail + surface) |
-| G9 | Tombstones / dirty-state: `practice_state` ∈ USPS set ∪ {NULL} | 1,063 distinct (raw) | **≤ ~60 distinct** |
+| G1 | `nppes_provider` row count == raw distinct `npi` | — | **== 9,551,447** (no loss) · *absolute* |
+| G2 | `count(DISTINCT npi)` in provider == row count | — | unique (PK preserved) · *absolute* |
+| G3 | Taxonomy long: `count(*) WHERE taxonomy_code='106S00000X'` == raw any-of-15 count | 582,200 via 6.65 s 15-col scan | **== 582,200**, BITMAP used, **warm < 250 ms** (cold recorded) |
+| G4 | Taxonomy: `count(*) WHERE is_primary` == raw `count(switch_*='Y')`; max primaries/npi | — | **== 9,208,126**, **≤ 1 primary per npi** · *absolute* |
+| G5 | Date range: `count(*) WHERE enumeration_date >= DATE '2020-01-01'` | naive raw = **0 (silently wrong)** | **== 3,292,670** (via `date32`) · *absolute* |
+| G6 | Specialty×geo: `provider ⋈ taxonomy WHERE taxonomy_code=X AND practice_state='TX'` | 8.73 s on raw | correct rows; **warm < 600 ms** (cold recorded). *Mechanism (M2): taxonomy BITMAP prunes to its fragment(s); the join range-prunes the provider side via a dynamic npi min/max filter — NOT an npi-BTREE take on both sides.* |
+| G7 | Batch-`npi` fragment pruning — test the **Lance-scanner prefilter** path, not the hash join (M2): `provider.scanner(filter="npi IN (<1000 ids>)")` | all 10 fragments (raw, unclustered) | reads **< all** fragments (npi-sorted zone-maps prune); assert `fragments_scanned < n_fragments` |
+| G8 | `date_parse_failures / source_non_null` per date col (all 5) | — | **< 0.0001** (measured 0.0 on 2026-05) · *absolute* |
+| G9 | Dirty-state: cleaned `practice_state` ∈ USPS set ∪ {NULL} | 1,063 distinct (raw) | **≤ 63 distinct** (measured 59) · *absolute* |
+| G10 | Cross-dataset integrity (n3): all three prefixes share `snapshot_month`; `count(DISTINCT npi)` in taxonomy & identifier ⊆ provider npi set | — | holds (rejects a torn partial publish) · *absolute* |
+| G11 | `is_active` invariant (m1): `count(*) WHERE NOT is_active` == `count(*) WHERE entity_type_code IS NULL` | — | **== 343,321** (divergence ⇒ a re-deactivation edge appeared; trip for human review) · *absolute* |
+| G12 | Provenance round-trip (M1): each published dataset's `schema.metadata['source_snapshot_uri']` non-empty | — | non-empty per dataset · *absolute* |
 
-Record G3/G5/G6 latencies into the ledger so regressions are visible across months. (Latency thresholds are environment-relative; the **correctness** assertions G1–G5/G8/G9 are absolute.)
+Record the cold G3/G6 latencies (`g3_cold_ms`/`g6_cold_ms`) to the ledger for cross-month regression visibility. The **correctness** assertions (G1–G5, G8–G12) are absolute build-fail gates; the warm-latency thresholds (G3/G6) gate against the measured 4–25 ms warm floor with headroom; cold latency is recorded, never gated (M3).
 
 ---
 
@@ -328,8 +359,8 @@ Record G3/G5/G6 latencies into the ledger so regressions are visible across mont
 
 1. Branch off `main` (`git fetch && git checkout -b claude/nppes-analytical-layer origin/main`).
 2. Write `pipelines/nppes/ops_nppes_analytical_runs.sql` + the `OPS_DDL` mirror; write `pipelines/nppes/materialize_analytical.py` per §2–§7.
-3. Local dry-run against `snapshot=2026-05` using the pinned toolchain (`uv venv --python 3.12`; `duckdb>=1.5,<2`, `pylance>=7`, `pyarrow>=17`, `boto3`; secrets via `doppler run --project core-x --config prd`). Stage to a local NVMe path; build all three tables; **do not publish** until the gate passes locally.
-4. Run the §8 gate locally (read the local Lance stages with `scanner(filter=…)` and DuckDB). Iterate until G1–G9 pass.
+3. Local dry-run against `snapshot=2026-05` using the pinned toolchain (`uv venv --python 3.12`; `duckdb>=1.5,<2`, `pylance>=7`, `pyarrow>=17`, `boto3`; secrets via `doppler run --project core-x --config prd`). Stage under `SCRATCH_DIR` on the local ephemeral disk (`/tmp/nppes_analytical`, B1 — not `/mnt/nvme`); build all three tables; **do not publish** until the gate passes locally.
+4. Run the §8 gate locally (read the local Lance stages with `scanner(filter=…)` and DuckDB). Iterate until the correctness gates G1–G5, G8–G12 pass (G6/G7 latencies recorded, warm thresholds asserted).
 5. Publish to R2 (the three `snapshot=2026-05` prefixes) via the local-stage→boto3 path; run `verify` against the published datasets; confirm the gate passes on R2.
 6. Apply `ops.nppes_analytical_runs` (`init_state`) and confirm a run row landed.
 7. Commit, push, open PR vs `main`, **self-merge** (`gh pr merge --squash --delete-branch`), **pull into `/Users/benjamincrane/core-x`**, verify `git log -1 --oneline`. (Base on current `main`; never stack on an unmerged branch — squash drops post-squash commits.)
