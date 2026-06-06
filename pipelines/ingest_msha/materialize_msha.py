@@ -22,12 +22,17 @@ WHAT THIS WORKER DOES
         s3://data-sink/active/msha_enforcement_ledger/ Violations ⟕ AssessedViolations
                                                        on VIOLATION_NO
 
-CRITICAL GUARDRAIL — NO BRIDGING (Directive 29).
-    These records are NOT cross-walked, bridged, or joined to sos_normalized_master,
-    companies, PPP, SBA, or any external universe. The MSHA universe is landed in
-    isolation on its own native keys. No core.name_norm, no legal_name_base, no
-    normalized_legal_name column — names are landed verbatim (dequoted/trimmed only). A
-    future bridging directive owns name resolution downstream.
+ENTITY-NAME NORMALIZATION (Directive-29 isolation exception — AUTHORIZED).
+    The records are still landed on MSHA's own native keys — NOT row-level cross-walked or
+    JOINed to sos_normalized_master / companies / PPP / SBA at ingest. The Directive-29
+    "no name_norm" guardrail is LIFTED for crosswalk readiness: each entity legal-name key
+    (operator / controller / business / violator name) gets a persisted ``<COL>_norm``
+    sibling computed at write-time via core.name_norm — the single-source-of-truth
+    blocking-key macro. Downstream bridges then exact-join the SoS spine's BTREE blocking
+    key against a STORED column, never a read-time ``name_norm(col)`` wrapper (which is
+    structurally non-indexable → full scan; proven in
+    docs/reference/MSHA_INDEX_TOPOLOGY_PUSHDOWN_DIAGNOSTIC.md). Asset/office/equipment names
+    (MINE_NAME, OFFICE_NAME, EQUIP_MFR_NAME) are NOT normalized — entity legal names only.
 
 PARSING HYGIENE — the Directive-26 recipe (two correctness traps, both load-bearing).
     Verified live against all five source files (zero row drop, exact recon counts):
@@ -78,6 +83,11 @@ INDEXING (every load-bearing resolution key gets a scalar index — ARCHITECTURE
                             VIOLATION_ISSUE_DT/PROPOSED_PENALTY_AMT (the severity/temporal
                             range-scan columns); BITMAP SIG_SUB/CIT_ORD_SAFE/
                             VIOLATOR_TYPE_CD/COAL_METAL_IND.
+    PLUS (resolution spine)  BTREE on every raw entity-name key, its <COL>_norm sibling, and
+                            ZIP_CD (mines) — so raw point lookups, normalized cross-registry
+                            joins, and ZIP geo-blocking all bind a scalar index instead of
+                            full-scanning. Built from NORM_COLS + the raw/ZIP additions in
+                            INDEX_PLAN below.
 
 CONTROL PLANE (Trigger v4 durable callback): the worker accepts ``trigger_callback_url``
     and, on terminal state (success OR failure), (1) writes the run row to
@@ -98,6 +108,8 @@ from __future__ import annotations
 import os
 
 import modal
+
+from core.name_norm import name_norm  # canonical blocking-key macro (write-time _norm keys)
 
 BUCKET = "data-sink"
 LANDING_PREFIX = os.environ.get("MSHA_LANDING_PREFIX", "landing/msha").strip("/") + "/"
@@ -191,24 +203,44 @@ DATASETS: dict[str, dict] = {
     },
 }
 
+# Entity legal-name keys normalized at write-time (Directive-29 isolation exception). Each
+# listed column gets a persisted ``<COL>_norm`` sibling via core.name_norm — the crosswalk
+# blocking key. Entity legal names ONLY (operator/controller/business/violator) — asset/
+# office/equipment names are intentionally excluded.
+NORM_COLS: dict[str, list[str]] = {
+    "msha_mines": ["CURRENT_OPERATOR_NAME", "CURRENT_CONTROLLER_NAME", "BUSINESS_NAME"],
+    "msha_corporate_history": ["OPERATOR_NAME", "CONTROLLER_NAME"],
+    "msha_enforcement_ledger": ["VIOLATOR_NAME", "CONTROLLER_NAME"],
+}
+
 # Scalar index plan. BTREE = high-cardinality resolution / range-scan keys; BITMAP =
 # low-cardinality categoricals frequently filtered. MINE_ID + VIOLATOR_ID on the
-# enforcement ledger are the directive's hard mandate.
+# enforcement ledger are the directive's hard mandate. The BTREE lists now also carry the
+# RAW entity-name keys + ZIP_CD (mines); every ``<COL>_norm`` is appended programmatically
+# from NORM_COLS below so a normalized column can never ship unindexed.
 INDEX_PLAN: dict[str, dict[str, list[str]]] = {
     "msha_mines": {
-        "BTREE": ["MINE_ID", "CURRENT_CONTROLLER_ID", "CURRENT_OPERATOR_ID"],
+        "BTREE": ["MINE_ID", "CURRENT_CONTROLLER_ID", "CURRENT_OPERATOR_ID",
+                  "CURRENT_OPERATOR_NAME", "CURRENT_CONTROLLER_NAME", "BUSINESS_NAME", "ZIP_CD"],
         "BITMAP": ["COAL_METAL_IND", "STATE", "CURRENT_MINE_STATUS"],
     },
     "msha_corporate_history": {
-        "BTREE": ["CONTROLLER_ID", "OPERATOR_ID", "MINE_ID"],
+        "BTREE": ["CONTROLLER_ID", "OPERATOR_ID", "MINE_ID",
+                  "OPERATOR_NAME", "CONTROLLER_NAME"],
         "BITMAP": ["CONTROLLER_TYPE", "COAL_METAL_IND"],
     },
     "msha_enforcement_ledger": {
         "BTREE": ["MINE_ID", "VIOLATOR_ID", "VIOLATION_NO", "CONTROLLER_ID",
-                  "EVENT_NO", "ASSESS_CASE_NO", "VIOLATION_ISSUE_DT", "PROPOSED_PENALTY_AMT"],
+                  "EVENT_NO", "ASSESS_CASE_NO", "VIOLATION_ISSUE_DT", "PROPOSED_PENALTY_AMT",
+                  "VIOLATOR_NAME", "CONTROLLER_NAME"],
         "BITMAP": ["SIG_SUB", "CIT_ORD_SAFE", "VIOLATOR_TYPE_CD", "COAL_METAL_IND"],
     },
 }
+
+# Every normalized key column is BTREE-indexed (high-cardinality resolution keys) — derived
+# from NORM_COLS so the two can never drift.
+for _ds, _ncols in NORM_COLS.items():
+    INDEX_PLAN[_ds]["BTREE"].extend(c + "_norm" for c in _ncols)
 
 # ── ops.msha_ingest_runs DDL — verbatim mirror of ops_msha_ingest_runs.sql. Applied by
 # the ``init_ops`` entrypoint and (defensively) before each terminal write. ──
@@ -248,7 +280,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # DataFusion pool and OOMs on high-cardinality string columns over millions of rows
     # (lance#2650). Force the cheap in-memory sort.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # canonical blocking-key macro → /root/core/
 
 app = modal.App("msha-pipelines", image=image)
 
@@ -422,6 +454,19 @@ def _join_sql(left_path: str, left_archive: str, left_cols: list[str],
             f"FROM {_src(left_path, 'l')}\nLEFT JOIN {_src(right_path, 'r')} ON {on}")
 
 
+def _with_norm(inner_sql: str, norm_cols: list[str]) -> str:
+    """Wrap a typed projection, appending ``core.name_norm(col) AS col_norm`` for each
+    entity legal-name key. The macro is applied to the already-dequoted aliased column, so
+    ``col_norm`` is byte-identical to name_norm over the raw dequoted source — and NULL-safe
+    (the inner column is empty→NULL; name_norm(NULL)→NULL). The raw columns are preserved
+    verbatim; the _norm siblings are appended at the end of the schema."""
+    if not norm_cols:
+        return inner_sql
+    extras = ",\n    ".join(
+        f"{name_norm(_q(c))} AS {_q(c + '_norm')}" for c in norm_cols)
+    return f"SELECT base.*,\n    {extras}\nFROM (\n{inner_sql}\n) AS base"
+
+
 def _spine_count(con, path: str) -> int:
     """Authoritative input-grain count for the spine source (the no-drop anchor)."""
     return con.execute(
@@ -582,6 +627,7 @@ def _materialize_one(con, s3, ds_name: str, so: dict) -> dict:
                             spec["join_key"], spec["right_prefix"])
             source_archives = [la, ra]
 
+        sql = _with_norm(sql, NORM_COLS.get(ds_name, []))
         reader = con.execute(sql).to_arrow_reader(READ_BATCH_ROWS)
         n_cols = len(reader.schema)
         _write_lance(reader, uri, so)
