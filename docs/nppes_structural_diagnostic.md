@@ -214,9 +214,100 @@ Fold **all** of the following into the `_build_transform_sql` projection and one
 
 ---
 
+## 6. Compute Engine Integration (DuckDB ⋈ Lance) — Empirical
+
+§4 specified runtime configs from first principles. This section **measures** them against the live dataset. Every figure is a cold/warm R2 read from this vantage; `duckdb 1.5.3` over `lance.dataset(...)` registered as a relation (`con.register(name, ds)` — the general analytical path) and `lance` scanner pushdown. The bedrock is assessed on its own structure; how today's `apps/*` consumers happen to query it is not a constraint and is excluded from the verdict.
+
+### 6.1 Pushdown survives the DuckDB SQL boundary — the engine is not the bottleneck
+
+Same query shape (`count(*) WHERE col = val`), indexed vs unindexed column, is the controlled experiment:
+
+| DuckDB SQL over registered `LanceDataset` | Index | Rows | Latency | Reading |
+|---|:--|---:|---:|:--|
+| `count(*) WHERE npi = <one>` | BTREE | 1 | **~100 ms** | index pushed into Lance (a full `npi` scan ≈ 1 s+) |
+| `count(*) WHERE entity_type_code = '2'` | **none** | 1,927,780 | **1,243 ms** | **scan floor** — nothing to push to (same shape, 12× slower) |
+| `SELECT * WHERE npi = <one>` | BTREE | 1 × 334 col | **1.9 s** | pushdown **+ late materialization** — else 11.46 GiB ≈ 120 s |
+| `SELECT npi WHERE npi = <one>` | BTREE | 1 | 1.5 s | pushdown + one R2 "take" round-trip (cold open) |
+
+**Finding:** DuckDB pushes scalar-index equality predicates straight into Lance, and projects late — proven by `SELECT *` returning one row in 1.9 s instead of dragging the full 11.46 GiB. The index↔engine path is healthy. **A correctly-written analytical query gets pushdown for free — *if the predicate column is indexed*.** The 12× gap to the unindexed control is the entire story: the problem is missing indices on the analytical axes, not a broken pushdown path. (Cold point-lookups land at 1.5–1.9 s including dataset-open + R2 takes, not the "sub-100 ms" of warm metadata-only counts — R2 round-trips dominate the cold path.)
+
+### 6.2 The unindexed scan floor — where the bedrock actually fails
+
+The columns GTM segments on carry no index, so every analytical sweep hits the scan floor:
+
+| Analytical query | Latency | Cause |
+|---|---:|:--|
+| count of specialty `X` across all 15 taxonomy slots (15-col `OR`) | **6,652 ms** | unindexed + 15-column smear (§6.4) |
+| market-map cell: NPI+name+city of specialty `X` in TX (BITMAP state ⋀ 15-col `OR`, project 3) | **8,729 ms** | one selective index + unindexed specialty scan |
+| `count(*)` unindexed categorical (`entity_type_code`) | 1,243 ms | full column scan |
+
+**Effective analytical scan throughput ≈ 97 MiB/s** (the §2 full pass: 11.46 GiB read + 668 aggregates in 121 s). Query wall-clock ≈ *scanned-column-bytes ÷ 97 MiB/s* whenever the predicate is unindexed — which, for GTM, is always. Seconds-per-query is not interactive; a full specialty×geo map (≈1,100 taxonomies × 51 states) iterated this way is minutes-to-hours.
+
+### 6.3 Temporal axis is semantically broken — no consumer rewrite can fix it cheaply
+
+Dates are stored as `MM/DD/YYYY` strings (sample: `05/23/2005`). Measured:
+
+```
+lexical    '12/31/1999' < '01/01/2020'                         -> FALSE     (string order is NOT chronological)
+naive      WHERE provider_enumeration_date >= '2020-01-01'     -> 0 rows    (silently wrong: compares 'MM/..' to '2020..')
+correct    WHERE try_strptime(...,'%m/%d/%Y') >= DATE '2020-01-01' -> 3,292,670 rows  (222 ms full-scan reparse)
+```
+
+`MM/DD/YYYY` strings do not sort chronologically, so **range filters and `ORDER BY date` are wrong**, and a naive consumer gets a silent empty/garbage result. The only correct path is a per-query `strptime` reparse — a computed expression over a **full scan** that **defeats any index or zone-map pruning**. Time-cohorting ("enumerated in the last 2 years," "recently reactivated") — a core GTM primitive — is unusable on the bedrock as-typed. This is a typing defect in the SoR; it must be fixed in the data (`date32`, §5.6), not downstream.
+
+### 6.4 Specialty axis is shattered across 15 columns
+
+A provider's specialties live in `healthcare_provider_taxonomy_code_1..15` (with parallel 15-tuple `switch`/`license`/`group` columns). There is **no single indexable specialty column**. Measured on the highest-volume primary code `106S00000X`:
+
+```
+slot_1 only       564,452
+any of 15 slots   582,200    (15-column OR scan, 6,652 ms)
+missed by slot1   17,748  (3.0%)
+```
+
+A primary-slot-only index (the §5 Tier-1 `BITMAP` on `taxonomy_code_1`) is a partial fix: it accelerates the *primary* specialty but **misses every secondary-held specialty** — 3% for a primary-dominant code, structurally much higher for specialties typically held as a second/third taxonomy. Clean "all providers with specialty X" inherently requires unpivoting 15 columns × 9.55M rows. Specialty market-mapping — the #1 healthcare-GTM axis — is structurally hostile in this layout.
+
+### 6.5 Out-of-core & memory — measured, confirms §4
+
+The full 334-column null+NDV pass (9.55M rows, 668 streaming aggregates) completed in **121 s inside a 10 GiB `memory_limit` with zero spill** — HLL/count states are tiny, so *aggregation* is not the memory risk. The §4-A read config (`threads=8`, `memory_limit≈20 GB`, `temp_directory` on NVMe, narrow projection, push predicates into the scanner) is confirmed sufficient for query/scan workloads. The memory/disk pressure lives entirely in the **Tier-2 `ORDER BY npi` global re-sort** (§4-C): that external sort spills the *decoded* payload (≈25–35 GiB), and its `temp_directory` **must** be high-I/O local NVMe — on the container root FS it either exhausts disk or throttles.
+
+### 6.6 I/O bottlenecks — DuckDB ⋈ Lance COPY/INSERT (write path)
+
+Three memory/I-O hazards on writes into the Lance SoR, in rising severity:
+
+1. **R2 multipart `400 InvalidPart` (already mitigated).** A direct Lance write to R2 trips R2's "all non-trailing parts equal length" rule once a scalar-index `page_data.lance` is large enough to escalate object_store's adaptive multipart mid-upload. NPPES is squarely in range — the address BTREE `page_data.lance` is **126 MB**, and the proposed name BTREEs (§5 Tier-1) are the same class. Mandatory pattern (already in the pipeline): **build local → boto3 publish (uniform parts)**. Never write indices straight to R2.
+2. **BTREE-train OOM / `LANCE_BYPASS_SPILLING` scaling cliff.** The high-cardinality string BTREEs (`provider_first_line_business_practice_location_address` 2.9M distinct; the proposed `provider_organization_name_legal_business_name` 1.15M, `provider_last_name_legal_name` 0.8M) train by sorting the column. Lance's bounded spill sorter under-sizes and OOMs on these, so the pipeline sets `LANCE_BYPASS_SPILLING=true` (in-RAM sort). Safe at 9.55M rows (each key set <1 GiB ≪ 32 GiB), and trains run **sequentially** so peak is one-at-a-time — but this trades OOM-safety for speed and is a **scaling cliff**: at multi-month accumulation or a larger registry the in-RAM sort is the first thing to blow the 32 GiB envelope. Watch it as index count and row count grow.
+3. **Tier-2 re-sort spill (the real ceiling).** The `ORDER BY npi` rewrite is the heaviest COPY-class op: decoded sort spill ≈25–35 GiB to `temp_directory`, plus the new local Lance stage (~12 GiB) and `READ_BATCH_ROWS`-bounded write RSS. Size `ephemeral_disk ≥ 64 GiB`, `max_temp_directory_size ≥ 128 GiB`, NVMe temp, and run isolated from the monthly capture (blast-radius containment).
+
+---
+
+## 7. GTM-Usability Verdict & the Derived-Layer Mandate
+
+**The data is complete and correct; the *bedrock is stored in raw CMS dissemination shape, not analytical shape*. It is a faithful cold archive masquerading as a serving layer.** The earlier "physically pristine" verdict (§1) stands and is not in tension with this: the bytes are healthy, the *model* is not. Four structural disqualifiers make it functionally unusable for interactive GTM / market-mapping / analysis as it sits — **each independent of any consumer code, none fixable downstream**:
+
+1. **Temporal axis broken** (§6.3) — date-as-string; range filters silently wrong; correct answers require full-scan reparse. Time-cohorting impossible.
+2. **Specialty axis shattered** (§6.4) — the primary healthcare-GTM segmentation dimension smeared across 15 columns with no indexable form; "all providers of specialty X" is a 15-column full scan.
+3. **Analytical axes unindexed** (§6.2) — `entity_type`, taxonomy, names, dates carry no index, so every segment query hits the ~97 MiB/s scan floor (seconds-to-minutes, non-interactive). Pushdown works (§6.1) but has nothing to push to.
+4. **`npi` unclustered** (§1.1) — batch enrichment/resolution joins fan out to all 10 fragments instead of pruning.
+
+**This is not a tuning problem and not a consumer problem.** The engine pushes down correctly; the consumers are rewritable. The defect is that the SoR was never modeled for analysis — it is the CSV, transposed to columns.
+
+**Mandate — separate the archive from the serving layer.** The raw monthly snapshot stays as the immutable, append-only SoR (it is correct and should not be contorted to serve queries). GTM/analysis hits a **derived analytical projection** — call it `nppes_analytical` — built once per snapshot from the raw SoR, carrying:
+
+- **Dates → `date32`** (parse `MM/DD/YYYY`), enabling temporal range pushdown + zone-map pruning.
+- **Taxonomy unpivoted to a long/nested specialty model** — either a child table `nppes_taxonomy(npi, taxonomy_code, is_primary, license, license_state, group, slot)` or a `list<struct>` column — so "specialty = X" is one indexable predicate, secondary specialties included, and specialty×geo is a clean `GROUP BY`. **This single change is the difference between a usable and an unusable provider market-map.**
+- **Scalar indices on the analytical axes** — `BITMAP(entity_type_code)`, `BITMAP(taxonomy_code)` on the unpivoted table, `BTREE(provider_last_name_legal_name)` / `BTREE(provider_organization_name_legal_business_name)` for resolution, `date32` BTREE/zone-maps for temporal.
+- **`ORDER BY npi`** (or `entity_type, npi`) clustering so batch joins prune fragments.
+- **The noise dropped** — the 100%-null column, the three `'<UNAVAIL>'` redaction sentinels, the 200-column `other_provider_identifier` sprawl folded into nested form, per-row provenance demoted to metadata.
+
+Until that derived layer exists, the honest status is: **NPPES-as-stored answers single-`npi` point lookups well and nothing else interactively.** Confirmed — and the fix is a derived analytical dataset (§5 Tier-2 is its first iteration), not index tuning on the raw snapshot.
+
+---
+
 ### Appendix — Provenance
 
 - Telemetry: `pylance 7.0.0` (`count_rows`, `get_fragments` → `physical_rows`/`count_rows`/`data_files`, `list_indices`, `stats.index_stats`), R2 `list_objects_v2` byte census, `duckdb 1.5.3` streaming aggregates (null density **exact**; NDV via HLL; `npi`/state distinct **exact**; provenance ballast via `octet_length` **exact**).
 - Read path: `lance.dataset(uri, storage_options=…)` against R2 (path-style, `region=auto`); one full 334-column null+NDV pass (121 s), one narrow exact pass, one provenance-ballast pass; per-fragment `npi` zone-map pass.
 - HLL caveat: `approx_count_distinct` over-estimated `npi` by +14.3% (10.92M vs 9.55M true); high-cardinality NDV figures are indicative, ±~2–15% at the top of the range.
-- No dataset mutation occurred. No DDL, no index ops, no writes.
+- §6 compute battery: `lance` scanner `filter=` pushdown vs `duckdb 1.5.3` over a registered `LanceDataset` (`con.register`), same-shape indexed/unindexed controls, `try_strptime` date-semantics tests, 15-slot taxonomy `OR` scans, and a specialty×geo market-map query — all timed as cold/warm R2 reads from one vantage; absolute latencies are environment-relative, the **ratios** (indexed vs scan floor) are the load-bearing result.
+- No dataset mutation occurred. No DDL, no index ops, no writes. Read-only throughout.
