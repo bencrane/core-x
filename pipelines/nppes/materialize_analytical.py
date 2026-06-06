@@ -112,7 +112,13 @@ INDEX_PLAN: dict[str, dict[str, list[str]]] = {
                    "practice_state", "enumeration_year"],
     },
     "nppes_provider_taxonomy": {
-        "btree": ["npi"],
+        # npi BTREE dropped per diagnostic §E.4 (docs/cms_nppes_relational_diagnostic.md):
+        # the table is (taxonomy_code, npi)-clustered, so the npi BTREE delivered row
+        # selection but ZERO fragment pruning (12/12 frags, 320 IOPs) at 147.43 MiB — 90%
+        # of this table's index budget for a non-pruning path. Batch npi→taxonomy now routes
+        # through the npi-clustered nppes_provider table (no live single-NPI reverse-lookup
+        # consumer). The taxonomy_code BITMAP remains the load-bearing prune index.
+        "btree": [],
         "bitmap": ["taxonomy_code", "is_primary", "license_state"],
     },
     "nppes_provider_identifier": {
