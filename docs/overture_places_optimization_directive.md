@@ -4,7 +4,9 @@
 **Companion:** [docs/overture_places_structural_diagnostic.md](overture_places_structural_diagnostic.md) — the read-only diagnostic this directive remediates. Read it first; every decision below traces to a measured finding there.
 **Target SoR:** `s3://data-sink/active/overture_places/` (Gen-3 Lance, R2). 16,273,123 rows, single snapshot.
 **Nature:** a **one-shot, re-ingest-free, in-place structural migration** of the committed SoR to schema **`overture_places.v2`**, plus go-forward parity in the ingest worker. The SoR URI does **not** change.
-**Authority:** all engineering decisions in §2 are **locked** — do not re-litigate them. Execute the runbook in §6. The migration **mutates the SoR**; it is gated, idempotent, ledgered, and reversible.
+**Authority:** all engineering decisions in §2 are **locked** — do not re-litigate them. Execute the runbook in §6. The migration **mutates the SoR**; it is gated, re-run-safe (clean no-op if already v2), ledgered, and reversible.
+
+> **Revision v1.1 (2026-06-06):** incorporates the BLOCKER + MAJOR remediations from the adversarial review ([docs/overture_places_optimization_directive_review.md](overture_places_optimization_directive_review.md)) — **item 1/F1** bbox recipe corrected to the exact lon/lat predicate (the corner-derived `hilbert` range produced unrecoverable false negatives, measured 19.89%); **item 2/F5** acceptance criterion now asserts bbox exactness vs brute force; **item 3/F2** streaming-fallback metadata persisted via `update_schema_metadata` (also fixes F7 deprecation); **item 4/F3** goal↔design framing reconciled (region-primary sort kept for the dominant by-state access; bbox correctness is sort-independent); **item 5/F4** idempotency guard added (clean no-op on an already-v2 SoR). All five verified against the installed stack. *Remaining (minor/nit, not blocking): F8 stronger post-publish verify, F6 `category` NDV is 2,019 exact (cited as 1,574), F9 `/tmp` vs `/mnt/nvme` doc alignment, F10 Modal-import deploy confirmation.*
 
 ---
 
@@ -13,7 +15,7 @@
 Bring the canonical dataset to mathematical/structural optimality without re-ingesting from Overture (operator constraint: no continual re-ingest). Concretely:
 
 1. **Demote 4 constant provenance columns** (`country`, `snapshot_date`, `release_tag`, `ingested_at`) from per-row data to **Lance schema metadata** — reclaims ~403 MiB decoded (`release_tag` alone 195 MB).
-2. **Add a 1-D spatial key** (`hilbert`, `UINTEGER`) and **physically sort** the dataset by `(region, hilbert)` so fragment zone-maps prune — killing the measured **38.9 s** two-BTREE bbox pathology.
+2. **Eliminate the measured 38.9 s two-BTREE bbox pathology** by dropping the per-axis `longitude`/`latitude` BTREEs (the AND-intersect was the cost) and serving bbox via an **exact lon/lat predicate**; add a 1-D spatial key (`hilbert`, `UINTEGER`) and **physically sort** by `(region, hilbert)` so fragments cluster — **region-primary for the dominant by-state/territory access, hilbert-secondary for intra-region geo clustering** (which prunes region-coherent bbox scans via zone-maps). *(bbox correctness no longer depends on the sort; cross-state bbox stays exact but prunes less — see D3.)*
 3. **Fix the index set:** drop the per-axis `longitude`/`latitude` BTREEs (wrong structure for 2-D, large), add a `hilbert` BTREE and a `category` BITMAP.
 4. **Normalize `region`** (131 dirty values → ~56 clean USPS codes + NULL) and **recast `confidence`** `double→float32`.
 5. **Update the ingest worker** so any future re-ingest is born in v2.
@@ -32,7 +34,7 @@ Bring the canonical dataset to mathematical/structural optimality without re-ing
 |---|---|---|
 | **D1** | **Transform the committed SoR in place; do NOT re-ingest from Overture.** Read R2 → transform → republish to the same URI. | Operator: no continual re-ingest. The committed dataset already has the US filter + spatial flatten; everything needed (lon/lat, region, etc.) is present. Re-pulling risks release drift. |
 | **D2** | **Spatial key = `ST_Hilbert(lon, lat, bounds[-180,-90,180,90])` → `UINTEGER`.** Sort `(region, hilbert)`; BTREE on `hilbert`. | `ST_GeoHash` does not exist in DuckDB 1.5 spatial (verified). `ST_QuadKey` is Web-Mercator, **undefined beyond ±85.05° lat** — and the diagnostic found real lat −89.9° outliers. Hilbert with global **linear** bounds maps every coordinate validly, has superior curve locality, and is a compact 4-byte integer (smaller BTREE than a 12-char quadkey string). Verified: neighbors Δ=5, distant Δ=8.8M, outlier maps clean. |
-| **D3** | **Sort region-primary, spatial-secondary** (`ORDER BY region NULLS LAST, hilbert`). | Territory/by-state filtering is the dominant access pattern for a GTM places SoR; region-primary gives fragment pruning for `region=…` AND bbox-within-region pruning. (If pure cross-state bbox later dominates, flip to `ORDER BY hilbert` — a one-line change in a future rewrite.) |
+| **D3** | **Sort region-primary, spatial-secondary** (`ORDER BY region NULLS LAST, hilbert`). | Territory/by-state filtering is the dominant access pattern for a GTM places SoR, so optimize the layout for it. Measured trade-off (adversarial review): region-primary makes by-state `region='CA'` touch **2/16** fragments (vs 5/16 under hilbert-primary) but a *multi-state* bbox touch **10/16** (vs 7/16). The trade favors region-primary because (a) by-state is dominant, and (b) **bbox correctness is independent of the sort** — it is served by the exact lon/lat predicate (§9), not a hilbert range, so a cross-state bbox is still correct (just less pruned). hilbert-secondary clusters geography *within* a region, pruning region-coherent bboxes. *(If pure cross-state bbox ever dominates, flip to `ORDER BY hilbert` and update the `sort_order` metadata — a one-line change.)* |
 | **D4** | **Drop the `longitude` & `latitude` BTREE indices.** Keep lon/lat as `double` data columns. | Measured: per-axis BTREEs serve 2-D bbox via a multi-million-row-id `AND`-intersect = **38.9 s**. They are large (near-unique doubles) and structurally wrong for the 2-D access. `hilbert` replaces them. Single-axis coordinate range is degenerate (a scan beats it over R2 — see diagnostic §5-F.1). |
 | **D5** | **Add `category` BITMAP** (1,574 NDV). | Diagnostic: the primary categorical access key is unindexed; roaring BITMAP is correct for ≤~few-thousand-cardinality equality. |
 | **D6** | **REJECT the `id` `string→fixed_size_binary(16)` recast. Keep `id` as the 36-char UUID string.** | `id` (GERS) is the **plane-wide cross-dataset join key**; bridges/crosswalks/downstream Lance datasets address entities by text id. Changing the key representation is an interface break across the whole plane — the ~325 MB decoded saving (which compresses well on disk anyway) does not justify fragmenting the join contract. Optimize structure, never the canonical key's type. |
@@ -79,8 +81,8 @@ Bring the canonical dataset to mathematical/structural optimality without re-ing
 | Decoded payload | 2,286 MB | **~1,863 MB** | **−18.5%** (−423 constants; −65 confidence + 65 hilbert net 0) |
 | Per-row columns | 13 | 10 | −3 |
 | Index footprint | 1.34 GiB | **lower** (est.) | drop 2 near-unique-double BTREEs; add 1 uint32 BTREE + 1 small BITMAP |
-| bbox query | 38.9 s | **sub-second** (target) | hilbert range + fragment pruning replaces 2-BTREE intersect |
-| by-state scan | all 16 frags | **pruned** | region-primary sort → tight region zone-maps |
+| bbox query | 38.9 s (2-BTREE intersect) | **exact lon/lat predicate** | the 38.9 s AND-intersect is *removed* (lon/lat BTREEs dropped); region-coherent bbox prunes via zone-maps (measured 5/9 fragments on a slice); cross-state bbox stays exact, prunes less |
+| by-state scan | all 16 frags | **pruned** | region-primary sort → tight region zone-maps (best pruning for the dominant access) |
 
 ---
 
@@ -89,7 +91,8 @@ Bring the canonical dataset to mathematical/structural optimality without re-ing
 - `ST_Hilbert(longitude::DOUBLE, latitude::DOUBLE, ST_Extent(ST_MakeEnvelope(-180,-90,180,90)))` → `UINTEGER`. Clusters neighbors (Δ=5 for ~80 m apart; Δ=8.8 M Cheyenne↔LA). Maps the lat −89.9° outlier with no Mercator clamp.
 - `ORDER BY region NULLS LAST, hilbert` on output aliases — valid; NULL regions sort last.
 - Lance schema metadata round-trips: `pa.Table.replace_schema_metadata({...})` → `lance.write_dataset` → `lance.dataset(...).schema.metadata` recovers all keys; field types preserved (`hilbert` uint32, `confidence` float32, lon/lat double).
-- Integer BTREE on `hilbert` + range predicate → physical plan contains `ScalarIndexQuery@hilbert_idx(BTree)`.
+- Integer BTREE on `hilbert` + a **direct** range predicate → physical plan contains `ScalarIndexQuery@hilbert_idx(BTree)`. (This validates the *index*, for cell-range lookups — it is **not** a bbox recipe; see §9.3.)
+- **bbox = exact lon/lat predicate** (the §9.3 recipe), verified on a real 606k-row western slice: returns rows identical to a brute-force scan (164,409 == 164,409) and touches 5/9 fragments via zone-map pruning. The rejected corner-derived `hilbert BETWEEN` recipe lost **19.89%** of in-bbox rows (unrecoverable false negatives).
 - Full `projection_sql` (region CASE + hilbert + casts + sort) executes end-to-end; `ca→CA`, `New York→NY`, `Florida→FL`, `QC→NULL` (sorts last).
 
 ---
@@ -186,8 +189,9 @@ rewrites SORTED by (region, hilbert), rebuilds the v2 scalar-index set, then
 republishes to the SAME URI — guarded by a pre-wipe R2 backup and a HARD
 build-verify gate before any publish.
 
-Mutates the SoR. Idempotent (overwrite), ledgered (ops.overture_places_runs,
-write_path='optimize'), reversible (server-side R2 backup + restore-on-failure).
+Mutates the SoR. Re-run-safe (aborts pre-mutation as a clean no-op if the SoR is
+already v2), ledgered (ops.overture_places_runs, write_path='optimize'), reversible
+(server-side R2 backup + restore-on-failure).
 
     modal run pipelines/overture_maps/optimize.py::dryrun    # build+verify LOCAL only, NO mutation
     modal run pipelines/overture_maps/optimize.py::apply     # backup → publish → verify → ledger
@@ -228,6 +232,12 @@ SOURCE_COLUMNS = [
     "id", "longitude", "latitude", "region",
     "locality", "postcode", "name", "category", "confidence",
 ]
+
+
+class AlreadyV2(Exception):
+    """Raised when the SoR is already overture_places.v2 — migration is a no-op.
+    Caught by optimize_overture_places and reported as a clean, non-error no-op so a
+    retry harness treats 'already migrated' as success, never as failure."""
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -448,6 +458,15 @@ def _transform_and_build(con_threads: int = 8) -> dict:
 
     so = _lance_storage_options()
     src = lance.dataset(DATASET_URI, storage_options=so)
+
+    # Idempotency guard: a v2 SoR has 'hilbert' and has dropped the provenance
+    # columns. Detect that and abort as a clean no-op BEFORE any read/transform —
+    # re-running after a (rare) failed auto-restore must not crash on a missing column.
+    field_names = {f.name for f in src.schema}
+    if "hilbert" in field_names and not {"country", "release_tag"}.issubset(field_names):
+        sv = (src.schema.metadata or {}).get(b"schema_version", b"").decode() or "v2"
+        raise AlreadyV2(sv)
+
     src_rows = src.count_rows()
     print(f"Source rows: {src_rows:,}")
     if src_rows != SRC_ROWS_EXPECTED:
@@ -524,14 +543,15 @@ def _transform_and_build(con_threads: int = 8) -> dict:
         reader = src.scanner(columns=SOURCE_COLUMNS).to_reader()
         con.register("src", reader)
         rdr = con.execute(sql).to_arrow_reader(STREAM_BATCH_ROWS)
-        schema = rdr.schema.with_metadata(
-            {k.encode(): v.encode() for k, v in metadata.items()}
-        )
+        # NOTE: lance.write_dataset drops the schema= kwarg's metadata for a
+        # RecordBatchReader source (it takes the data schema from the reader). Write
+        # with the reader's own schema, then set metadata on the committed dataset.
         lance.write_dataset(
-            rdr, LOCAL_OUT, schema=schema, mode="overwrite",
+            rdr, LOCAL_OUT, schema=rdr.schema, mode="overwrite",
             data_storage_version=DATA_STORAGE_VERSION,
             max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
         )
+        lance.dataset(LOCAL_OUT).update_schema_metadata(dict(metadata))
     finally:
         con.close()
 
@@ -562,7 +582,13 @@ def optimize_overture_places(apply: bool = False) -> dict:
     import lance
 
     started_at = dt.datetime.now(dt.timezone.utc)
-    report = _transform_and_build()
+    try:
+        report = _transform_and_build()
+    except AlreadyV2 as exc:
+        msg = f"SoR is already {exc}; migration is a no-op (nothing to do)."
+        print(msg)
+        return {"mode": "noop", "already_v2": True, "schema_version": str(exc),
+                "mutated": False, "note": msg}
 
     if not apply:
         return {"mode": "dryrun", "mutated": False, **report}
@@ -626,7 +652,7 @@ def apply() -> None:
     print(json.dumps(optimize_overture_places.remote(apply=True), indent=2, default=str))
 ```
 
-> **Status:** both files above are syntax-checked (`py_compile`) and `projection_sql` is validated end-to-end. `add_local_python_source` is the current Modal API for bundling local packages; if the deployed Modal version differs, either rely on Modal automount (default) or inline `_transform`'s constants into `optimize.py`.
+> **Status:** both files above are syntax-checked (`py_compile`) and `projection_sql` is validated end-to-end. The v1.1 fixes are verified against the installed stack: the streaming-fallback `update_schema_metadata` path persists all metadata keys and survives the index build (old `schema=`-kwarg path persisted `[]`); the idempotency guard fires on a v2-shaped dataset and is silent on v1. `add_local_python_source` is the current Modal API for bundling local packages; if the deployed Modal version differs, either rely on Modal automount (default) or inline `_transform`'s constants into `optimize.py`.
 
 ### 5.3 EDIT — `pipelines/overture_maps/places.py` (go-forward parity)
 
@@ -685,7 +711,15 @@ table = table.replace_schema_metadata({
     b"hilbert_bounds": T.HILBERT_BOUNDS_TAG.encode(),
 })
 ```
-And on the streaming path, `schema = reader.schema.with_metadata({...same...})` before `lance.write_dataset(reader, schema=schema, ...)`.
+And on the streaming path, **do not** pass metadata via the `schema=` kwarg — Lance drops it for a `RecordBatchReader` source. Write with the reader's own schema, then set metadata on the committed dataset (mirrors the `optimize.py` fix):
+```python
+lance.write_dataset(reader, schema=reader.schema, mode="overwrite", ...)
+lance.dataset(local_path).update_schema_metadata({
+    "country": "US", "release_tag": release_tag, "snapshot_date": snapshot_date,
+    "ingested_at": started_at.isoformat(), "schema_version": T.SCHEMA_VERSION,
+    "sort_order": "region,hilbert", "hilbert_bounds": T.HILBERT_BOUNDS_TAG,
+})
+```
 
 **(e)** Ensure `con.execute("LOAD spatial;")` precedes the transform (already present in the ingest).
 
@@ -733,8 +767,8 @@ The cycle is **done** only when ALL hold:
 - [ ] Live SoR: `count_rows() == 16,273,123`; `DISTINCT(id)` == row count (unchanged).
 - [ ] Live SoR schema == 10 v2 fields with correct types; `schema.metadata` carries the 4 demoted constants + `schema_version=overture_places.v2`.
 - [ ] Live SoR indices == {id, name, postcode, locality, hilbert} BTREE + {region, category} BITMAP; **no** longitude/latitude index.
-- [ ] `region = 'CA'` plan uses `ScalarIndexQuery@region_idx(Bitmap)`; `hilbert BETWEEN …` uses `ScalarIndexQuery@hilbert_idx(BTree)`; `category = …` uses `ScalarIndexQuery@category_idx(Bitmap)`.
-- [ ] A representative bbox (translated to a hilbert range + residual lon/lat refine — see §9) returns the correct rows in **< 1 s**.
+- [ ] `region = 'CA'` plan uses `ScalarIndexQuery@region_idx(Bitmap)`; `category = …` uses `ScalarIndexQuery@category_idx(Bitmap)`; a **direct** `hilbert BETWEEN a AND b` (cell-range lookup, *not* a bbox) uses `ScalarIndexQuery@hilbert_idx(BTree)`.
+- [ ] A representative bbox via the §9 **lon/lat predicate** returns rows **identical to a brute-force lon/lat scan** (exactness assertion — count and id-set equality, not just non-empty) and touches fewer fragments than the full set.
 - [ ] `places.py` edits compile; a future ingest would emit v2 (review-confirmed).
 
 ---
@@ -753,15 +787,14 @@ From the diagnostic §5 (measured) — how to query the v2 SoR so the indices ar
 
 1. **Never filter in DuckDB over an unfiltered Lance reader** (28× penalty, index bypassed). Pass the `LanceDataset` object to DuckDB (replacement scan pushes the predicate) **or** build `ds.scanner(filter=…, columns=[…])`.
 2. **Equality / range on indexed columns** (`id`, `name`, `postcode`, `locality`, `region`, `category`, `hilbert`) push down to `ScalarIndexQuery`. Keep predicates as simple comparisons / `IN` / conjunctions — functions and complex expressions fall back to a full scan.
-3. **bbox queries** — translate to a `hilbert` range + residual refine (the Hilbert range is a superset; the refine guarantees exactness, the range prunes fragments):
+3. **bbox queries — use the lon/lat predicate directly. Do NOT derive a `hilbert` range from the bbox corners.** A space-filling curve enters and exits a rectangle many times; the in-bbox Hilbert values are not a single interval and their extrema are *not* at the corners — so `hilbert BETWEEN corner_min AND corner_max` silently **drops** valid interior rows, and a residual lon/lat filter cannot recover a row the `BETWEEN` already excluded (false negatives are unrecoverable). Measured on a real 606k-row western slice: the corner-range recipe lost **19.89%** of in-bbox rows; the lon/lat predicate was **exact**.
    ```sql
-   -- compute h_lo/h_hi = min/max ST_Hilbert over the bbox corners (+ edge samples),
-   -- bounds = ST_Extent(ST_MakeEnvelope(-180,-90,180,90))  -- MUST match the build bounds
+   -- EXACT, and prunes .lance files via the (region, hilbert) sort's zone-maps.
    SELECT * FROM places
-   WHERE hilbert BETWEEN :h_lo AND :h_hi          -- prunes fragments via the BTREE
-     AND longitude BETWEEN :min_lon AND :max_lon  -- residual exactness
+   WHERE longitude BETWEEN :min_lon AND :max_lon
      AND latitude  BETWEEN :min_lat AND :max_lat;
    ```
+   Verified: returns rows identical to a brute-force scan (164,409 == 164,409) and touches 5/9 fragments on hilbert-sorted data. Because lon/lat are *data* columns (the per-axis BTREEs were dropped, D4), this is a `LanceRead` + `refine_filter` pruned at the fragment level by zone-maps — best for region-coherent bboxes; a multi-state bbox stays **exact** but touches more fragments. *(Hot-path option, only if zone-map pruning proves insufficient: decompose the bbox into the **set** of contiguous Hilbert cell-runs that tile it — a true per-cell superset — and `hilbert IN (run1) OR … AND <lon/lat residual>`. More code; do not ship a single corner-derived range.)*
 4. **by-state** — `region = 'XX'` (or `IN (...)`); fragments are region-clustered so zone-maps prune in addition to the BITMAP.
 5. **DuckDB out-of-core config** for heavy scans/joins on the SoR: `memory_limit ≈ 70–75% RAM`, dedicated NVMe `temp_directory`, `preserve_insertion_order=false`.
 
