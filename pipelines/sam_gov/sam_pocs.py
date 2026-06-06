@@ -63,6 +63,8 @@ import os
 
 import modal
 
+from core.ops_alert import alert
+
 BUCKET = "data-sink"
 SAM_SRC_URI = "s3://data-sink/active/entity_registrations/"
 _PROD_URI = "s3://data-sink/active/sam_pocs/"
@@ -147,7 +149,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pyarrow>=17",
     "requests>=2.32",
     "psycopg[binary]>=3.2",
-).env({"LANCE_BYPASS_SPILLING": "true"})
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.ops_alert")
 
 app = modal.App("sam-gov-pocs-pipelines", image=image)
 
@@ -457,19 +459,6 @@ def _prior_success_baseline(dataset_uri: str) -> dict | None:
         conn.close()
 
 
-def _alert(msg: str) -> None:
-    """Best-effort human alert on terminal failure/rollback. No-op if OPS_ALERT_WEBHOOK
-    unset; never raises (must not mask or block the build)."""
-    url = os.environ.get("OPS_ALERT_WEBHOOK")
-    if not url:
-        return
-    try:
-        import requests
-        requests.post(url, json={"text": f"[sam_pocs] {msg}"}, timeout=10)
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARN: alert POST failed: {exc}")
-
-
 def _record_run(*, feed, dataset_uri, sam_label, metrics, status, error,
                 started_at, completed_at) -> None:
     conn = _pg_connect()
@@ -639,7 +628,7 @@ def build_sam_pocs(trigger_callback_url: str | None = None,
                         "distinct_uei": metrics["distinct_uei"],
                         "distinct_cage": metrics["distinct_cage"]})
         if status != "success":
-            _alert(f"{feed} build {status}: {str(error)[:300]}")
+            alert(f"[sam_pocs] {feed} build {status}: {str(error)[:300]}")
 
     if status != "success":
         raise RuntimeError(f"sam_pocs build failed: {error}")

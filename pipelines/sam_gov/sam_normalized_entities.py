@@ -42,6 +42,7 @@ import os
 import modal
 
 from core.name_norm import legal_name_base, name_norm
+from core.ops_alert import alert
 
 BUCKET = "data-sink"
 SRC_URI = "s3://data-sink/active/sam_master_entities/"
@@ -113,7 +114,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "pyarrow>=17",
     "requests>=2.32",
     "psycopg[binary]>=3.2",
-).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.name_norm")
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.name_norm").add_local_python_source("core.ops_alert")
 
 app = modal.App("sam-gov-normalized-entities-pipelines", image=image)
 
@@ -440,6 +441,7 @@ def build_sam_normalized_entities(trigger_callback_url: str | None = None) -> di
                         "distinct_uei": metrics["distinct_uei"]})
 
     if status != "success":
+        alert(f"[sam_normalized_entities] {FEED} build {status}: {str(error)[:300]}")
         raise RuntimeError(f"sam_normalized_entities build failed: {error}")
     return {"feed": FEED, "dataset": DATASET_URI, "sam_label": sam_label, **metrics}
 
