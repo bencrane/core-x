@@ -43,9 +43,10 @@ Spill configuration (source-verified against lance-format/lance
     asserts its absence at runtime and refuses to run otherwise.
   • Spill path — with spilling on, Lance builds ``DiskManagerBuilder::default()`` →
     ``DiskManagerMode::OsTmpDirectory`` → ``tempfile::tempdir()`` → ``std::env::temp_dir()`` →
-    honors **TMPDIR**. Modal RESERVES ``/tmp`` (a Volume cannot mount there), so the Volume is
-    mounted at ``/mnt/spill`` and ``TMPDIR=/mnt/spill`` routes every DiskManager spill onto the
-    Volume instead of the container root disk.
+    honors **TMPDIR**. Spill goes to the worker's LOCAL NVMe (``TMPDIR=/tmp``): the ~tens-of-GB
+    sort fits local disk and runs far faster than a networked modal.Volume, so the build finishes
+    inside a preemption-free window. Run ``::reindex`` **detached** (``modal run --detach``) so the
+    build survives client disconnect and Modal's preemption-retry can complete it server-side.
   • Spill cap — ``LANCE_MAX_TEMP_DIRECTORY_SIZE`` and ``LANCE_MEM_POOL_SIZE`` parse via
     ``s.parse::<u64>()`` = **RAW BYTES**. A "250GB" string fails the parse and silently reverts to
     the 100 GB default. Both are passed as integer byte strings below.
@@ -87,12 +88,14 @@ DUCKDB_MEMORY_LIMIT = "48GB"
 SPILL_DIR = "/tmp/duckdb_spill"            # LOCAL scratch on the append workers (DuckDB temp)
 SCRATCH_DIR = "/tmp/epa"                   # LOCAL scratch on the append workers (gz + parquet)
 
-# Index-worker spill onto a mounted Volume ------------------------------------ #
-# Modal RESERVES /tmp and refuses to mount a Volume there (mount_utils.validate_mount_points
-# raises InvalidError for abs_path == "/tmp"). The spill target need not BE /tmp — DataFusion's
-# DiskManager(OsTmpDirectory) follows TMPDIR — so mount the Volume at a dedicated path and point
-# TMPDIR at it. Same guarantee (spill lands on the Volume), legal mount point.
-SPILL_MOUNT = "/mnt/spill"                  # Volume mount == TMPDIR (DataFusion OsTmpDirectory target)
+# Index-sort spill target ------------------------------------------------------ #
+# DataFusion's DiskManager(OsTmpDirectory) follows TMPDIR. The BTREE external sort for 422 M rows
+# spills only ~tens of GB — which fits the worker's LOCAL NVMe — and local disk is *far* faster than
+# a networked modal.Volume, so the build finishes inside a preemption-free window instead of being a
+# slow-moving target. (A networked-Volume spill ran 40+ min on the heavy index and got preempted
+# mid-build; create_scalar_index has no checkpoint, so a preemption restarts it from zero.)
+# /tmp here is a plain local dir — Modal only forbids MOUNTING a Volume at /tmp, not writing to it.
+SPILL_MOUNT = "/tmp"                         # local NVMe spill dir == TMPDIR
 _GiB = 1024 ** 3
 # RAW BYTES (parse::<u64>): a "250GB"/"24GB" string would fail the parse and revert to defaults.
 LANCE_MAX_TEMP_BYTES = str(250 * _GiB)     # 268435456000  — raise the 100 GB DataFusion cap
@@ -127,9 +130,8 @@ index_image = image.env(
     }
 )
 
-# Networked scratch volume that absorbs the 422 M-row external-sort spill. Used as PURE SCRATCH
-# (spill files are created + deleted by DataFusion within the run); never committed/persisted.
-spill_volume = modal.Volume.from_name("epa-dmr-index-spill", create_if_missing=True)
+# (No modal.Volume: the index sort spills to the worker's local NVMe at TMPDIR=/tmp — faster and
+# preemption-resilient. The spill (~tens of GB) is well within the container's default local disk.)
 
 app = modal.App("epa-dmr-history", image=image)
 
@@ -536,15 +538,20 @@ def append_one(src: dict, run_id: str, force: bool = False) -> dict:
 @app.function(
     image=index_image,                                   # carries TMPDIR + cap + pool; NO bypass var
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    volumes={SPILL_MOUNT: spill_volume},                 # networked scratch absorbs the 422 M-row sort
-    timeout=60 * 60 * 12,                                # external sort over a networked volume is slow
-    memory=49152,                                        # standard 48 GB — RAM is NOT the sort budget; disk is
+    timeout=60 * 60 * 6,                                 # local-NVMe spill is fast; 6 h is ample headroom
+    memory=49152,                                        # standard 48 GB — RAM is NOT the sort budget; local disk is
     cpu=8.0,
+    ephemeral_disk=524288,                               # 512 GiB local NVMe (Modal's explicit floor) — the
+                                                         # ~tens-of-GB sort spill fits with huge margin
+    retries=2,                                           # idempotent (replace=True) → safe to retry on preemption/transient
 )
 def rebuild_indexes(run_id: str) -> dict:
-    """Full ``create_scalar_index(replace=True)`` over the unified ~422 M-row dataset, with the
-    DataFusion external sort spilling to the mounted Volume. Preflights the spill configuration and
-    REFUSES to run in-memory (which would OOM a 48 GB box on the EXTERNAL_PERMIT_NMBR BTREE)."""
+    """Full ``create_scalar_index(replace=True)`` over the unified ~422 M-row dataset, the DataFusion
+    external sort spilling to LOCAL NVMe (TMPDIR=/tmp). SELF-FINALIZING: after the build it re-reads
+    the dataset (row count, index manifest, FISCAL_YEAR span) and records a terminal ledger row, so a
+    single detached run proves completion with no follow-up. Preflights the spill config and REFUSES
+    to run in-memory (which would OOM a 48 GB box on the EXTERNAL_PERMIT_NMBR BTREE). Run DETACHED
+    (``modal run --detach``) so it survives client disconnect and Modal completes it server-side."""
     import datetime as dt
 
     import lance
@@ -558,9 +565,9 @@ def rebuild_indexes(run_id: str) -> dict:
         )
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir != SPILL_MOUNT:
-        raise RuntimeError(f"TMPDIR={tmpdir!r}; expected {SPILL_MOUNT!r} (the mounted spill Volume).")
-    if not os.path.ismount(SPILL_MOUNT) and not os.path.isdir(SPILL_MOUNT):
-        raise RuntimeError(f"spill mount {SPILL_MOUNT!r} not present.")
+        raise RuntimeError(f"TMPDIR={tmpdir!r}; expected {SPILL_MOUNT!r} (the local NVMe spill dir).")
+    if not os.path.isdir(SPILL_MOUNT):
+        raise RuntimeError(f"spill dir {SPILL_MOUNT!r} not present.")
     os.makedirs(SPILL_MOUNT, exist_ok=True)
     print(
         "[reindex] spill preflight OK | "
@@ -573,17 +580,36 @@ def rebuild_indexes(run_id: str) -> dict:
     uri = ACTIVE_BASE + DATASET + "/"
     so = _r2_storage_options()
     started = dt.datetime.now(dt.timezone.utc)
-    status, error, built = "error", None, []
+    status, error, built, verify_out = "error", None, [], {}
     try:
         ds = lance.dataset(uri, storage_options=so)
         total = ds.count_rows()
-        print(f"[reindex] {DATASET} rows={total:,} — full rebuild (replace=True), disk-spilled sort")
+        print(f"[reindex] {DATASET} rows={total:,} — full rebuild (replace=True), local-NVMe spill")
         for col, kind in INDEX_PLAN:
             print(f"[reindex] building {kind} on {col} …")
             ds.create_scalar_index(col, index_type=kind, replace=True)
             built.append(f"{col}:{kind}")
             print(f"[reindex]   {kind} ✓ {col}")
         status = "success"
+
+        # ── self-verify (best-effort read-back; the indices are already committed) ───────────────
+        try:
+            os.makedirs(SPILL_DIR, exist_ok=True)
+            ds2 = lance.dataset(uri, storage_options=so)   # fresh manifest read
+            idx = [i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i))
+                   for i in ds2.list_indices()]
+            con = _new_con()
+            try:
+                con.register("dmr_fy", ds2.scanner(columns=["FISCAL_YEAR"]).to_reader())
+                fy_min, fy_max = con.execute("SELECT min(FISCAL_YEAR), max(FISCAL_YEAR) FROM dmr_fy").fetchone()
+            finally:
+                con.close()
+            verify_out = {"rows": ds2.count_rows(), "indices": idx,
+                          "fiscal_year_min": fy_min, "fiscal_year_max": fy_max}
+            print(f"[reindex] ✅ DONE — VERIFIED {verify_out}")
+        except Exception as vexc:  # noqa: BLE001 — verify is a read-back proof, not the build itself
+            verify_out = {"verify_error": str(vexc)}
+            print(f"[reindex] indices built OK; read-back verify hiccup: {vexc}")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         print(f"[reindex] FAILED: {error}")
@@ -591,12 +617,13 @@ def rebuild_indexes(run_id: str) -> dict:
         completed = dt.datetime.now(dt.timezone.utc)
         _record_run(run_id=run_id, source_archives="(reindex)", rows_written=0,
                     indexes_built=",".join(built), status=status, error=error,
-                    metrics={"reindex": True, "index_plan": [f"{c}:{k}" for c, k in INDEX_PLAN]},
+                    metrics={"reindex": True, "index_plan": [f"{c}:{k}" for c, k in INDEX_PLAN],
+                             "verify": verify_out},
                     started_at=started, completed_at=completed)
 
     if status != "success":
         raise RuntimeError(f"reindex failed: {error}")
-    return {"dataset": DATASET, "indexes": built, "status": status}
+    return {"dataset": DATASET, "indexes": built, "status": status, "verify": verify_out}
 
 
 # --------------------------------------------------------------------------- #
