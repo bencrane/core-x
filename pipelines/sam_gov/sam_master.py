@@ -26,6 +26,8 @@ import os
 
 import modal
 
+from core.ops_alert import alert
+
 BUCKET = "data-sink"
 SRC_URI = "s3://data-sink/active/entity_registrations/"
 ENTITIES_URI = os.environ.get("SAM_MASTER_ENTITIES_URI", "s3://data-sink/active/sam_master_entities/")
@@ -76,7 +78,7 @@ DOMAIN_BLOCK = (
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "duckdb>=1.5,<2", "lancedb>=0.15", "pylance>=0.19", "pyarrow>=17", "psycopg[binary]>=3.2",
-).env({"LANCE_BYPASS_SPILLING": "true"})
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.ops_alert")
 
 app = modal.App("sam-gov-master-pipelines", image=image)
 
@@ -329,6 +331,7 @@ def build_sam_master(sql: dict, dry_run: bool = False) -> dict:
                 "datasets": [ENTITIES_URI, CONTACTS_URI, DOMAINS_URI], **metrics}
     except Exception as exc:  # noqa: BLE001
         error = str(exc)[:500]
+        alert(f"[sam_master] {FEED} build error: {error}")
         raise
     finally:
         _record_run(sam_label=sam_label, metrics=metrics, status=status, error=error,
