@@ -1,0 +1,612 @@
+"""Internal endpoints called by the Trigger.dev gtm-run-initiative-pipeline
+task. Bearer-authenticated with TRIGGER_SHARED_SECRET, same pattern as
+internal/exa_jobs.py + internal/gtm_initiatives.py.
+
+The single source of truth for an agent invocation is
+``POST /run-step``: one HTTP call per agent slug, hq-x blocks for the
+full Anthropic round trip, every state mutation lands in the DB before
+the response returns. Trigger.dev's TS layer holds zero business state.
+
+This module also exports two Phase-1 proxy routers for the new
+slice-to-campaign GTM pipeline:
+
+  * ``tasks_router`` — prefix ``/tasks``. Generic async-task proxies.
+  * ``gtm_slice_router`` — prefix ``/gtm-slice``. Slice pipeline step
+    proxies (resolve / find-people / validate).
+
+All Phase-1 endpoints are pure receive-and-ack: they authenticate the
+Trigger.dev payload, return a 200 OK with the structured ack envelope,
+and persist nothing. State writes land in subsequent phases.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+from uuid import UUID
+
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, status
+from psycopg.types.json import Jsonb
+from pydantic import BaseModel, Field
+
+from app.auth.trigger_secret import verify_trigger_secret
+from app.db import get_db_connection
+from app.services import blitz_client
+from app.services import gtm_initiatives as gtm_svc
+from app.services import gtm_pipeline as pipeline
+
+logger = logging.getLogger(__name__)
+
+# Phase 1 Bulk Firmographic Hydration — Modal Web Function entrypoint.
+# Placeholder URL; swap for the deployed Modal app's stable web URL once the
+# DEX-side Modal app exists. Public endpoint, no auth header — matches the
+# txdot-letting Modal-from-hq-x precedent.
+_MODAL_HYDRATION_URL = (
+    "https://bencrane--data-engine-x-gtm-hydration-modal-run.modal.run"
+)
+
+router = APIRouter(prefix="/gtm", tags=["internal"])
+
+
+@router.post(
+    "/initiatives/{initiative_id}/run-step",
+    dependencies=[Depends(verify_trigger_secret)],
+)
+async def run_step(
+    initiative_id: UUID,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    agent_slug = body.get("agent_slug")
+    if not agent_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "agent_slug_required"},
+        )
+
+    recipient_id_raw = body.get("recipient_id")
+    step_id_raw = body.get("channel_campaign_step_id")
+    try:
+        recipient_id = UUID(recipient_id_raw) if recipient_id_raw else None
+        channel_campaign_step_id = (
+            UUID(step_id_raw) if step_id_raw else None
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_uuid_kwarg", "message": str(exc)},
+        ) from exc
+
+    try:
+        result = await pipeline.run_step(
+            initiative_id=initiative_id,
+            agent_slug=agent_slug,
+            hint=body.get("hint"),
+            upstream_outputs=body.get("upstream_outputs"),
+            recipient_id=recipient_id,
+            channel_campaign_step_id=channel_campaign_step_id,
+        )
+    except pipeline.AgentSlugNotRegistered as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "agent_not_registered", "message": str(exc)},
+        ) from exc
+    except pipeline.RunStepError as exc:
+        # Anthropic-side or parse-irrecoverable failure. The DB row was
+        # already finalized to status='failed' inside run_step. Re-raise
+        # as 500 so Trigger.dev's task layer sees the failure and marks
+        # the pipeline failed.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "run_step_failed", "message": str(exc)},
+        ) from exc
+
+    return result
+
+
+@router.post(
+    "/initiatives/{initiative_id}/pipeline-completed",
+    dependencies=[Depends(verify_trigger_secret)],
+)
+async def pipeline_completed(
+    initiative_id: UUID,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    initiative = await gtm_svc.get_initiative(initiative_id)
+    if initiative is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "initiative_not_found"},
+        )
+    await pipeline.set_pipeline_status(initiative_id, "completed")
+    await gtm_svc.append_history(
+        initiative_id,
+        {
+            "kind": "pipeline_completed",
+            "trigger_run_id": body.get("trigger_run_id"),
+        },
+    )
+    return {"initiative_id": str(initiative_id), "pipeline_status": "completed"}
+
+
+@router.post(
+    "/initiatives/{initiative_id}/pipeline-failed",
+    dependencies=[Depends(verify_trigger_secret)],
+)
+async def pipeline_failed(
+    initiative_id: UUID,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    initiative = await gtm_svc.get_initiative(initiative_id)
+    if initiative is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "initiative_not_found"},
+        )
+    await pipeline.set_pipeline_status(initiative_id, "failed")
+    await gtm_svc.append_history(
+        initiative_id,
+        {
+            "kind": "pipeline_failed",
+            "trigger_run_id": body.get("trigger_run_id"),
+            "failed_at_slug": body.get("failed_at_slug"),
+            "reason": body.get("reason"),
+        },
+    )
+    return {
+        "initiative_id": str(initiative_id),
+        "pipeline_status": "failed",
+        "failed_at_slug": body.get("failed_at_slug"),
+        "reason": body.get("reason"),
+    }
+
+
+@router.post(
+    "/initiatives/{initiative_id}/fanout-targets",
+    dependencies=[Depends(verify_trigger_secret)],
+)
+async def fanout_targets(
+    initiative_id: UUID,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Cross-product of (recipient × DM step) for the initiative's most
+    recent succeeded materialization. Trigger.dev's parent task calls
+    this immediately before fanning out the per-recipient creative
+    batchTrigger.
+
+    Body: ``{"agent_slug": "<fanout actor slug>"}`` — currently
+    ignored beyond schema-level validation; in v0 every fanout step
+    consumes the same (recipient × DM step) target set.
+    """
+    initiative = await gtm_svc.get_initiative(initiative_id)
+    if initiative is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "initiative_not_found"},
+        )
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Read the most recent succeeded channel-step-materializer's
+            # executed.dm_step_ids — this is the authoritative DM step
+            # set for the current materialization.
+            await cur.execute(
+                """
+                SELECT output_blob
+                FROM business.gtm_subagent_runs
+                WHERE initiative_id = %s
+                  AND agent_slug = 'gtm-channel-step-materializer'
+                  AND status = 'succeeded'
+                ORDER BY run_index DESC
+                LIMIT 1
+                """,
+                (str(initiative_id),),
+            )
+            cs_row = await cur.fetchone()
+            if cs_row is None or cs_row[0] is None:
+                return {"items": [], "expected_count": 0}
+
+            value = (cs_row[0] or {}).get("value") or {}
+            executed = (
+                value.get("executed") if isinstance(value, dict) else None
+            ) or {}
+            dm_step_ids = list(executed.get("dm_step_ids") or [])
+            if not dm_step_ids:
+                return {"items": [], "expected_count": 0}
+
+            await cur.execute(
+                """
+                SELECT recipient_id
+                FROM business.initiative_recipient_memberships
+                WHERE initiative_id = %s AND removed_at IS NULL
+                ORDER BY added_at
+                """,
+                (str(initiative_id),),
+            )
+            recipient_rows = await cur.fetchall()
+
+    items = [
+        {
+            "recipient_id": str(r[0]),
+            "channel_campaign_step_id": str(s),
+        }
+        for r in recipient_rows
+        for s in dm_step_ids
+    ]
+    return {"items": items, "expected_count": len(items)}
+
+
+__all__ = ["router", "tasks_router", "gtm_slice_router"]
+
+
+# ── Phase-1 slice-to-campaign proxy routers ───────────────────────────────
+
+
+class EnrichTaskPayload(BaseModel):
+    """Body for ``POST /internal/tasks/enrich``.
+
+    Per-entity enrichment envelope. The ``gtm_slice_enrichment``
+    Trigger.dev task fans out one POST per entity; the proxy materializes
+    a row in ``ops.task_runs`` keyed by ``task_run_id`` (Trigger.dev's
+    root run id) with ``task_type = f"{provider}_{action}"``.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    task_run_id: str = Field(..., description="Trigger.dev run ID.")
+    provider: str = Field(..., description="Upstream enrichment provider slug.")
+    action: str = Field(..., description="Enrichment action slug.")
+    entity_data: dict[str, Any] = Field(
+        ...,
+        description="The single entity payload Trigger is dispatching.",
+    )
+
+
+class GtmSliceResolvePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/resolve``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(
+        ...,
+        description="Stable pipeline run identifier (Trigger root run).",
+    )
+    audience_spec_id: str = Field(..., description="DEX audience spec ID.")
+    run_id: str | None = Field(
+        default=None,
+        description="Trigger.dev step run ID (optional).",
+    )
+
+
+class GtmSliceFindPeoplePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/find-people``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(...)
+    audience_spec_id: str = Field(...)
+    provider_set: list[str] = Field(
+        default_factory=list,
+        description="People-finder providers (leadmagic, parallel, …).",
+    )
+    run_id: str | None = Field(default=None)
+
+
+class GtmSliceValidatePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/validate``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(...)
+    audience_spec_id: str = Field(...)
+    provider_set: list[str] = Field(
+        default_factory=list,
+        description="Email-validation providers (millionverifier, …).",
+    )
+    run_id: str | None = Field(default=None)
+
+
+tasks_router = APIRouter(prefix="/tasks", tags=["internal"])
+gtm_slice_router = APIRouter(prefix="/gtm-slice", tags=["internal"])
+
+
+@tasks_router.post(
+    "/enrich",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
+    task_type = f"{payload.provider}_{payload.action}"
+    # UEI is the entity-grain cache key the DEX hydration slice anti-joins
+    # against; persisting it on the ledger row enables a high-throughput
+    # NOT IN (SELECT uei …) scan without JSONB extraction.
+    raw_uei = payload.entity_data.get("uei") if isinstance(payload.entity_data, dict) else None
+    entity_uei = raw_uei.strip() if isinstance(raw_uei, str) and raw_uei.strip() else None
+    # `domain` and `linkedin_url` are the Blitz-input parameters this row
+    # executed against. Logging them as top-level columns turns the ledger
+    # into a faithful execution cache — downstream readers can reconstruct
+    # "what did we ask Blitz for" without parsing entity_data out of an
+    # opaque JSONB envelope.
+    raw_domain = payload.entity_data.get("domain") if isinstance(payload.entity_data, dict) else None
+    entity_domain = raw_domain.strip() if isinstance(raw_domain, str) and raw_domain.strip() else None
+    raw_linkedin_url = payload.entity_data.get("linkedin_url") if isinstance(payload.entity_data, dict) else None
+    entity_linkedin_url = raw_linkedin_url.strip() if isinstance(raw_linkedin_url, str) and raw_linkedin_url.strip() else None
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO ops.task_runs
+                        (run_id, task_type, status, inputs_count, uei, domain, linkedin_url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        payload.task_run_id,
+                        task_type,
+                        "pending",
+                        1,
+                        entity_uei,
+                        entity_domain,
+                        entity_linkedin_url,
+                    ),
+                )
+            await conn.commit()
+    except Exception as exc:
+        logger.exception(
+            "tasks_enrich_ledger_insert_failed",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "ledger_insert_failed",
+                "message": str(exc),
+            },
+        ) from exc
+
+    # ── Phase 2: provider dispatch — funnel ALL exceptions into 'failed' ──
+    # Every escape path from the provider phase converges on a terminal
+    # status. Once the INSERT above has landed, the row WILL reach a
+    # terminal state in Phase 3 — even if the provider call raises an
+    # unexpected exception type or the response is structurally
+    # surprising. This is the seal the operator's 250/250 bar requires:
+    # zero ledger rows ever stuck at 'pending' after the proxy returns.
+    final_status: str = "failed"
+    result_payload: dict[str, Any] | None = None
+    error_dict: dict[str, Any] | None = None
+
+    try:
+        if payload.provider == "blitz":
+            try:
+                result_payload = await blitz_client.call(
+                    payload.action, payload.entity_data
+                )
+                final_status = "completed"
+            except blitz_client.BlitzCallError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": "BlitzCallError",
+                    "message": str(exc),
+                    "status_code": exc.status_code,
+                    "endpoint": exc.endpoint,
+                }
+            except blitz_client.BlitzError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
+                }
+            except httpx.HTTPError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
+                }
+
+        elif payload.provider == "modal":
+            # Heavy waterfall dispatcher — POSTs to the GTM-hydration Modal
+            # Web Function, captures the response, and surfaces the terminal
+            # status back to the Trigger.dev caller so the orchestrator can
+            # rely on `ack.status === "completed"` as ground truth.
+            modal_body = {
+                "action": payload.action,
+                "entity_data": payload.entity_data,
+            }
+            # 80s budget — bounded ~10s under the Trigger task's 90s
+            # `callHqx` client-side timeout so the proxy returns a structured
+            # failure ack before the orchestrator sees a severed connection.
+            try:
+                async with httpx.AsyncClient(timeout=80.0) as client:
+                    resp = await client.post(_MODAL_HYDRATION_URL, json=modal_body)
+                if resp.status_code // 100 == 2:
+                    try:
+                        result_payload = resp.json()
+                    except ValueError:
+                        result_payload = {"raw_response": resp.text}
+                    # The Modal hydrator returns HTTP 200 even on Blitz-side
+                    # failures, surfacing the terminal state via
+                    # `result_payload["status"]`.
+                    modal_reported_status = (
+                        result_payload.get("status")
+                        if isinstance(result_payload, dict)
+                        else None
+                    )
+                    if modal_reported_status == "failed":
+                        final_status = "failed"
+                        error_dict = {
+                            "kind": "ModalReportedFailure",
+                            "message": (
+                                result_payload.get("error")
+                                if isinstance(result_payload, dict)
+                                else None
+                            ) or "modal returned status=failed without error detail",
+                            "endpoint": _MODAL_HYDRATION_URL,
+                        }
+                    else:
+                        # Modal returns HTTP 200 + status=completed even when
+                        # Blitz could not match the company. Promote the
+                        # clean "no match" outcome to a first-class terminal
+                        # status so downstream cohort anti-joins can exclude
+                        # confirmed misses without re-burning upstream calls.
+                        blitz_data = (
+                            result_payload.get("blitz_data")
+                            if isinstance(result_payload, dict)
+                            else None
+                        )
+                        if isinstance(blitz_data, dict) and blitz_data.get("found") is False:
+                            final_status = "not_found"
+                        else:
+                            final_status = "completed"
+                else:
+                    final_status = "failed"
+                    error_dict = {
+                        "kind": "ModalCallError",
+                        "status_code": resp.status_code,
+                        "message": resp.text[:500],
+                        "endpoint": _MODAL_HYDRATION_URL,
+                    }
+            except httpx.HTTPError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
+                    "endpoint": _MODAL_HYDRATION_URL,
+                }
+
+    except Exception as exc:
+        # Catch-all seal. Any exception not handled by a provider-specific
+        # except block above (Pydantic shape surprises, asyncio cancellations,
+        # JSON access errors against unexpected payload shapes, etc.) flips
+        # the row to 'failed' rather than escaping and leaving the ledger row
+        # stuck at 'pending'.
+        logger.exception(
+            "tasks_enrich_provider_unhandled_exception",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+                "provider": payload.provider,
+            },
+        )
+        final_status = "failed"
+        result_payload = None
+        error_dict = {
+            "kind": exc.__class__.__name__,
+            "message": str(exc),
+            "phase": "provider_dispatch",
+        }
+
+    # ── Phase 3: terminal UPDATE — single shared write ────────────────────
+    # On failure WITHOUT a provider response, persist the error envelope
+    # AS the result_payload so downstream readers have observability on the
+    # failure without having to join error_log separately. The error_log
+    # column still carries the same envelope for queries that filter by it.
+    if final_status == "failed" and result_payload is None and error_dict is not None:
+        persisted_result_payload = error_dict
+    elif final_status in ("completed", "not_found") and result_payload is not None:
+        persisted_result_payload = result_payload
+    else:
+        persisted_result_payload = None
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE ops.task_runs
+                    SET status = %s,
+                        outputs_count = %s,
+                        error_log = %s,
+                        result_payload = %s,
+                        updated_at = now()
+                    WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
+                    """,
+                    (
+                        final_status,
+                        1 if final_status == "completed" else 0,
+                        Jsonb(error_dict) if error_dict else None,
+                        Jsonb(persisted_result_payload) if persisted_result_payload is not None else None,
+                        payload.task_run_id,
+                        entity_uei,
+                    ),
+                )
+            await conn.commit()
+    except Exception as exc:
+        # The terminal UPDATE failed after psycopg_pool's internal retries
+        # (~30s budget). The row is stuck at 'pending'. We surface 500 so
+        # the orchestrator counts this as a failure. A subsequent
+        # reconciler sweep would be the only path to drain stuck rows —
+        # not in this PR, but flagged in the PR body.
+        logger.exception(
+            "tasks_enrich_ledger_update_failed",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+                "final_status": final_status,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "ledger_update_failed",
+                "message": str(exc),
+            },
+        ) from exc
+
+    return {
+        "acknowledged": True,
+        "endpoint": "tasks.enrich",
+        "task_run_id": payload.task_run_id,
+        "task_type": task_type,
+        "status": final_status,
+        "result": result_payload,
+        "error": error_dict,
+    }
+
+
+@gtm_slice_router.post(
+    "/resolve",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_resolve(payload: GtmSliceResolvePayload) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.resolve",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
+
+
+@gtm_slice_router.post(
+    "/find-people",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_find_people(
+    payload: GtmSliceFindPeoplePayload,
+) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.find-people",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
+
+
+@gtm_slice_router.post(
+    "/validate",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_validate(
+    payload: GtmSliceValidatePayload,
+) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.validate",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
