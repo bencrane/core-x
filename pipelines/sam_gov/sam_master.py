@@ -242,7 +242,8 @@ def _record_run(*, sam_label, metrics, status, error, started_at, completed_at) 
 # Modal build
 # --------------------------------------------------------------------------- #
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("ops-alerts")],
     timeout=2 * 60 * 60, memory=131072, cpu=8.0,
 )
 def build_sam_master(sql: dict, dry_run: bool = False) -> dict:
