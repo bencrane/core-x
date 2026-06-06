@@ -37,10 +37,11 @@ indices) is built on local disk (no multipart) and published once via boto3
 pipelines/pdl_companies/free_company_dataset.py, which solved the identical
 constraint at 35.4M rows.
 
-Index plan (operator-authorized 2026-06-01; expanded for entity resolution):
-    BTREE  : id, longitude, latitude, name, postcode, locality
-             (resolution keys + bbox range + postal/locality blocking joins)
-    BITMAP : region   (≤~60 US ISO-3166-2 codes — low cardinality)
+Index plan (v3 — single source of truth in _transform.OPTIMIZED_*):
+    BTREE  : id, name, postcode, locality, hilbert, domain, phone
+             (resolution keys: id/name + the deterministic domain/phone, postal/
+             locality blocking joins, integer hilbert sort/spatial key)
+    BITMAP : region, category   (low-cardinality categorical pushdown)
 
     modal deploy pipelines/overture_maps/places.py
     modal run    pipelines/overture_maps/places.py::initdb       # create ops.* table
@@ -83,11 +84,12 @@ DATA_STORAGE_VERSION = "2.1"
 # rows if the full materialization hits a catchable allocation error.
 STREAM_BATCH_ROWS = 1048576
 
-# ── Scalar index plan (v2; single source of truth in _transform) ────────────
-# BTREE id/name/postcode/locality + the integer `hilbert` sort key; BITMAP
-# region + category. The per-axis lon/lat BTREEs were dropped (2-D bbox via two
-# 1-D BTREEs measured 38.9s; bbox is served by an exact lon/lat predicate +
-# zone-map pruning). See docs/overture_places_optimization_directive.md.
+# ── Scalar index plan (v3; single source of truth in _transform) ────────────
+# BTREE id/name/postcode/locality + the integer `hilbert` sort key + the two
+# deterministic resolution keys domain/phone; BITMAP region + category. The
+# per-axis lon/lat BTREEs were dropped (2-D bbox via two 1-D BTREEs measured
+# 38.9s; bbox is served by an exact lon/lat predicate + zone-map pruning). See
+# docs/overture_places_optimization_directive.md + the v3 resolution-keys directive.
 OVERTURE_BTREE_INDEXES = T.OPTIMIZED_BTREE_INDEXES
 OVERTURE_BITMAP_INDEXES = T.OPTIMIZED_BITMAP_INDEXES
 
@@ -244,11 +246,12 @@ def _v2_schema_metadata(release_tag: str, snapshot_date: str, ingested_at_iso: s
 
 
 def _build_sql(geom_expr: str) -> str:
-    """100% of the transform → Overture Places v2 schema. Anonymous read_parquet
+    """100% of the transform → Overture Places v3 schema. Anonymous read_parquet
     over the resolved release → decode geometry ONCE (geo CTE) + US filter pushed
-    to the scan → flatten ST_X/ST_Y + unpack addresses[1]/names/categories (flat
-    CTE) → shared v2 projection (adds the ``hilbert`` sort key, normalizes region,
-    casts confidence→float32, sorts by region,hilbert). The 4 constant provenance
+    to the scan → flatten ST_X/ST_Y + unpack addresses[1]/names/categories/taxonomy
+    + normalize the resolution keys domain/phone/street (flat CTE) → shared v3
+    projection (adds ``hilbert``, normalizes region, casts confidence→float32, carries
+    domain/phone/street/taxonomy, sorts by region,hilbert). The 4 constant provenance
     columns are demoted to Lance schema metadata by the caller, NOT projected. The
     WKB ``geometry`` never leaves the geo CTE. ``geom_expr`` is repo-controlled
     (probe output, not user input); only the read path is bound positionally (one ?)."""
@@ -263,6 +266,9 @@ geo AS (
         addresses,
         names,
         categories,
+        taxonomy,
+        websites,
+        phones,
         confidence
     FROM raw
     WHERE addresses[1].country = 'US'   -- ISO 3166-1 alpha-2; predicate pushed to scan
@@ -277,7 +283,11 @@ flat AS (
         nullif(trim(addresses[1].postcode), '')  AS postcode,     -- US ZIP / ZIP+4 (blocking key)
         nullif(trim(names.primary), '')          AS name,         -- entity-resolution key
         nullif(trim(categories.primary), '')     AS category,     -- POI category slug
-        TRY_CAST(confidence AS DOUBLE)           AS confidence     -- Overture 0..1 quality score
+        nullif(trim(taxonomy.primary), '')       AS taxonomy,     -- richer category hierarchy leaf
+        TRY_CAST(confidence AS DOUBLE)           AS confidence,    -- Overture 0..1 quality score
+        {T.domain_sql('websites[1]')}            AS domain,        -- registrable domain (resolution key)
+        {T.phone_sql('phones[1]')}               AS phone,         -- E.164/NANP phone (resolution key)
+        nullif(trim(addresses[1].freeform), '')  AS street         -- full street line (resolution key)
     FROM geo
 )
 {T.projection_sql("flat")}
