@@ -182,9 +182,26 @@ def _safe_json(resp) -> Any:
 
 
 def _hqx_dsn() -> str:
-    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    """Transaction-mode (Supavisor :6543) hq-x DSN for this rate-gated, horizontally
+    scaled worker.
+
+    The worker holds one Postgres connection for the whole run while it is mostly idle —
+    blocked on the rate-governed gateway between sparse DB touches. On the SESSION pooler
+    (:5432, pool_size=15) every such connection pins a backend for the entire run, so N
+    concurrent workers exhaust the 15-slot ceiling (``EMAXCONNSESSION: max clients reached
+    in session mode``). The TRANSACTION pooler checks a backend out only for each autocommit
+    statement, returning it between the batched read and the per-entity writes — a long-
+    lived-but-idle worker costs ~0 backends. Prefer an explicit HQX_DB_URL_TRANSACTION; else
+    derive it from the session DSN (Supavisor maps session→transaction by the pooler port
+    5432→6543)."""
+    dsn = os.environ.get("HQX_DB_URL_TRANSACTION")
     if not dsn:
-        raise RuntimeError("HQX_DB_URL_POOLED not set in the hqx-postgres Modal secret.")
+        pooled = os.environ.get("HQX_DB_URL_POOLED")
+        if not pooled:
+            raise RuntimeError(
+                "Neither HQX_DB_URL_TRANSACTION nor HQX_DB_URL_POOLED set in the "
+                "hqx-postgres Modal secret.")
+        dsn = pooled.replace(".pooler.supabase.com:5432", ".pooler.supabase.com:6543")
     if "sslmode=" not in dsn:
         dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
     return dsn
@@ -193,7 +210,11 @@ def _hqx_dsn() -> str:
 def _open_conn(dsn: str):
     import psycopg
 
-    return psycopg.connect(dsn, autocommit=True)
+    # prepare_threshold=None disables psycopg3 server-side prepared statements: under
+    # transaction-mode pooling consecutive statements may land on different backends, so a
+    # prepared statement created on one is absent on the next. autocommit=True keeps each
+    # statement its own short transaction so the pooler frees the backend between gateway calls.
+    return psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
 
 
 def _gateway():

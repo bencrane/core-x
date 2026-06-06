@@ -47,17 +47,29 @@ Reconnaissance (verified live against the metastore + the 2018 / 2023 / 2024 pay
      INTEGER. Everything else (NPIs, profile/record/payment IDs, codes) stays VARCHAR.
 
 Topology — SINGLE sequential orchestrator (``refresh_all``), the directive's model:
-  one container, one ephemeral disk. Per family, for each year in catalog order:
+  one container. Per family, for each year in catalog order:
       download CSV → /tmp (UTF-8-sanitised stream)  [Python: I/O only, no transform]
         → DuckDB read_csv(all_varchar, quote-aware, parallel=false) → dynamic project/cast
         → to_arrow_reader (streaming; never materialise the 8 GB General file)
-        → Lance append to the LOCAL family dataset (v2.1, on ephemeral disk)
+        → Lance append to the LOCAL family dataset (v2.1, on the default /tmp overlay)
         → rm the local CSV   [bounded disk: one CSV at a time, never concurrent]
-  After a family's years land locally, build its BTREE + BITMAP scalar indexes ONCE, then
-  PUBLISH the whole dataset to R2 via boto3 (wipe prefix + upload — uniform-part multipart).
-  Direct Lance→R2 writes are NOT used: object_store emits variable-size multipart parts,
-  which R2 rejects ("all non-trailing parts must have the same length"); boto3 does not.
-  A full refresh re-publishes each family from a clean local rebuild (idempotent snapshot).
+  STAGING runs on /tmp with ephemeral_disk=524288 (512 GiB of fast backing for general's
+  ~23 GiB peak). /tmp (overlay) accepts Lance's commit rename and held the full 82.29M-row
+  restore; a Modal Volume does NOT — its FUSE rejects the rename (EPERM, run #76) — so giants
+  can't stage on a Volume. The disk's 512 GiB floor forces spot, so a giant backfill can be
+  mid-run preempted (#64); refresh_all's retries=3 re-runs on a fresh container, and the publish
+  is idempotent + read-back-verified, so a re-attempt can never corrupt the live dataset. After a
+  family's years land, build its BTREE + BITMAP scalar indexes ONCE, then PUBLISH to R2 via
+  boto3 (uniform-part multipart). Direct Lance→R2 writes are NOT used: object_store emits
+  variable-size multipart parts, which R2 rejects ("all non-trailing parts must have the same
+  length"); boto3 does not. The publish is HARDENED: a from-scratch rebuild stages to a sibling
+  __staging prefix, verifies object set + per-file sizes == local, then swaps over the live
+  prefix (manifest uploaded LAST) — the live copy is never wiped before the replacement is
+  staged + verified; staged-from-R2 ops (reindex / single-year) publish append-only (only new
+  files, never re-pushing the multi-GB data tree). Every publish path then passes a READ-BACK
+  VERIFY GATE (_verify_published): the dataset is reopened FRESH from R2 and its row + index
+  counts asserted before success is recorded — the check whose absence let run #58 record a
+  'success' over a corpse. See _publish_full_swap / _publish_incremental / _verify_published.
 
 Control plane (Trigger v4 durable callback): ``refresh_all`` accepts ``trigger_callback_url``
 and, on terminal state, (1) writes per-unit run rows to ``ops.cms_open_payments_runs`` via
@@ -95,6 +107,20 @@ METASTORE_URL = os.environ.get(
 )
 
 SCRATCH_DIR = "/tmp/cms_open_payments"
+
+# Giant staging — the constraint, measured the hard way. Lance's dataset commit does an atomic
+# rename() that the storage layer must accept. A Modal Volume's FUSE layer does NOT: a /vol write
+# dies at commit with EPERM ("Operation not permitted, os error 1", lance commit.rs) — run #76.
+# /dev/shm (tmpfs) accepts it but caps at 16 GiB, too small for general. The default /tmp overlay
+# is the staging path: it accepts the rename and held the full 82.29M-row restore (≈23 GiB peak:
+# 15 GiB dataset + one ≤8 GiB CSV, deleted per year). ephemeral_disk=524288 is requested NOT to
+# change the FS type (still overlay) but for SPACE + write speed — it backs /tmp with 512 GiB; a
+# no-ephemeral_disk overlay is also ~10× slower on the multi-GB writes. The disk's 512 GiB floor
+# forces preemptible spot, so a giant backfill can be mid-run preempted (#64: a SystemExit slips
+# past `except Exception` → a ledger row with error=None); refresh_all's retries=3 re-runs from
+# scratch on a fresh container, and the publish is idempotent + read-back-verified, so a re-run
+# can never corrupt the live dataset. (ARCHITECTURE.md's "Volume-staged" giant rule does NOT hold
+# for lance.write_dataset — the Volume rejects its commit rename; /tmp is the working substitute.)
 
 # Lance fragment sizing (fleet constants). max_rows_per_file = the Lance default;
 # max_bytes_per_file = 90 GiB (the documented Lance default; every other worker uses it).
@@ -409,6 +435,7 @@ def _s3_client():
     so = _r2_storage_options()
     cfg = Config(request_checksum_calculation="when_required",
                  response_checksum_validation="when_required",
+                 retries={"max_attempts": 5, "mode": "standard"},  # underlying transient-error retry
                  s3={"addressing_style": "path"})
     return boto3.client(
         "s3", endpoint_url=so["endpoint"],
@@ -424,31 +451,287 @@ def _family_prefix(family: str) -> str:
 
 
 def _local_ds(family: str) -> str:
-    """Local Lance staging directory for a family (accumulated across years, then published)."""
+    """Local Lance staging directory for a family (accumulated across years on the default
+    /tmp overlay, then published). Giants and small families stage identically — see the
+    staging note above for why /tmp (not a Volume, not an ephemeral_disk override)."""
     return os.path.join(SCRATCH_DIR, f"{family}_lance")
 
 
-def _replace_r2_prefix(s3, prefix: str, local_dir: str) -> int:
-    """Idempotent publish: wipe the R2 prefix, then upload the local Lance dataset
-    (boto3/s3transfer = uniform-part multipart, R2-compliant). Returns files uploaded.
-    Mirrors pipelines/pdl_companies + sam_gov/entity_registrations_bulk."""
-    to_del = []
+# ── Hardened R2 publish (root-cause fix for the general partial-publish corpse) ──────────
+# The retired ``_replace_r2_prefix`` wiped the live prefix, then re-uploaded every data file
+# with NO retry and NO atomic swap. On general's 16 GiB / ~83-file giant a single transient
+# R2 error mid-upload (run #58, file ~72) left the prefix as orphaned ``data/*.lance``
+# fragments with zero ``_versions/`` manifests — unreadable AND unrecoverable, because the
+# wipe had already destroyed the prior good copy. Two publish modes replace it, per
+# ARCHITECTURE.md "Giants — Volume-staged, append-only":
+#   • _publish_incremental — for a local dataset STAGED FROM R2 (reindex, single-year).
+#     Uploads ONLY files absent/size-changed vs R2, manifest LAST, never wipes. This is the
+#     giant rule verbatim ("upload only the new files … never wipe or re-upload data files").
+#   • _publish_full_swap — for a FROM-SCRATCH rebuild (refresh_all). Stages the whole new
+#     dataset to a sibling ``__staging`` prefix (resumable + retried), VERIFIES object set +
+#     per-file sizes == local, then swaps over the live prefix (delete-old → server-side copy
+#     in dependency order, manifest LAST → verify). Live is never wiped before the
+#     replacement is fully staged and verified; worst case on failure is a briefly-unreadable
+#     (never corrupt) prefix a re-run reconciles — the inverse of the retired corpse.
+_R2_PUBLISH_ATTEMPTS = 4           # outer per-file retry (botocore also retries internally)
+_R2_RETRY_BACKOFF_S = 8            # linear backoff base → 8s, 16s, 24s between attempts
+_R2_SINGLE_COPY_MAX = 5 * 1024**3  # R2/S3 single-request CopyObject ceiling (5 GiB)
+
+
+def _staging_prefix(live_prefix: str) -> str:
+    """Sibling staging prefix for the swap publish: ``active/cms_general_payments/`` →
+    ``active/cms_general_payments__staging/``. The ``__`` guarantees staging keys do NOT
+    fall under the live prefix, so a list/read of the live dataset never sees a half-staged
+    copy, and listing live never enumerates staging."""
+    return live_prefix.rstrip("/") + "__staging/"
+
+
+def _upload_rank(rel: str) -> int:
+    """Dependency-order key for upload/copy. A Lance manifest references its data, deletion,
+    index, and transaction files, so those MUST be written before the manifest — else a
+    reader can observe a manifest pointing at absent data (the exact corruption we eliminate).
+    Lower rank is written first; ``_versions/`` (the manifest) is written LAST."""
+    if rel.startswith("_versions/"):
+        return 4
+    if rel.startswith("_transactions/"):
+        return 3
+    if rel.startswith("_indices/"):
+        return 2
+    return 1  # data/, _deletions/, and anything else the manifest depends on
+
+
+def _ordered_rels(rels) -> list[str]:
+    """Deterministic dependency order: by upload rank, then path."""
+    return sorted(rels, key=lambda r: (_upload_rank(r), r))
+
+
+def _list_prefix_sizes(s3, prefix: str) -> dict[str, int]:
+    """``{relative_path: size_bytes}`` for every object under an R2 prefix. R2 is strongly
+    read-after-write consistent, so this is a reliable post-upload verification source."""
+    out: dict[str, int] = {}
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
         for o in page.get("Contents", []):
-            to_del.append({"Key": o["Key"]})
-            if len(to_del) == 1000:
-                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
-                to_del = []
-    if to_del:
-        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
-    uploaded = 0
-    for root, _, files in os.walk(local_dir):
+            rel = o["Key"][len(prefix):]
+            if rel:
+                out[rel] = o["Size"]
+    return out
+
+
+def _local_file_sizes(local_dir: str) -> dict[str, int]:
+    """``{relative_path: size_bytes}`` for every file in the local Lance dataset."""
+    out: dict[str, int] = {}
+    for root, _dirs, files in os.walk(local_dir):
         for fn in files:
             lp = os.path.join(root, fn)
             rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
-            s3.upload_file(lp, BUCKET, prefix + rel)
-            uploaded += 1
+            out[rel] = os.path.getsize(lp)
+    return out
+
+
+def _upload_file_retry(s3, local_path: str, key: str) -> None:
+    """Upload one file to R2 with bounded linear backoff. The transient R2 error that aborted
+    run #58 mid-upload (and corrupted general) is precisely what this recovers."""
+    import time
+
+    last: Exception | None = None
+    for attempt in range(1, _R2_PUBLISH_ATTEMPTS + 1):
+        try:
+            s3.upload_file(local_path, BUCKET, key)
+            return
+        except Exception as exc:  # noqa: BLE001 — transient R2/network; retried below
+            last = exc
+            print(f"    upload {key} attempt {attempt}/{_R2_PUBLISH_ATTEMPTS} failed: {str(exc)[:200]}")
+            if attempt < _R2_PUBLISH_ATTEMPTS:
+                time.sleep(_R2_RETRY_BACKOFF_S * attempt)
+    raise RuntimeError(f"upload failed after {_R2_PUBLISH_ATTEMPTS} attempts: {key}: {last}")
+
+
+def _copy_key_retry(s3, src_key: str, dst_key: str) -> None:
+    """Server-side copy one object within R2 (no worker egress) with bounded backoff. Used
+    by the swap step so the verified staging bytes become live without re-transferring GiBs
+    from the worker."""
+    import time
+
+    last: Exception | None = None
+    for attempt in range(1, _R2_PUBLISH_ATTEMPTS + 1):
+        try:
+            s3.copy_object(Bucket=BUCKET, Key=dst_key,
+                           CopySource={"Bucket": BUCKET, "Key": src_key})
+            return
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            print(f"    copy {dst_key} attempt {attempt}/{_R2_PUBLISH_ATTEMPTS} failed: {str(exc)[:200]}")
+            if attempt < _R2_PUBLISH_ATTEMPTS:
+                time.sleep(_R2_RETRY_BACKOFF_S * attempt)
+    raise RuntimeError(f"copy failed after {_R2_PUBLISH_ATTEMPTS} attempts: {src_key} → {dst_key}: {last}")
+
+
+def _delete_keys(s3, keys: list[str]) -> int:
+    """Batched delete of explicit R2 keys (≤1000 per request). Returns objects deleted."""
+    n = 0
+    for i in range(0, len(keys), 1000):
+        batch = [{"Key": k} for k in keys[i:i + 1000]]
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": batch, "Quiet": True})
+        n += len(batch)
+    return n
+
+
+def _delete_prefix(s3, prefix: str) -> int:
+    """Delete every object under an R2 prefix (batched). Returns objects deleted."""
+    keys: list[str] = []
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            keys.append(o["Key"])
+            if len(keys) == 1000:
+                n += _delete_keys(s3, keys)
+                keys = []
+    if keys:
+        n += _delete_keys(s3, keys)
+    return n
+
+
+def _publish_incremental(s3, live_prefix: str, local_dir: str) -> int:
+    """Append-only publish for a local dataset STAGED FROM R2 (reindex / single-year update).
+    Uploads only files absent-from or size-changed-vs R2 — in dependency order, manifest LAST
+    — and NEVER deletes. Lance files are immutable per version, so a size match means
+    identical content (skip); the only new files are the freshly written index dirs, deletion
+    vectors, transactions, and the new manifest. This is the ARCHITECTURE.md giant rule —
+    'upload only the new files … never wipe or re-upload data files' — and avoids re-pushing
+    the multi-GB data tree every cycle. Superseded index/manifest objects remain as harmless
+    orphans (pruned out-of-band), exactly as the federal-spine staged index campaign does.
+    Returns files uploaded."""
+    local_sizes = _local_file_sizes(local_dir)
+    if not local_sizes:
+        raise RuntimeError(f"refusing to publish empty dataset to {live_prefix}")
+    r2_before = _list_prefix_sizes(s3, live_prefix)
+    uploaded = 0
+    for rel in _ordered_rels(local_sizes):
+        if r2_before.get(rel) == local_sizes[rel]:
+            continue  # already in R2, byte-identical
+        _upload_file_retry(s3, os.path.join(local_dir, rel.replace("/", os.sep)), live_prefix + rel)
+        uploaded += 1
+    print(f"  published {uploaded} new/changed files (append-only) → s3://{BUCKET}/{live_prefix} "
+          f"({len(local_sizes) - uploaded} reused)")
     return uploaded
+
+
+def _publish_full_swap(s3, live_prefix: str, local_dir: str) -> int:
+    """Non-destructive full replace for a FROM-SCRATCH rebuild (refresh_all). The local
+    dataset is a brand-new Lance lineage (fresh fragment UUIDs, version chain restarted at 1),
+    so it cannot be diffed against the live copy — it must wholesale replace it. Instead of
+    wiping-then-uploading (which left the corpse on any mid-upload error), it stages then
+    swaps:
+
+      1. Resumable upload local → ``__staging`` sibling: skip files already staged
+         byte-identically (a re-run after a transient failure resumes rather than restarts),
+         retry each with backoff, manifest LAST.
+      2. Prune stale ``__staging`` debris from a prior aborted lineage.
+      3. VERIFY: staging object set + per-file sizes == local, exactly. Live is STILL
+         UNTOUCHED — a failure here aborts with the live copy fully intact.
+      4. SWAP: delete the old live objects, then server-side copy staging → live in
+         dependency order (manifest LAST, so live never exposes a manifest before its data),
+         then verify live == local.
+      5. Best-effort delete of staging (correctness does not depend on it).
+
+    Worst case on failure is a briefly-unreadable (never corrupt) live prefix a re-run makes
+    consistent — the inverse of the retired primitive's permanent corpse. Returns files
+    published."""
+    local_sizes = _local_file_sizes(local_dir)
+    if not local_sizes:
+        raise RuntimeError(f"refusing to publish empty dataset to {live_prefix}")
+    staging = _staging_prefix(live_prefix)
+    ordered = _ordered_rels(local_sizes)
+
+    # 1. Resumable staged upload (live untouched throughout this step).
+    staged_before = _list_prefix_sizes(s3, staging)
+    up = reused = 0
+    for rel in ordered:
+        if staged_before.get(rel) == local_sizes[rel]:
+            reused += 1
+            continue
+        _upload_file_retry(s3, os.path.join(local_dir, rel.replace("/", os.sep)), staging + rel)
+        up += 1
+    # 2. Prune stale staging debris (older lineage / partial prior run) so verify is exact.
+    stale = [staging + rel for rel in staged_before if rel not in local_sizes]
+    if stale:
+        _delete_keys(s3, stale)
+
+    # 3. Verify staging == local BEFORE touching live. Abort intact on any mismatch.
+    staged_after = _list_prefix_sizes(s3, staging)
+    if staged_after != local_sizes:
+        missing = {r: local_sizes[r] for r in local_sizes if staged_after.get(r) != local_sizes[r]}
+        extra = {r: staged_after[r] for r in staged_after if r not in local_sizes}
+        raise RuntimeError(
+            f"staging verify failed for {staging}: LIVE LEFT INTACT. "
+            f"{len(missing)} missing/size-mismatch, {len(extra)} extra. "
+            f"sample_missing={dict(list(missing.items())[:5])}")
+    print(f"  staged {up} uploaded + {reused} reused → {staging}; "
+          f"{len(local_sizes)} files verified == local")
+
+    # 4. Swap: delete old live, copy staging → live (ordered, manifest LAST), verify live.
+    deleted = _delete_prefix(s3, live_prefix)
+    print(f"  swap: deleted {deleted} old object(s) under {live_prefix}; copying {len(ordered)} from staging")
+    for rel in ordered:
+        if local_sizes[rel] > _R2_SINGLE_COPY_MAX:
+            # Fragment exceeds R2's single-request copy ceiling — re-upload from local instead.
+            _upload_file_retry(s3, os.path.join(local_dir, rel.replace("/", os.sep)), live_prefix + rel)
+        else:
+            _copy_key_retry(s3, staging + rel, live_prefix + rel)
+    live_after = _list_prefix_sizes(s3, live_prefix)
+    if live_after != local_sizes:
+        bad = {r: (local_sizes[r], live_after.get(r)) for r in local_sizes
+               if live_after.get(r) != local_sizes[r]}
+        raise RuntimeError(
+            f"live verify failed after swap for {live_prefix}: re-run to reconcile. "
+            f"{len(bad)} mismatched; sample={dict(list(bad.items())[:5])}")
+
+    # 5. Best-effort staging cleanup.
+    try:
+        _delete_prefix(s3, staging)
+    except Exception as exc:  # noqa: BLE001 — staging debris is harmless
+        print(f"  WARN: staging cleanup failed (harmless): {str(exc)[:160]}")
+    print(f"  published {len(local_sizes)} files (staged-swap) → s3://{BUCKET}/{live_prefix}")
+    return len(local_sizes)
+
+
+# ── Read-back verify gate (O1/O2) ────────────────────────────────────────────────────────
+# The check whose ABSENCE let run #58 record a 'successful' publish over a corpse: after the
+# swap commits, OPEN THE DATASET FRESH FROM R2 and assert it is whole (rows + full index plan
+# + a BTREE point-probe) before "success" is recorded. The size-census inside _publish_full_swap
+# proves the bytes match local; this proves the committed manifest actually opens and resolves.
+EXPECTED_INDEX_COUNT = {"general": 10, "research": 10, "ownership": 8}
+# Defensive: the explicit gate must track the registry (BTREE + BITMAP per family). A future
+# index-plan edit that forgets to update this constant trips here at import, not silently in prod.
+assert all(
+    EXPECTED_INDEX_COUNT[f] == len(c["btree"]) + len(c["bitmap"]) for f, c in FAMILIES.items()
+), "EXPECTED_INDEX_COUNT out of sync with the FAMILIES index plan"
+
+
+def _verify_published(uri: str, expected_rows: int, expected_indices: int | None,
+                      npi_col: str, storage_options: dict) -> dict:
+    """Open the just-published dataset FRESH from R2 and assert wholeness. Raises on any
+    disagreement (the caller records verify=error and leaves the published bytes for
+    inspection — they are valid, this is an alarm, not corruption). R2 is strongly
+    read-after-write consistent, so a successful open reflects the manifest the swap just
+    committed. expected_indices=None skips the index assertion (an index-less ingest path)."""
+    import lance
+
+    ds = lance.dataset(uri, storage_options=storage_options)
+    rows = ds.count_rows()
+    if rows != expected_rows:
+        raise RuntimeError(f"verify {uri}: R2 rows={rows:,} != expected {expected_rows:,}")
+    healthy = [i for i in _list_committed_indices(ds) if "error" not in i]
+    nidx = len(healthy)
+    if expected_indices is not None and nidx != expected_indices:
+        raise RuntimeError(
+            f"verify {uri}: R2 indices={nidx} != expected {expected_indices} "
+            f"(committed: {[i.get('name') for i in healthy]})")
+    probe = ds.scanner(filter=f"{npi_col} IS NOT NULL", columns=[npi_col],
+                       limit=1, prefilter=True).to_table().num_rows
+    if probe < 1:
+        raise RuntimeError(f"verify {uri}: BTREE probe on {npi_col} returned 0 rows")
+    return {"rows": rows, "indices": nidx}
 
 
 def _download_r2_prefix(s3, prefix: str, local_dir: str) -> int:
@@ -843,7 +1126,9 @@ def discover_units(only_family: str | None = None, only_year: int | None = None)
     timeout=60 * 90,
     memory=32768,
     cpu=8.0,
-    ephemeral_disk=524288,  # Modal floor (512 GiB) — far exceeds one ~8 GB year + DuckDB spill
+    ephemeral_disk=524288,  # 512 GiB of fast /tmp backing for the staged family + one CSV (only
+                            # one year on disk at a time). /tmp (overlay) accepts Lance's commit
+                            # rename; a Modal Volume does not (see the staging note).
 )
 def ingest_family_year(
     family: str, year: int, url: str | None = None,
@@ -922,9 +1207,17 @@ def ingest_family_year(
         if build_index:
             print(f"[{family}] building indexes locally")
             built = _build_indexes_local(local_ds, family)
-        published = _replace_r2_prefix(s3, prefix, local_ds)
+        # Local dataset was staged FROM R2 → append-only publish (only new files, never wipe).
+        published = _publish_incremental(s3, prefix, local_ds)
+        # Read-back gate (O1): open fresh from R2 and assert wholeness before success. Assert
+        # the full index plan only when this run (re)built it; otherwise verify rows only.
+        total_rows = lance.dataset(local_ds).count_rows()
+        _verify_published(cfg["uri"], total_rows,
+                          EXPECTED_INDEX_COUNT[family] if build_index else None,
+                          cfg["npi_col"], _r2_storage_options())
         status = "success"
-        print(f"[{family} {year}] published {published} files → {cfg['uri']} ({rows:,} rows this year)")
+        print(f"[{family} {year}] published {published} files, verified {total_rows:,} rows on R2 "
+              f"→ {cfg['uri']} ({rows:,} rows this year)")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         status = "error"
@@ -951,24 +1244,34 @@ def ingest_family_year(
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=60 * 60 * 10,  # full historical backfill across all families/years, sequential
-    memory=32768,
+    memory=49152,          # 48 GiB — proven for general's in-RAM 82M-row BTREE sort (run #41).
     cpu=8.0,
-    ephemeral_disk=524288,  # Modal floor (512 GiB); only one year resides on disk at a time
-    retries=0,             # a 10 h job must not silently restart from scratch; re-run is idempotent
+    ephemeral_disk=524288,  # Backs /tmp with 512 GiB of fast storage — required for general's
+                            # ~23 GiB peak + quick writes. /tmp (overlay) accepts Lance's commit
+                            # rename and held the full 82.29M-row restore; a Modal Volume's FUSE
+                            # does NOT (rejects the rename, EPERM "os error 1" — run #76 — so giants
+                            # can't stage on a Volume). The 512 GiB floor forces spot capacity, so a
+                            # mid-run preemption is possible (#64) — covered by retries.
+    retries=3,             # absorb a spot preemption: re-run from scratch on a fresh container.
+                           # Safe because the publish is idempotent (full_swap) + read-back verified.
 )
 def refresh_all(
     only_family: str | None = None, only_year: int | None = None,
     skip_index: bool = False, trigger_callback_url: str | None = None,
 ) -> dict:
-    """THE dispatched orchestrator (Trigger → Universal Dispatcher → here). One container,
-    one ephemeral disk. For each family, SEQUENTIALLY (download → transform → append-LOCAL →
-    rm CSV) accumulate every year into a local Lance dataset (never two years' CSVs on disk
-    at once), then build scalar indexes ONCE and publish the whole family to R2 via boto3
-    (uniform-part multipart — the R2-compliant write the direct Lance→R2 path cannot do).
-    Per-unit failures are recorded and skipped (one bad year must not sink the family); the
-    family still indexes + publishes whatever landed. Posts ONE flat-JSON summary callback."""
+    """THE dispatched orchestrator (Trigger → Universal Dispatcher → here). One container.
+    For each family, SEQUENTIALLY (download → transform → append-LOCAL on /tmp → rm CSV)
+    accumulate every year into a local Lance dataset (never two years' CSVs on disk at once),
+    then build scalar indexes ONCE, publish the whole family to R2 via boto3 (uniform-part
+    multipart — the R2-compliant write the direct Lance→R2 path cannot do), and READ-BACK
+    VERIFY it before success. Per-unit failures are recorded and skipped (one bad year must not
+    sink the family); the family still indexes + publishes whatever landed. The giant (general)
+    runs on stable non-preemptible capacity (no ephemeral_disk override), so it completes in one
+    pass. Posts ONE flat-JSON summary callback."""
     import datetime as dt
     import shutil
+
+    import lance
 
     started_at = dt.datetime.now(dt.timezone.utc)
     units = _resolve_units(only_family, only_year)
@@ -985,7 +1288,7 @@ def refresh_all(
 
     for family, fam_units in by_family.items():
         local_ds = _local_ds(family)
-        shutil.rmtree(local_ds, ignore_errors=True)
+        shutil.rmtree(local_ds, ignore_errors=True)  # always a clean from-scratch rebuild
         landed: list[int] = []
         for unit in fam_units:
             try:
@@ -998,6 +1301,7 @@ def refresh_all(
         built: list[str] = []
         published = 0
         publish_status = "skipped"
+        fam_rows = 0
         if landed:
             if not skip_index:
                 try:
@@ -1005,10 +1309,14 @@ def refresh_all(
                     built = _build_indexes_local(local_ds, family)
                 except Exception as exc:  # noqa: BLE001
                     built = [f"ERROR: {exc}"]
+            # Authoritative family row count from the committed local dataset (drives the gate).
+            fam_rows = lance.dataset(local_ds).count_rows()
             pub_started = dt.datetime.now(dt.timezone.utc)
-            fam_rows = sum(r["rows_processed"] for r in per_unit if r["family"] == family)
             try:
-                published = _replace_r2_prefix(s3, _family_prefix(family), local_ds)
+                # From-scratch rebuild → stage to __staging, verify == local, then swap over the
+                # live prefix. Live is never wiped before the new copy is verified; for general's
+                # restore the swap also reclaims the orphaned partial-publish corpse cleanly.
+                published = _publish_full_swap(s3, _family_prefix(family), local_ds)
                 publish_status = "success"
                 print(f"[{family}] published {published} files → {FAMILIES[family]['uri']}")
             except Exception as exc:  # noqa: BLE001
@@ -1019,11 +1327,34 @@ def refresh_all(
                         fam_rows, 0, publish_status,
                         None if publish_status == "success" else "boto3 publish failed",
                         pub_started, dt.datetime.now(dt.timezone.utc))
-        shutil.rmtree(local_ds, ignore_errors=True)  # free disk before the next family
+
+            # Read-back verify gate (O1/O2): only NOW is the family truly done. Records a
+            # distinct 'verify' ledger row; a failure downgrades the family (bytes stay for
+            # inspection — this is the alarm whose absence let run #58 'succeed' over a corpse).
+            if publish_status == "success":
+                ver_started = dt.datetime.now(dt.timezone.utc)
+                try:
+                    vinfo = _verify_published(
+                        FAMILIES[family]["uri"], fam_rows,
+                        None if skip_index else EXPECTED_INDEX_COUNT[family],
+                        FAMILIES[family]["npi_col"], _r2_storage_options())
+                    print(f"[{family}] verify OK: rows={vinfo['rows']:,} indices={vinfo['indices']}")
+                    _record_run("verify", family, FAMILIES[family]["uri"], None, None, None,
+                                vinfo["rows"], 0, "success", None, ver_started,
+                                dt.datetime.now(dt.timezone.utc))
+                except Exception as exc:  # noqa: BLE001
+                    publish_status = "verify_failed"
+                    failures.append({"family": family, "year": "verify", "error": str(exc)})
+                    print(f"[{family}] VERIFY FAILED: {exc}")
+                    _record_run("verify", family, FAMILIES[family]["uri"], None, None, None,
+                                fam_rows, 0, "error", str(exc)[:2000], ver_started,
+                                dt.datetime.now(dt.timezone.utc))
+
+        shutil.rmtree(local_ds, ignore_errors=True)  # free /tmp before the next family
 
         by_family_summary[family] = {
-            "rows": sum(r["rows_processed"] for r in per_unit if r["family"] == family),
-            "years": sorted(r["year"] for r in per_unit if r["family"] == family),
+            "rows": fam_rows,
+            "years": sorted(landed),
             "indices": built,
             "files_published": published,
             "publish": publish_status,
@@ -1040,7 +1371,7 @@ def refresh_all(
         "phase": "refresh_all",
         "units_total": len(units),
         "units_succeeded": len(ok),
-        "units_failed": len([f for f in failures if f["year"] != "publish"]),
+        "units_failed": len([f for f in failures if f["year"] not in ("publish", "verify")]),
         "rows_processed": sum(r["rows_processed"] for r in ok),
         "by_family": by_family_summary,
         "failures": failures,
@@ -1060,9 +1391,11 @@ def refresh_all(
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials")],
     timeout=60 * 60 * 3,
-    memory=49152,  # BTREE sort over the full ~40-50M-row General dataset (bypass-spilling)
+    memory=49152,  # BTREE sort over the full General dataset (bypass-spilling)
     cpu=8.0,
-    ephemeral_disk=524288,  # stage the full family dataset locally before reindexing
+    ephemeral_disk=524288,  # 512 GiB of fast /tmp backing to stage the full family dataset.
+                            # /tmp (overlay) accepts Lance's commit rename; a Modal Volume does
+                            # not (EPERM at commit — see the staging note).
 )
 def reindex_family(family: str) -> dict:
     """(Re)build the scalar indexes without re-ingesting: stage the committed R2 dataset to
@@ -1085,13 +1418,53 @@ def reindex_family(family: str) -> dict:
     print(f"Staged {staged} files from {cfg['uri']} → {local_ds}")
     try:
         built = _build_indexes_local(local_ds, family)
-        published = _replace_r2_prefix(s3, prefix, local_ds)
+        # Local dataset was staged FROM R2 → append-only publish (only new index/manifest
+        # files; the multi-GB data tree is reused in place, never re-pushed).
+        published = _publish_incremental(s3, prefix, local_ds)
         ds = lance.dataset(local_ds)
-        out = {"family": family, "dataset_uri": cfg["uri"], "rows": ds.count_rows(),
-               "built": built, "files_published": published,
+        local_rows = ds.count_rows()
+        # Read-back gate (O1/O2): the reindex always (re)builds the full plan → assert it.
+        verified = _verify_published(cfg["uri"], local_rows, EXPECTED_INDEX_COUNT[family],
+                                     cfg["npi_col"], _r2_storage_options())
+        out = {"family": family, "dataset_uri": cfg["uri"], "rows": local_rows,
+               "built": built, "files_published": published, "verified": verified,
                "committed_indices": _list_committed_indices(ds)}
     finally:
         shutil.rmtree(local_ds, ignore_errors=True)
+    return out
+
+
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 15, memory=8192)
+def verify_family(family: str) -> dict:
+    """Read-only health probe of a published family on R2 (no staging, no mutation): open the
+    committed dataset straight from its R2 manifest and return row count + committed scalar
+    indices (count, names, fields). The operational check after a restore/publish — confirms
+    the manifest opens (a partial-publish corpse raises 'Not found: …/_versions'), the row
+    count matches the catalog ingest, and the full BTREE+BITMAP plan committed."""
+    import lance
+
+    family = family.strip().lower()
+    if family not in FAMILIES:
+        raise ValueError(f"family must be one of {sorted(FAMILIES)}, got {family!r}")
+    cfg = FAMILIES[family]
+    so = _r2_storage_options()
+    ds = lance.dataset(cfg["uri"], storage_options=so)
+    indices = _list_committed_indices(ds)
+    healthy_idx = [i for i in indices if "error" not in i]
+    expected = len(cfg["btree"]) + len(cfg["bitmap"])
+    rows = ds.count_rows()
+    out = {
+        "family": family,
+        "dataset_uri": cfg["uri"],
+        "rows": rows,
+        "version": getattr(ds, "version", None),
+        "num_indices": len(healthy_idx),
+        "expected_indices": expected,
+        "indices_ok": len(healthy_idx) == expected,
+        "committed_indices": indices,
+    }
+    print(f"[{family}] rows={rows:,} indices={len(healthy_idx)}/{expected} "
+          f"v{out['version']} → {cfg['uri']}")
     return out
 
 
@@ -1143,7 +1516,9 @@ def ingest_one(family: str, year: int, url: str = "", no_index: bool = False) ->
 
 @app.local_entrypoint()
 def backfill(only_family: str = "", only_year: int = 0, skip_index: bool = False) -> None:
-    """Full historical backfill (or a filtered slice). Sequential, one container."""
+    """Full historical backfill (or a filtered slice). Sequential, one container. The giant
+    (general) runs on stable non-preemptible capacity, so it completes in one pass; a genuine
+    failure is recorded per-year and the re-run is idempotent (per-year delete+append)."""
     import json
 
     print(json.dumps(
@@ -1159,6 +1534,15 @@ def reindex(family: str = "") -> None:
 
     for fam in ([family] if family else list(FAMILIES)):
         print(json.dumps(reindex_family.remote(fam), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def verify(family: str = "") -> None:
+    """Read-only health probe: row count + committed indices for a family (default: all)."""
+    import json
+
+    for fam in ([family] if family else list(FAMILIES)):
+        print(json.dumps(verify_family.remote(fam), indent=2, default=str))
 
 
 @app.local_entrypoint()

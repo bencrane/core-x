@@ -45,7 +45,13 @@ pdl_company_id (src ``id``) is a perfect unique key (35,446,771 distinct /
 locality/region/country all stay VARCHAR. No VARIANT.
 
 Refresh: MANUAL R2 drops only (standalone snapshot). Lance overwrite rebuilds the
-dataset wholesale; immutable-version MVCC retains prior snapshots for time travel.
+dataset wholesale. NOTE: the publish path (_replace_r2_prefix) wipes the R2 prefix
+and re-uploads the fresh local build, so only the LATEST snapshot is physically
+retained on R2 — there is NO cross-snapshot time travel (a prior version=N would
+reference wiped data files), and cleanup_old_versions is unnecessary (nothing
+accretes). This is acceptable because the feed is a single manual snapshot. If
+multi-snapshot history is ever required, switch to a non-wiping append/merge_insert
+publish + cleanup_old_versions(retain_versions=...).
 
     modal deploy pipelines/pdl_companies/free_company_dataset.py
     modal run    pipelines/pdl_companies/free_company_dataset.py::initdb       # create ops.* table
@@ -415,6 +421,7 @@ def ingest_pdl_companies(key: str = LANDING_KEY,
     try:
         s3 = _s3_client()
         os.makedirs(SCRATCH_DIR, exist_ok=True)
+        os.makedirs(os.path.join(SCRATCH_DIR, "duckdb_spill"), exist_ok=True)
         shutil.rmtree(LOCAL_DATASET, ignore_errors=True)
         # I/O ONLY — gzip bytes straight to scratch, NO transcode, NO extract.
         print(f"Downloading s3://{BUCKET}/{key} → {LOCAL_GZ}")
@@ -426,6 +433,12 @@ def ingest_pdl_companies(key: str = LANDING_KEY,
         try:
             con.execute("PRAGMA threads=8;")
             con.execute("SET enable_progress_bar=false;")
+            # Out-of-core guard (mirrors pdl_normalized_companies.py): bound DuckDB
+            # below the 32 GiB container floor and route any spill — notably the
+            # count(DISTINCT) over 35.4M PK strings — to local NVMe, NOT the overlay
+            # root FS. 24 GiB is the verified-safe envelope at this row scale.
+            con.execute(f"SET temp_directory='{SCRATCH_DIR}/duckdb_spill';")
+            con.execute("SET memory_limit='24GB';")
             try:
                 # PRIMARY — full materialization (~7 GiB Arrow; fits 32 GiB).
                 table = con.sql(sql).to_arrow_table()
@@ -457,6 +470,8 @@ def ingest_pdl_companies(key: str = LANDING_KEY,
                 con = duckdb.connect(":memory:")
                 con.execute("PRAGMA threads=8;")
                 con.execute("SET enable_progress_bar=false;")
+                con.execute(f"SET temp_directory='{SCRATCH_DIR}/duckdb_spill';")
+                con.execute("SET memory_limit='24GB';")
                 reader = con.sql(sql).to_arrow_reader(STREAM_BATCH_ROWS)
                 lance.write_dataset(
                     reader,
@@ -495,6 +510,20 @@ def ingest_pdl_companies(key: str = LANDING_KEY,
 
     if status != "success":
         raise RuntimeError(f"pdl_companies ingest failed for {key}: {error}")
+
+    # Fan out the derived-sidecar rebuild so a new base snapshot cannot leave
+    # pdl_normalized_companies silently stale (the staleness-trigger contract —
+    # docs/plans/PDL_NORMALIZED_COMPANIES_SIDECAR_PLAN.md §9). Best-effort: the base ingest
+    # has already succeeded and published; a fan-out miss must not fail it (the consumer
+    # contract's source_version fail-closed assert is the backstop).
+    try:
+        modal.Function.from_name(
+            "pdl-normalized-companies", "ingest_normalized_companies"
+        ).spawn(trigger_callback_url=None)
+        print("Fanned out pdl_normalized_companies rebuild.")
+    except Exception as exc:  # noqa: BLE001 — fan-out is additive; never fail the base ingest
+        print(f"WARN: could not fan out pdl_normalized_companies rebuild: {exc}")
+
     return {"feed": FEED, "source_file": source_file, "rows_processed": int(rows),
             "distinct_ids": distinct_ids, "write_path": write_path,
             "dataset_uri": DATASET_URI, "snapshot_date": snapshot_date,

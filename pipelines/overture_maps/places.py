@@ -56,6 +56,8 @@ import os
 
 import modal
 
+from pipelines.overture_maps import _transform as T
+
 # ── System-of-record (R2) ──────────────────────────────────────────────────
 BUCKET = "data-sink"
 DATASET_PREFIX = "active/overture_places/"
@@ -81,21 +83,13 @@ DATA_STORAGE_VERSION = "2.1"
 # rows if the full materialization hits a catchable allocation error.
 STREAM_BATCH_ROWS = 1048576
 
-# ── Scalar index plan (operator-authorized; §8-B of the approved plan) ──────
-# BTREE for high-cardinality load-bearing resolution / range keys; BITMAP for
-# the low-cardinality categorical. The geometry is flattened to lon/lat floats,
-# so the per-axis BTREEs serve bounding-box range predicates without a WKB column.
-OVERTURE_BTREE_INDEXES = [
-    "id",         # GERS id — unique resolution key
-    "longitude",  # flattened ST_X — bbox range predicates
-    "latitude",   # flattened ST_Y — bbox range predicates
-    "name",       # business-name exact-match resolution joins
-    "postcode",   # postal-blocking joins (US ZIP / ZIP+4, raw)
-    "locality",   # locality-blocking joins (city / town)
-]
-OVERTURE_BITMAP_INDEXES = [
-    "region",     # US ISO-3166-2 subdivision (~57 distinct) — low cardinality
-]
+# ── Scalar index plan (v2; single source of truth in _transform) ────────────
+# BTREE id/name/postcode/locality + the integer `hilbert` sort key; BITMAP
+# region + category. The per-axis lon/lat BTREEs were dropped (2-D bbox via two
+# 1-D BTREEs measured 38.9s; bbox is served by an exact lon/lat predicate +
+# zone-map pruning). See docs/overture_places_optimization_directive.md.
+OVERTURE_BTREE_INDEXES = T.OPTIMIZED_BTREE_INDEXES
+OVERTURE_BITMAP_INDEXES = T.OPTIMIZED_BITMAP_INDEXES
 
 # Terminal-state ledger. CREATE SCHEMA + CREATE TABLE run as SEPARATE statements
 # (psycopg sends one command per execute()). Mirrors the ops.* contract
@@ -142,9 +136,12 @@ image = (
         # BTREE training sorts the column; bypass Lance's bounded spill-to-disk
         # ExternalSorter, whose memory accounting under-sizes the pool and
         # exhausts on multi-million-row columns. With 32 GiB the unique ``id``
-        # string + lon/lat doubles sort fully in-memory. See lance-format/lance#2650.
+        # string + the hilbert sort fully in-memory. See lance-format/lance#2650.
         {"LANCE_BYPASS_SPILLING": "true"}
     )
+    # Mount the local package so `from pipelines.overture_maps import _transform`
+    # resolves in the container (shared v2 transform; mirrors optimize.py).
+    .add_local_python_source("pipelines")
 )
 
 app = modal.App("overture-maps-pipelines", image=image)
@@ -232,13 +229,29 @@ def _detect_geometry_decode(con, read_glob: str) -> str:
     return "geometry" if "GEOMETRY" in col_type else "ST_GeomFromWKB(geometry)"
 
 
+def _v2_schema_metadata(release_tag: str, snapshot_date: str, ingested_at_iso: str) -> dict:
+    """Provenance demoted from per-row columns to Lance schema metadata (v2).
+    A future re-ingest re-stamps these once at the dataset level, not on every row."""
+    return {
+        "country": "US",
+        "release_tag": release_tag,
+        "snapshot_date": snapshot_date,
+        "ingested_at": ingested_at_iso,
+        "schema_version": T.SCHEMA_VERSION,
+        "sort_order": "region,hilbert",
+        "hilbert_bounds": T.HILBERT_BOUNDS_TAG,
+    }
+
+
 def _build_sql(geom_expr: str) -> str:
-    """100% of the transform. Anonymous read_parquet over the resolved release →
-    decode geometry ONCE (geo CTE) + US filter pushed to the scan → flatten
-    ST_X/ST_Y to lon/lat floats + unpack addresses[1]/names/categories →
-    snake_case projection. The WKB ``geometry`` is NEVER projected past the geo
-    CTE — only the float coordinates land. ``geom_expr`` is repo-controlled
-    (probe output, not user input); the read path and dates are bound positionally."""
+    """100% of the transform → Overture Places v2 schema. Anonymous read_parquet
+    over the resolved release → decode geometry ONCE (geo CTE) + US filter pushed
+    to the scan → flatten ST_X/ST_Y + unpack addresses[1]/names/categories (flat
+    CTE) → shared v2 projection (adds the ``hilbert`` sort key, normalizes region,
+    casts confidence→float32, sorts by region,hilbert). The 4 constant provenance
+    columns are demoted to Lance schema metadata by the caller, NOT projected. The
+    WKB ``geometry`` never leaves the geo CTE. ``geom_expr`` is repo-controlled
+    (probe output, not user input); only the read path is bound positionally (one ?)."""
     return f"""
 WITH raw AS (
     SELECT * FROM read_parquet(?)
@@ -253,22 +266,21 @@ geo AS (
         confidence
     FROM raw
     WHERE addresses[1].country = 'US'   -- ISO 3166-1 alpha-2; predicate pushed to scan
+),
+flat AS (
+    SELECT
+        nullif(trim(id), '')                     AS id,
+        ST_X(geom)                               AS longitude,   -- flattened float
+        ST_Y(geom)                               AS latitude,    -- flattened float
+        nullif(trim(addresses[1].region), '')    AS region,       -- raw; normalized in projection
+        nullif(trim(addresses[1].locality), '')  AS locality,     -- city / town (blocking key)
+        nullif(trim(addresses[1].postcode), '')  AS postcode,     -- US ZIP / ZIP+4 (blocking key)
+        nullif(trim(names.primary), '')          AS name,         -- entity-resolution key
+        nullif(trim(categories.primary), '')     AS category,     -- POI category slug
+        TRY_CAST(confidence AS DOUBLE)           AS confidence     -- Overture 0..1 quality score
+    FROM geo
 )
-SELECT
-    nullif(trim(id), '')                     AS id,
-    ST_X(geom)                               AS longitude,   -- flattened float
-    ST_Y(geom)                               AS latitude,    -- flattened float
-    nullif(trim(addresses[1].region), '')    AS region,       -- US ISO-3166-2 subdivision
-    nullif(trim(addresses[1].locality), '')  AS locality,     -- city / town (blocking key)
-    nullif(trim(addresses[1].postcode), '')  AS postcode,     -- US ZIP / ZIP+4 (blocking key)
-    nullif(trim(addresses[1].country), '')   AS country,      -- constant 'US' (provenance)
-    nullif(trim(names.primary), '')          AS name,         -- entity-resolution key
-    nullif(trim(categories.primary), '')     AS category,     -- POI category slug
-    TRY_CAST(confidence AS DOUBLE)           AS confidence,    -- Overture 0..1 quality score
-    CAST(? AS DATE)                          AS snapshot_date,
-    CAST(? AS VARCHAR)                       AS release_tag,
-    now()                                    AS ingested_at
-FROM geo
+{T.projection_sql("flat")}
 """
 
 
@@ -486,7 +498,7 @@ def ingest_overture_places(release: str | None = None,
             geom_expr = _detect_geometry_decode(con, read_glob)
             print(f"  geometry decode: ST_X/ST_Y({geom_expr})")
             sql = _build_sql(geom_expr)
-            params = [read_glob, snapshot_date, release_tag]
+            params = [read_glob]  # only the read path is bound; dates → schema metadata
 
             try:
                 # PRIMARY — full materialization in the 32 GiB container.
@@ -498,6 +510,11 @@ def ingest_overture_places(release: str | None = None,
                 distinct_ids = con.execute("SELECT count(DISTINCT id) FROM proj").fetchone()[0]
                 con.unregister("proj")
                 print(f"  materialized {rows:,} US rows; distinct id = {distinct_ids:,}")
+                # Demote provenance constants to schema metadata (v2).
+                table = table.replace_schema_metadata({
+                    k.encode(): v.encode() for k, v in
+                    _v2_schema_metadata(release_tag, snapshot_date, started_at.isoformat()).items()
+                })
                 # LOCAL write (no storage_options) — avoids R2 multipart rule.
                 lance.write_dataset(
                     table,
@@ -529,6 +546,11 @@ def ingest_overture_places(release: str | None = None,
                     data_storage_version=DATA_STORAGE_VERSION,
                     max_rows_per_file=MAX_ROWS_PER_FILE,
                     max_bytes_per_file=MAX_BYTES_PER_FILE,
+                )
+                # schema= kwarg metadata is dropped for a reader source; set it
+                # on the committed dataset (mirrors optimize.py).
+                lance.dataset(LOCAL_DATASET).update_schema_metadata(
+                    _v2_schema_metadata(release_tag, snapshot_date, started_at.isoformat())
                 )
         finally:
             con.close()
