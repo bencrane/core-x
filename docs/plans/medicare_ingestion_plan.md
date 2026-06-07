@@ -12,12 +12,14 @@ layered *on top of* the landed data if and when prioritized. It is **not** a pre
 coupled to it. **No fuzzy name/geo crosswalk is built in this plan.** The 13-year depth exists so those
 practice-acquisition questions can be asked on top of cleanly-landed, key-united data — that is the entire mandate.
 **Provenance:** every mechanic below is lifted from an existing in-repo pattern (cited inline). The drift/topology
-facts were re-verified against `/tmp/medicare_recon.json` after an Opus-4.8 adversarial review of the diagnostic;
-§1 records the corrections that review forced.
+facts were re-verified against the committed recon evidence
+([`docs/reference/medicare_archive_recon_evidence.md`](../reference/medicare_archive_recon_evidence.md) — the full
+per-member schema/grain/drift ground truth, distilled by `scripts/recon_medicare_evidence.py`) after an Opus-4.8
+adversarial review of the diagnostic; §1 records the corrections that review forced.
 
 ---
 
-## §1 — Corrections to the diagnostic (verified against the recon JSON)
+## §1 — Corrections to the diagnostic (verified against the committed recon evidence)
 
 | # | Original claim | Corrected fact (JSON-verified) | Ingest consequence |
 |---|---|---|---|
