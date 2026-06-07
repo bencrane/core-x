@@ -1,12 +1,12 @@
 # Form 5500 (2025) — Post-Ingest Structural Diagnostic & Cross-Graph Overlap Probe
 
-**Result:** ✅ PASS — 7 datasets · 276,143 rows · 11 BTREE / 0 BITMAP indexes · 0 tombstones · 17.6s
+**Result:** ✅ PASS — 11 datasets · 304,139 rows · 19 BTREE / 0 BITMAP indexes · 0 tombstones · 8.1s
 
 **Mode:** read-only / zero-mutation. No dataset, index, or fragment written, compacted, or deleted; the sole write is this report.
 **Form 5500 plane:** `/Users/benjamincrane/core-x-lake/active` (local LanceDB lake)  
 **NPPES plane:** `s3://data-sink/active/nppes/snapshot=2026-05` (R2 SoR)  
 **CMS Open Payments plane:** `s3://data-sink/active/cms_general_payments` (R2 SoR)  
-**Run (UTC):** 2026-06-07T01:41:07+00:00
+**Run (UTC):** 2026-06-07T18:15:16+00:00
 
 ## 1. Index & Type Matrix
 
@@ -18,9 +18,13 @@
 | `form5500_sch_i` | F_SCH_I | 10,059 | 80 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
 | `form5500_sch_c_provider` | F_SCH_C_PART1_ITEM2 | 3,774 | 25 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
 | `form5500_sch_c_provider_code` | F_SCH_C_PART1_ITEM2_CODES | 8,117 | 7 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
-| `form5500_sch_a_broker` | F_SCH_A_PART1 | 34,358 | 22 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
+| `form5500_sch_a_broker` | F_SCH_A_PART1 | 34,358 | 22 | 1 | 1 | `string` ✅ | `ACK_ID`, `FORM_ID` | — |
+| `form5500_sch_a_carrier` | F_SCH_A | 23,648 | 93 | 1 | 1 | `string` ✅ | `ACK_ID`, `FORM_ID`, `SCH_A_EIN`, `SCH_A_PLAN_NUM` | — |
+| `form5500_sch_c_indirect` | F_SCH_C_PART1_ITEM3 | 2,656 | 22 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
+| `form5500_sch_c_eligible` | F_SCH_C_PART1_ITEM1 | 1,611 | 18 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
+| `form5500_sch_c_terminated` | F_SCH_C_PART3 | 81 | 22 | 1 | 1 | `string` ✅ | `ACK_ID` | — |
 
-**Index plan vs. landed:** all 7 datasets carry `BTREE(ACK_ID)`; the two head tables (`main`, `sf`) additionally carry per-column BTREEs on the business identity — `11` BTREE total, matching the ingest's committed plan. **BITMAP indexes built: 0** (none — every indexed Form 5500 column is high-cardinality identifier/temporal; no low-NDV categorical was indexed at ingest).
+**Index plan vs. landed:** all 11 datasets carry `BTREE(ACK_ID)`; 4 additionally carry per-column BTREEs on business-identity / composite-join keys (`main`, `sf`, `sch_a_broker`, `sch_a_carrier`) — `19` BTREE total, matching the ingest's committed plan. **BITMAP indexes built: 0** (none — every indexed Form 5500 column is high-cardinality identifier/temporal; no low-NDV categorical was indexed at ingest).
 
 ## 1b. Type-Safety Proof — keys bound to TEXT, leading zeros intact
 
@@ -40,6 +44,15 @@ Directive keys (`ACK_ID`, `SPONS_DFE_EIN`, `SPONS_DFE_PN`, `PROVIDER_OTHER_EIN`)
 | `form5500_sch_c_provider` | `PROVIDER_OTHER_EIN` | `string` ✅ | 333 ✅ | `042647786`, `010233346`, `042647786` |
 | `form5500_sch_c_provider_code` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
 | `form5500_sch_a_broker` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_a_carrier` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_a_carrier` | `SCH_A_EIN` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_a_carrier` | `INS_CARRIER_EIN` | `string` ✅ | 2,823 ✅ | `061227840`, `061227840`, `061227840` |
+| `form5500_sch_c_indirect` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_c_indirect` | `PROVIDER_PAYOR_EIN` | `string` ✅ | 128 ✅ | `043523567`, `043523567`, `043158862` |
+| `form5500_sch_c_eligible` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_c_eligible` | `PROVIDER_ELIGIBLE_EIN` | `string` ✅ | 167 ✅ | `042647786`, `042647786`, `042647786` |
+| `form5500_sch_c_terminated` | `ACK_ID` | `string` ✅ | — (n/a) | — (not an EIN key) |
+| `form5500_sch_c_terminated` | `PROVIDER_TERM_EIN` | `string` ✅ | — (n/a) | — (not an EIN key) |
 
 ## 1c. Storage Health
 
@@ -51,7 +64,11 @@ Directive keys (`ACK_ID`, `SPONS_DFE_EIN`, `SPONS_DFE_PN`, `PROVIDER_OTHER_EIN`)
 | `form5500_sch_i` | 10,059 | 1 | 1 | 1.00× | 0 | 0 | 0 | 3.8 MiB | 163.8 KiB |
 | `form5500_sch_c_provider` | 3,774 | 1 | 1 | 1.00× | 0 | 0 | 1 | 483.9 KiB | 61.1 KiB |
 | `form5500_sch_c_provider_code` | 8,117 | 1 | 1 | 1.00× | 0 | 0 | 1 | 146.4 KiB | 69.8 KiB |
-| `form5500_sch_a_broker` | 34,358 | 1 | 1 | 1.00× | 0 | 0 | 0 | 2.9 MiB | 340.7 KiB |
+| `form5500_sch_a_broker` | 34,358 | 1 | 1 | 1.00× | 0 | 0 | 0 | 2.9 MiB | 407.2 KiB |
+| `form5500_sch_a_carrier` | 23,648 | 1 | 1 | 1.00× | 0 | 0 | 0 | 6.9 MiB | 608.9 KiB |
+| `form5500_sch_c_indirect` | 2,656 | 1 | 1 | 1.00× | 0 | 0 | 1 | 247.7 KiB | 21.0 KiB |
+| `form5500_sch_c_eligible` | 1,611 | 1 | 1 | 1.00× | 0 | 0 | 1 | 114.0 KiB | 28.5 KiB |
+| `form5500_sch_c_terminated` | 81 | 1 | 1 | 1.00× | 0 | 0 | 1 | 29.8 KiB | 5.2 KiB |
 
 - **Read amplification 1.00× across the board** — one fragment, one data file per dataset (every table is below the 1,048,576-row file cap), so a scan opens the theoretical minimum number of files.
 - **Tombstones: 0; deleted rows: 0** — the ingest used `mode=overwrite` (clean publish), so there is no soft-delete debt and no compaction is owed.
@@ -107,7 +124,7 @@ Inner/anti-join of `form5500_sch_c_provider.ACK_ID` against the primary head `fo
 
 | Form 5500 counterparty | F5500 EIN | NPPES organization (legal name) | Sch C rows |
 |---|---|---|--:|
-| UNITED HEALTHCARE SERVICES, INC. | `411289245` | UNITED HEALTHCARE SERVICES, INC. | 16 |
+| UNITED HEALTHCARE SERVICES, INC. | `411289245` | UNITED HEALTHCARE SERVICES, INC | 16 |
 | AETNA LIFE INSURANCE COMPANY | `066033492` | AETNA LIFE INSURANCE COMPANY | 5 |
 | HEALTHGRAM INC | `561449504` | HEALTHGRAM, INC. | 5 |
 | ANTHEM INSURANCE COMPANIES INC | `350781558` | ANTHEM INSURANCE COMPANIES, INC. | 4 |
