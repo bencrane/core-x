@@ -12,6 +12,14 @@ never invoked.** The full **89.78 GB logical corpus** was mapped while transferr
 hundred MB of prefix bytes. Single-pass head sampling — row-level claims (summary rows, NPI validity) describe
 the **first 50 rows** of each file and are stated as such; the recommended ingest-time guards do not rely on them.
 
+> **Post-review correction (Opus-4.8 architectural review, verified against the recon JSON).** Several §3/§4 claims
+> below were corrected: **DME C1/C2 have additive drift** (72→97, 68→93 at 2017) — not "stable"; **A1 56-col is a
+> name-subset of 81-col but NOT a positional prefix** (cols inserted at index 55, displacing `Bene_Avg_Risk_Scre`);
+> **R1 Provider Enrollment is a five-table relational archive**, not one flat file; **QPP drift is severe**
+> (92→165→204→212); money totals need **`DECIMAL(18,2)`**; **`program_year` indexes as `BITMAP`**. The review also
+> **disproved the NPPES→EIN→Form 5500 bridge** (NPPES redacts EIN to a constant `<UNAVAIL>` sentinel). The forward
+> ingest specification is [`docs/plans/medicare_ingestion_plan.md`](plans/medicare_ingestion_plan.md).
+
 ---
 
 ## §1 — Inventory Summary
@@ -196,8 +204,11 @@ so this reconstructs CMS-published totals only approximately). The directive's *
 | **B2 — by Provider and Drug** | 2013–2024 | **22** | **STABLE** — identical every year |
 | **B1 — by Provider** | 2013–2020 | **84** | **STABLE** — identical every year |
 | **A3 — by Geography and Service** | 2013–2024 | **15** | **STABLE** |
-| **C1/C2/C3/C4 — DME** | 2014–2023 | 97/93/32/18 | **STABLE** within each sub-grain |
-| **R2 — QPP** | 2017–2024 | 212 | not drift-diffed (single mirror; expect MIPS-measure churn — verify at ingest) |
+| **C1 — DME by Referring Provider** | 2014–2023 | **72 → 97** | **ADDITIVE** at 2017 (+25 `Bene_CC_*`, same block as A1) |
+| **C2 — DME by Supplier** | 2014–2023 | **68 → 93** | **ADDITIVE** at 2017 (+25 `Bene_CC_*`) |
+| **C3 — DME by Supplier and Service** | 2014–2023 | **32** | **STABLE** |
+| **C4 — DME by Geography and Service** | 2017–2023 | **18** | **STABLE** |
+| **R2 — QPP** | 2017–2024 | **92 → 165 → 204 → 212** | **SEVERE additive drift** (92 for 2017–2021; 165 in 2022; 204 in 2023; 212 in 2024) — superset-reconcile by name |
 
 **No legacy-rename drift exists in this archive.** This is the decisive correction to the directive's premise:
 CMS **re-published the entire historical series (back to 2013) under the unified current data dictionary**
@@ -207,7 +218,10 @@ CMS **re-published the entire historical series (back to 2013) under the unified
 
 ### 3.3 A1 (mirror target) — the additive delta at 2017
 
-2013–2016 (56 cols) is a **strict prefix** of 2017–2024 (81 cols). The 25 added columns are inserted between
+2013–2016 (56 cols) is a **column-name subset** of 2017–2024 (81 cols) — but **NOT a positional prefix**
+(`h81[:56] != h56`): the first positional divergence is at **index 55**, where the 25 columns are *inserted*,
+displacing `Bene_Avg_Risk_Scre` to the tail. **Reconciliation must be name-keyed, never positional** — a positional
+union would misfile `Bene_Avg_Risk_Scre` under a chronic-condition column. The 25 added columns are inserted between
 `Bene_Ndual_Cnt` and `Bene_Avg_Risk_Scre`:
 
 - **11 behavioral-health prevalence** `Bene_CC_BH_*_Pct`: ADHD_OthCD, Alcohol_Drug, Tobacco, Alz_NonAlzdem,
@@ -240,7 +254,11 @@ offset (the `_member_to_gz` pattern) — never extract a full zip to disk.
 | `cms_dme_supplier` / `…_supplier_service` | C2 / C3 | NPI × year / × HCPCS | 2014–2023 |
 | `cms_*_geography` (3) | A3/B3/C4 | geo × code × year | — |
 | `cms_qpp_experience` | R2 | NPI × year | 2017–2024 |
-| `cms_provider_enrollment` *(crosswalk)* | R1 | NPI snapshot | — |
+| `cms_provider_enrollment` *(head)* | R1·Enrollment | `ENRLMT_ID` (1/NPI) | — |
+| `cms_provider_enrollment_reassignment` | R1·Reassignment | reassign↔receive `ENRLMT_ID` pair (affiliation graph) | — |
+| `cms_provider_enrollment_practice` | R1·Practice_Location | `ENRLMT_ID` × location | — |
+| `cms_provider_enrollment_specialty` | R1·Secondary_Specialty | `ENRLMT_ID` × specialty | — |
+| `cms_provider_enrollment_npi` | R1·Additional_NPIs | `ENRLMT_ID` × NPI | — |
 | `ref_rbcs_taxonomy` *(crosswalk)* | R3 | HCPCS | — |
 
 ### 4.2 Per-row transforms (the reconciled mirror — `cms_physician_provider`)
@@ -256,7 +274,10 @@ offset (the `_member_to_gz` pattern) — never extract a full zip to disk.
    Lance append requires a stable schema — enforce column order + type from the superset, not per-file.
 5. **Typed casts** (rest stay trimmed VARCHAR):
    - Money — `Tot_Sbmtd_Chrg`, `Tot_Mdcr_Alowd_Amt`, `Tot_Mdcr_Pymt_Amt`, `Tot_Mdcr_Stdzd_Amt`, and the
-     `Drug_*`/`Med_*` parallels → **`DECIMAL(14,2)`** (strip `$`/`,` if present).
+     `Drug_*`/`Med_*` parallels, DME `Suplr_*_Amt`, Part D `Tot_Drug_Cst` → **`DECIMAL(18,2)`** (strip `$`/`,`).
+     **Not `DECIMAL(14,2)`** — a large org/lab/dialysis NPI's annual *submitted* charges (gross, pre-adjudication)
+     can approach/exceed 10¹²; a `TRY_CAST` overflow silently NULLs exactly the largest, most commercially
+     interesting providers. (A2's per-service **averages** are bounded → `DECIMAL(14,2)` is fine there.)
    - Counts — `Tot_Benes`, `Tot_Srvcs`, `Tot_HCPCS_Cds`, all `Bene_*_Cnt` → **`BIGINT`**.
    - Rates/scores — `Bene_CC_*_Pct`, `Bene_Avg_Risk_Scre`, `Bene_Avg_Age` → **`DOUBLE`**.
    - No native date columns in A1 (temporal grain is `program_year`).
@@ -284,11 +305,15 @@ offset (the `_member_to_gz` pattern) — never extract a full zip to disk.
 
 | Dataset | `BTREE` (high-cardinality / resolution) | `BITMAP` (low-cardinality / filter) |
 |---|---|---|
-| `cms_physician_provider` | `npi`, `program_year` | `Rndrng_Prvdr_Type`, `Rndrng_Prvdr_State_Abrvtn`, `Rndrng_Prvdr_Ent_Cd` |
-| `cms_physician_provider_service` | `npi`, `HCPCS_Cd`, `program_year` | `Place_Of_Srvc`, `Rndrng_Prvdr_State_Abrvtn` |
-| `cms_partd_provider_drug` | `npi`, `program_year` | `Prscrbr_Type`, `Prscrbr_State_Abrvtn` |
+| `cms_physician_provider` | `npi` | `program_year`, `Rndrng_Prvdr_Type`, `Rndrng_Prvdr_State_Abrvtn`, `Rndrng_Prvdr_Ent_Cd` |
+| `cms_physician_provider_service` | `npi`, `HCPCS_Cd` | `program_year`, `Place_Of_Srvc`, `Rndrng_Prvdr_State_Abrvtn` |
+| `cms_partd_provider_drug` | `npi` | `program_year`, `Prscrbr_Type`, `Prscrbr_State_Abrvtn` |
 
-`npi` is the load-bearing resolution key on every NPI dataset → hard `BTREE`. Configure DuckDB
+`npi` (and `HCPCS_Cd`/`enrlmt_id` where present) is the load-bearing resolution key → hard `BTREE`;
+**`program_year` is low-cardinality (≤13 distinct) → `BITMAP`, not BTREE** (year-filter pushdown is served strictly
+better by a bitmap at that NDV). Build indexes only after the per-(dataset, year) candidate-key proof
+(`GROUP BY npi … HAVING count(*)>1` = 0) passes — an unexpected duplicate key changes the index semantics.
+Configure DuckDB
 `temp_directory` to local NVMe and a bounded `memory_limit` for the sort; run index builds in a process isolated
 from the append path.
 
