@@ -67,6 +67,11 @@ import os
 import modal
 
 # Gen-2 source lake (Polaris warehouse bucket) and Gen-3 target sink — same R2 account.
+# SPENT MIGRATION: the CO UCC companion streams were materialized to Gen-3
+# (ucc_co_{debtors,secured_parties,collateral}) and the Gen-2 source bucket
+# `dex-raw-landing-zone` was PURGED 2026-06-07. The source no longer exists; this
+# default is retained only for historical reference. Re-running `run` requires an
+# explicit UCC_CO_SOURCE_BUCKET pointing at a live source.
 SOURCE_BUCKET = os.environ.get("UCC_CO_SOURCE_BUCKET", "dex-raw-landing-zone")
 TARGET_BUCKET = "data-sink"
 SOURCE_STREAM_PREFIX = "ucc/state=CO/stream={stream}/"  # snapshot=<date>/data.parquet under here

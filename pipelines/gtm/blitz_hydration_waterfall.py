@@ -79,8 +79,10 @@ COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/")
 FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", f"{_ACTIVE}/firmographics_blitz/")
 
 # R2 transport landing (raw Blitz payloads). Bucket + prefix overridable.
-LANDING_BUCKET = os.environ.get("BLITZ_HYDRATION_LANDING_BUCKET", "dex-raw-landing-zone")
-LANDING_PREFIX = os.environ.get("BLITZ_HYDRATION_LANDING_PREFIX", "blitz_contacts").strip("/")
+# Gen-2 `dex-raw-landing-zone` was purged 2026-06-07; transport now lands in the Gen-3
+# data-sink landing tier (s3://data-sink/landing/blitz_contacts/).
+LANDING_BUCKET = os.environ.get("BLITZ_HYDRATION_LANDING_BUCKET", "data-sink")
+LANDING_PREFIX = os.environ.get("BLITZ_HYDRATION_LANDING_PREFIX", "landing/blitz_contacts").strip("/")
 
 # Waterfall live caps (docs "Waterfall Logic": max_results ≤25, cascade ≤8 tiers).
 MAX_RESULTS_CAP = 25

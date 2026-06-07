@@ -1,6 +1,15 @@
 # dex R2 (`dex-raw-landing-zone`) — Full Catalog & Gen-3 Coverage Gap
 
-**Captured:** 2026-06-07 (live `rclone` listing).  
+> **🟥 DECOMMISSIONED — bucket PURGED 2026-06-07.** `dex-raw-landing-zone` was deleted
+> in full (52,870 objects / 1.682 TiB freed) by operator directive after DEX /
+> polaris-server MCP / `data-engine-x` were confirmed retired. This document is now a
+> **historical record** of what the bucket held. The full object manifest is archived at
+> `s3://data-sink/archive/dex-raw-landing-zone-manifest-20260607.txt.gz`. `dex-db`
+> (Gen-2 Postgres) was explicitly OUT of scope and remains intact. **Action item that
+> survives:** the §1 GAP list — sources never materialized to Gen-3, to re-acquire from
+> upstream if needed.
+
+**Captured:** 2026-06-07 (live `rclone` listing, pre-purge).  
 **dex R2 total:** 52,869 objects / 1.7 TiB  
   - raw parquet landings: 29,204 objs / 392.5 GiB across 90 prefixes  
   - DEX Lance warehouse (`polaris-warehouse/`): 23,665 objs / 1.3 TiB across 46 namespaces  
