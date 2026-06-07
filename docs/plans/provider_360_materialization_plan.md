@@ -1,6 +1,14 @@
 # provider_360 — Materialization Plan (implementation-ready)
 
-**Status:** ready to build. All input datasets are landed and verified in the Lance SoR.
+**Status:** ready to build — **v2, adversarial review applied + live-validated.** All input datasets are landed and verified in the Lance SoR.
+
+> **v2 remediations (all verified against live data — see §13 for the full audit):**
+> - **QPP fan-out fixed** (§4.6): collapse is a mandatory `GROUP BY npi` pre-agg CTE; `participation_type` is dead post-2022 → use `coalesce(participation_option, reporting_option)`.
+> - **A2/C3 money math fixed** (§4.4): line totals computed in DOUBLE, final per-NPI scalar cast to `DECIMAL(18,2)` (the `avg×srvcs` product overflows `DECIMAL` and NULLs the biggest providers); `*_lines_suppressed` counters added.
+> - **Practice "primary" inversion fixed** (§4.7): "largest fan-in" assigned solo docs to the hospital they're cross-credentialed at — carry BOTH poles + `is_independent_candidate`.
+> - **ADDED Medicare panel economics** (§4.2): risk score / dual-share / chronic-disease % — the #1 practice-economics signals, previously omitted.
+> - **CUT** redundant `cms_ownership` re-aggregation (the Open Payments rollup already carries it).
+> - **+5 gates** (§7) and the **`practice_group_360`** companion — 1 row per buyable practice unit (§12).
 **Owner of context:** this doc is self-contained. A fresh agent should be able to read it top-to-bottom and start building without prior session context.
 **Companion specs:** [`docs/entity-360-master-plan.md`](../entity-360-master-plan.md), [`docs/nppes_analytical_implementation_plan.md`](../nppes_analytical_implementation_plan.md).
 **Closest code precedent:** [`pipelines/cms_open_payments/materialize_resolution.py`](../../pipelines/cms_open_payments/materialize_resolution.py) (the 1-row-per-NPI rollup this generalizes) and [`pipelines/nppes/materialize_analytical.py`](../../pipelines/nppes/materialize_analytical.py) (the per-snapshot serving-layer pattern + gates).
@@ -225,3 +233,34 @@ Record every gate result (jsonb) in `ops.provider_360_runs`.
 4. Ship (PR → merge → pull). Add a Trigger.dev cadence later (rebuild when NPPES + CMS sources refresh).
 
 **Done = `active/provider_360/snapshot=YYYY-MM/` exists, 9,551,447 rows, all gates green, `SELECT * FROM provider_360 WHERE npi=?` returns the full picture in one indexed lookup.**
+
+---
+
+## 12. `practice_group_360` — the buyable-unit companion (strategic capstone)
+
+provider_360 is 1-row-per-NPI, but **the unit a PE firm acquires is the practice group**, not the individual. Build a companion **`practice_group_360`** (1 row per `rcv_bnft_enrlmt_id`) that rolls the members' provider_360 economics up to the group — the table a PE associate actually queries:
+
+```sql
+SELECT * FROM practice_group_360
+WHERE state='TX' AND member_count BETWEEN 3 AND 15
+  AND top_specialty LIKE '%Nephrology%' AND avg_panel_risk_score > 1.2
+  AND dual_share < 0.30 ORDER BY total_medicare_paid_usd DESC;     -- ranked acquisition targets
+```
+
+**Grain:** 1 row per group ENRLMT_ID (`rcv_bnft_enrlmt_id` from reassignment). **Keys only** (ENRLMT_ID, npi) — no fuzzy resolution. Build AFTER provider_360 (it joins the member NPIs to their provider_360 rows).
+
+**Columns:** `group_enrlmt_id` (PK) · `org_name` (from enrollment, 99.2% populated) · `group_state` · `member_count` (fan-in, the size signal) · `member_npis` `LIST<string>` · `total_medicare_paid_usd` (sum members' `med_a1_lifetime_mdcr_pymt` — DECIMAL(38,2)) · `total_rx_cost_usd` · `avg_panel_risk_score` (avg members' `med_a1_panel_avg_risk_score`) · `avg_dual_share` · `top_specialty` / `specialty_mix` (mode/agg of members' `primary_taxonomy_code`) · `avg_mips_score` · `independent_member_count` (members with `is_independent_candidate`) · `total_op_payments_usd` · `n_states` (geographic spread). Index: BTREE `group_enrlmt_id`, BITMAP `group_state`, BTREE `org_name`, `member_count`.
+
+**Acceptance:** 1 row per distinct `rcv_bnft_enrlmt_id` in the reassignment graph; `member_count == reassignment fan-in`; `total_medicare_paid_usd` reconciles to the sum of member provider_360 rows.
+
+---
+
+## 13. v2 validation audit (what the adversarial review verified against live data)
+- QPP `participation_type` 100% NULL in 2023–24 (1,028,915 rows); `participation_option`/`reporting_option` live → B1 fix.
+- QPP 86,952 `(npi, program_year)` pairs with >1 row (≤15) → mandatory pre-agg, else G1 fails → B2 fix.
+- `avg_mdcr_pymt_amt × tot_srvcs` types to `DECIMAL(37,2)`; `sum` overflowed to NULL for the top NPI until cast to DOUBLE → B3 fix.
+- A1 reconstruction `avg×tot_srvcs` matches published top-line within 0.02–0.08% (NPI 1538144910: $214,613,718 vs $214,653,948); `avg×tot_bene_day_srvcs` off 4–5% → confirms the multiplier.
+- Practice graph: 836,559 NPIs (44%) reassign to >1 group; 66,880 have largest≥100 / smallest≤5 → "largest fan-in" inverts the independent signal → B4 fix.
+- Attach rates (exact, for G3): a1 1,923,751 (20.1%) · b1 1,655,349 (17.3%) · svc 1,694,622 (17.7%) · op 1,603,039 (16.8%) · mips 1,277,404 (13.4%) · ffs-enrollment 2,556,645 (26.8%).
+- Panel economics populated: `bene_avg_risk_scre` 845,753 NPIs/2023 (0.33–13.66); `bene_cc_ph_diabetes_v2_pct` 1.05M NPIs.
+- `cms_provider_payment_rollup` already carries ownership totals (6,271 NPIs) → ownership re-agg cut.
