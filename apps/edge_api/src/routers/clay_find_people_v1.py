@@ -163,6 +163,14 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
 
     row = _to_row(rec)
     if row is None:
+        # A 422 is a SILENT drop from Clay's side (4xx is not retried). Log why — without
+        # PII — so a bulk load is reconcilable: count these against /stats to see drops.
+        logger.warning(
+            "clay find-people land rejected: missing/empty raw_payload.url "
+            "(had_domain=%s had_name=%s had_company_record_id=%s)",
+            bool(_s(rec.get("domain"))), bool(_s(rec.get("name"))),
+            bool(_s(rec.get("company_record_id"))),
+        )
         raise HTTPException(status_code=422, detail="missing/empty raw_payload.url")
 
     async with get_db_connection() as conn:
