@@ -42,6 +42,15 @@ if a scoped token can read objects but not list the bucket):
 | `awards` (alias →      | `s3://data-sink/active/contractor_award_summary/`| `recipient_uei`                   |
 | `contractor_award_summary`) |                                             |                                   |
 
+**Entity-360 serving layer** (commit `e2b479c`, snapshot-partitioned, discovered — not seeded):
+
+| Relation                              | Rows / grain            | BTREE                                                          | BITMAP                                                                                                   |
+|---------------------------------------|-------------------------|---------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `provider_360/snapshot=YYYY-MM`       | 9.55M · 1/NPI           | `npi`, `practice_zip5`, `last_name`, `smallest_practice_group_enrlmt_id` | `entity_type_code`, `is_active`, `practice_state`, `primary_taxonomy_code`, `med_a1_provider_type`, `med_a1_latest_year`, `mips_final_score_year`, `is_independent_candidate` |
+| `practice_group_360/snapshot=YYYY-MM` | 253.7K · 1/buyable-group | `group_enrlmt_id`, `org_name`                                 | `group_state`                                                                                            |
+
+Surfaced by the **Provider 360** targeting tools below. Snapshot auto-resolves to the newest partition (override with `PROVIDER_360_SNAPSHOT` / `PRACTICE_GROUP_360_SNAPSHOT`).
+
 ## Tools
 
 **Audience** ([`src/tools/audience.py`](src/tools/audience.py))
@@ -81,6 +90,24 @@ Postgres-qualified table never triggers a needless R2 manifest open.
 
 The `hqx` attach is read/write, but the agent-facing raw-SQL path is **read-only-gated**:
 `execute_audience_query` accepts a single read statement only — `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`ATTACH`/`COPY`/extension-load/transaction-control and `;`-chained statements are rejected (keywords inside string literals and comments don't trip the guard, and aren't a bypass either). All hq-x writes flow through `save_campaign_audience` — a parameterized upsert inside an explicit transaction boundary; `source_query`/`parameters` are stored as data, never executed.
+
+**Provider 360 — entity-360 targeting** ([`src/tools/provider360.py`](src/tools/provider360.py)) — semantic GTM targeting over the `provider_360` / `practice_group_360` serving layer. Each query is driven from the selective side so the scalar indices fire as pushdown; non-indexed measures (money, growth, MIPS, group size) are thresholded on the already-pruned cohort. Every tool returns `elapsed_ms`, `index_path`, `cohort_size`, and `result_count`.
+
+_provider_360 grain (1/NPI):_
+- `get_provider_360_profile(npi)` — BTREE(`npi`) point lookup; the full entity-360 row (identity → 12-yr Medicare → panel risk → MIPS → Tier-1 rollups → dual-pole practice graph)
+- `get_independent_platforms(specialty, state, min_size, max_size, rank_by, limit)` — solo / micro-practice physicians by specialty(+state), ranked by Medicare/Rx economics (the independent-platform sweet spot)
+- `find_heavy_prescribers(specialty, state, single_practitioner, rank_by, limit)` — Part-D volume/cost leaders
+- `find_growth_and_quality_triggers(specialty, state, min_growth_pct, min_mips, min_medicare_floor, limit)` — growth-trajectory × MIPS outbound triggers
+- `find_clean_independent_practices(specialty, state, min_medicare_2024, max_manufacturer_payments, limit)` — high-Medicare, low-manufacturer-money ("non-compromised") surgical/specialty practices
+- `find_dme_footprint(specialty, state, limit)` — DME supplier-economics leaders
+- `get_dual_pole_leakage(state, specialty, max_secondary_group_size, limit)` — solo-PC physicians with a minor secondary group attachment
+
+_practice_group_360 grain (1/buyable-group):_
+- `find_acquisition_target_groups(specialty, state, min_size, max_size, min_panel_risk, rank_by, limit)` — buyable groups by size band / specialty / acuity / rolled-up economics
+- `get_practice_group_roster(org_name | group_enrlmt_id)` — BTREE point lookup; full NPI roster + combined footprint
+- `extract_practice_eins_for_matching(specialty, state, min_size, max_size)` — distinct billing-org matching anchors + `org_name` coverage gate
+
+> **Schema note.** These tools speak the *real* serving-layer schema, not directive shorthand: specialty = `primary_taxonomy_code` (NUCC; friendly names map in `SPECIALTY_TAXONOMY`) — there is no `provider_type_desc`; "fan_in" = the dual-pole `smallest_/largest_practice_group_size`; "2024 service $" = `med_a1_latest_mdcr_pymt @ med_a1_latest_year=2024` (`svc_money_complete` is a build gate, not a metric). **No EIN/TIN exists in the substrate** — `extract_practice_eins_for_matching` returns `group_enrlmt_id` (PECOS) as the matching anchor. Materialized growth is 2019→latest (no discrete 2023→2024); DME is the supplier side (no "referring provider-years").
 
 **DMaaS** ([`src/tools/dmaas.py`](src/tools/dmaas.py)) — Direct-Mail action wrappers, Lob-backed (**stubs**: validate + echo, return `not_implemented`)
 - `create_direct_mail_campaign`, `send_postcard`, `send_letter`, `get_fulfillment_status`
