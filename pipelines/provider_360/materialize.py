@@ -243,11 +243,11 @@ def _verify_published(uri, expected_rows, expected_indices, probe_col, so):
     return {"rows": rows, "indices": nidx}
 
 
-def _new_con():
+def _new_con(mem: str = DUCKDB_MEM):
     import duckdb
     con = duckdb.connect(":memory:")
     con.execute("SET threads TO 8")
-    con.execute(f"SET memory_limit='{DUCKDB_MEM}'")
+    con.execute(f"SET memory_limit='{mem}'")
     os.makedirs(SPILL, exist_ok=True)
     con.execute(f"SET temp_directory='{SPILL}'")
     con.execute("SET preserve_insertion_order=false")
@@ -303,7 +303,10 @@ def _service_sql():  # A2 — money in DOUBLE, final scalar DECIMAL(18,2); RBCS 
         count(DISTINCT program_year) AS svc_active_years,
         min(program_year) AS svc_first_year, max(program_year) AS svc_last_year,
         CAST(sum(CASE WHEN hcpcs_drug_ind='Y' THEN CAST(avg_mdcr_pymt_amt AS DOUBLE)*tot_srvcs END) AS DECIMAL(18,2)) AS svc_partb_drug_paid_usd,
-        coalesce(bool_or(hcpcs_drug_ind='Y'), false) AS has_partb_administered_drugs
+        coalesce(bool_or(hcpcs_drug_ind='Y'), false) AS has_partb_administered_drugs,
+        100.0 * (sum(CAST(avg_mdcr_pymt_amt AS DOUBLE)*tot_srvcs) FILTER (WHERE program_year=2024)
+          - sum(CAST(avg_mdcr_pymt_amt AS DOUBLE)*tot_srvcs) FILTER (WHERE program_year=2023))
+          / nullif(sum(CAST(avg_mdcr_pymt_amt AS DOUBLE)*tot_srvcs) FILTER (WHERE program_year=2023), 0) AS svc_paid_yoy_pct
       FROM a2 GROUP BY npi),
     catline AS (
       SELECT a.npi, r.rbcs_cat AS cat, sum(CAST(a.avg_mdcr_pymt_amt AS DOUBLE)*a.tot_srvcs) AS paid
@@ -323,7 +326,10 @@ def _drug_sql():  # B2 — totals already (DECIMAL); top generics by cost
         CAST(sum(CAST(tot_drug_cst AS DOUBLE)) AS DECIMAL(18,2)) AS rx_total_drug_cost_usd,
         sum(tot_clms) AS rx_total_claims, sum(tot_30day_fills) AS rx_total_30day_fills, sum(tot_day_suply) AS rx_total_day_supply,
         count(DISTINCT gnrc_name) AS rx_distinct_generics, count(DISTINCT brnd_name) AS rx_distinct_brands,
-        count(DISTINCT program_year) AS rx_active_years, min(program_year) AS rx_first_year, max(program_year) AS rx_last_year
+        count(DISTINCT program_year) AS rx_active_years, min(program_year) AS rx_first_year, max(program_year) AS rx_last_year,
+        100.0 * (sum(CAST(tot_drug_cst AS DOUBLE)) FILTER (WHERE program_year=2024)
+          - sum(CAST(tot_drug_cst AS DOUBLE)) FILTER (WHERE program_year=2023))
+          / nullif(sum(CAST(tot_drug_cst AS DOUBLE)) FILTER (WHERE program_year=2023), 0) AS rx_cost_yoy_pct
       FROM b2 GROUP BY npi),
     g AS (SELECT npi, gnrc_name, sum(CAST(tot_drug_cst AS DOUBLE)) AS cost FROM b2 WHERE gnrc_name IS NOT NULL GROUP BY 1,2),
     top AS (
@@ -343,6 +349,9 @@ def _dme_sql():  # C3
       sum(tot_suplr_clms) AS dme_supplied_claims,
       count(DISTINCT hcpcs_cd) AS dme_distinct_hcpcs,
       CAST(avg(CASE WHEN suplr_rentl_ind='Y' THEN 1.0 ELSE 0.0 END) AS DOUBLE) AS dme_rental_share,
+      100.0 * (sum(CAST(avg_suplr_mdcr_pymt_amt AS DOUBLE)*tot_suplr_srvcs) FILTER (WHERE program_year=2023)
+        - sum(CAST(avg_suplr_mdcr_pymt_amt AS DOUBLE)*tot_suplr_srvcs) FILTER (WHERE program_year=2022))
+        / nullif(sum(CAST(avg_suplr_mdcr_pymt_amt AS DOUBLE)*tot_suplr_srvcs) FILTER (WHERE program_year=2022), 0) AS dme_paid_yoy_pct,
       true AS is_dme_supplier
     FROM c3 GROUP BY npi
     """
@@ -372,7 +381,14 @@ a1 AS (
     arg_max(bene_cc_ph_hf_nonihd_v2_pct, program_year) AS med_a1_dx_chf_pct,
     arg_max(bene_cc_ph_ckd_v2_pct, program_year) AS med_a1_dx_ckd_pct,
     100.0 * (arg_max(CAST(tot_mdcr_pymt_amt AS DOUBLE), program_year) - max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2019))
-      / nullif(max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2019), 0) AS med_a1_pymt_growth_2019_latest_pct
+      / nullif(max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2019), 0) AS med_a1_pymt_growth_2019_latest_pct,
+    100.0 * (max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2024) - max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2023))
+      / nullif(max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2023), 0) AS med_a1_pymt_yoy_pct,
+    100.0 * (power(CAST(max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2024) AS DOUBLE)
+      / nullif(max(tot_mdcr_pymt_amt) FILTER (WHERE program_year=2021), 0), 1.0/3) - 1) AS med_a1_pymt_cagr_3yr_pct,
+    100.0 * (max(tot_benes) FILTER (WHERE program_year=2024) - max(tot_benes) FILTER (WHERE program_year=2023))
+      / nullif(max(tot_benes) FILTER (WHERE program_year=2023), 0) AS med_a1_benes_yoy_pct,
+    (max(program_year) = 2024) AS med_a1_active_latest
   FROM a1 GROUP BY npi)
 """
 
@@ -476,6 +492,8 @@ def _provider_360_sql():
       a1.med_a1_drug_sprsn_latest, a1.med_a1_med_sprsn_latest,
       a1.med_a1_panel_avg_risk_score, a1.med_a1_panel_avg_age, a1.med_a1_dual_share,
       a1.med_a1_dx_diabetes_pct, a1.med_a1_dx_chf_pct, a1.med_a1_dx_ckd_pct, a1.med_a1_pymt_growth_2019_latest_pct,
+      a1.med_a1_pymt_yoy_pct, a1.med_a1_pymt_cagr_3yr_pct, a1.med_a1_benes_yoy_pct,
+      coalesce(a1.med_a1_active_latest, false) AS med_a1_active_latest,
       -- Part D prescriber totals (B1, ≤2020)
       coalesce(b1.has_b1, false) AS has_b1, b1.med_b1_latest_year, b1.med_b1_latest_drug_cost, b1.med_b1_latest_clms,
       b1.med_b1_latest_benes, b1.med_b1_latest_30day_fills, b1.med_b1_latest_day_suply,
@@ -486,11 +504,12 @@ def _provider_360_sql():
       (svc.npi IS NOT NULL) AS has_svc, svc.svc_total_medicare_paid_usd, svc.svc_lines_suppressed, svc.svc_total_services,
       svc.svc_total_bene_lines, svc.svc_distinct_hcpcs, svc.svc_active_years, svc.svc_first_year, svc.svc_last_year,
       svc.svc_partb_drug_paid_usd, svc.has_partb_administered_drugs, svc.svc_top_rbcs_cat, svc.svc_top_rbcs_cat_paid_usd,
+      svc.svc_paid_yoy_pct,
       (rx.npi IS NOT NULL) AS has_rx, rx.rx_total_drug_cost_usd, rx.rx_total_claims, rx.rx_total_30day_fills,
       rx.rx_total_day_supply, rx.rx_distinct_generics, rx.rx_distinct_brands, rx.rx_active_years, rx.rx_first_year,
-      rx.rx_last_year, rx.rx_top1_generic, rx.rx_top1_generic_cost_usd, rx.rx_top3_generics,
+      rx.rx_last_year, rx.rx_top1_generic, rx.rx_top1_generic_cost_usd, rx.rx_top3_generics, rx.rx_cost_yoy_pct,
       coalesce(dme.is_dme_supplier, false) AS is_dme_supplier, dme.dme_supplied_total_paid_usd, dme.dme_supplied_claims,
-      dme.dme_distinct_hcpcs, dme.dme_rental_share, dme.dme_lines_suppressed,
+      dme.dme_distinct_hcpcs, dme.dme_rental_share, dme.dme_lines_suppressed, dme.dme_paid_yoy_pct,
       (op.npi IS NOT NULL) AS has_op, op.total_payments_usd AS op_total_payments_usd,
       op.general_total_usd AS op_general_total_usd, op.research_total_usd AS op_research_total_usd,
       op.distinct_manufacturers AS op_distinct_manufacturers, op.has_ownership_interest AS op_has_ownership_interest,
@@ -536,7 +555,8 @@ def _group_360_sql():
       SELECT m.group_enrlmt_id, m.npi,
         p.med_a1_lifetime_mdcr_pymt, p.rx_total_drug_cost_usd, p.med_a1_panel_avg_risk_score,
         p.med_a1_dual_share, p.primary_taxonomy_code, p.mips_final_score, p.op_total_payments_usd,
-        p.is_independent_candidate, p.practice_state
+        p.is_independent_candidate, p.practice_state,
+        p.med_a1_pymt_yoy_pct, p.med_a1_pymt_cagr_3yr_pct, p.med_a1_active_latest
       FROM members m JOIN p360 p ON p.npi = m.npi)
     SELECT
       j.group_enrlmt_id,
@@ -552,7 +572,10 @@ def _group_360_sql():
       avg(j.mips_final_score) AS avg_mips_score,
       sum(CASE WHEN j.is_independent_candidate THEN 1 ELSE 0 END) AS independent_member_count,
       CAST(sum(j.op_total_payments_usd) AS DECIMAL(38,2)) AS total_op_payments_usd,
-      count(DISTINCT j.practice_state) AS n_states
+      count(DISTINCT j.practice_state) AS n_states,
+      avg(j.med_a1_pymt_yoy_pct) AS avg_pymt_yoy_pct,
+      avg(j.med_a1_pymt_cagr_3yr_pct) AS avg_pymt_cagr_3yr_pct,
+      sum(CASE WHEN j.med_a1_active_latest THEN 1 ELSE 0 END) AS active_member_count
     FROM joined j
     LEFT JOIN (SELECT enrlmt_id, any_value(org_name) org_name, any_value(state_cd) state_cd
                FROM enrollment_t WHERE org_name IS NOT NULL GROUP BY enrlmt_id) org
@@ -603,7 +626,7 @@ def _build_rollup(which: str) -> dict:
     started = dt.datetime.now(dt.timezone.utc)
     shutil.rmtree(SCRATCH, ignore_errors=True); os.makedirs(SPILL, exist_ok=True)
     so = _so()
-    con = _new_con()
+    con = _new_con(mem="100GB" if which == "drug" else DUCKDB_MEM)  # B2 (npi,generic) groupby on the 128 GiB container
     out_local = os.path.join(LOCAL, cfg["out"])
     live = f"{ACTIVE}{cfg['out']}/"
     try:
@@ -702,12 +725,12 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _reg(con, "svc", "cms_physician_service_rollup",
              ["npi", "svc_total_medicare_paid_usd", "svc_lines_suppressed", "svc_total_services", "svc_total_bene_lines",
               "svc_distinct_hcpcs", "svc_active_years", "svc_first_year", "svc_last_year", "svc_partb_drug_paid_usd",
-              "has_partb_administered_drugs", "svc_top_rbcs_cat", "svc_top_rbcs_cat_paid_usd"], so)
+              "has_partb_administered_drugs", "svc_top_rbcs_cat", "svc_top_rbcs_cat_paid_usd", "svc_paid_yoy_pct"], so)
         _reg(con, "rx", "cms_partd_drug_rollup", ["npi", "rx_total_drug_cost_usd", "rx_total_claims", "rx_total_30day_fills",
              "rx_total_day_supply", "rx_distinct_generics", "rx_distinct_brands", "rx_active_years", "rx_first_year",
-             "rx_last_year", "rx_top1_generic", "rx_top1_generic_cost_usd", "rx_top3_generics"], so)
+             "rx_last_year", "rx_top1_generic", "rx_top1_generic_cost_usd", "rx_top3_generics", "rx_cost_yoy_pct"], so)
         _reg(con, "dme", "cms_dme_supplier_rollup", ["npi", "dme_supplied_total_paid_usd", "dme_lines_suppressed",
-             "dme_supplied_claims", "dme_distinct_hcpcs", "dme_rental_share", "is_dme_supplier"], so)
+             "dme_supplied_claims", "dme_distinct_hcpcs", "dme_rental_share", "dme_paid_yoy_pct", "is_dme_supplier"], so)
         _reg(con, "op", "cms_provider_payment_rollup", ["npi", "total_payments_usd", "general_total_usd", "research_total_usd",
              "distinct_manufacturers", "has_ownership_interest", "ownership_total_value_usd", "first_payment_year",
              "last_payment_year", "recipient_type"], so)
@@ -796,7 +819,8 @@ def build_practice_group_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _reg(con, "enrollment_t", "cms_provider_enrollment", ["npi", "enrlmt_id", "org_name", "state_cd"], so)
         _reg(con, "p360", f"provider_360/snapshot={snapshot_month}", ["npi", "med_a1_lifetime_mdcr_pymt", "rx_total_drug_cost_usd",
              "med_a1_panel_avg_risk_score", "med_a1_dual_share", "primary_taxonomy_code", "mips_final_score",
-             "op_total_payments_usd", "is_independent_candidate", "practice_state"], so)
+             "op_total_payments_usd", "is_independent_candidate", "practice_state",
+             "med_a1_pymt_yoy_pct", "med_a1_pymt_cagr_3yr_pct", "med_a1_active_latest"], so)
         rows = _write_sorted(con, _group_360_sql(), out_local, "group_enrlmt_id")
         con.close()
         print(f"[practice_group_360] {rows:,} groups")
