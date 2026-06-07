@@ -1,26 +1,33 @@
 """Clay Find People — raw landing surface (append-only).
 
 Endpoints (mounted at ``/api/v1/clay/find-people``, service-token gated):
-  POST /land   → land a batch of Clay find-people records, verbatim, idempotent
+  POST /land   → land a batch of Clay find-people records, idempotent
   GET  /stats  → row / distinct-person / distinct-domain counts
 
-CONTRACT. Each item in ``records`` is a Clay find-people object stored EXACTLY as sent into
-``gtm.clay_find_people.raw_payload`` (jsonb). NOTHING is exploded. The caller does NOT send a
-separate ``person_linkedin_url`` — the server reads it out of the payload itself. The only
-derived values are lossless identity keys:
+CONTRACT. Each item in ``records`` is a Clay find-people object. It is stored TWO ways, both
+faithful to the source:
+  1. ``raw_payload`` (jsonb) — the object EXACTLY as sent, verbatim. Immutable source of truth,
+     drift-proof: if Clay adds/removes fields nothing is ever lost.
+  2. Flat typed columns — a LOSSLESS structural projection of the known fields (``name`` →
+     full_name, ``matched_experience.job_title`` → matched_job_title, …). Values are stored
+     AS-IS; this is NOT normalization. Semantic normalization (job_title → job_level enum) is a
+     SEPARATE downstream stage and is NOT done here.
 
-    raw_payload.url     → linkedin_url_raw (verbatim; this is what feeds the blitz email finder)
+The caller does NOT send a separate ``person_linkedin_url`` — the server reads it out of the
+payload. The only computed values are lossless identity keys:
+    raw_payload.url     → linkedin_url_raw (verbatim; feeds the blitz email finder)
                           → linkedin_url_norm → person_id = sha256(linkedin_url_norm)
     raw_payload.domain  → domain_norm (FK → firmographics_blitz.domain_norm)
 
-GRAIN: (person × company-record). The same LinkedIn URL can attach to multiple domains, so the
-PK = sha256(linkedin_url_norm | domain_norm) keeps every attachment; ``ON CONFLICT DO NOTHING``
-makes re-sends idempotent. Title/role normalization + email enrichment are SEPARATE downstream
-stages that read this table — never done here.
+GRAIN: (person × company). PK = ``sha256(linkedin_url_norm | <company_key>)`` where company_key
+degrades through a fallback chain so a missing company never silently collapses distinct Clay
+observations:  domain_norm  →  company_record_id  →  stable hash of the full payload.
+``ON CONFLICT DO NOTHING`` makes re-sends idempotent at whatever tier the key resolved to.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from typing import Any
@@ -38,7 +45,7 @@ router = APIRouter(prefix="/api/v1/clay/find-people", tags=["clay-find-people"])
 
 
 class LandBody(BaseModel):
-    """Envelope is strict; each item in ``records`` is a Clay object stored VERBATIM."""
+    """Envelope is strict; each item in ``records`` is a Clay object stored verbatim + exploded."""
 
     records: list[dict[str, Any]] = Field(min_length=1, max_length=25_000)
     batch_id: str | None = Field(default=None, max_length=200)
@@ -57,72 +64,120 @@ _TRAIL_DOT = re.compile(r"\.+$")
 
 
 def _norm_linkedin(url: str) -> str:
-    """lower/trim → strip scheme → strip www. → strip query/fragment → strip trailing slash."""
     s = _SCHEME.sub("", url.strip().lower())
     s = _WWW.sub("", s)
     s = _QS.sub("", s)
-    s = _TRAIL_SLASH.sub("", s)
-    return s
+    return _TRAIL_SLASH.sub("", s)
 
 
 def _norm_domain(domain: str) -> str:
-    """Mirror of the firmographics_blitz domain_norm: lower/trim → strip scheme → strip www.
-    → strip path → strip trailing dots."""
     s = _SCHEME.sub("", domain.strip().lower())
     s = _WWW.sub("", s)
     s = _PATH.sub("", s)
-    s = _TRAIL_DOT.sub("", s)
-    return s
+    return _TRAIL_DOT.sub("", s)
 
 
 def _sha(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-_INSERT_SQL = """
-    INSERT INTO gtm.clay_find_people
-        (record_id, person_id, linkedin_url_raw, linkedin_url_norm,
-         domain_norm, source, batch_id, raw_payload)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (record_id) DO NOTHING
-"""
+def _s(v: Any) -> str | None:
+    """Verbatim text projection — trims whitespace only, never interprets."""
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _bigint(v: Any) -> int | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v.strip())
+    return None
+
+
+def _obj(rec: dict[str, Any], key: str) -> dict[str, Any]:
+    o = rec.get(key)
+    return o if isinstance(o, dict) else {}
+
+
+def _company_fallback(rec: dict[str, Any]) -> str:
+    """Company discriminant when domain is absent: prefer Clay's company_record_id, else a
+    stable hash of the full payload so every distinct observation stays a distinct row."""
+    crid = _s(rec.get("company_record_id"))
+    if crid:
+        return "crid:" + crid
+    return "raw:" + _sha(json.dumps(rec, sort_keys=True, separators=(",", ":")))
+
+
+# Column order is the single source of truth for the INSERT placeholders below.
+_COLS = (
+    "record_id", "person_id", "linkedin_url_raw", "linkedin_url_norm", "domain_norm",
+    "domain_raw", "full_name", "first_name", "last_name", "location_name", "follower_count",
+    "company_table_id", "company_record_id",
+    "matched_job_title", "matched_company_name", "matched_start_date",
+    "loc_city", "loc_state", "loc_region", "loc_country", "loc_country_iso",
+    "latest_experience_title", "latest_experience_company", "latest_experience_start_date",
+    "source", "batch_id", "raw_payload",
+)
+_INSERT_SQL = (
+    f"INSERT INTO gtm.clay_find_people ({', '.join(_COLS)}) "
+    f"VALUES ({', '.join(['%s'] * len(_COLS))}) "
+    f"ON CONFLICT (record_id) DO NOTHING"
+)
 
 _STATS_SQL = """
-    SELECT count(*)                      AS rows,
-           count(DISTINCT person_id)     AS distinct_persons,
-           count(DISTINCT domain_norm)   AS distinct_domains
+    SELECT count(*)                    AS rows,
+           count(DISTINCT person_id)   AS distinct_persons,
+           count(DISTINCT domain_norm) AS distinct_domains
     FROM gtm.clay_find_people
 """
 
 
+def _to_row(rec: dict[str, Any], source: str, batch_id: str | None) -> tuple | None:
+    """Project one Clay record → the full column tuple. None if it lacks a usable url."""
+    url = rec.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    li_norm = _norm_linkedin(url)
+    if not li_norm:
+        return None
+    raw_dom = rec.get("domain")
+    dom_norm = _norm_domain(raw_dom) if isinstance(raw_dom, str) and raw_dom.strip() else None
+    record_id = _sha(f"{li_norm}|{dom_norm or _company_fallback(rec)}")
+    me, loc = _obj(rec, "matched_experience"), _obj(rec, "structured_location")
+    return (
+        record_id, _sha(li_norm), url.strip(), li_norm, dom_norm,
+        _s(rec.get("domain")), _s(rec.get("name")), _s(rec.get("first_name")),
+        _s(rec.get("last_name")), _s(rec.get("location_name")), _bigint(rec.get("follower_count")),
+        _s(rec.get("company_table_id")), _s(rec.get("company_record_id")),
+        _s(me.get("job_title")), _s(me.get("company_name")), _s(me.get("start_date")),
+        _s(loc.get("city")), _s(loc.get("state")), _s(loc.get("region")),
+        _s(loc.get("country")), _s(loc.get("country_iso")),
+        _s(rec.get("latest_experience_title")), _s(rec.get("latest_experience_company")),
+        _s(rec.get("latest_experience_start_date")),
+        source, batch_id, Jsonb(rec),
+    )
+
+
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: LandBody) -> dict[str, Any]:
-    """Land Clay records verbatim. Returns received / landed (newly inserted) /
-    already_present (ON CONFLICT dups) / skipped (records missing a usable url)."""
+    """Land Clay records (verbatim raw_payload + exploded columns). Returns received /
+    landed (newly inserted) / already_present (ON CONFLICT dups) / skipped (no usable url)."""
     received = len(body.records)
     skipped: list[dict[str, Any]] = []
     rows: list[tuple] = []
     seen: set[str] = set()
 
     for i, rec in enumerate(body.records):
-        url = rec.get("url")
-        if not isinstance(url, str) or not url.strip():
-            skipped.append({"index": i, "reason": "missing raw_payload.url"})
+        row = _to_row(rec, body.source, body.batch_id)
+        if row is None:
+            skipped.append({"index": i, "reason": "missing/empty raw_payload.url"})
             continue
-        li_norm = _norm_linkedin(url)
-        if not li_norm:
-            skipped.append({"index": i, "reason": "empty linkedin_url after normalization"})
+        if row[0] in seen:  # collapse byte-identical (person, company) dups within this payload
             continue
-        raw_dom = rec.get("domain")
-        dom_norm = _norm_domain(raw_dom) if isinstance(raw_dom, str) and raw_dom.strip() else None
-        record_id = _sha(f"{li_norm}|{dom_norm or ''}")
-        if record_id in seen:  # collapse exact (person, domain) dups within this one payload
-            continue
-        seen.add(record_id)
-        rows.append(
-            (record_id, _sha(li_norm), url.strip(), li_norm,
-             dom_norm, body.source, body.batch_id, Jsonb(rec))
-        )
+        seen.add(row[0])
+        rows.append(row)
 
     landed = 0
     if rows:
