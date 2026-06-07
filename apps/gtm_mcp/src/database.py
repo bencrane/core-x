@@ -65,6 +65,7 @@ import logging
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable
 
@@ -126,7 +127,31 @@ _hqx_attached = False  # set under _lock the first time get_connection() runs
 
 _registry_lock = threading.Lock()
 _registry: dict[str, str] | None = None  # discovered name → s3:// uri (lazy singleton)
+_registry_built_at = 0.0  # monotonic stamp of the last registry build (TTL self-refresh)
 _tls = threading.local()  # per-thread boto3 client (clients are not shared across threads)
+
+# ── Warm dataset-handle cache (serving-tier latency, Directive: recall) ───────
+# WHY. The per-call "open fresh" path below reloads the Lance scalar index from R2
+# on EVERY tool call — ~78% of a cold point lookup, and pylance does NOT share a
+# resident index across LanceDataset handles (only object reuse avoids the reload).
+# The load-bearing datasets mutate at days-to-monthly cadence, so a per-request
+# re-validation is a continuous tax against a rare event. This cache holds the
+# OPENED handle (index resident) keyed by URI, refreshed on a coarse TTL — turning
+# point lookups from ~1.5 s into tens of ms co-located, gateway-wide (every tool
+# funnels through open_dataset / _register_datasets). It is a SERVING-tier mirror;
+# the Lance/R2 system of record is untouched.
+#
+# FRESHNESS. Bounded by GTM_HANDLE_TTL_S (default 30 min) — trivially within the
+# real mutation cadence. On a miss the dataset's _versions/ commit log is listed
+# TWICE and required equal before the handle is trusted: a guard against the
+# non-atomic _publish_full_swap window (delete-then-recopy) — a mid-swap partial is
+# served fresh+UNCACHED, never adopted. A new snapshot=YYYY-MM month is picked up
+# because get_registry() self-refreshes on the same TTL and the new month resolves
+# to a NEW uri (a fresh cache entry), while expired old-month entries are swept.
+_handle_cache: dict[str, tuple[float, Any]] = {}  # uri → (refresh_deadline_monotonic, LanceDataset)
+_handle_lock = threading.Lock()
+_HANDLE_TTL_S = float(os.environ.get("GTM_HANDLE_TTL_S", "1800"))
+_REGISTRY_TTL_S = float(os.environ.get("GTM_REGISTRY_TTL_S", "1800"))
 
 
 # ── R2 endpoint / credentials ───────────────────────────────────────────────
@@ -295,14 +320,19 @@ def _build_registry() -> dict[str, str]:
 
 
 def get_registry(refresh: bool = False) -> dict[str, str]:
-    """The in-memory dataset registry (``name → uri``), built once on first use.
-    ``refresh=True`` rebuilds it (re-lists the sink) — the hook for picking up new
-    drops without a process restart. Returns a copy so callers can't mutate it."""
-    global _registry
-    if _registry is None or refresh:
+    """The in-memory dataset registry (``name → uri``), built on first use and
+    self-refreshed every ``GTM_REGISTRY_TTL_S`` (default 30 min) so a newly landed
+    dataset OR a new ``snapshot=YYYY-MM`` partition is discovered without a process
+    restart — the prerequisite for the warm-handle cache to ever roll to a new
+    month. ``refresh=True`` forces a rebuild now. Returns a copy so callers can't
+    mutate it."""
+    global _registry, _registry_built_at
+    now = time.monotonic()
+    if _registry is None or refresh or (now - _registry_built_at) > _REGISTRY_TTL_S:
         with _registry_lock:
-            if _registry is None or refresh:
+            if _registry is None or refresh or (time.monotonic() - _registry_built_at) > _REGISTRY_TTL_S:
                 _registry = _build_registry()
+                _registry_built_at = time.monotonic()
     return dict(_registry)
 
 
@@ -411,18 +441,74 @@ def referenced_datasets(sql: str) -> set[str]:
     return found
 
 
-def open_dataset(name: str):
-    """Open a registered dataset fresh (latest committed Lance version). ``name``
-    is any registry key (a canonical name or the ``awards`` alias). The returned
-    ``lance.LanceDataset`` exposes ``.scanner(filter=..., columns=...)`` for BTREE
-    index pushdown."""
+def _versions_listing(uri: str) -> list[tuple] | None:
+    """Sorted ``(key, etag, size)`` of every object under the dataset's ``_versions/``
+    commit log (the Lance manifest dir). The freshness fingerprint AND the swap-window
+    probe. ``None`` on listing failure or an empty/absent log."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "", 1).rstrip("/") + "/_versions/"
+    try:
+        s3 = _thread_s3()
+        out: list[tuple] = []
+        token: str | None = None
+        while True:
+            kw: dict[str, Any] = {"Bucket": BUCKET, "Prefix": prefix}
+            if token:
+                kw["ContinuationToken"] = token
+            resp = s3.list_objects_v2(**kw)
+            for o in resp.get("Contents", []):
+                out.append((o["Key"], o.get("ETag"), o.get("Size")))
+            if resp.get("IsTruncated"):
+                token = resp.get("NextContinuationToken")
+            else:
+                break
+        return sorted(out) if out else None
+    except Exception as exc:  # noqa: BLE001 — never let a listing hiccup break or poison the cache
+        log.warning("gtm-mcp: _versions listing failed for %s: %s", uri, exc)
+        return None
+
+
+def _cached_dataset(uri: str):
+    """Return a warm, TTL-validated ``LanceDataset`` for ``uri`` — reusing the cached
+    handle (scalar index resident, no R2 reload) until its TTL lapses. On a miss the
+    ``_versions/`` log is listed twice and required EQUAL before the new handle is
+    cached (mid-swap partial → served fresh, not adopted). Concurrent first-callers may
+    each open once (cost-only, self-correcting). The SoR is never touched."""
     import lance
 
+    now = time.monotonic()
+    with _handle_lock:
+        hit = _handle_cache.get(uri)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+
+    a = _versions_listing(uri)
+    stable = a is not None and a == _versions_listing(uri)
+    ds = lance.dataset(uri, storage_options=r2_storage_options())
+    if stable:
+        with _handle_lock:
+            # sweep expired entries (bounds growth as snapshots roll monthly), then cache
+            for k in [k for k, v in _handle_cache.items() if v[0] <= now]:
+                del _handle_cache[k]
+            _handle_cache[uri] = (now + _HANDLE_TTL_S, ds)
+    return ds
+
+
+def open_dataset_uri(uri: str):
+    """Warm-cached open by explicit ``s3://`` URI — for snapshot-partitioned datasets
+    (``provider_360/snapshot=YYYY-MM``) addressed directly rather than by registry name."""
+    return _cached_dataset(uri)
+
+
+def open_dataset(name: str):
+    """Open a registered dataset (latest committed Lance version) via the warm-handle
+    cache. ``name`` is any registry key (a canonical name or the ``awards`` alias). The
+    returned ``lance.LanceDataset`` exposes ``.scanner(filter=..., columns=...)`` for
+    BTREE/BITMAP index pushdown; reuse keeps the index resident across calls."""
     reg = get_registry()
     uri = reg.get(name)
     if uri is None:
         raise KeyError(f"unknown dataset {name!r}; call list_datasets to see what is registered")
-    return lance.dataset(uri, storage_options=r2_storage_options())
+    return _cached_dataset(uri)
 
 
 # ── hq-x Postgres attach (Directive 18 §1) ──────────────────────────────────
@@ -545,14 +631,13 @@ def _register_datasets(cur, names: Iterable[str]) -> None:
     skipped — DuckDB then raises a clear "table not found" for it, never a silent
     empty."""
     reg = get_registry()
-    so = r2_storage_options()
-    import lance
-
     for name in names:
         uri = reg.get(name)
         if uri is None:
             continue
-        cur.register(name, lance.dataset(uri, storage_options=so))
+        # Register the warm-cached handle (index resident) — NOT a fresh open. DuckDB
+        # re-scans the LanceDataset lazily and pushes projections/filters into Lance.
+        cur.register(name, _cached_dataset(uri))
 
 
 def query(
