@@ -88,6 +88,12 @@ LIST_SIBLINGS = {
     "disaster_response_string": ("disaster_response_codes", False),
 }
 
+# SBA business-types tokens uniquely carry a cert effective-date suffix welded to the 2-char
+# designation code (<code><YYYYMMDD>, e.g. A620260521 = A6 + 2026-05-21). This sibling source is
+# DECOMPOSED (not plain-split) into the code list above + the aligned cert-date list below.
+SBA_TYPES_STRING = "sba_business_types_string"
+SBA_DATES_SIBLING = "sba_business_type_dates"
+
 # entity_url domain blocklist — universal junk (mailbox + placeholder tiers). The richer
 # regional-ISP curation lives in sam_fmcsa_domain_spine.CONSUMER_BLOCK (FMCSA-join specific).
 DOMAIN_BLOCK = (
@@ -167,6 +173,21 @@ def _list_expr(src_col: str, sibling: str, naics_strip: bool) -> str:
             f"x -> {inner}), e -> e <> '') AS {sibling}")
 
 
+def _sba_list_exprs(src_col: str, codes_sibling: str, dates_sibling: str) -> list[str]:
+    """SBA business-types tokens are ``<2-char-code><YYYYMMDD?>`` — the cert effective-date suffix,
+    when present, is welded to the designation code (e.g. ``A620260521`` → A6 + 2026-05-21). A plain
+    '~' split leaves the date stuck on, so a downstream ``code = 'A6'`` filter misses every dated row.
+    Split on '~', drop empty tokens, then emit two positionally-aligned lists off the SAME token
+    array: the bare 2-char code (trailing 8-digit date stripped) and the parsed cert effective date
+    (NULL where a token carries no date suffix). The verbatim ``*_string`` sibling stays untouched."""
+    toks = f"list_filter(string_split(coalesce({src_col}, ''), '~'), x -> trim(x) <> '')"
+    codes = (f"list_transform({toks}, x -> regexp_replace(trim(x), '[0-9]{{8}}$', '')) "
+             f"AS {codes_sibling}")
+    dates = (f"list_transform({toks}, x -> TRY_CAST(TRY_STRPTIME("
+             f"regexp_extract(trim(x), '[0-9]{{8}}$'), '%Y%m%d') AS DATE)) AS {dates_sibling}")
+    return [codes, dates]
+
+
 def build_sql(field_map: list[dict], date_positions: list[int]) -> dict:
     """Generate the full SQL pipeline from the frozen field map. Returns the strings the
     Modal function executes against the registered `reg` scan."""
@@ -205,8 +226,14 @@ def build_sql(field_map: list[dict], date_positions: list[int]) -> dict:
         f"FROM (SELECT uei, extract_label, sam_extract_code, {snap} AS _snap FROM proj) GROUP BY uei"
     )
 
-    sibling_exprs = [_list_expr(f"l.{c}", s, strip) for c, (s, strip) in LIST_SIBLINGS.items()
-                     if c in entity_cols]
+    sibling_exprs: list[str] = []
+    for c, (s, strip) in LIST_SIBLINGS.items():
+        if c not in entity_cols:
+            continue
+        if c == SBA_TYPES_STRING:
+            sibling_exprs += _sba_list_exprs(f"l.{c}", s, SBA_DATES_SIBLING)
+        else:
+            sibling_exprs.append(_list_expr(f"l.{c}", s, strip))
     entity_select = (["l.uei"] + [f"l.{c}" for c in entity_cols] + sibling_exprs + [
         "t.is_active",
         "t.first_seen_label", "t.last_seen_label", "t.snapshot_count", "t.ever_inactive",
