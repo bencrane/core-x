@@ -7,7 +7,8 @@
 
 ## 0. TL;DR (read this first)
 
-- There is a large, real staffing-agency dataset, but it lives **only in the cold archive tier** as **Parquet**, not in the live `active/` Lance SoR. It is a frozen snapshot dumped **2026-06-02**.
+- ✅ **MATERIALIZED (2026-06-07) — START HERE:** the 24,398 vertical-tagged staffing agencies are now a live, indexed Lance table at **`s3://data-sink/active/staffing_agencies`**. One row per agency: identity (`company_name`, `domain`, `website`, `company_linkedin_url`, `linkedin_slug`), the 11-vertical `industries_served`, a unified `employee_band`, and clay `revenue_range` — every firmographic field carries explicit provenance (`firmo_source` ∈ {`in_clay` 16,312 · `pdl` 7,242 · `none` 844}). Indices: `BTREE(domain_norm, company_linkedin_url)`, `BITMAP(employee_band, firmo_source)`. **Query this, don't re-derive from the archive.** See §9. CSV mirror: `~/Desktop/hq/exports/staffing_agencies_24398_2026-06-07.csv`.
+- The *source* data behind it lives **only in the cold archive tier** as **Parquet** (`archive/dex/entities/`), a frozen snapshot dumped **2026-06-02** — that's the raw material §1–§8 describe.
 - Canonical company count: **~45,515 distinct staffing-agency domains** (deduped union across 3 source tables).
 - Structured **"industries served"** classification exists for **24,398** of them (11-vertical controlled vocabulary).
 - **People/contacts exist for a minority** of the universe (~10k of 45.5k domains have ≥1 person). Where they exist they are rich: ~30.5k contacts with **~100% email coverage** and a 1,000-row outreach-priority ranking.
@@ -209,18 +210,26 @@ person_entities   ── join by company_id → company_entities.company_id, or 
 
 ---
 
-## 9. Recommended build (if this becomes a live capability)
+## 9. Materialized master + remaining work
 
-Promote a unified, indexed staffing master into the active Lance SoR:
+**✅ BUILT — `s3://data-sink/active/staffing_agencies`** (Lance, **24,398 rows**, 2026-06-07). One row per vertical-tagged staffing agency; the canonical company layer. Query it directly — do **not** re-derive from the archive.
 
-1. **Universe:** union the **45,515** distinct staffing domains (from `clay_find_companies` staffing + vertical-tagged `target_companies` + `company_entities` staffing), keyed on normalized `domain`.
-2. **Firmographics:** left-join `clay_find_companies` (size, revenue, description, LinkedIn id, `raw_payload.industries[]`).
-3. **Industries served:** left-join `demand_company_target_verticals` (the 11-vertical tags), pivot to a `vertical[]` array or a long child table with a `BITMAP` index on `vertical`.
-4. **Contacts:** attach `target_people` (+ `target_people_emails`, `outreach_tiers`) and `clay_find_people` (for titles); dedup people by `person_linkedin_url`.
-5. **Write to `active/`** as Lance: `BTREE(domain)`, `BTREE(person email)`, `BITMAP(vertical, tier)`. Append-only; index after write.
-6. **Re-verify emails** before any send (deliverability has decayed since 2026-06-02).
+Schema (16 cols): `target_company_id · company_name · domain · website · domain_norm · company_linkedin_url · linkedin_slug · industries_served · employee_band · employee_band_source · revenue_range · revenue_source · country · year_founded · pdl_company_id · firmo_source`.
+Indices: `BTREE(domain_norm)`, `BTREE(company_linkedin_url)`, `BITMAP(employee_band)`, `BITMAP(firmo_source)`.
+Provenance: `firmo_source` = `in_clay` (16,312) · `pdl` (7,242) · `none` (844); `revenue_range` is clay-sourced (15,099 populated, `revenue_source='clay'`); `employee_band` unifies clay `size` ⊕ PDL `employee_size_range` (`employee_band_source` says which).
 
-**Active-plane alternatives to check first** (if you want the *current* universe rather than the frozen archive): `active/pdl_normalized_companies`, `active/company_target_industries`, `active/firmographics_blitz` — live Lance datasets with industry signal (require a Lance reader to query).
+```python
+import lance
+ds = lance.dataset("s3://data-sink/active/staffing_agencies", storage_options=R2_SO)  # R2_SO per §1.1
+ds.scanner(filter="employee_band IN ('1-10','11-50') AND firmo_source='in_clay'").to_table()
+```
+
+**Remaining work (NOT yet built):**
+1. **Contacts layer** — attach `target_people` (+ `target_people_emails`, `outreach_tiers`) and `clay_find_people` (titles) to these agencies; dedup people by `person_linkedin_url`. Only ~10k of 24,398 have any contact today (§6).
+2. **Firmographic gaps** — the 844 `firmo_source='none'` (and ~846 `employee_band='unknown'`) agencies need enrichment. They already carry domain + company LinkedIn URL → feed **Blitz Workflow B** (`enrichment-blitz-enrich-linkedin`), which lands firmographics in the `firmographics_blitz` Lance SoR.
+3. **Re-verify emails** before any send (archive contacts are stale since 2026-06-02).
+
+**Build provenance:** assembled via DuckDB-over-R2 (dex archive source) ⊕ the live `active/pdl_normalized_companies` match (BTREE on `normalized_domain`/`linkedin_slug`), streamed to Lance via Arrow.
 
 ---
 
