@@ -317,22 +317,33 @@ true`, then defensive cast) **before** the Lance write. Ordered by blast radius.
 
 ---
 
-## 6. Proposed Lance landing spec (forward reference — not executed here)
+## 6. Lance landing — EXECUTED 2026-06-07
 
-Single standalone dataset, append-not-applicable (this is a wholesale snapshot feed → `mode="overwrite"`,
-matching `sba_foia`).
+Ingested by `pipelines/sbir/ingest.py` (`doppler run -- python pipelines/sbir/ingest.py`). Single
+standalone dataset, wholesale snapshot (`mode="overwrite"`, matching `sba_foia`). Run recorded in
+`ops.sbir_awards_runs` (status=success).
 
 - **URI:** `s3://data-sink/active/sbir_awards/` (env-overridable `SBIR_AWARDS_LANCE_URI`).
-- **Write:** `lance.write_dataset(arrow, URI, mode="overwrite", data_storage_version="2.0",
-  max_rows_per_file=1048576, storage_options=<R2>)` → 1 fragment (219,502 rows ≪ 1,048,576).
-- **BTREE (high-card resolution):** `sbir_surrogate_id` (PK), `company`, `uei`, `duns`,
-  `agency_tracking_number`, `contract`, `topic_code`, `pi_name`, `zip`.
-- **BITMAP (low-card categorical):** `program`, `phase`, `agency`, `branch`, `state`, `award_year`,
-  `solicitation_year`, `hubzone_owned`, `woman_owned`, `socially_economically_disadvantaged`.
-- **Out-of-core envelope:** trivial at this scale (decoded corpus ≈ 0.5 GB). The abstract column
-  dominates width; set `memory_limit` ≥ 4 GB + `temp_directory` on local NVMe for the projection, and
-  `LANCE_BYPASS_SPILLING=true` is unnecessary here (row count is far below the SBA threshold that forced
-  it). Idempotency via an `ops.sbir_awards_runs` ledger row on terminal state.
+- **Committed state:** Lance **v15**, **219,502 rows**, **1 fragment**, `data_storage_version=2.0`,
+  decoded ≈ 0.5 GB. **PK gate: `distinct(sbir_surrogate_id) == rows == 219,502`** (3 byte-identical
+  rows disambiguated by the ordinal). Projection ran at `memory_limit=8GB` + local NVMe spill.
+- **14 scalar indices, 100% trained (`num_indexed_rows=219,502, num_unindexed_rows=0` each):**
+  - **BTREE (6):** `sbir_surrogate_id` (PK), `uei`, `duns`, `company`, `agency_tracking_number`,
+    `contract` — point lookups resolve via `ScalarIndexQuery@*_idx(BTree)`, `refine_filter=--`.
+  - **BITMAP (8):** `phase`, `program`, `agency`, `state`, `award_year`, `hubzone_owned`,
+    `woman_owned`, `socially_economically_disadvantaged` — equality resolves via
+    `ScalarIndexQuery@*_idx(Bitmap)`.
+  - *Index set follows the ingestion directive's Phase 4.* The diagnostic's broader proposal
+    (`topic_code`/`pi_name`/`zip` BTREE; `branch`/`solicitation_year` BITMAP) is deferred — additively
+    buildable via `python pipelines/sbir/ingest.py --reindex-only` without re-ingest.
+- **Cleaning contract applied (verified pre-write):** surrogate PK minted; string sentinels →NULL;
+  `DUNS` lpad-9 (316 malformed nulled); `UEI` retained + `uei_valid` flag (1 fail); `State`→USPS-2
+  (0 unmapped); `Zip`→ZIP5; `Award Amount`→`DECIMAL(18,2)`; flags kept ternary `Y/N/U`; dates
+  window-validated; `Abstract` placeholder-nulled (→190,034 embeddable) + whitespace-flattened
+  (0 residual newlines).
+- **⚠ Directive edge — `contract_end_date`:** the uniform `[1982-01-01, now+2y]` window nulled **129**
+  legitimate future-dated contract ends (>2028-06). Per-spec; candidate follow-up is to exempt
+  `contract_end_date` from the upper bound (a contract's end is legitimately future).
 
 ---
 
