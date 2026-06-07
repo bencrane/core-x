@@ -8,7 +8,7 @@ WIRE CONTRACT. Clay POSTs a single record per request, the object under a ``raw_
 
     { "raw_payload": { "url": "...", "name": "...", "domain": "...", ... } }
 
-No ``records`` array, no ``batch_id`` — one row at a time. (A bare object with no ``raw_payload``
+No ``records`` array — one row at a time. (A bare object with no ``raw_payload``
 wrapper is also accepted, so a Clay misconfig never drops data.)
 
 STORAGE. The record is stored TWO ways, both faithful to source:
@@ -108,7 +108,7 @@ _COLS = (
     "matched_job_title", "matched_company_name", "matched_start_date",
     "loc_city", "loc_state", "loc_region", "loc_country", "loc_country_iso",
     "latest_experience_title", "latest_experience_company", "latest_experience_start_date",
-    "source", "batch_id", "raw_payload",
+    "source", "raw_payload",
 )
 _INSERT_SQL = (
     f"INSERT INTO gtm.clay_find_people ({', '.join(_COLS)}) "
@@ -126,7 +126,7 @@ _STATS_SQL = """
 _SOURCE = "clay_find_people"
 
 
-def _to_row(rec: dict[str, Any], batch_id: str | None) -> tuple | None:
+def _to_row(rec: dict[str, Any]) -> tuple | None:
     """Project one Clay record → the full column tuple. None if it lacks a usable url."""
     url = rec.get("url")
     if not isinstance(url, str) or not url.strip():
@@ -148,7 +148,7 @@ def _to_row(rec: dict[str, Any], batch_id: str | None) -> tuple | None:
         _s(loc.get("country")), _s(loc.get("country_iso")),
         _s(rec.get("latest_experience_title")), _s(rec.get("latest_experience_company")),
         _s(rec.get("latest_experience_start_date")),
-        _SOURCE, batch_id, Jsonb(rec),
+        _SOURCE, Jsonb(rec),
     )
 
 
@@ -156,13 +156,12 @@ def _to_row(rec: dict[str, Any], batch_id: str | None) -> tuple | None:
 async def land(body: dict[str, Any]) -> dict[str, Any]:
     """Land ONE Clay record. Body is ``{"raw_payload": {...}}`` (one row per request); a bare
     object with no wrapper is also accepted. Stores raw_payload verbatim + exploded columns."""
-    batch_id = body.get("batch_id") if isinstance(body.get("batch_id"), str) else None
     rec = body.get("raw_payload")
     if not isinstance(rec, dict):
         # tolerate a bare Clay object sent without the raw_payload wrapper
-        rec = {k: v for k, v in body.items() if k != "batch_id"}
+        rec = body
 
-    row = _to_row(rec, batch_id)
+    row = _to_row(rec)
     if row is None:
         raise HTTPException(status_code=422, detail="missing/empty raw_payload.url")
 
