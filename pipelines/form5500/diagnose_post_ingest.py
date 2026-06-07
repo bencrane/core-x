@@ -80,7 +80,17 @@ DATASETS = [
     {"name": "sch_c_provider_code", "lance": "form5500_sch_c_provider_code", "stem": "F_SCH_C_PART1_ITEM2_CODES",
      "exp_btree": ["ACK_ID"], "key_cols": ["ACK_ID"], "lz_cols": []},
     {"name": "sch_a_broker",        "lance": "form5500_sch_a_broker",        "stem": "F_SCH_A_PART1",
-     "exp_btree": ["ACK_ID"], "key_cols": ["ACK_ID"], "lz_cols": []},
+     "exp_btree": ["ACK_ID", "FORM_ID"], "key_cols": ["ACK_ID"], "lz_cols": []},
+    # ── Reconciliation patch datasets (PR #300 + materialization) ──
+    {"name": "sch_a_carrier",       "lance": "form5500_sch_a_carrier",       "stem": "F_SCH_A",
+     "exp_btree": ["ACK_ID", "FORM_ID", "SCH_A_EIN", "SCH_A_PLAN_NUM"],
+     "key_cols": ["ACK_ID", "SCH_A_EIN", "INS_CARRIER_EIN"], "lz_cols": ["INS_CARRIER_EIN"]},
+    {"name": "sch_c_indirect",      "lance": "form5500_sch_c_indirect",      "stem": "F_SCH_C_PART1_ITEM3",
+     "exp_btree": ["ACK_ID"], "key_cols": ["ACK_ID", "PROVIDER_PAYOR_EIN"], "lz_cols": ["PROVIDER_PAYOR_EIN"]},
+    {"name": "sch_c_eligible",      "lance": "form5500_sch_c_eligible",      "stem": "F_SCH_C_PART1_ITEM1",
+     "exp_btree": ["ACK_ID"], "key_cols": ["ACK_ID", "PROVIDER_ELIGIBLE_EIN"], "lz_cols": ["PROVIDER_ELIGIBLE_EIN"]},
+    {"name": "sch_c_terminated",    "lance": "form5500_sch_c_terminated",    "stem": "F_SCH_C_PART3",
+     "exp_btree": ["ACK_ID"], "key_cols": ["ACK_ID", "PROVIDER_TERM_EIN"], "lz_cols": []},
 ]
 
 
