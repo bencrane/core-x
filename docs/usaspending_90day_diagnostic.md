@@ -15,6 +15,7 @@
 | **Exact temporal-filter payload?** | A `last_modified_date` `date_range` over the trailing window + `prime_award_types:["A","B","C","D"]`. Verbatim JSON in §2.1. **`last_modified_date`, not `action_date`** — the warehouse lags 7+ days (90 for DoD), so an `action_date` daily window returns ≈0 rows (§2.3). |
 | **Is the ingest code already there?** | **Partially — the API tier already exists and works.** `usaspending_api_landing.py` wraps exactly this endpoint and landed **583,776 rows** on 2026-06-04. The dead in-SoR `usaspending_daily_delta.py` is **already removed** from the checkout. Full inventory §3. |
 | **What grain / coverage does the pull capture?** | **Prime CONTRACT TRANSACTIONS only** (FPDS, types A/B/C/D), at **transaction grain** (measured: 1.17 txn/award — the "award grain" docstring is wrong). **No subawards, no assistance/FABS** (grants/loans). And the captured freshness is currently **stranded** — no cron, no consuming mirror (§3.4–3.5). |
+| **What can the "get all" payload filter by?** | award type (prime+sub) · date (`action_date`/`last_modified_date`) · agency · place-of-performance · recipient location · single keyword. **NOT** NAICS / PSC / amount / recipient-name / CFDA — those need the *capped* (500K) Advanced-Search download family. Full surface map + filter vocabulary §6. |
 | **Rate limits / pagination to respect?** | No API key, **no numeric rate limit** — throttling is **per source IP** (F5 BotDefense). `bulk_download/awards` is uncapped but async (submit → poll `status` ≤60 min → download ZIP). The paginated/`download` endpoints carry hard caps (10K and 500K) that forbid their use here. Full matrix §4. |
 | **⚠️ Does a 7-day lookback actually catch delayed reporting?** | **Only if runs never slip.** A *fixed* 7-day window with **no watermark** loses any record stamped during a >7-day cron outage. The deployed pipeline uses **45 days** for exactly this robustness. Reconcile before narrowing to 7 (§2.4, §5). |
 
@@ -104,7 +105,7 @@ Concrete, as-of the diagnostic date (2026-06-06):
 
 **Field rationale (each key traces to a requirement):**
 - `prime_award_types: ["A","B","C","D"]` — **contracts only** (A=definitive, B=purchase order, C=delivery order, D=BPA call). Excludes IDV vehicles and all assistance. This is "contract records." To include IDVs add the `IDV_*` codes; for assistance add `02–11`.
-- `date_type: "last_modified_date"` — windows on the **warehouse modification stamp**, which is set on **both insert and update**. This single lever is what "isolates only newly modified or created contract records." *(Created-only, excluding modifications, is the separate `date_type:"new_awards_only"` member of the Time Period Object — recommend `last_modified_date` per the directive's "modified **or** created"; `new_awards_only` is the alternative if pure net-new is later wanted, pending a live field-accept check since it is not literally enumerated in this endpoint's contract.)*
+- `date_type: "last_modified_date"` — windows on the **warehouse modification stamp**, set on **both insert and update** — exactly "newly modified or created." `bulk_download/awards`'s `date_type` enum is **only `action_date` or `last_modified_date`** (confirmed in its contract Data Structures, §6.2); the created-only `new_awards_only` lever exists **only** on the search-family Time Period Object, **not** here — so the uncapped get-all cannot isolate created-vs-modified at the API.
 - `date_range` — inclusive `[start,end]` on `last_modified_date`. The trailing 7-day lookback.
 - `file_format: "csv"` — the landed verbatim form (read all-VARCHAR downstream).
 - **No `limit` key** — the endpoint is uncapped; supplying one is unnecessary and there is no pagination cursor to respect.
@@ -288,7 +289,73 @@ The downstream dedup/resolve layer (the `usaspending_mirror/award` mirror, plann
 
 ---
 
-## 6. Evidence appendix (reproducible, read-only)
+## 6. The full payload possibility space (what the catalog makes queryable)
+
+### 6.1 The endpoint surface — 176 endpoints, three operational classes
+
+The 176 endpoints across 18 groups split into three classes by how you would use them for ingestion:
+
+| Class | Groups (count) | Pattern | For the delta? |
+|---|---|---|---|
+| **"Get all" (bulk/download)** | `bulk_download` (4), `download` (11) | one POST with a `filters` body + date window → server generates a CSV ZIP of *everything* matching | ✅ this is the daily pull |
+| **Analytical (paginated)** | `search` (26) | POST filter body → paginated JSON aggregations/rows, **10K-record ceiling** | ✗ capped; analysis only |
+| **Granular (per-entity)** | `awards`, `recipient`, `agency`, `idvs`, `federal_accounts`, `references`, `autocomplete`, `disaster`, … (155) | GET/POST by a single id/code → one entity or one lookup | ✗ one-at-a-time; enrichment only |
+
+The operator's framing is exact: the daily ingest hits a **"get all"** endpoint (`bulk_download/awards`), not the ~155 granular per-entity endpoints. Those exist to hydrate a *specific* award/recipient/agency after the fact (e.g. `GET /api/v2/awards/{award_id}/` for full detail), not to sweep the feed.
+
+### 6.2 The daily "get all" payload — `bulk_download/awards` `Filters` (COMPLETE, from the catalog)
+
+The full `Filters` type **is** in the catalog (the contract's `# Data Structures` section). The endpoint accepts **exactly** these keys:
+
+| Filter key | Type | Notes |
+|---|---|---|
+| `prime_award_types` | enum[] | A,B,C,D (contracts) · IDV_A…IDV_E (vehicles) · 02–11,-1 (assistance) |
+| `sub_award_types` | enum[] | `procurement`, `grant` — **the lever that adds subawards** |
+| `date_type` | enum | **`action_date` or `last_modified_date` ONLY** — no `date_signed`, no `new_awards_only` |
+| `date_range` | {start_date,end_date} | the window |
+| `agencies` | Agency[] | awarding/funding × toptier/subtier (contract says *required*; the live pipeline omits it and still succeeds → effectively optional = all agencies) |
+| `keyword` | string | a **single** keyword (not an array) |
+| `place_of_performance_locations` | Location[] | country/state/county/city/district/zip |
+| `place_of_performance_scope` | enum | domestic / foreign |
+| `recipient_locations` | Location[] | same Location shape |
+| `recipient_scope` | enum | domestic / foreign |
+| `columns` | string[] | restrict the output column set |
+| `file_format` | enum | csv / tsv / pstxt |
+
+**What the get-all CANNOT filter by** (absent from the bulk `Filters` type): `naics_codes`, `psc_codes`, `award_amounts`, `recipient_search_text` / `recipient_type_names`, `award_ids`, `program_numbers` (CFDA), `set_aside_type_codes`, `extent_competed_type_codes`, `tas_codes`. Industry/amount targeting happens **downstream** (as today), or via the rich-but-capped family (§6.4).
+
+### 6.3 The full AdvancedFilterObject (rich filter set — search & Advanced-Search-download family)
+
+`search/spending_by_*` and `download/{awards,search,transactions}` accept the canonical **AdvancedFilterObject** (upstream `search_filters.md` — which the catalog does **not** ingest, §6.5):
+
+`keywords[]` · `time_period[]` (date_type: action_date / date_signed / **last_modified_date** / new_awards_only) · `place_of_performance_scope` · `place_of_performance_locations[]` · `agencies[]` · `recipient_search_text[]` · `recipient_scope` · `recipient_locations[]` · `recipient_type_names[]` · `award_type_codes[]` · `award_ids[]` · `award_amounts[]` · `program_numbers[]` (CFDA) · **`naics_codes`** (require/exclude) · **`psc_codes`** (require/exclude tree) · `contract_pricing_type_codes[]` · `set_aside_type_codes[]` · `extent_competed_type_codes[]` · `tas_codes` · `def_codes[]` (disaster).
+
+`new_awards_only` (created-only isolation) exists **here** but **not** on `bulk_download/awards` — a created-vs-modified split is only achievable on this family, never on the uncapped get-all.
+
+### 6.4 The decision axis this exposes — uncapped+coarse vs capped+rich
+
+| | `bulk_download/awards` (today's get-all) | `download/search` · `download/awards` (Advanced-Search) |
+|---|---|---|
+| Cap | **uncapped** (async; proven > 583K) | **500,000-row hard cap** |
+| Filters | award type · date · agency · geography · keyword | **full AdvancedFilterObject** (incl. NAICS, PSC, amount) |
+| Daily *all-contracts* delta | ✅ correct | ✗ would truncate / force chunking |
+| Narrow *vertical* pull (e.g. construction NAICS only) | ✗ cannot filter NAICS at API | ✅ pre-filter NAICS/PSC; a narrow window is usually < 500K |
+
+Keep `bulk_download/awards` for the full daily delta. If a **campaign-specific narrow feed** is ever wanted (one NAICS sector, one agency's grants), `download/search` with NAICS/PSC filters is the tool — trading the 500K cap (rarely binding on a narrow slice) for API-side targeting.
+
+### 6.5 Catalog coverage gap + high-value endpoints not in use
+
+**Catalog gap (partial):** endpoints that **inline** their `Filters` type (e.g. `bulk_download/awards`) are fully queryable from `contract_md`. Endpoints that **reference the external** `AdvancedFilterObject` (the whole `search` family, `download/awards`, …) are **not** — `search_filters.md` sits one level above `contracts/` and the builder's `CONTRACTS_MARKER` skips it. So the full filter vocabulary for ~37 filterable endpoints is not in the catalog. **Fix:** extend [`usaspending_api_catalog.py`](../pipelines/usaspending/usaspending_api_catalog.py)'s fetch to also ingest `api_contracts/search_filters.md` (+ shared `*data_structures*`) as catalog rows / a sidecar column.
+
+**High-value endpoints not currently used:**
+- **`GET /api/v2/awards/last_updated/`** — the date the award data was last refreshed. A **freshness oracle** → ideal `skip_if_current` gate for the daily cron (don't pull if upstream hasn't advanced).
+- **`POST /api/v2/bulk_download/list_monthly_files/`** — lists USAspending's *pre-generated* monthly archive ZIPs — an alternative cold-start bulk source with no async job to babysit.
+- **`POST /api/v2/download/search/`** — Advanced-Search download (full filter object) — the NAICS/PSC-narrowed pull path (§6.4).
+- **`GET /api/v2/references/data_dictionary/`** — the authoritative column dictionary; maps the 297 landed columns → definitions for the mirror's column map.
+
+---
+
+## 7. Evidence appendix (reproducible, read-only)
 
 ```bash
 # Catalog interrogation (176 rows; delta-endpoint extract; temporal-lever census)
@@ -311,6 +378,15 @@ doppler run -p core-x -c prd -- uv run --no-project \
 # Endpoint capability grep — sub_award_types / assistance support (§3.5)
 doppler run -p core-x -c prd -- uv run --no-project \
   --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/usaspending_bulkdl_caps.py
+
+# Full payload surface — 176-endpoint census + filter-key vocabulary per endpoint (§6.1, 6.4)
+doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/usaspending_payload_surface.py
+# bulk_download/awards COMPLETE Filters type (the get-all payload ceiling, §6.2) — in contract_md Data Structures
+doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/bulkdl_filters_def.py
+# The canonical AdvancedFilterObject the catalog does NOT ingest (§6.3, 6.5):
+curl -sS "https://raw.githubusercontent.com/fedspendingtransparency/usaspending-api/master/usaspending_api/api_contracts/search_filters.md"
 
 # Live ledgers (frontier + bulk vintage)
 doppler run -p core-x -c prd -- bash -c \
