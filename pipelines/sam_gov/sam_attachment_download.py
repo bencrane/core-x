@@ -68,7 +68,12 @@ FEED = "sam_attachment_download"
 # non-export-controlled files only (guardrail).
 _UNIV = ("size_bytes >= 1 AND file_name IS NOT NULL "
          "AND access_level = 'public' AND export_controlled = false")
-_SIZECAP = "size_bytes >= 10000 AND size_bytes < 50000000"   # [10 KB, 50 MB)
+# DECLARED-size prefilter only — NOT a real-size bound. size_bytes is SAM's
+# corrupted size (true mod 10 MB for >=10 MB files; see manifest KNOWN DEFECT), so
+# a real >=50 MB file can declare <50 MB and PASS this gate. That is intentional and
+# safe: the real 50 MB ceiling is enforced at fetch in _download_one on the
+# post-redirect Content-Length AND the running stream length (-> status=oversize).
+_SIZECAP = "size_bytes >= 10000 AND size_bytes < 50000000"   # declared band, not real bytes
 _TEXT = "mime_type IN ('pdf','docx','doc','txt')"
 _HV = "(" + " OR ".join(                                      # high-value filename signal
     f"lower(file_name) LIKE '%{k}%'" for k in
@@ -272,7 +277,10 @@ def build_worklist(tier: str, storage_options: dict, manifest_uri: str, worklist
           FROM m WHERE {pred}
         ) WHERE rn = 1
     """).to_arrow_table()
-    total_bytes = con.execute(f"""
+    # Declared LOWER BOUND: size_bytes is corrupted (mod 10 MB) for >=10 MB files, so
+    # this pre-flight sum undercounts true bytes. Real bytes are summed post-download
+    # from the ledger's size_downloaded (ops row bytes_downloaded).
+    total_bytes_declared_lb = con.execute(f"""
         SELECT coalesce(sum(size_bytes), 0) FROM (
           SELECT size_bytes, row_number() OVER (PARTITION BY resource_id
                    ORDER BY attachment_order, notice_id) AS rn
@@ -281,8 +289,9 @@ def build_worklist(tier: str, storage_options: dict, manifest_uri: str, worklist
     """).fetchone()[0]
     lance.write_dataset(wl, worklist_uri, mode="overwrite",
                         data_storage_version="2.1", storage_options=storage_options)
-    print(f"worklist[{tier}] distinct_files={wl.num_rows:,} bytes={total_bytes:,} "
-          f"(~{total_bytes / 1e9:.1f} GB) -> {worklist_uri}", flush=True)
+    print(f"worklist[{tier}] distinct_files={wl.num_rows:,} "
+          f"declared_bytes_LOWERBOUND={total_bytes_declared_lb:,} "
+          f"(~{total_bytes_declared_lb / 1e9:.1f} GB; >=10 MB undercounted) -> {worklist_uri}", flush=True)
     return wl
 
 
@@ -311,11 +320,12 @@ def _download_one(session, url: str, notice_id: str | None, *,
     wall-clock backstop. Returns ``(status_label, http_status, body|None, attempts, error|None)``.
 
     The download endpoint 303-redirects to S3; the manifest's declared ``size_bytes``
-    is unreliable (some files carry a placeholder, e.g. 10,000,000 for a real 210 MB
-    file), so the >50 MB ceiling is enforced on the POST-redirect Content-Length AND
-    on the running stream length — not on the declared size. ``read_timeout`` bounds a
-    single socket read; ``wallclock`` bounds the whole transfer so a slow-roll tarpit
-    cannot hang the run.
+    is corrupted for >=10 MB files (verified 2026-06-06): SAM reports
+    ``((true-1) mod 10_000_000)+1``, a lower bound only — a real 210 MB file declares
+    10,000,000; a real 45 MB file declares ~5 MB. So the >50 MB ceiling is enforced on
+    the POST-redirect Content-Length AND on the running stream length — NEVER on the
+    declared size. ``read_timeout`` bounds a single socket read; ``wallclock`` bounds
+    the whole transfer so a slow-roll tarpit cannot hang the run.
 
     Labels: downloaded | restricted | gone | oversize | failed."""
     import time
@@ -513,7 +523,13 @@ def run_download(
                 size_dl = len(body)
                 claimed = (f.get("mime_type") or "").lower()
                 sniffed = _sniff_mime(body[:512])
-                size_match = size_dl == int(f["size_bytes"] or 0)
+                # CONSISTENCY, not raw equality: SAM corrupts >=10 MB declared sizes to
+                # ((true-1) mod 10_000_000)+1 (manifest KNOWN DEFECT), so size_dl==decl
+                # false-flags every >=10 MB file. Match iff the declared value is that
+                # modulo image of the bytes we actually got; a false then means a REAL
+                # anomaly (truncation / wrong file) — what the <0.5% gate exists to catch.
+                decl = int(f["size_bytes"] or 0)
+                size_match = decl == ((((size_dl - 1) % 10_000_000) + 1) if size_dl >= 1 else 0)
                 m_match = _mime_match(claimed, sniffed)
                 key = f"{key_prefix}{rid}"
                 s3.put_object(Bucket=bucket, Key=key, Body=body,

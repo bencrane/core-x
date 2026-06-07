@@ -72,6 +72,18 @@ GET sam.gov/.../files/{rid}/download   (4 public files in tier size range)
 file**. The plan's integrity flag is sound for public content (resolves the
 prompt's finding #3 in the plan's favor).
 
+> **⚠️ CORRECTION (verified live 2026-06-06) — F3 was sampled only on small files.**
+> All four probed files above are 22 KB–1.6 MB (< 10 MB), so none exercised the
+> defect. `size_bytes` is **corrupted for files ≥10 MB**: SAM returns
+> `((true_size − 1) mod 10,000,000) + 1` — a **lower bound** on true bytes, exact
+> only below 10 MB, and **not invertible**. Raw `downloaded == size_bytes` does NOT
+> hold for ≥10 MB files (declared→real: 5,066,771→45,066,771; 4,019,768→14,019,768;
+> 2,253,038→32,253,038; 10,000,000→~210 MB). The integrity check must use
+> **modulo-10 MB consistency**, not raw equality (implemented in
+> `sam_attachment_download.py` `run_download`), and true size is authoritative only
+> via the ledger's `size_downloaded`. Downloads were never at risk — the 50 MB cap is
+> enforced on real Content-Length + stream length at fetch, not on `size_bytes`.
+
 ### F4 — Restricted files refuse with `401` (not 403), JSON error, 283 bytes
 ```
 private           661ea3e5… -> 401 application/json 283B  {"errors":{"code":"UNAUTHORIZED",...}}

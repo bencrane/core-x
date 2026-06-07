@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_runs (
     oversize         int,                    -- real Content-Length >= 50 MB cap (declared size lies; no store)
     bytes_downloaded bigint,                 -- sum of stored object sizes this run
     sustained_mbps   numeric,                -- measured throughput (bytes / transfer wall-clock)
-    size_mismatches  int,                    -- downloaded rows where size_downloaded != size_expected
+    size_mismatches  int,                    -- downloaded rows whose bytes are NOT modulo-10MB-consistent with declared size_expected (real anomaly; SAM's >=10 MB mod-10MB corruption is excluded so it doesn't false-flag)
     mime_mismatches  int,                    -- downloaded rows where magic-byte sniff != declared mime
     status           text,                   -- 'success' | 'interrupted' | 'error'
     error            text,
