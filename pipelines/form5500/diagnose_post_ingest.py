@@ -368,9 +368,15 @@ def render(stats: list[dict], xg: dict, started: dt.datetime, elapsed: float) ->
         L.append(f"| `form5500_{s['name']}` | {s['stem']} | {s['rows']:,} | {s['ncols']} | "
                  f"{s['n_frags']} | {s['n_data_files']} | `{ack}` {flag} | {btree} | {bm} |")
     L.append("")
-    L.append(f"**Index plan vs. landed:** all 7 datasets carry `BTREE(ACK_ID)`; the two head "
-             f"tables (`main`, `sf`) additionally carry per-column BTREEs on the business "
-             f"identity — `{total_btree}` BTREE total, matching the ingest's committed plan. "
+    def _btree_fields(s: dict) -> set:
+        return {c for v in s["idx"].values()
+                if v["type"] == "BTree" or v["type"].upper().startswith("BTREE")
+                for c in v["fields"]}
+    multi = [s["name"] for s in stats if len(_btree_fields(s)) > 1]
+    L.append(f"**Index plan vs. landed:** all {len(stats)} datasets carry `BTREE(ACK_ID)`; "
+             f"{len(multi)} additionally carry per-column BTREEs on business-identity / "
+             f"composite-join keys ({', '.join(f'`{m}`' for m in multi)}) — `{total_btree}` "
+             f"BTREE total, matching the ingest's committed plan. "
              f"**BITMAP indexes built: {total_bitmap}** "
              f"{'(none — every indexed Form 5500 column is high-cardinality identifier/temporal; '
               'no low-NDV categorical was indexed at ingest).' if total_bitmap == 0 else ''}")
