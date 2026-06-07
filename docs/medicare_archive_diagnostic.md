@@ -4,6 +4,10 @@
 **Source of record probed:** `s3://data-sink/landing/cms/medicare-datasets/` (Cloudflare R2, Gen-3 landing tier).
 **Probe:** [`scripts/recon_medicare_archive.py`](../scripts/recon_medicare_archive.py) — reproducible via
 `doppler run -p core-x -c prd -- python3 scripts/recon_medicare_archive.py > /tmp/medicare_recon.json`.
+**Committed evidence:** the full per-member schema / grain / drift ground truth this report rests on is checked in at
+[`docs/reference/medicare_archive_recon_evidence.md`](reference/medicare_archive_recon_evidence.md) (distilled from
+the probe output by `scripts/recon_medicare_evidence.py`). **No claim here depends on an out-of-repo file** — the
+`/tmp` path above is only the raw intermediate the generator consumes.
 **Method (anti-OOM, strict):** each ZIP's central directory was read from the object **tail** via a handful of
 HTTP Range GETs (`_S3RangeReader` → stdlib `zipfile`); each data member was characterised by
 **stream-decompressing only its leading deflate blocks** — capped at 50 rows / 1 MiB decompressed, whichever
@@ -12,7 +16,7 @@ never invoked.** The full **89.78 GB logical corpus** was mapped while transferr
 hundred MB of prefix bytes. Single-pass head sampling — row-level claims (summary rows, NPI validity) describe
 the **first 50 rows** of each file and are stated as such; the recommended ingest-time guards do not rely on them.
 
-> **Post-review correction (Opus-4.8 architectural review, verified against the recon JSON).** Several §3/§4 claims
+> **Post-review correction (Opus-4.8 architectural review, verified against the committed recon evidence).** Several §3/§4 claims
 > below were corrected: **DME C1/C2 have additive drift** (72→97, 68→93 at 2017) — not "stable"; **A1 56-col is a
 > name-subset of 81-col but NOT a positional prefix** (cols inserted at index 55, displacing `Bene_Avg_Risk_Scre`);
 > **R1 Provider Enrollment is a five-table relational archive**, not one flat file; **QPP drift is severe**
