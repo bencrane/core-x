@@ -136,6 +136,12 @@ CREATE OR REPLACE TEMP MACRO vdate(x) AS (
             BETWEEN DATE '1982-01-01' AND (current_date + INTERVAL 2 YEAR)
        THEN TRY_CAST(nullif(trim(x), '') AS DATE) ELSE NULL END
 );
+-- Lower-bound-only validation. Used for contract_end_date ONLY: a contract's end is
+-- legitimately future (multi-year awards run past now+2y), so it carries no upper bound.
+CREATE OR REPLACE TEMP MACRO vdate_lb(x) AS (
+  CASE WHEN TRY_CAST(nullif(trim(x), '') AS DATE) >= DATE '1982-01-01'
+       THEN TRY_CAST(nullif(trim(x), '') AS DATE) ELSE NULL END
+);
 CREATE OR REPLACE TEMP MACRO usps(s) AS (
   CASE upper(trim(s)) {cases}
        ELSE CASE WHEN regexp_full_match(upper(trim(s)), '[A-Z]{{2}}')
@@ -144,10 +150,23 @@ CREATE OR REPLACE TEMP MACRO usps(s) AS (
 """
 
 
-def _build_sql(local_source: str) -> str:
+def _build_sql(local_source: str, ced_upper: str | None = None,
+               emit_true_ced: bool = False) -> str:
+    """ced_upper: contract_end_date upper-bound override. None (default) = lower-bound-only
+    (the canonical behavior — a contract's end is legitimately future). An explicit
+    'YYYY-MM-DD' reproduces the original [1982, that-date] window, used solely to
+    reconstruct the v15 surrogate keys for the additive patch (patch_contract_end_date.py).
+    emit_true_ced: also project a non-hashed `contract_end_date_true` (lower-bound-only) —
+    patch-support only; absent on a normal ingest so it never lands in the dataset."""
     src = local_source.replace("'", "''")
     base = os.path.basename(local_source).replace("'", "''")
     abs_ph = ", ".join(f"'{p}'" for p in _ABS_PLACEHOLDERS)
+    ced_expr = ('vdate_lb("Contract End Date")' if not ced_upper else
+                "CASE WHEN TRY_CAST(nullif(trim(\"Contract End Date\"), '') AS DATE) "
+                f"BETWEEN DATE '1982-01-01' AND DATE '{ced_upper}' "
+                "THEN TRY_CAST(nullif(trim(\"Contract End Date\"), '') AS DATE) ELSE NULL END")
+    true_ced_line = (",\n    vdate_lb(\"Contract End Date\") AS contract_end_date_true"
+                     if emit_true_ced else "")
     serial = "concat_ws(chr(31), " + ", ".join(
         f"coalesce(CAST({c} AS VARCHAR), chr(30))" for c in PUBLISHED) + ")"
     return f"""
@@ -166,7 +185,7 @@ proj AS (
     clean_text("Agency Tracking Number")               AS agency_tracking_number,
     clean_text("Contract")                             AS contract,
     vdate("Proposal Award Date")                       AS proposal_award_date,
-    vdate("Contract End Date")                          AS contract_end_date,
+    {ced_expr}                                         AS contract_end_date,
     clean_text("Solicitation Number")                  AS solicitation_number,
     TRY_CAST(nullif(trim("Solicitation Year"), '') AS SMALLINT) AS solicitation_year,
     vdate("Solicitation Close Date")                   AS solicitation_close_date,
@@ -210,7 +229,7 @@ proj AS (
     CASE WHEN clean_text("UEI") IS NULL THEN NULL
          ELSE regexp_full_match(clean_text("UEI"), '[A-Za-z0-9]{{12}}') END AS uei_valid,
     now()                                              AS ingested_at,
-    '{base}'                                           AS source_file
+    '{base}'                                           AS source_file{true_ced_line}
   FROM src
 ),
 hashed AS (SELECT *, sha256({serial}) AS _h FROM proj)

@@ -341,9 +341,17 @@ standalone dataset, wholesale snapshot (`mode="overwrite"`, matching `sba_foia`)
   (0 unmapped); `Zip`→ZIP5; `Award Amount`→`DECIMAL(18,2)`; flags kept ternary `Y/N/U`; dates
   window-validated; `Abstract` placeholder-nulled (→190,034 embeddable) + whitespace-flattened
   (0 residual newlines).
-- **⚠ Directive edge — `contract_end_date`:** the uniform `[1982-01-01, now+2y]` window nulled **129**
-  legitimate future-dated contract ends (>2028-06). Per-spec; candidate follow-up is to exempt
-  `contract_end_date` from the upper bound (a contract's end is legitimately future).
+- **✅ `contract_end_date` upper-bound — RESOLVED (in-place patch, v15→v30).** `contract_end_date` is
+  now **lower-bound-only** (`vdate_lb`; a contract's end is legitimately future) while the other four
+  dates keep the full `[1982-01-01, now+2y]` window. The originally-nulled future dates were restored
+  additively (no re-ingest) by `pipelines/sbir/patch_contract_end_date.py`: it reconstructs each row's
+  stored surrogate via the original projection (`ced_upper='2028-06-07'`), then `merge_insert`-updates
+  only `contract_end_date` keyed on `sbir_surrogate_id` and rebuilds all 14 indices. **128 rows
+  restored** (`ced` non-null 107,802 → 107,930); the originally-cited "129" was 128 upper-bound
+  casualties **+ 1 genuine sub-1982 date** that correctly stays NULL under the retained lower bound.
+  Logged in `ops.sbir_awards_runs` (`operation=restore_contract_end_date`). Caveat: the patched rows'
+  surrogate was hashed with `ced=NULL`; it is a stable opaque PK post-mint, and a future full
+  re-ingest (now lower-bound-only by default) re-aligns the hash under overwrite semantics.
 
 ---
 
