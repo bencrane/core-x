@@ -14,6 +14,7 @@
 | **Best endpoint for a rolling delta pull?** | **`POST /api/v2/bulk_download/awards/`** — the only date-bounded contract endpoint that is *uncapped* (async server-side CSV) **and** documents `date_type: last_modified_date` in its own contract. Every paginated alternative truncates at this volume (§1.3, §4). |
 | **Exact temporal-filter payload?** | A `last_modified_date` `date_range` over the trailing window + `prime_award_types:["A","B","C","D"]`. Verbatim JSON in §2.1. **`last_modified_date`, not `action_date`** — the warehouse lags 7+ days (90 for DoD), so an `action_date` daily window returns ≈0 rows (§2.3). |
 | **Is the ingest code already there?** | **Partially — the API tier already exists and works.** `usaspending_api_landing.py` wraps exactly this endpoint and landed **583,776 rows** on 2026-06-04. The dead in-SoR `usaspending_daily_delta.py` is **already removed** from the checkout. Full inventory §3. |
+| **What grain / coverage does the pull capture?** | **Prime CONTRACT TRANSACTIONS only** (FPDS, types A/B/C/D), at **transaction grain** (measured: 1.17 txn/award — the "award grain" docstring is wrong). **No subawards, no assistance/FABS** (grants/loans). And the captured freshness is currently **stranded** — no cron, no consuming mirror (§3.4–3.5). |
 | **Rate limits / pagination to respect?** | No API key, **no numeric rate limit** — throttling is **per source IP** (F5 BotDefense). `bulk_download/awards` is uncapped but async (submit → poll `status` ≤60 min → download ZIP). The paginated/`download` endpoints carry hard caps (10K and 500K) that forbid their use here. Full matrix §4. |
 | **⚠️ Does a 7-day lookback actually catch delayed reporting?** | **Only if runs never slip.** A *fixed* 7-day window with **no watermark** loses any record stamped during a >7-day cron outage. The deployed pipeline uses **45 days** for exactly this robustness. Reconcile before narrowing to 7 (§2.4, §5). |
 
@@ -137,11 +138,7 @@ USAspending's warehouse lags the real contract action by **7+ days** (civilian) 
 - The deployed landing tier uses a **fixed rolling window with NO watermark** (§3). A fixed 7-day window that misses >7 consecutive daily runs **permanently loses** every record stamped in the un-covered gap — there is no state to back-fill from.
 - The deployed window is **45 days** precisely for this robustness: it tolerates ~38 days of consecutive missed runs before data loss, at the cost of re-pulling overlap daily (harmless — the dedup is downstream).
 
-**Two ways to honor the 7-day directive without the fragility:**
-1. **Keep a fixed window, widen the safety margin** (the deployed 45-day choice). A 7-day lookback is the *minimum*; 45 days is the *robust* setting. Re-pull overlap is free.
-2. **Watermark-drive the window**: `window_start = min(today − 7d, last_successful_window_end − 1d)`; `window_end = today`. Steady state = 7 days; auto-widens to close any gap after an outage. Requires promoting the audit ledger to a watermark (it is explicitly *not* one today — §3).
-
-Recommendation: **option 2** if 7-day is a hard requirement (gives the narrow steady-state window the directive wants *and* gap-safety); otherwise leave the deployed 45-day fixed window, which already over-covers a 7-day lookback.
+The fix is **not** to pull 45 days every day — it is to split cold-start (one wide gap-close) from steady-state (narrow daily) and add a watermark so an outage auto-widens the next pull. That corrected window model is §5.
 
 ### 2.5 Optional pre-flight — `POST /api/v2/download/count/`
 
@@ -194,6 +191,42 @@ Plus the SAM↔USAspending crosswalk consumer: [`crosswalk_sam_usaspending.ts`](
 
 The landing ledger is **audit-only, explicitly NOT a watermark** ([DDL comment](../pipelines/usaspending/ops_usaspending_award_search_api_landing_runs.sql)): "the landing window is a fixed rolling `[today − WINDOW_DAYS … today]`; runs overlap by design." This is the exact gap §2.4 flags for a fixed 7-day window.
 
+### 3.4 Grain & coverage of the live pull — MEASURED (resolves the docstring contradiction)
+
+Probed the live landing `pull_date=2026-06-04` (583,776 rows × 297 cols) directly. The module docstring **and** the rebuild plan call this "award grain" — that is **wrong**. Ground truth from the bytes:
+
+| Property | Measured | Verdict |
+|---|---|---|
+| distinct `contract_transaction_unique_key` | **583,776 = row count** | **Transaction grain** — the transaction is the PK |
+| distinct `contract_award_unique_key` | 497,168 | **1.174 rows / award** |
+| `modification_number` spread | 462,333 awards @1 mod · 23,930 @2 · 4,693 @3 · … 8+ | multiple txns per award ⇒ transaction grain |
+| assistance keys (FABS) | **0 columns present** | **No assistance** — contracts only |
+| subaward markers | **0 columns present** | **No subawards** |
+| `award_type_code` distribution | C 277,242 · A 182,394 · B 95,972 · D 28,168 | only the **4 prime CONTRACT** types |
+| `last_modified_date` ∈ | [2026-04-20 … 2026-06-02] | the 45-day pull window |
+| `action_date` ∈ | **[1993-11-15 … 2026-06-02]** | 30-yr-old awards re-modified in-window — hard proof an `action_date` window would miss them |
+
+**Direct answers to "what is / isn't the daily pull capturing":**
+- **Transaction grain — YES, already.** But **prime contracts only** (FPDS, types A/B/C/D), at transaction grain (1.17 txn/award). The path is misleadingly named `…/award_search/`; the data inside is `Contracts_PrimeTransactions`.
+- **Subawards — NO.** Zero subaward columns; the payload carries no `sub_award_types`.
+- **Assistance (FABS — grants / loans / direct payments) — NO.** Zero assistance columns; `prime_award_types` is contracts-only.
+- **Not actually daily, and stranded.** No cron (single manual pull), and **no consuming mirror** — even the contract-transaction freshness it captures is read by nothing today.
+
+**Net:** right now **zero bulk tables receive any API freshness.** `award_search` (78.4M, award), `transaction_search_fpds` (107M, contract txn), `transaction_search_fabs` (128.8M, assistance txn), and `subaward_search` (9.8M) are all frozen at the `2026-05-06` bulk vintage. The landing *captures* fresh contract transactions but nothing rolls them up or unions them in.
+
+### 3.5 Adding the missing grains — the endpoint supports all of them (but each is a separate dataset)
+
+`bulk_download/awards` natively exposes the full surface (confirmed in-contract: `prime_award_types`, `sub_award_types ∈ {procurement, grant}`, `columns`, all optional). The endpoint always emits at **transaction grain** (its member is `*_PrimeTransactions_*`). But each award class / sub level returns a **separate CSV member with a different schema**, so they cannot share one landing:
+
+| Add to the payload | New ZIP member | cols | Grain / dedup PK | Lands as |
+|---|---|---|---|---|
+| *(current)* `prime_award_types: A,B,C,D` | `Contracts_PrimeTransactions` | 297 | contract txn / `contract_transaction_unique_key` | exists ✓ |
+| `prime_award_types += 02…11,-1` | `Assistance_PrimeTransactions` | 112 | assistance txn / `assistance_transaction_unique_key` | **NEW partition** |
+| `sub_award_types: [procurement]` | `Contracts_Subawards` | 118 | contract subaward / `prime_award_unique_key`+sub | **NEW partition** |
+| `sub_award_types: [grant]` | `Assistance_Subawards` | 113 | assistance subaward | **NEW partition** |
+
+**Implementation caveat (why this is not a one-line payload edit):** the landing does `read_csv('*.csv', all_varchar=true)` over the *whole* extracted ZIP. Adding assistance/subaward types to the same job drops 2–4 differently-shaped CSVs into that glob and the union corrupts into a null-filled super-schema. Capturing the extra grains requires landing **each member into its own grain-appropriate Lance dataset** (per-member `read_csv`, each keyed on its own PK). Subawards additionally ride a **known-stale FFATA feed** (single-digit 90-day volume per `GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md` §3.3) — low value relative to build cost. Assistance (FABS) is the higher-value add if GTM needs grants/loans.
+
 ---
 
 ## 4. API rate limits & pagination boundaries the ingestion script must respect
@@ -230,17 +263,28 @@ core-x has **no commit-lock helper**. The landing tier writes to an **immutable,
 
 ---
 
-## 5. Reconciliation — 7-day directive vs 45-day deployed vs 90-day strategy
+## 5. Window strategy — cold-start gap-close ONCE, then narrow daily (the corrected model)
 
-| Window | Where it comes from | What it buys | Risk |
+The per-pull window is **not** a flat "45 (or 90) days every day." That is what the deployed landing does today only because it is stateless (no watermark, no cron) and a fixed re-pull is the simplest robust thing. For a true daily cadence the window has **two phases**:
+
+| Phase | `last_modified_date` window | Volume | Frequency |
 |---|---|---|---|
-| **7-day lookback** (directive §3) | this directive | Minimal daily re-pull volume (~156K txns) | Fixed + no watermark → **data loss on any >7-day outage** (§2.4) |
-| **45-day rolling** (deployed) | `usaspending_api_landing.py` `WINDOW_DAYS=45` | Tolerates ~38-day outage; re-pull overlap free | Larger daily volume (583K txns) — harmless (downstream dedup) |
-| **90-day strategy** (directive header) | the overall horizon | Coverage/retention target of the rolling system | Not a per-pull window — it is the dedup-mirror's horizon, not the API call's |
+| **Cold start (once)** | `[bulk_snapshot − overlap, today]` = `[2026-05-03, today]` (~34d) | one-time catch-up | run once to close bulk → today |
+| **Steady state (daily)** | `[today − N, today]`, **N ≈ 4–7** | ~90K–156K txn/pull | every day |
 
-The three are **not** in conflict once separated: the **90-day** is the *strategy horizon* (how far back the resolved/deduped served view stays fresh), the **7-day** is the *daily pull window*, and **45-day** is the *deployed pull window* that already over-satisfies a 7-day lookback. The only real decision the directive forces is **§2.4**: narrow the deployed window 45→7 (and then add a watermark to stay gap-safe), or leave 45 and treat "7-day lookback" as already-covered. **Do not ship a fixed 7-day window without a watermark** — that is strictly more fragile than what is already deployed.
+- **Cold start** closes the gap between the bulk snapshot (`2026-05-06`) and now in one wide async job. *For contract transactions this is already effectively done* — the existing manual landing pulled `[2026-04-20 … 2026-06-04]`, which over-covers the gap. A fresh cold-start is only needed for **newly added grains** (assistance / subawards, §3.5).
+- **Steady state** pulls only a short trailing window each day. `last_modified_date` semantics make a small `N` *complete*, not lossy: a 90-day-late DoD publish lands with `last_modified_date = publish date`, so `[today − 7, today]` catches it the day it appears — `N` does **not** need to span the warehouse/publish delay.
 
-The downstream dedup/resolve layer (the `usaspending_mirror/award` mirror, planned in [`USASPENDING_SUBSYSTEM_REBUILD_PLAN.md`](plans/USASPENDING_SUBSYSTEM_REBUILD_PLAN.md)) is what turns the overlapping daily landings into a clean 90-day-fresh served surface, keyed on `generated_unique_award_id` with `max(last_modified_date)` precedence. The delta pull's only job is to **land the window verbatim**; correctness of the 90-day picture is the mirror's job, not the API call's.
+**The one thing this requires: a watermark** (the deployed ledger is explicitly *not* one). Promote it so a missed run auto-widens the next pull instead of dropping the gap:
+```
+window_end   = today
+window_start = min(today − N, last_successful_window_end − overlap)   # snaps back to N after it catches up
+```
+Steady state = `N` days; an outage transparently widens the next window to cover it. This is exactly the operator's model — **wide once, narrow daily** — without the fixed-window fragility, and ~4× cheaper than re-pulling 45 days every day (≈156K vs 583K rows/pull).
+
+**How the three numbers relate (no conflict once separated):** **90-day** = the *strategy horizon* the served view stays fresh over (the mirror's job); **N=4–7** = the *daily* pull window; **cold-start ~34d** = the *one-time* bulk→today catch-up; **45-day fixed** = merely the *current deployed* stopgap that over-covers a 7-day lookback. **Do not ship a fixed small window without a watermark** — that alone is strictly more fragile than the deployed 45-day.
+
+The downstream dedup/resolve layer (the `usaspending_mirror/award` mirror, planned in [`USASPENDING_SUBSYSTEM_REBUILD_PLAN.md`](plans/USASPENDING_SUBSYSTEM_REBUILD_PLAN.md)) turns the overlapping daily landings into a clean 90-day-fresh served surface, keyed on `generated_unique_award_id` with `max(last_modified_date)` precedence. The delta pull's only job is to **land the window verbatim**; correctness of the 90-day picture is the mirror's job, not the API call's. **Note the grain mismatch (§3.4):** the landing is *transaction*-grain while the planned mirror is *award*-grain — the mirror build must roll transactions up to awards (`contract_award_unique_key`, latest `last_modified_date` wins), or a parallel transaction-grain mirror is needed to freshen `transaction_search_fpds`.
 
 ---
 
@@ -255,6 +299,18 @@ doppler run -p core-x -c prd -- uv run --no-project \
 # Full bulk_download/awards + download/count contract dump (request schema, cap prose)
 doppler run -p core-x -c prd -- uv run --no-project \
   --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/usaspending_bulkdl_detail.py
+
+# Grain & coverage of the live landing (§3.4) — txn vs award grain, subaward/assistance presence
+doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5' \
+  python3 /tmp/usaspending_landing_grain.py     # PULL_DATE=2026-06-04
+# → rows 583,776 = distinct contract_transaction_unique_key (txn PK); 1.174 rows/award;
+#   0 assistance cols, 0 subaward cols; award types C/A/B/D only;
+#   action_date ∈ [1993-11-15 … 2026-06-02] vs last_modified_date ∈ [2026-04-20 … 2026-06-02]
+
+# Endpoint capability grep — sub_award_types / assistance support (§3.5)
+doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/usaspending_bulkdl_caps.py
 
 # Live ledgers (frontier + bulk vintage)
 doppler run -p core-x -c prd -- bash -c \
