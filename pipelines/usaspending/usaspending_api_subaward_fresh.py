@@ -80,6 +80,14 @@ DEFAULT_CHUNK_DAYS = 10
 MAX_INFLIGHT = 4
 POLL_SECONDS = 30
 CHUNK_CAP_SECONDS = int(os.environ.get("USASPENDING_SUBAWARD_CHUNK_CAP", str(90 * 60)))
+RUN_CAP_SECONDS = int(os.environ.get("USASPENDING_SUBAWARD_RUN_CAP", str(6 * 3600)))
+# Zombie detection: a `running` job whose API-reported seconds_elapsed exceeds a width-keyed
+# budget is treated as stuck. rows/cols stay 0 for the entire healthy generation, so elapsed
+# is the only viable signal. Budgets are kept ABOVE the worst observed healthy time at every
+# width (1d healthy <=10m; dense 15d observed ~46m) so a slow-but-healthy job is never killed.
+# A deduped resubmit reports the OLD stuck job's large elapsed — which correctly trips this.
+ZOMBIE_BASE_SECONDS = int(os.environ.get("USASPENDING_SUBAWARD_ZOMBIE_BASE", str(20 * 60)))
+ZOMBIE_PER_DAY_SECONDS = int(os.environ.get("USASPENDING_SUBAWARD_ZOMBIE_PER_DAY", str(6 * 60)))
 
 INDEX_COLS = [
     "prime_award_unique_key", "subaward_number", "subawardee_uei", "prime_awardee_uei",
@@ -158,16 +166,47 @@ def _chunk_windows(start, end, chunk_days):
     return out
 
 
+def _zombie_budget(ws, we) -> int:
+    """Max generation seconds a healthy `running` job of this window width may take before it
+    is declared a zombie. Inclusive width in days; super-linear allowance per fact: width
+    drives generation time."""
+    days = (we - ws).days + 1
+    return ZOMBIE_BASE_SECONDS + ZOMBIE_PER_DAY_SECONDS * (days - 1)
+
+
+def _split_window(ws, we):
+    """Split [ws..we] into two DISJOINT, contiguous sub-windows that exactly cover it (fresh
+    request signatures ⇒ escape USAspending dedup; disjoint ⇒ no duplicate rows). Returns []
+    at the 1-day floor — a single day cannot be split, so a still-zombie 1-day window is a
+    bounded GAP (poison day)."""
+    days = (we - ws).days + 1
+    if days <= 1:
+        return []
+    mid = ws + dt.timedelta(days=days // 2 - 1)
+    return [(ws, mid), (mid + dt.timedelta(days=1), we)]
+
+
 def _run_chunks(windows, workdir):
     """Submit/poll all windows with an in-flight cap; download finished ones (retry-hardened).
-    Returns (n_downloaded, polls, gaps:list[str]). Each window that never finishes → gap."""
+    Returns (n_downloaded, polls, gaps:list[str]).
+
+    Zombie escape: a `running` job whose seconds_elapsed exceeds _zombie_budget (or that blows
+    CHUNK_CAP_SECONDS) is abandoned and its window is split into two disjoint sub-windows pushed
+    back as FRESH requests (different signature ⇒ escapes USAspending dedup; disjoint ⇒ no dup;
+    smaller ⇒ less likely to zombie). A window that still zombies at the 1-day floor is a bounded
+    GAP (poison day). `tried` prevents resubmitting a signature; RUN_CAP_SECONDS bounds the run."""
     shutil.rmtree(workdir, ignore_errors=True); os.makedirs(workdir, exist_ok=True)
     pending = list(windows)
     active, done, gaps = [], 0, []   # active: dicts {ws,we,fn,t0,resubs}
+    tried = set()                    # (ws,we) signatures already submitted — never resubmit
     polls = 0
+    run_t0 = time.time()
     while pending or active:
         while pending and len(active) < MAX_INFLIGHT:
             ws, we = pending.pop(0)
+            if (ws, we) in tried:    # defensive: never re-submit a tried signature (would dedup)
+                gaps.append(f"[{ws}..{we}]"); log(f"[{ws}..{we}] already tried -> GAP (skip)"); continue
+            tried.add((ws, we))
             fn = _submit(ws, we)
             active.append({"ws": ws, "we": we, "fn": fn, "t0": time.time(), "resubs": 0})
             log(f"submitted [{ws}..{we}] -> {fn}")
@@ -195,11 +234,30 @@ def _run_chunks(windows, workdir):
                     still.append(j); log(f"[{j['ws']}..{j['we']}] {s} -> resubmitted")
                 else:
                     gaps.append(f"[{j['ws']}..{j['we']}]"); log(f"[{j['ws']}..{j['we']}] {s} twice -> GAP")
-            elif time.time() - j["t0"] > CHUNK_CAP_SECONDS:
-                gaps.append(f"[{j['ws']}..{j['we']}]"); log(f"[{j['ws']}..{j['we']}] chunk cap -> GAP")
             else:
-                still.append(j)
+                # running / _transient / status=None / cap exceeded → zombie check.
+                # elapsed: prefer the API's own generation clock; fall back to local wall-clock
+                # when seconds_elapsed is absent (e.g. a `detail`-only unknown-file response).
+                elapsed = st.get("seconds_elapsed") or (time.time() - j["t0"])
+                hard_cap = (time.time() - j["t0"]) > CHUNK_CAP_SECONDS
+                if float(elapsed) > _zombie_budget(j["ws"], j["we"]) or hard_cap:
+                    halves = _split_window(j["ws"], j["we"])
+                    if halves:
+                        pending.extend(halves)   # fresh disjoint signatures; this job is abandoned
+                        log(f"[{j['ws']}..{j['we']}] ZOMBIE (elapsed={elapsed}) -> abandon, split {halves}")
+                    else:
+                        gaps.append(f"[{j['ws']}..{j['we']}]")  # 1-day floor → poison day
+                        log(f"[{j['ws']}..{j['we']}] ZOMBIE at 1-day floor -> GAP (poison day)")
+                else:
+                    still.append(j)
         active = still
+        if time.time() - run_t0 > RUN_CAP_SECONDS:
+            for j in active:
+                gaps.append(f"[{j['ws']}..{j['we']}]")
+            for ws, we in pending:
+                gaps.append(f"[{ws}..{we}]")
+            log(f"RUN CAP {RUN_CAP_SECONDS}s hit; {len(active) + len(pending)} window(s) -> GAP")
+            break
     return done, polls, gaps
 
 
