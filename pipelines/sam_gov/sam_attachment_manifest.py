@@ -26,6 +26,20 @@ R2 Lance read via Doppler, deps via uv. No SAM_API_KEY needed.
 Output: ``s3://data-sink/active/sam_opps_attachment_manifest/`` (Lance v2.0),
 grain = one row per attachment. ``download_url`` carries no secret.
 
+KNOWN DEFECT — ``size_bytes`` IS A LOWER BOUND, NOT TRUE SIZE (verified live
+2026-06-06). The source field ``a.get("size")`` from the attachment-list API is
+corrupted for files >=10 MB: SAM returns ``((true_size - 1) mod 10_000_000) + 1``
+— the true size with an unknown multiple of 10 MB subtracted. So ``size_bytes``
+is a LOWER BOUND on true bytes, EXACT only when true size < 10 MB, and NOT
+invertible (the 10 MB multiplier is destroyed — a declared 5 MB row may be a real
+45 MB file). True size is knowable only by measuring Content-Length at fetch; the
+byte-download stage records it as ``size_downloaded`` in the file ledger
+(``sam_attachment_files``), which is the authority for real sizes. Examples
+(declared -> real): 5,066,771 -> 45,066,771; 4,019,768 -> 14,019,768;
+2,253,038 -> 32,253,038; 10,000,000 -> ~210 MB. Consumers must NOT treat
+``size_bytes`` as a true size, a cap, or a storage budget above 10 MB — enforce
+real size at fetch (see ``sam_attachment_download.py`` _download_one).
+
     doppler run --project core-x --config prd -- \
       uv run --with pylance --with pyarrow --with requests --with 'psycopg[binary]' \
       python pipelines/sam_gov/sam_attachment_manifest.py --do-remaining --resume
@@ -257,6 +271,8 @@ def run_harvest(
                     "attachment_id": a.get("attachmentId"), "resource_id": rid,
                     "attachment_order": int(a.get("attachmentOrder") or 0),
                     "file_name": a.get("name"), "mime_type": (a.get("mimeType") or "").lstrip("."),
+                    # LOWER BOUND, not true size: SAM corrupts >=10 MB sizes to
+                    # ((true-1) mod 10_000_000)+1. See module docstring KNOWN DEFECT.
                     "size_bytes": int(a.get("size") or 0),
                     "access_level": a.get("accessLevel"),
                     "export_controlled": str(a.get("exportControlled", "0")) == "1",
@@ -294,7 +310,9 @@ def run_harvest(
             print(f"index phase skipped: {exc}", flush=True)
 
         completed_at = dt.datetime.now(dt.timezone.utc)
-        total_bytes = sum(int(r["size_bytes"] or 0) for r in rows)
+        # DECLARED lower bound only — size_bytes is corrupted (mod 10 MB) for >=10 MB
+        # files, so this undercounts true bytes. Real totals come from the file ledger.
+        total_bytes_declared_lb = sum(int(r["size_bytes"] or 0) for r in rows)
         stats = {
             "feed": FEED, "status": final_status, "active_total": active_total,
             "trigger_total": len(trigger_ids), "notices_covered": len(captured),
@@ -304,12 +322,14 @@ def run_harvest(
             "uncovered_notices": active_total - len(captured),
             "api_calls": calls["n"], "phase_b_ran": do_remaining, "error": error_text,
             "started_at": started_at, "completed_at": completed_at,
-            "stats": {"manifest_uri": manifest_uri, "total_bytes": total_bytes,
+            "stats": {"manifest_uri": manifest_uri,
+                      "total_bytes_declared_lowerbound": total_bytes_declared_lb,
                       "source": "sam.gov/api/prod/opps/v3 (frontend, no api_key)"},
         }
         _record_run(stats, dsn)
         print("SUMMARY:", {k: v for k, v in stats.items() if k != "stats"}, flush=True)
-        print(f"total_attachment_bytes={total_bytes:,} (~{total_bytes/1e9:.1f} GB)", flush=True)
+        print(f"total_attachment_bytes(declared LOWER BOUND; >=10 MB undercounted)="
+              f"{total_bytes_declared_lb:,} (~{total_bytes_declared_lb/1e9:.1f} GB)", flush=True)
     return {k: stats[k] for k in ("status", "attachments", "notices_covered",
                                   "trigger_covered", "uncovered_notices", "api_calls")}
 

@@ -60,7 +60,7 @@ GET https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}
 ```
 - `200 application/octet-stream`, honors HTTP `Range`, **no api_key, no quota**. The full URL is stored per-row in `download_url`.
 - **Verified behaviors you must code to:**
-  - Public file → `200`; downloaded byte length **equals `size_bytes` exactly**; magic bytes match `mime_type`.
+  - Public file → `200`; magic bytes match `mime_type`. Downloaded byte length equals `size_bytes` **only for files < 10 MB**. ⚠️ For files ≥10 MB, `size_bytes` is corrupted to `((true−1) mod 10,000,000)+1` (verified 2026-06-06) — a lower bound, not the real size. Check integrity by **modulo-10 MB consistency**, never raw equality; treat `size_downloaded` as the true size.
   - Restricted (`access_level!='public'` or `export_controlled=true`) → **`401`** with a JSON `UNAUTHORIZED` body.
   - Removed/dead resource → **`400`** (JSON `BAD_REQUEST`).
 
@@ -96,7 +96,7 @@ A manifest row is a **citation**; the same physical file is cited by many notice
 - `public`     = `access_level = 'public'`
 - `not_ec`     = `export_controlled = false`  *(724 EC rows excluded)*
 - `text`       = `mime_type IN ('pdf','docx','doc','txt')`
-- `size_cap`   = `10_000 <= size_bytes < 50_000_000`  *(exclusive 50 MB; the `>50MB` band is 1.3% of files but 40% of bytes)*
+- `size_cap`   = `10_000 <= size_bytes < 50_000_000`  *(**declared-size prefilter, NOT a real-size bound** — `size_bytes` is corrupted mod 10 MB for ≥10 MB files, so a real ≥50 MB file can declare <50 MB and pass; the real 50 MB ceiling is enforced at fetch on post-redirect Content-Length + stream length → `oversize`. The "1.3% of files / 40% of bytes" split is itself computed from corrupted declared sizes and understates large-file bytes.)*
 - `high_value` = `lower(file_name)` contains any of: `sow`, `pws`, `statement of work`, `performance work`, `scope of work`, `statement of objectives`, `specification`, `soo`
 
 **5b. Tiers** (counts are *citation rows* as-of-harvest, for comparison; the run iterates the
@@ -122,7 +122,7 @@ SELECT * FROM (
   FROM <tier_filtered_manifest>
 ) WHERE rn = 1
 ```
-Print the **distinct-file count** and `sum(size_bytes)` GB — that is the real request and storage budget.
+Print the **distinct-file count** and `sum(size_bytes)` GB. ⚠️ The byte total is a **lower bound** — `size_bytes` is corrupted mod 10 MB for ≥10 MB files, so it undercounts true storage. The real storage budget is `sum(size_downloaded)` over the ledger after the run; the request count (distinct files) is exact.
 
 ---
 
@@ -143,7 +143,7 @@ Print the **distinct-file count** and `sum(size_bytes)` GB — that is the real 
    | `http_status` | int32 | actual response code |
    | `sha256` | string | content hash — integrity (+ opportunistic cross-file dedup) |
    | `size_expected` / `size_downloaded` | int64 | manifest `size_bytes` vs actual bytes |
-   | `size_match` | bool | `size_downloaded == size_expected` |
+   | `size_match` | bool | bytes are **modulo-10 MB consistent** with `size_expected` (not raw `==`, since `size_expected`/`size_bytes` is corrupted mod 10 MB for ≥10 MB files) — `false` ⇒ real truncation/wrong-file anomaly |
    | `mime_claimed` / `mime_sniffed` / `mime_match` | string/string/bool | declared vs magic-byte |
    | `stored_uri` | string | exact R2 object path |
    | `attempts` | int32 | retry count |

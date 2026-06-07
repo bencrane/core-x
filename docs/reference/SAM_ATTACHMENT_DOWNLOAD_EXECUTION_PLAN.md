@@ -28,7 +28,7 @@ land them in R2, and track every file in a verifiable, auditable ledger.
   ```
   GET https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download
   ```
-  `200 application/octet-stream`, honors HTTP `Range`, **no api_key, no quota**. The full URL is stored per-row in `download_url`. **Observed (review F3/F4):** public files return bytes whose length **equals `size_bytes` exactly**; restricted files return **`401`** (JSON body); dead/removed resources return **`400`**.
+  `200 application/octet-stream`, honors HTTP `Range`, **no api_key, no quota**. The full URL is stored per-row in `download_url`. **Observed (review F3/F4):** public files return bytes whose length equals `size_bytes` **for files < 10 MB only**; restricted files return **`401`** (JSON body); dead/removed resources return **`400`**. ⚠️ **`size_bytes` is corrupted for files ≥10 MB** (verified 2026-06-06): SAM reports `((true−1) mod 10,000,000)+1`, a lower bound — F3's 4-file sample was all < 1.7 MB and missed it. Use `size_downloaded` as the true size; enforce the 50 MB cap on real Content-Length at fetch.
 
 - **Execution conventions (MANDATORY):**
   - **Run LOCAL / in-session, NOT on Modal** — SAM throttles datacenter egress IPs (429); residential IP is clean.
@@ -105,8 +105,8 @@ A row is a **citation**, not a file. Verified counts: 331,401 rows · 331,401 di
    | `status` | string | `downloaded` / `failed` / `restricted` / `gone` |
    | `http_status` | int32 | actual response code |
    | `sha256` | string | content hash — integrity (+ opportunistic cross-object dedup; M2) |
-   | `size_expected` / `size_downloaded` | int64 | manifest `size_bytes` vs actual |
-   | `size_match` | bool | equal? |
+   | `size_expected` / `size_downloaded` | int64 | manifest `size_bytes` (corrupted mod 10 MB for ≥10 MB — lower bound) vs actual bytes (true size) |
+   | `size_match` | bool | bytes **modulo-10 MB consistent** with `size_expected` (not raw `==`); `false` ⇒ real anomaly |
    | `mime_claimed` / `mime_sniffed` / `mime_match` | string/string/bool | declared vs magic-byte |
    | `stored_uri` | string | exact R2 path |
    | `attempts`, `first_attempt_at`, `completed_at`, `error` | | trail |
@@ -180,7 +180,7 @@ Write-time: `sha256` + `size_match` + `mime_match` per file, flagged on mismatch
 
 Computed on **distinct `resource_id`** (M4):
 - **`downloaded / (worklist_distinct − gone) >= 0.99`** (the `gone` bucket carves out attachments removed between harvest and download — `400/410`).
-- `size_match=false` and `mime_match=false` each **< 0.5%**, every such row inspected/explained.
+- `size_match=false` and `mime_match=false` each **< 0.5%**, every such row inspected/explained. (`size_match` is modulo-10 MB consistency, not raw equality — SAM's ≥10 MB mod-10 MB corruption is excluded so it does not inflate this; a `false` is a genuine truncation/wrong-file anomaly.)
 - Reconciliation: **`orphans = missing = corrupt = 0`.**
 - `ops.sam_attachment_download_runs` terminal row present with counts + bytes + `sustained_mbps` + the exact `worklist_filter`.
 - Ledger `sam_attachment_files` indexed (once, at end) and joins cleanly to the manifest on `resource_id`.
