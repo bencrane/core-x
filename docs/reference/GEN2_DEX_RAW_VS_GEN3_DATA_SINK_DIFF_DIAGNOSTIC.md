@@ -1,5 +1,12 @@
 # Gen-2 (`dex-raw-landing-zone`) vs Gen-3 (`data-sink`) — Differential Diagnostic
 
+> **🟥 SUPERSEDED — bucket PURGED 2026-06-07.** This diagnostic's verdict ("not safe to
+> bulk-delete") reflected the state *before* the operator confirmed DEX / polaris-server
+> MCP / `data-engine-x` were fully decommissioned. With those readers/writers gone, the
+> bucket was deleted in full (1.682 TiB). The live-dependency findings below are retained
+> for history. Full catalog + re-acquire gap list:
+> [`DEX_R2_CATALOG_AND_GEN3_COVERAGE_GAP.md`](./DEX_R2_CATALOG_AND_GEN3_COVERAGE_GAP.md).
+
 **Date:** 2026-06-07
 **Buckets:** both in the same R2 account (one credential set reads/writes both).
 **Method:** full recursive `rclone lsf` object listing of each bucket (size + server
