@@ -49,8 +49,12 @@ def main() -> None:
     p.add_argument("--shard-size", type=int, default=50_000)
     p.add_argument("--inter-call-sleep", type=float, default=0.1)
     p.add_argument("--checkpoint-every", type=int, default=2000)
-    p.add_argument("--max-shards", type=int, default=0, help="0 = all (smoke knob)")
+    p.add_argument("--max-shards", type=int, default=0, help="0 = all from --shard-start (smoke/worker knob)")
     p.add_argument("--max-notices-per-shard", type=int, default=0, help="0 = all (smoke knob)")
+    p.add_argument("--shard-start", type=int, default=0,
+                   help="first shard index — disjoint ranges let multiple workers run in parallel")
+    p.add_argument("--scratch-uri", default=SHARD_UNIVERSE_URI,
+                   help="per-worker scratch universe URI (must differ between concurrent workers)")
     p.add_argument("--manifest-base", default=MANIFEST_BASE)
     p.add_argument("--target-uri", default=TARGET_URI)
     a = p.parse_args()
@@ -61,13 +65,14 @@ def main() -> None:
 
     tgt = lance.dataset(a.target_uri, storage_options=so).to_table(columns=HARVEST_COLS)
     n = tgt.num_rows
-    nshards = (n + a.shard_size - 1) // a.shard_size
-    if a.max_shards:
-        nshards = min(nshards, a.max_shards)
+    total_shards = (n + a.shard_size - 1) // a.shard_size
+    start = a.shard_start
+    end = min(total_shards, start + a.max_shards) if a.max_shards else total_shards
     print(f"[{dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}] "
-          f"target={n:,} notices -> {nshards} shard(s) of {a.shard_size:,}", flush=True)
+          f"target={n:,} notices, {total_shards} total shards of {a.shard_size:,}; "
+          f"this worker processes shards [{start},{end})", flush=True)
 
-    for i in range(nshards):
+    for i in range(start, end):
         marker = os.path.join(MARKER_DIR, f"shard_{i:03d}.done")
         if os.path.exists(marker):
             print(f"shard {i:03d}: marker present — skip", flush=True)
@@ -76,13 +81,13 @@ def main() -> None:
         if a.max_notices_per_shard:
             sl = sl.slice(0, a.max_notices_per_shard)
         # tiny scratch universe (≤50K rows, 7 small cols → single-part R2 write, safe)
-        lance.write_dataset(sl, SHARD_UNIVERSE_URI, mode="overwrite",
+        lance.write_dataset(sl, a.scratch_uri, mode="overwrite",
                             data_storage_version="2.0", storage_options=so)
         muri = a.manifest_base.format(i=i)
         print(f"=== shard {i:03d}: {sl.num_rows:,} notices -> {muri} ===", flush=True)
         try:
             run_harvest(
-                storage_options=so, dsn=dsn, sam_active_uri=SHARD_UNIVERSE_URI,
+                storage_options=so, dsn=dsn, sam_active_uri=a.scratch_uri,
                 manifest_uri=muri, do_remaining=True,
                 max_notices=a.max_notices_per_shard or 0,
                 checkpoint_every=a.checkpoint_every, inter_call_sleep=a.inter_call_sleep,
