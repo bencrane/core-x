@@ -41,6 +41,7 @@ from .src.mcp.doppler import mcp as doppler_mcp
 from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
+from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.service_token import require_service_token
 
@@ -115,6 +116,10 @@ app.include_router(agent_runs_router)
 # gtm.clay_find_people (verbatim raw_payload + lossless identity keys). Service-token gated.
 app.include_router(clay_find_people_router)
 
+# clay-find-companies: raw, append-only landing of Clay find-companies records into
+# gtm.clay_find_companies (verbatim raw_payload + lossless identity keys). Service-token gated.
+app.include_router(clay_find_companies_router)
+
 # Pipeline: the post-payment GTM pipeline /run-step surface, vendored from hq-x.
 # Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
 # /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
@@ -131,6 +136,7 @@ def _info() -> dict:
             "agent_runs": True,        # /api/v1/agent-runs/* (SSE)
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
+            "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
         },
     }
 
