@@ -45,6 +45,34 @@ AND_NAICS = [
     "237110", "237130", "237310", "237990",
 ]
 
+# Environmental / hazard remediation services — the "EPA violation hits -> who gets the
+# call" set: assess (consulting/testing) -> remediate -> haul & dispose.
+REMEDIATION_NAICS = [
+    "562910",  # Remediation Services (bullseye)
+    "541620",  # Environmental Consulting Services
+    "541380",  # Testing Laboratories
+    "562112",  # Hazardous Waste Collection
+    "562211",  # Hazardous Waste Treatment and Disposal
+    "562219",  # Other Nonhazardous Waste Treatment and Disposal
+    "562111",  # Solid Waste Collection
+    "562212",  # Solid Waste Landfill
+    "562998",  # All Other Miscellaneous Waste Management Services
+    "562920",  # Materials Recovery Facilities
+    "238910",  # Site Preparation Contractors (excavation/abatement/demolition for cleanup)
+]
+
+# Equipment rental & leasing (construction-serving). NOTE: largely a PRIVATE-sector
+# business — SAM/FPDS only captures the federal-contracting slice. See module sizing.
+EQUIP_RENTAL_NAICS = [
+    "532412",  # Construction, Mining & Forestry Machinery & Equipment Rental (bullseye)
+    "532490",  # Other Commercial & Industrial Machinery & Equipment Rental
+    "532310",  # General Rental Centers
+    "532120",  # Truck, Utility Trailer & RV Rental & Leasing
+]
+
+NAICS_SETS = {"ad": AND_NAICS, "remediation": REMEDIATION_NAICS,
+              "equipment_rental": EQUIP_RENTAL_NAICS}
+
 AWARD_SEARCH = "s3://data-sink/active/usaspending/award_search/"
 FPDS_TXNS = "s3://data-sink/active/usaspending/transaction_search_fpds/"
 # Hardcoded (NOT env): P3 sets SAM_OPPS_LANCE_URI=target for the harvester, so the
@@ -115,7 +143,10 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--qualify-years", type=int, default=2)
     p.add_argument("--footprint-years", type=int, default=6)
-    p.add_argument("--target-uri", default=TARGET_URI)
+    p.add_argument("--naics-set", choices=sorted(NAICS_SETS), default="ad",
+                   help="which NAICS bundle to target (ad | remediation | equipment_rental)")
+    p.add_argument("--target-uri", default=None,
+                   help="default: _play1_target_universe_<set>/ ('ad' keeps the original path)")
     p.add_argument("--memory-limit", default="10GB")
     p.add_argument("--temp-dir", default="/tmp/duckdb_spill")
     p.add_argument("--dry-run", action="store_true", help="size only; do not write target universe")
@@ -125,7 +156,11 @@ def main() -> None:
     today = dt.date.today()
     q_cut = (today - dt.timedelta(days=365 * a.qualify_years)).isoformat()
     f_cut = (today - dt.timedelta(days=365 * a.footprint_years)).isoformat()
-    naics_filter = "naics_code IN (" + ",".join(f"'{c}'" for c in AND_NAICS) + ")"  # pushdown predicate
+    codes = NAICS_SETS[a.naics_set]
+    a.target_uri = a.target_uri or (TARGET_URI if a.naics_set == "ad"
+                                    else f"s3://data-sink/active/_play1_target_universe_{a.naics_set}/")
+    naics_filter = "naics_code IN (" + ",".join(f"'{c}'" for c in codes) + ")"  # pushdown predicate
+    print(f"[{_now()}] naics_set={a.naics_set} ({len(codes)} codes) target={a.target_uri}", flush=True)
 
     os.makedirs(a.temp_dir, exist_ok=True)
     con = duckdb.connect()

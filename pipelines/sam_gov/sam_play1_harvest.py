@@ -57,11 +57,14 @@ def main() -> None:
                    help="per-worker scratch universe URI (must differ between concurrent workers)")
     p.add_argument("--manifest-base", default=MANIFEST_BASE)
     p.add_argument("--target-uri", default=TARGET_URI)
+    p.add_argument("--marker-dir", default=MARKER_DIR,
+                   help="per-vertical marker dir — MUST differ across NAICS verticals or "
+                        "one vertical's done-markers will skip another's shards")
     a = p.parse_args()
 
     so = _r2_storage_options()
     dsn = os.environ.get("HQX_DB_URL_POOLED")
-    os.makedirs(MARKER_DIR, exist_ok=True)
+    os.makedirs(a.marker_dir, exist_ok=True)
 
     tgt = lance.dataset(a.target_uri, storage_options=so).to_table(columns=HARVEST_COLS)
     n = tgt.num_rows
@@ -73,7 +76,7 @@ def main() -> None:
           f"this worker processes shards [{start},{end})", flush=True)
 
     for i in range(start, end):
-        marker = os.path.join(MARKER_DIR, f"shard_{i:03d}.done")
+        marker = os.path.join(a.marker_dir, f"shard_{i:03d}.done")
         if os.path.exists(marker):
             print(f"shard {i:03d}: marker present — skip", flush=True)
             continue
