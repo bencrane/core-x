@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS gtm.clay_find_people (
     latest_experience_start_date text,
     -- raw source of truth + lineage
     source            text        NOT NULL DEFAULT 'clay_find_people',
-    batch_id          text,
     raw_payload       jsonb       NOT NULL,                -- the Clay object, EXACTLY as sent
     landed_at         timestamptz NOT NULL DEFAULT now()
 );
@@ -72,7 +71,12 @@ ALTER TABLE gtm.clay_find_people ADD COLUMN IF NOT EXISTS latest_experience_titl
 ALTER TABLE gtm.clay_find_people ADD COLUMN IF NOT EXISTS latest_experience_company    text;
 ALTER TABLE gtm.clay_find_people ADD COLUMN IF NOT EXISTS latest_experience_start_date text;
 
+-- batch_id removed from the contract (Clay fires one row per request — there is no batch grain).
+-- Drop it idempotently so an already-deployed table converges to the new shape. It was pure lineage
+-- metadata, never an identity key, so dropping it cannot collapse or corrupt the (person x company) grain.
+DROP INDEX  IF EXISTS gtm.clay_find_people_batch_idx;
+ALTER TABLE gtm.clay_find_people DROP COLUMN IF EXISTS batch_id;
+
 CREATE INDEX IF NOT EXISTS clay_find_people_person_idx ON gtm.clay_find_people (person_id);
 CREATE INDEX IF NOT EXISTS clay_find_people_domain_idx ON gtm.clay_find_people (domain_norm);
-CREATE INDEX IF NOT EXISTS clay_find_people_batch_idx  ON gtm.clay_find_people (batch_id);
 CREATE INDEX IF NOT EXISTS clay_find_people_landed_idx ON gtm.clay_find_people (landed_at DESC);
