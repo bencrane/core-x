@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -51,6 +52,13 @@ from .. import database
 FEED_PROVIDER = "provider_360"
 FEED_GROUP = "practice_group_360"
 DEFAULT_SNAPSHOT = "2026-06"
+
+# OOM guard. Each broad cohort `to_table()` materialization grows RSS by hundreds of MB
+# (measured ~386-500 MB, partly unreclaimed); 6 concurrent broad cohorts peaked at
+# ~2333 MB, past the 2048 MB Render Standard limit. Cap concurrent cohort scans so warm
+# steady-state residency + concurrent scans stay under the box. Point lookups are NOT
+# gated by this (they don't go through _scan), so they stay responsive under cohort load.
+_COHORT_SEM = threading.Semaphore(int(os.environ.get("GTM_MAX_CONCURRENT_COHORT_SCANS", "2")))
 
 _TAXONOMY_RE = re.compile(r"^[0-9A-Z]{10}$")
 _STATE_RE = re.compile(r"^[A-Z]{2}$")
@@ -83,28 +91,27 @@ SPECIALTY_TAXONOMY: dict[str, str] = {
 # Surgical specialties used by find_clean_independent_practices' "surgical" shorthand.
 SURGICAL_TAXONOMY = ["207X00000X", "208600000X", "208800000X", "207Y00000X", "208200000X"]
 
-_snapshot_cache: dict[str, str] = {}
-
 
 # ── snapshot resolution + dataset open ───────────────────────────────────────
 def _latest_snapshot(feed: str) -> str:
-    """Resolve the newest ``snapshot=YYYY-MM`` partition for ``feed`` from the
-    discovered registry (so the tools auto-track a freshly materialized snapshot).
-    ``{FEED}_SNAPSHOT`` env overrides; falls back to the known-good default."""
+    """Resolve the newest ``snapshot=YYYY-MM`` partition for ``feed`` from the registry.
+
+    NO local pin: it reads ``database.get_registry()`` fresh every call (the registry is
+    a cheap cached dict that self-refreshes on its own TTL), so a newly materialized
+    month is picked up without a restart. (An earlier process-lifetime ``_snapshot_cache``
+    pin here was the root of a month-rollover staleness bug — see
+    docs/reference/GTM_MCP_RECALL_ARCHITECTURE_DIAGNOSTIC.md.) ``{FEED}_SNAPSHOT`` env
+    pins explicitly; falls back to the known-good default."""
     env = os.environ.get(f"{feed.upper()}_SNAPSHOT")
     if env:
         return env
-    if feed in _snapshot_cache:
-        return _snapshot_cache[feed]
     prefix = f"{feed}/snapshot="
     snaps = sorted(
         k[len(prefix):].rstrip("/")
         for k in database.get_registry()
         if k.startswith(prefix)
     )
-    snap = snaps[-1] if snaps else DEFAULT_SNAPSHOT
-    _snapshot_cache[feed] = snap
-    return snap
+    return snaps[-1] if snaps else DEFAULT_SNAPSHOT
 
 
 def _uri(feed: str) -> str:
@@ -112,12 +119,12 @@ def _uri(feed: str) -> str:
 
 
 def _open(feed: str):
-    """Open the snapshot-partitioned dataset fresh (latest committed Lance version).
-    ``lance`` is imported lazily here (the codebase's fail-soft pattern) so importing
-    this module never hard-fails server boot."""
-    import lance
-
-    return lance.dataset(_uri(feed), storage_options=database.r2_storage_options())
+    """Warm-cached open of the snapshot-partitioned dataset via the shared serving-tier
+    handle cache (``database.open_dataset_uri``) — the scalar index stays resident across
+    calls, so a point lookup drops from ~1.5 s (per-call index reload) to tens of ms
+    co-located. TTL-bounded freshness + a publish-swap stability guard live in
+    database.py; a new monthly snapshot is picked up via the TTL'd registry."""
+    return database.open_dataset_uri(_uri(feed))
 
 
 def _lit(s: str) -> str:
@@ -187,8 +194,11 @@ def _jsonify(v: Any) -> Any:
 
 
 def _scan(feed: str, flt: str, columns: list[str]):
-    """Lance prefilter pushdown → Arrow table (the bounded cohort)."""
-    return _open(feed).scanner(columns=columns, filter=flt, prefilter=True).to_table()
+    """Lance prefilter pushdown → Arrow table (the bounded cohort). Gated by the cohort
+    semaphore (OOM guard): concurrent broad materializations are capped so warm residency
+    + in-flight scans stay under the instance memory limit."""
+    with _COHORT_SEM:
+        return _open(feed).scanner(columns=columns, filter=flt, prefilter=True).to_table()
 
 
 def _sort_limit(tbl, order_sql: str, limit: int, where: str | None = None) -> list[dict]:
