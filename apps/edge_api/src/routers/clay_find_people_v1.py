@@ -1,28 +1,29 @@
 """Clay Find People — raw landing surface (append-only).
 
 Endpoints (mounted at ``/api/v1/clay/find-people``, service-token gated):
-  POST /land   → land a batch of Clay find-people records, idempotent
+  POST /land   → land ONE Clay find-people record (Clay fires one row per request), idempotent
   GET  /stats  → row / distinct-person / distinct-domain counts
 
-CONTRACT. Each item in ``records`` is a Clay find-people object. It is stored TWO ways, both
-faithful to the source:
-  1. ``raw_payload`` (jsonb) — the object EXACTLY as sent, verbatim. Immutable source of truth,
-     drift-proof: if Clay adds/removes fields nothing is ever lost.
-  2. Flat typed columns — a LOSSLESS structural projection of the known fields (``name`` →
-     full_name, ``matched_experience.job_title`` → matched_job_title, …). Values are stored
-     AS-IS; this is NOT normalization. Semantic normalization (job_title → job_level enum) is a
-     SEPARATE downstream stage and is NOT done here.
+WIRE CONTRACT. Clay POSTs a single record per request, the object under a ``raw_payload`` key::
 
-The caller does NOT send a separate ``person_linkedin_url`` — the server reads it out of the
-payload. The only computed values are lossless identity keys:
-    raw_payload.url     → linkedin_url_raw (verbatim; feeds the blitz email finder)
-                          → linkedin_url_norm → person_id = sha256(linkedin_url_norm)
-    raw_payload.domain  → domain_norm (FK → firmographics_blitz.domain_norm)
+    { "raw_payload": { "url": "...", "name": "...", "domain": "...", ... } }
 
-GRAIN: (person × company). PK = ``sha256(linkedin_url_norm | <company_key>)`` where company_key
-degrades through a fallback chain so a missing company never silently collapses distinct Clay
-observations:  domain_norm  →  company_record_id  →  stable hash of the full payload.
-``ON CONFLICT DO NOTHING`` makes re-sends idempotent at whatever tier the key resolved to.
+No ``records`` array, no ``batch_id`` — one row at a time. (A bare object with no ``raw_payload``
+wrapper is also accepted, so a Clay misconfig never drops data.)
+
+STORAGE. The record is stored TWO ways, both faithful to source:
+  1. ``raw_payload`` (jsonb) — the object EXACTLY as sent. Immutable source of truth; drift-proof.
+  2. flat typed columns — a LOSSLESS structural projection of the known fields, stored AS-IS.
+     NOT normalization: ``matched_job_title`` keeps the verbatim Clay string. Semantic
+     normalization (job_title → job_level enum) is a SEPARATE downstream stage, never done here.
+The only computed columns are lossless identity keys read server-side from the payload:
+    raw_payload.url    → linkedin_url_raw (verbatim; feeds blitz /v2/enrichment/email)
+                         → linkedin_url_norm → person_id = sha256(linkedin_url_norm)
+    raw_payload.domain → domain_norm (FK → firmographics_blitz.domain_norm)
+
+GRAIN: (person × company). PK = ``sha256(linkedin_url_norm | company_key)`` where company_key
+degrades  domain_norm → company_record_id → hash(full payload)  so a missing company never
+silently collapses distinct observations. ``ON CONFLICT DO NOTHING`` makes re-sends idempotent.
 """
 from __future__ import annotations
 
@@ -32,9 +33,8 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field
 
 from ..db import get_db_connection
 from ..service_token import require_service_token
@@ -42,16 +42,6 @@ from ..service_token import require_service_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/clay/find-people", tags=["clay-find-people"])
-
-
-class LandBody(BaseModel):
-    """Envelope is strict; each item in ``records`` is a Clay object stored verbatim + exploded."""
-
-    records: list[dict[str, Any]] = Field(min_length=1, max_length=25_000)
-    batch_id: str | None = Field(default=None, max_length=200)
-    source: str = Field(default="clay_find_people", max_length=100)
-
-    model_config = ConfigDict(extra="forbid")
 
 
 # ── Lossless canonicalization (NOT classification) ───────────────────────────
@@ -133,8 +123,10 @@ _STATS_SQL = """
     FROM gtm.clay_find_people
 """
 
+_SOURCE = "clay_find_people"
 
-def _to_row(rec: dict[str, Any], source: str, batch_id: str | None) -> tuple | None:
+
+def _to_row(rec: dict[str, Any], batch_id: str | None) -> tuple | None:
     """Project one Clay record → the full column tuple. None if it lacks a usable url."""
     url = rec.get("url")
     if not isinstance(url, str) or not url.strip():
@@ -156,45 +148,36 @@ def _to_row(rec: dict[str, Any], source: str, batch_id: str | None) -> tuple | N
         _s(loc.get("country")), _s(loc.get("country_iso")),
         _s(rec.get("latest_experience_title")), _s(rec.get("latest_experience_company")),
         _s(rec.get("latest_experience_start_date")),
-        source, batch_id, Jsonb(rec),
+        _SOURCE, batch_id, Jsonb(rec),
     )
 
 
 @router.post("/land", dependencies=[Depends(require_service_token)])
-async def land(body: LandBody) -> dict[str, Any]:
-    """Land Clay records (verbatim raw_payload + exploded columns). Returns received /
-    landed (newly inserted) / already_present (ON CONFLICT dups) / skipped (no usable url)."""
-    received = len(body.records)
-    skipped: list[dict[str, Any]] = []
-    rows: list[tuple] = []
-    seen: set[str] = set()
+async def land(body: dict[str, Any]) -> dict[str, Any]:
+    """Land ONE Clay record. Body is ``{"raw_payload": {...}}`` (one row per request); a bare
+    object with no wrapper is also accepted. Stores raw_payload verbatim + exploded columns."""
+    batch_id = body.get("batch_id") if isinstance(body.get("batch_id"), str) else None
+    rec = body.get("raw_payload")
+    if not isinstance(rec, dict):
+        # tolerate a bare Clay object sent without the raw_payload wrapper
+        rec = {k: v for k, v in body.items() if k != "batch_id"}
 
-    for i, rec in enumerate(body.records):
-        row = _to_row(rec, body.source, body.batch_id)
-        if row is None:
-            skipped.append({"index": i, "reason": "missing/empty raw_payload.url"})
-            continue
-        if row[0] in seen:  # collapse byte-identical (person, company) dups within this payload
-            continue
-        seen.add(row[0])
-        rows.append(row)
+    row = _to_row(rec, batch_id)
+    if row is None:
+        raise HTTPException(status_code=422, detail="missing/empty raw_payload.url")
 
-    landed = 0
-    if rows:
-        async with get_db_connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.executemany(_INSERT_SQL, rows)
-                landed = cur.rowcount if (cur.rowcount and cur.rowcount > 0) else 0
-            await conn.commit()
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_INSERT_SQL, row)
+            landed = cur.rowcount == 1
+        await conn.commit()
 
     return {
-        "received": received,
-        "accepted": len(rows),
-        "landed": landed,
-        "already_present": max(len(rows) - landed, 0),
-        "skipped": len(skipped),
-        "skipped_detail": skipped[:50],
-        "batch_id": body.batch_id,
+        "landed": landed,                 # False ⇒ this (person, company) was already present
+        "already_present": not landed,
+        "record_id": row[0],
+        "person_id": row[1],
+        "domain_norm": row[4],
     }
 
 
