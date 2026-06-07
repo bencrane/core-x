@@ -40,6 +40,7 @@ DEVIATIONS from the plan (documented):
     modal run pipelines/cms_medicare/ingest.py::init_state
     modal run pipelines/cms_medicare/ingest.py::discover
     modal run pipelines/cms_medicare/ingest.py::ingest --dataset cms_physician_provider
+    modal run pipelines/cms_medicare/ingest.py::ingest_giant --dataset cms_partd_provider_drug   # B2/A2 (128 GiB)
     modal run pipelines/cms_medicare/ingest.py::verify  --dataset cms_physician_provider
     modal run pipelines/cms_medicare/ingest.py::show_ledger
 """
@@ -230,6 +231,7 @@ DATASETS: dict[str, dict] = {
 GRAIN: dict[str, list] = {
     "cms_physician_provider": ["rndrng_npi", "program_year"],
     "cms_physician_provider_service": ["rndrng_npi", "hcpcs_cd", "place_of_srvc", "program_year"],
+    "cms_partd_provider_drug": ["prscrbr_npi", "brnd_name", "gnrc_name", "program_year"],
     "cms_partd_provider": ["prscrbr_npi", "program_year"],
     "cms_dme_referring_provider": ["rfrg_npi", "program_year"],
     "cms_dme_supplier": ["suplr_npi", "program_year"],
@@ -821,20 +823,17 @@ def discover_members(dataset: str = "") -> dict:
     return out
 
 
-@app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    timeout=60 * 60 * 8, memory=49152, cpu=8.0, ephemeral_disk=524288, retries=2,
-)
-def ingest_dataset(dataset: str) -> dict:
+def _ingest_core(dataset: str) -> dict:
     """Land one dataset (full backfill) across all its years: discover → (pass 1) header union →
     (pass 2) per-member width-gate + project + append → sorted clustering rewrite → grain proof →
     index → publish-swap → verify gate. The ledger records per-year + terminal rows ONLY after R2 is
     verified (truthful), as idempotent UPSERTs (no duplicate rows on Modal retry). Re-raises on failure.
 
     Whole-dataset rebuild semantics (atomic full-swap). Per-year etag-aware no-op / single-year
-    delete-reappend (directive §4 steady-state delta) is a documented follow-up: ingest_dataset_year,
-    not yet wired — the backfill is a correct atomic rebuild without it. GIANTS (B2/A2) are refused
-    here: they need the federal-spine staged append-only index path (directive §5), also a follow-up."""
+    delete-reappend (directive §4 steady-state delta) is a documented follow-up (ingest_dataset_year,
+    not yet wired) — the backfill is a correct atomic rebuild without it. Shared by the non-giant
+    (49 GiB) and giant (128 GiB) Modal wrappers — the only difference is container RAM for the in-RAM
+    npi BTREE sort over a >100M-row giant."""
     import datetime as dt
     import shutil
 
@@ -843,11 +842,6 @@ def ingest_dataset(dataset: str) -> dict:
     if dataset not in DATASETS:
         raise RuntimeError(f"unknown dataset {dataset!r}; known: {list(DATASETS)}")
     cfg = DATASETS[dataset]
-    if cfg.get("giant"):
-        raise RuntimeError(
-            f"{dataset} is a GIANT (>100M rows / tens of GB). The in-process BTREE build + full-swap "
-            f"risks an in-RAM sort OOM and an ~2x-data R2 round-trip. Route its npi BTREE through the "
-            f"federal-spine staged append-only path (directive §5) — not yet wired. Refusing to run blindly.")
 
     started = dt.datetime.now(dt.timezone.utc)
     shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
@@ -957,6 +951,34 @@ def ingest_dataset(dataset: str) -> dict:
         shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
 
 
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60 * 8, memory=49152, cpu=8.0, ephemeral_disk=524288, retries=2,
+)
+def ingest_dataset(dataset: str) -> dict:
+    """Non-giant landing (49 GiB). Refuses giants — their >100M-row in-RAM npi BTREE sort needs the
+    128 GiB ``ingest_dataset_giant`` wrapper (review finding: in-process build OOM on 48 GiB)."""
+    cfg = DATASETS.get(dataset)
+    if cfg and cfg.get("giant"):
+        raise RuntimeError(f"{dataset} is a GIANT — run ::ingest_giant (128 GiB), not ::ingest.")
+    return _ingest_core(dataset)
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60 * 10, memory=131072, cpu=8.0, ephemeral_disk=524288, retries=1,
+)
+def ingest_dataset_giant(dataset: str) -> dict:
+    """Giant landing (128 GiB RAM, 10 h) for B2/A2 — high RAM absorbs the >100M-row in-RAM npi BTREE
+    sort (LANCE_BYPASS_SPILLING); DuckDB ORDER BY spills the clustering rewrite to the 512 GiB /tmp.
+    Same _ingest_core logic; the only difference is container size. retries=1 (a full restart is the
+    recovery — publish is atomic + read-back-verified, so a retry cannot corrupt the live dataset)."""
+    cfg = DATASETS.get(dataset)
+    if not (cfg and cfg.get("giant")):
+        raise RuntimeError(f"{dataset} is not a giant — run ::ingest (49 GiB), not ::ingest_giant.")
+    return _ingest_core(dataset)
+
+
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 15, memory=8192)
 def verify_dataset(dataset: str) -> dict:
     import lance
@@ -999,6 +1021,13 @@ def discover(dataset: str = "") -> None:
 def ingest(dataset: str) -> None:
     import json
     print(json.dumps(ingest_dataset.remote(dataset), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def ingest_giant(dataset: str) -> None:
+    """Land a GIANT (B2/A2) on the 128 GiB wrapper."""
+    import json
+    print(json.dumps(ingest_dataset_giant.remote(dataset), indent=2, default=str))
 
 
 @app.local_entrypoint()
