@@ -148,13 +148,13 @@ DATASETS: dict[str, dict] = {
         "bitmap": ["program_year", "suplr_prvdr_spclty_desc", "suplr_prvdr_state_abrvtn"],
         "cluster": "suplr_npi, program_year", "giant": False,
     },
-    "cms_dme_supplier_service": {  # C3 — NPI×HCPCS×year, 2014-2023
-        "archive_substr": "Devices & Supplies - by Supplier and Service",
+    "cms_dme_supplier_service": {  # C3 — NPI×HCPCS×rental-ind×year, 2014-2023 (grain proof found
+        "archive_substr": "Devices & Supplies - by Supplier and Service",  # the rental axis empirically)
         "member_re": r"_suphpr\.csv$", "partition": "year",
         "npi_col": "suplr_npi",
         "btree": ["suplr_npi", "hcpcs_cd"],
-        "bitmap": ["program_year", "suplr_prvdr_state_abrvtn"],
-        "cluster": "suplr_npi, hcpcs_cd, program_year", "giant": False,
+        "bitmap": ["program_year", "suplr_prvdr_state_abrvtn", "suplr_rentl_ind"],
+        "cluster": "suplr_npi, hcpcs_cd, suplr_rentl_ind, program_year", "giant": False,
     },
     "cms_dme_geography_service": {  # C4 — geo×HCPCS×year, 2017-2023
         "archive_substr": "Devices & Supplies - by Geography and Service",
@@ -233,7 +233,7 @@ GRAIN: dict[str, list] = {
     "cms_partd_provider": ["prscrbr_npi", "program_year"],
     "cms_dme_referring_provider": ["rfrg_npi", "program_year"],
     "cms_dme_supplier": ["suplr_npi", "program_year"],
-    "cms_dme_supplier_service": ["suplr_npi", "hcpcs_cd", "program_year"],
+    "cms_dme_supplier_service": ["suplr_npi", "hcpcs_cd", "suplr_rentl_ind", "program_year"],
 }
 
 # Ledger UPSERT targets (partial-unique-index predicates, must match OPS_DDL).
