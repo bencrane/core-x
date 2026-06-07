@@ -1,10 +1,16 @@
 # CMS Medicare Archive — Full-Archive Ingestion & Composition Plan
 
 **Companion to:** [`docs/medicare_archive_diagnostic.md`](../medicare_archive_diagnostic.md) (the layout/grain/drift recon).
-**Scope:** ingest the entire CMS Medicare archive from the raw landing tier
+**Scope:** land the entire CMS Medicare archive from the raw landing tier
 (`s3://data-sink/landing/cms/medicare-datasets/`, 35 zips / 17.03 GB compressed / **89.78 GB logical**) into the
-LanceDB system of record (`s3://data-sink/active/`), then compose it with the existing **NPPES**, **CMS Open
-Payments**, and **Form 5500** datasets behind the **entity-360** spine.
+LanceDB system of record (`s3://data-sink/active/`) — **physically optimized for the longitudinal, 13-year
+provider/practice queries a PE acquirer asks** — and unite it **only on unequivocal, published keys** (the **NPI**;
+the CMS enrollment **`ENRLMT_ID`**) with the existing **NPPES** and **CMS Open Payments** datasets.
+**Explicitly out of scope:** fuzzy entity resolution. Tying a practice to "who it really is" — its legal/corporate
+identity, parent, or ownership, via SoS / SBA / FEC / or any other source — is a **separate downstream decision**
+layered *on top of* the landed data if and when prioritized. It is **not** a prerequisite for landing and must not be
+coupled to it. **No fuzzy name/geo crosswalk is built in this plan.** The 13-year depth exists so those
+practice-acquisition questions can be asked on top of cleanly-landed, key-united data — that is the entire mandate.
 **Provenance:** every mechanic below is lifted from an existing in-repo pattern (cited inline). The drift/topology
 facts were re-verified against `/tmp/medicare_recon.json` after an Opus-4.8 adversarial review of the diagnostic;
 §1 records the corrections that review forced.
@@ -22,7 +28,7 @@ facts were re-verified against `/tmp/medicare_recon.json` after an Opus-4.8 adve
 | 5 | Money → `DECIMAL(14,2)` | provider-year *totals* can exceed 10¹² → overflow NULLs the largest providers | **`DECIMAL(18,2)`** for A1/C/Part-D totals; `(14,2)` only for A2 averages |
 | 6 | `program_year` under BTREE | NDV ≤13 | index as **`BITMAP`** |
 | 7 | A1 grain = "1 row = NPI per year" (asserted) | head-50-bound, self-fulfilling on sorted data — **unproven PK** | prove `(npi, program_year)` with `GROUP BY … HAVING count(*)>1 = 0` before indexing |
-| 8 | NPI→EIN→Form 5500 bridge via NPPES org records | **NPPES redacts EIN to constant `<UNAVAIL>`** (`docs/nppes_structural_diagnostic.md`) | bridge is impossible as a key join → build a name+geo probabilistic crosswalk through the SAM/SoS spine (§9.2) |
+| 8 | NPI→EIN→Form 5500 bridge via NPPES org records | **NPPES redacts EIN to constant `<UNAVAIL>`** (`docs/nppes_structural_diagnostic.md`); Form 5500 carries no NPI | no deterministic key exists → **Form 5500 / corporate-identity resolution is OUT OF SCOPE**; no fuzzy name/geo crosswalk is built (§8.2) |
 
 Validated-correct in the diagnostic (kept): grain separation / never-union; NPI VARCHAR; append-per-year;
 geography exclusion from NPI mirrors; A2 financials are averages; suppression three-state model; dedup of the `-2`
@@ -157,6 +163,22 @@ probes are recorded per unit → the grain/width validations become permanent au
   the grain first. Index builds run in a **process isolated from appends** (Open Payments boundary) — a failed build
   never corrupts landed data.
 
+### 5.1 Physical layout — cluster for the longitudinal query (the optimization that makes the 13-year questions fast)
+The dominant query is **per-provider (or per-practice) across all 13 years** — "NPI X's payment / volume / service-mix
+trajectory 2013→2024" — and **cohort-by-year** — "all dermatology NPIs in TX, payment trend by year." Append-per-year
+lands each year as its own fragment, so a given `npi` is **scattered across 13 fragments** and a per-provider pull
+touches all of them (the diagnostic's "BTREE-indexed but not clustered" caveat, §8.1). For an *optimized* landing:
+- **After the backfill lands, run one compaction pass that sorts each NPI dataset by `(npi, program_year)`** (Lance
+  `compact_files` / rewrite with a sort order). This **clusters** `npi`: a single-provider 13-year scan then prunes to
+  a handful of contiguous fragments instead of all 13, and the `npi` BTREE delivers fragment-level pruning (the NPPES
+  analytical "clustering dividend"). **This is the single highest-leverage landing optimization for the PE use case.**
+- **Steady state:** an annual append adds one npi-scattered fragment for the new year; re-compact (sort `npi,
+  program_year`) on a cheap cadence to restore clustering. Compaction is isolated from appends and from index builds.
+- **A2 / C3** (NPI×HCPCS) cluster by `(npi, hcpcs_cd, program_year)` — provider-and-procedure trend is their hot path.
+- **Fragment/row-group sizing:** `max_rows_per_file=1<<20` keeps fragments scan-efficient; the cohort BITMAPs
+  (`program_year`, `state`, specialty) prune by-year cohort queries without a full scan.
+This is what lets the landed datasets answer the PE questions (§8.4) with surgical pruning — no fuzzy resolution needed.
+
 ---
 
 ## §6 — Orchestration
@@ -210,54 +232,55 @@ before index builds), directive priority (decade+ totals first).
   no fragment pruning on `npi`; row-level pushdown only). `nppes_provider_taxonomy` is `(taxonomy_code, npi)`-clustered
   → a batch npi→taxonomy lookup must route through the npi-clustered `nppes_provider`, never the taxonomy table directly.
 
-### 8.2 The Form 5500 bridge (the disproven premise → the real path)
-- **NPPES does not disseminate EIN** — `employer_identification_number_ein` is a constant `'<UNAVAIL>'` redaction
-  sentinel (`docs/nppes_structural_diagnostic.md`). The NPI→EIN hop through NPPES **does not exist.**
-- **Form 5500 carries no NPI anywhere** — hub `ACK_ID`, business identity `(SPONS_DFE_EIN, SPONS_DFE_PN)`; every
-  detail-table `*_EIN` is a *counterparty* (Schedule C provider / Schedule A broker / Schedule R employer), not the
-  sponsor (`docs/form5500_relational_diagnostic.md`).
-- **Therefore the link is genuinely weak/indirect and must be built, name+geo, not by key:**
-  1. Medicare **organizational** provider (`Rndrng_Prvdr_Ent_Cd='O'` / NPPES `entity_type_code='2'`, carrying legal
-     business name + practice address) →
-  2. name+geo resolve into the federal entity spine (`sam_normalized_entities` / `sos_normalized_master`) via the
-     **proven `crosswalk_sos_sam` 5-tier ladder** (`pipelines/resolution/crosswalk_sos_sam.py`: materialized
-     `legal_name_base`, exact-normalized match key, geo as score not gate) →
-  3. resolved business entity → its `SPONS_DFE_EIN` in Form 5500.
-- Build as **`crosswalk_nppes_org_form5500`** keyed `(npi, ein, pn, match_tier, is_canonical)`, mirroring the
-  `crosswalk_sos_sam` build+gate; **tier-5 (name-only) is recall-only, never canonical.** Attaches *organizational*
-  NPIs only (individuals have no employer plan as themselves). Consumes the already-indexed `federal_spine_index_campaign`
-  spine as its right side. **Never present this as a key join.**
+### 8.2 Form 5500 & corporate identity — explicitly OUT OF SCOPE
+No **deterministic** key links Medicare to Form 5500: NPPES redacts EIN to a constant `'<UNAVAIL>'` sentinel
+(`docs/nppes_structural_diagnostic.md`) and Form 5500 carries no NPI anywhere — it is `ACK_ID` / `SPONS_DFE_EIN`-keyed,
+and every detail-table `*_EIN` is a *counterparty*, not the sponsor (`docs/form5500_relational_diagnostic.md`). The
+only way to bridge them is **fuzzy name+geo matching, which is non-deterministic and a business judgment — explicitly
+excluded from this plan.** **No `crosswalk_*_form5500` dataset is built.**
+
+Resolving a practice to its legal/corporate identity, parent, or ownership — whether later via SoS, SBA, FEC, or any
+other source — is a **separate downstream layer**, built *on top of* the landed, key-united data and joined by its own
+key once it exists. Landing does not wait on it and is never coupled to it. This plan's job is to land the data
+correctly and optimally so those questions *can* be asked, not to answer the identity question.
 
 ### 8.3 Reference crosswalks unlocked
-- **R1 Provider Enrollment** — `NPI ↔ PECOS_ASCT_CNTL_ID ↔ ENRLMT_ID`, plus the **`PPEF_Reassignment` graph**
-  (`REASGN_BNFT_ENRLMT_ID → RCV_BNFT_ENRLMT_ID`): solo NPIs → the group/practice that receives their reassigned
-  billing. This org-affiliation signal partially compensates for the dead NPPES EIN — it rolls per-NPI Medicare
-  utilization up to an org. `MULTIPLE_NPI_FLAG` + `PPEF_Additional_NPIs` flag multi-NPI providers (a dedup hazard for
-  per-provider aggregates).
+- **R1 Provider Enrollment — the DETERMINISTIC practice/group rollup (key-based, CMS-published; this is how
+  "practice" is reached with zero fuzzy matching).** `NPI ↔ PECOS_ASCT_CNTL_ID ↔ ENRLMT_ID`, plus the
+  **`PPEF_Reassignment` graph** (`REASGN_BNFT_ENRLMT_ID → RCV_BNFT_ENRLMT_ID`): an individual provider's enrollment
+  reassigns its billing to the group/practice enrollment that receives it. Traversed `provider NPI → ENRLMT_ID →
+  (reassignment) → group ENRLMT_ID`, this rolls per-NPI Medicare utilization/payment up to the **billing practice
+  entirely on CMS keys** — exactly the grain a PE acquirer evaluates, with no name/geo guessing. `MULTIPLE_NPI_FLAG` +
+  `PPEF_Additional_NPIs` flag multi-NPI providers (a dedup guard for per-provider aggregates).
 - **R3 BETOS/RBCS** — `HCPCS_Cd → RBCS_Cat/Subcat/Family` enriches A2/C3 with clinical service lines (imaging, major
   procedures, E&M…), respecting `HCPCS_Cd_Add_Dt`/`End_Dt` against `program_year`.
 
-### 8.4 The analytical surface — `provider_360`
-Per `docs/entity-360-master-plan.md` (UEI-grain entity-360) and `docs/nppes_analytical_implementation_plan.md`
-(per-snapshot derived serving layer `…/snapshot=YYYY-MM/`), build the **NPI-grain analogue**:
+### 8.4 The analytical surface — `provider_360` (deterministic composition, key-united only)
+Built **on top of** the landed data, uniting **only on unequivocal keys** (NPI; `ENRLMT_ID`). Per
+`docs/entity-360-master-plan.md` and `docs/nppes_analytical_implementation_plan.md` (per-snapshot derived serving
+layer `…/snapshot=YYYY-MM/`), the NPI-grain analogue:
 
 - **`provider_360`** — 1 row / NPI, base `nppes_provider` (the 9.55M verified-unique key set), LEFT JOINs on canonical
-  `npi` (BTREE-aligned):
+  `npi`/`ENRLMT_ID` (BTREE-aligned), **all deterministic**:
   - identity + specialty ← `nppes_provider` + `nppes_provider_taxonomy` (route via npi-clustered provider, §8.1).
   - longitudinal Medicare utilization/payment (2013–2024) ← `cms_physician_provider` (per-year totals + `Bene_CC_*`
-    mix for 2017+, as longitudinal arrays or latest-snapshot + trend deltas); + Part D + DME dimensions.
+    acuity mix for 2017+, as longitudinal arrays or latest-snapshot + trend deltas); + Part D + DME dimensions.
   - industry transfers ← Open Payments (with the mandatory research coalesce) + ownership.
   - quality ← `cms_qpp_experience` (MIPS `final_score`).
-  - enrollment/affiliation ← `cms_provider_enrollment` + reassignment graph.
-  - employer/benefits (where bridgeable) ← `crosswalk_nppes_org_form5500` — org NPIs only, confidence-flagged;
-    add `has_form5500_link` / `form5500_match_tier` so NULL reads as "no reliable link," never "no plan."
-- **Indexes:** BTREE `npi` (clustered — `ORDER BY npi` so npi-filter prunes fragments); BITMAP
+  - **practice/group rollup ← R1 reassignment graph** (`ENRLMT_ID`, §8.3) — the deterministic path to practice-level.
+  No fuzzy-resolved attributes; no corporate-identity columns. "Who owns this" is the separate downstream layer
+  (§8.2), joined later by its own key once built — never folded in here.
+- **Indexes:** BTREE `npi` (clustered — `ORDER BY npi` so npi-filter prunes fragments, §5.1); BITMAP
   `primary_taxonomy_code`, `entity_type_code`, `state`, latest-active-year. Per-snapshot, pure function of inputs,
   idempotent overwrite; chained off the raw ingests but decoupled (a materialize failure pages, never rolls back the SoR).
-- **Unlocks (single indexed scan):** "cardiologists in TX with >$5M Medicare submitted charges AND >$100k industry
-  transfers AND MIPS <75"; "high-volume Part D prescribers of a drug class with device-maker ownership stakes"; "provider
-  orgs with rising YoY Medicare utilization AND >100 Form 5500 plan participants"; "DME suppliers by RBCS service line
-  and state, ranked by Medicare payment."
+- **PE practice-acquisition questions this answers (single indexed scan, all key-deterministic):**
+  - "Dermatology NPIs/practices in TX whose Medicare payment grew >X% 2019→2024, ranked by 2024 `Tot_Mdcr_Pymt_Amt`."
+  - "A target practice's 13-year trajectory — payment, beneficiary panel (`Tot_Benes`), service mix (HCPCS/RBCS),
+    acuity (`Bene_CC_*`) — rolled to the group via the reassignment graph."
+  - "Every provider reassigning billing to a target group `ENRLMT_ID`, with their individual utilization + Open
+    Payments exposure + MIPS scores."
+  - "DME suppliers by RBCS service line and state, ranked by Medicare payment trend."
+  None require entity resolution — all answered on landed data united by `npi` / `ENRLMT_ID`.
 
 ---
 
@@ -267,6 +290,6 @@ Per `docs/entity-360-master-plan.md` (UEI-grain entity-360) and `docs/nppes_anal
 2. **Money width** — `count(*) WHERE try_cast(col AS DECIMAL(18,2)) IS NULL AND nullif(trim(col),'') IS NOT NULL = 0` per money column.
 3. **NPI resolution** — anti-join first A1 land vs `nppes_provider`, expect <0.01% orphans, Luhn-classify the residue.
 4. **Research coalesce** — wherever Open Payments enters `provider_360`, `coalesce(covered_recipient_npi, principal_investigator_1_npi)`.
-5. **Form 5500 bridge** — separate confidence-scored crosswalk, tier-5 recall-only; never folded silently into `provider_360` as a key join.
+5. **No fuzzy joins** — `provider_360` and every composition unite on published keys only (`npi`, `ENRLMT_ID`); no name/geo-resolved attribute enters the SoR or the serving layer. Corporate-identity resolution is a separate, later, key-joined layer.
 6. **Magnitude → index path** — `count(*)` per dataset before index build; B2/A2 → staged append-only path.
 7. **Suppression preserved** — assert every `*_Sprsn_Ind/_Flag` survives into the final schema; never coalesce suppressed→0.
