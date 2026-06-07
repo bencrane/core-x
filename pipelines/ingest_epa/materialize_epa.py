@@ -95,6 +95,46 @@ image = (
 
 app = modal.App("epa-pipelines", image=image)
 
+# --------------------------------------------------------------------------- #
+# R2-safe index image for epa_npdes_dmrs (the ONLY 422M-row dataset). In-place
+# index writes on a table this large trip R2's multipart rule — Lance's Rust
+# object-writer escalates part size mid-upload and R2 rejects unequal non-trailing
+# parts (HTTP 400 InvalidPart; proven on the 2026-06 reindex + the partition-replace
+# validation). Smaller datasets (≤46M) index fine in place via _build_indexes. The
+# fleet fix (hmda/cms/fec/sam + epa_dmr_history): stage dataset → local NVMe, build
+# indices there (spill enabled, no R2 multipart), publish new index/manifest files
+# via boto3 (uniform parts → R2-safe). This image therefore (a) does NOT set
+# LANCE_BYPASS_SPILLING (the local sort must spill to disk) and (b) raises the
+# DataFusion temp/mem caps. Mirrors materialize_epa_history.py::reindex_local.
+_GiB = 1024 ** 3
+LANCE_MAX_TEMP_BYTES = str(250 * _GiB)   # raw bytes — a "250GB" string would fail u64 parse
+LANCE_MEM_POOL_BYTES = str(24 * _GiB)
+INDEX_SPILL_DIR = "/tmp"                 # local NVMe; TMPDIR for the index-sort spill
+
+index_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "duckdb>=1.5,<2", "lancedb>=0.15", "pylance>=7", "pyarrow>=17",
+        "boto3>=1.34", "psycopg[binary]>=3.2",
+    )
+    .env({  # LANCE_BYPASS_SPILLING deliberately ABSENT → spill-to-disk enabled
+        "TMPDIR": INDEX_SPILL_DIR,
+        "LANCE_MAX_TEMP_DIRECTORY_SIZE": LANCE_MAX_TEMP_BYTES,
+        "LANCE_MEM_POOL_SIZE": LANCE_MEM_POOL_BYTES,
+    })
+)
+
+# epa_npdes_dmrs scalar indices — superset of the spec's btree/bitmap lists (adds the
+# GTM-predicate columns). Built via the R2-safe local round-trip in reindex_dmrs_local.
+DMR_INDEX_PLAN: list[tuple[str, str]] = [
+    ("EXTERNAL_PERMIT_NMBR", "BTREE"),
+    ("MONITORING_PERIOD_END_DATE", "BTREE"),
+    ("FISCAL_YEAR", "BITMAP"),
+    ("PARAMETER_CODE", "BTREE"),
+    ("VIOLATION_CODE", "BITMAP"),
+    ("NODI_CODE", "BITMAP"),
+]
+
 
 # --------------------------------------------------------------------------- #
 # ops.epa_ingest_runs — terminal-state ledger (idempotent DDL, self-bootstrapping)
@@ -517,6 +557,124 @@ def _build_indexes(uri: str, btree: list[str], bitmap: list[str], so: dict) -> l
 
 
 # --------------------------------------------------------------------------- #
+# R2-safe DMR index rebuild (epa_npdes_dmrs only) — local round-trip, boto3 publish.
+# See index_image note above for why in-place indexing fails on the 422M-row table.
+# --------------------------------------------------------------------------- #
+def _download_r2_prefix(s3, prefix: str, local_dir: str, workers: int = 8) -> set[str]:
+    """Stage every object under an R2 prefix → local disk (parallel). Returns the relative keys
+    already in R2 so the publish step skips re-uploading unchanged data fragments."""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=LANDING_BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if rel:
+                keys.append(rel)
+
+    def _dl(rel: str) -> None:
+        lp = os.path.join(local_dir, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(lp), exist_ok=True)
+        s3.download_file(LANDING_BUCKET, prefix + rel, lp)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_dl, keys))
+    return set(keys)
+
+
+def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> int:
+    """Upload local files whose relative key is NOT already in R2 (fresh index files + the new
+    manifest). boto3/s3transfer = uniform-part multipart → R2-safe. Manifest/version files upload
+    LAST so the new version resolves only once every file it references is present — a kill
+    mid-upload leaves the prior committed version intact, never a dangling manifest."""
+    new: list[tuple[str, str]] = []
+    for root, _, files in os.walk(local_dir):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            if rel not in existing:
+                new.append((rel, lp))
+    new.sort(key=lambda t: ("_versions/" in t[0] or t[0].endswith(".manifest"), t[0]))
+    for rel, lp in new:
+        s3.upload_file(lp, LANDING_BUCKET, prefix + rel)
+    return len(new)
+
+
+@app.function(
+    image=index_image,
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60 * 6,
+    memory=65536,                # 64 GB; the local create_scalar_index sort spills to local disk
+    cpu=16.0,
+    ephemeral_disk=524288,       # 512 GiB — holds the ~58 GB dataset + index-build scratch
+    retries=2,                   # idempotent (replace=True) → safe to retry on preemption
+)
+def reindex_dmrs_local(run_id: str) -> dict:
+    """R2-SAFE full rebuild of epa_npdes_dmrs' scalar indices. Stage active/epa_npdes_dmrs/ →
+    local disk, build every DMR_INDEX_PLAN index LOCALLY (no R2 multipart), publish only the new
+    index + manifest files via boto3 (uniform-part → R2-compliant; data fragments already in R2 are
+    never re-uploaded). Self-verifies + records a ledger row. Dispatched (spawn) by run_epa_ingest
+    after the DMR partition-replace — its own container so an index failure can't fail or corrupt
+    the data refresh. Mirrors materialize_epa_history.py::reindex_local."""
+    import datetime as dt
+
+    import lance
+
+    name = "epa_npdes_dmrs"
+    if os.environ.get("LANCE_BYPASS_SPILLING") is not None:
+        raise RuntimeError("LANCE_BYPASS_SPILLING must be ABSENT for the disk-spilling index build.")
+    os.makedirs(INDEX_SPILL_DIR, exist_ok=True)
+
+    uri = ACTIVE_BASE + name + "/"
+    prefix = "active/" + name + "/"
+    so = _r2_storage_options()
+    s3 = _s3_client()
+    local = f"/tmp/{name}_local"
+    started = dt.datetime.now(dt.timezone.utc)
+    status, error, built, verify_out = "error", None, [], {}
+    try:
+        print(f"[reindex_dmrs_local] staging s3://{LANDING_BUCKET}/{prefix} → {local} …")
+        existing = _download_r2_prefix(s3, prefix, local)
+        print(f"[reindex_dmrs_local] staged {len(existing)} files")
+        ds = lance.dataset(local)            # LOCAL — index writes hit disk, never R2 multipart
+        cols = set(ds.schema.names)
+        print(f"[reindex_dmrs_local] local rows={ds.count_rows():,} — building indices on local NVMe")
+        for col, kind in DMR_INDEX_PLAN:
+            if col not in cols:
+                raise RuntimeError(f"index column {col!r} absent from schema")
+            ds.create_scalar_index(col, index_type=kind, replace=True)
+            built.append(f"{col}:{kind}")
+            print(f"[reindex_dmrs_local]   {kind} ✓ {col}")
+        published = _upload_new_files(s3, prefix, local, existing)
+        print(f"[reindex_dmrs_local] published {published} new files via boto3 → R2")
+        status = "success"
+        try:
+            ds2 = lance.dataset(uri, storage_options=so)
+            idx = [i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i))
+                   for i in ds2.list_indices()]
+            verify_out = {"rows": ds2.count_rows(), "indices": idx, "published": published}
+            print(f"[reindex_dmrs_local] ✅ DONE — VERIFIED {verify_out}")
+        except Exception as vexc:  # noqa: BLE001 — verify is a read-back proof, not the publish
+            verify_out = {"verify_error": str(vexc), "published": published}
+            print(f"[reindex_dmrs_local] published OK; read-back verify hiccup: {vexc}")
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        print(f"[reindex_dmrs_local] FAILED: {error}")
+    finally:
+        completed = dt.datetime.now(dt.timezone.utc)
+        _record_run(run_id=run_id, dataset=name, dataset_uri=uri, source_archives="(reindex)",
+                    rows_written=0, indexes_built=",".join(built), status=status, error=error,
+                    metrics={"reindex": True, "r2_safe_local_roundtrip": True, "verify": verify_out},
+                    started_at=started, completed_at=completed)
+    if status != "success":
+        raise RuntimeError(f"reindex_dmrs_local failed: {error}")
+    return {"dataset": name, "indexes": built, "status": status, "verify": verify_out}
+
+
+# --------------------------------------------------------------------------- #
 # ops ledger + Trigger callback
 # --------------------------------------------------------------------------- #
 def _pg_connect():
@@ -683,20 +841,19 @@ def materialize_one(spec: dict, run_id: str) -> dict:
 
         rows = lance.dataset(uri, storage_options=so).count_rows()
         if replace_col and existed:
-            # Incremental index refresh — extends the EXISTING indices (all of them, incl.
-            # any added out-of-band) to the appended fragments. NOT a full rebuild: a
-            # create_scalar_index over the whole table trips R2 multipart at this scale
-            # (the cause of the 2026-06 reindex failures) and would drop indices absent from
-            # the spec lists. optimize_indices touches only the new/changed fragments.
-            lance.dataset(uri, storage_options=so).optimize.optimize_indices()
-            built = [ix["name"] for ix in lance.dataset(uri, storage_options=so).list_indices()]
+            # Floor tripwire FIRST: a normal replace leaves history (≥floor) intact, so rows<floor
+            # means history is missing — surface loudly rather than publish a truncated SoR.
             if name == "epa_npdes_dmrs" and rows < DMR_HISTORICAL_FLOOR:
-                # Tripwire: a normal replace leaves history (≥350M) intact, so rows<floor means
-                # history is missing — surface loudly rather than publish a silently-truncated SoR.
                 raise RuntimeError(
                     f"POST-WRITE FLOOR BREACH: epa_npdes_dmrs={rows:,} < floor "
                     f"{DMR_HISTORICAL_FLOOR:,} after partition-replace — investigate."
                 )
+            # Index refresh is DEFERRED to reindex_dmrs_local (R2-safe local round-trip),
+            # dispatched by run_epa_ingest after this append. In-place optimize_indices /
+            # create_scalar_index on the 422M-row table trips R2 multipart (InvalidPart) —
+            # proven 2026-06. The append commits the data; the new window fragments are indexed
+            # by that separate container (blast-radius separation).
+            built = ["(deferred → reindex_dmrs_local)"]
         else:
             built = _build_indexes(uri, spec.get("btree", []), spec.get("bitmap", []), so)
         print(f"[{name}] committed rows={rows:,} indexes={built}")
@@ -953,6 +1110,15 @@ def run_epa_ingest(trigger_callback_url: str | None = None, only: list[str] | No
         except Exception as exc:  # noqa: BLE001 — one bad dataset must not sink the batch
             print(f"[orchestrator] {name} raised: {exc}")
             results.append({"dataset": name, "rows": 0, "status": "error", "error": str(exc)})
+
+    # DMR index maintenance is R2-unsafe in place (the 422M-row index trips R2 multipart) — dispatch
+    # it as a SEPARATE container via the local round-trip. spawn (not remote) so a reindex failure
+    # can't fail or corrupt the data refresh; reindex_dmrs_local records its own ops ledger row.
+    dmr = next((r for r in results if r.get("dataset") == "epa_npdes_dmrs"), None)
+    if dmr and dmr.get("status") == "success":
+        reindex_dmrs_local.spawn(run_id=run_id)
+        print("[orchestrator] dispatched reindex_dmrs_local (R2-safe local round-trip)")
+
     if not skip_bridge:
         results.append(build_bridge.remote(run_id=run_id))
 
@@ -1032,6 +1198,16 @@ def one(name: str) -> None:
 
     run_id = dt.datetime.now(dt.timezone.utc).strftime("epa_one_%Y%m%dT%H%M%SZ")
     print(materialize_one.remote(_spec(name), run_id))
+
+
+@app.local_entrypoint()
+def reindex() -> None:
+    """R2-safe full reindex of epa_npdes_dmrs (all DMR_INDEX_PLAN indices). Standalone validation /
+    manual recovery; the monthly path dispatches reindex_dmrs_local automatically after the append."""
+    import datetime as dt
+
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("epa_reindex_%Y%m%dT%H%M%SZ")
+    print(reindex_dmrs_local.remote(run_id=run_id))
 
 
 @app.local_entrypoint()
