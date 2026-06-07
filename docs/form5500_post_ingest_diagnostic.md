@@ -1,12 +1,12 @@
 # Form 5500 (2025) — Post-Ingest Structural Diagnostic & Cross-Graph Overlap Probe
 
-**Result:** ✅ PASS — 7 datasets · 276,143 rows · 11 BTREE / 0 BITMAP indexes · 0 tombstones · 6.9s
+**Result:** ✅ PASS — 7 datasets · 276,143 rows · 11 BTREE / 0 BITMAP indexes · 0 tombstones · 17.6s
 
 **Mode:** read-only / zero-mutation. No dataset, index, or fragment written, compacted, or deleted; the sole write is this report.
 **Form 5500 plane:** `/Users/benjamincrane/core-x-lake/active` (local LanceDB lake)  
 **NPPES plane:** `s3://data-sink/active/nppes/snapshot=2026-05` (R2 SoR)  
 **CMS Open Payments plane:** `s3://data-sink/active/cms_general_payments` (R2 SoR)  
-**Run (UTC):** 2026-06-07T01:11:05+00:00
+**Run (UTC):** 2026-06-07T01:41:07+00:00
 
 ## 1. Index & Type Matrix
 
