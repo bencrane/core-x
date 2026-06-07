@@ -202,12 +202,17 @@ cache can touch the irreducible R2 columnar data-fetch.
 - **Non-atomic publish swap.** Until `_publish_full_swap` writes-new-prefix-then-flips-pointer, every
   invalidation scheme inherits the delete-then-recopy window; the stable-LIST guard is the interim
   mitigation, not a fix.
-- **Per-dataset TTL.** Flat GTM datasets mutate every few days, entity-360 monthly. A single global TTL is a
-  compromise; a per-dataset TTL (short for in-place feeds, long for snapshots) is more correct and is the
-  one real config-surface follow-up.
-- **`people` ↔ `enrichment_blitz` mapping unconfirmed.** `enrichment_blitz` shows 87 runs/4 days; if the
-  gateway's `people` registry entry maps to that feed, people lookups mutate far more often than monthly and
-  warrant a shorter TTL — confirm the R2 URI behind the `people` entry before tuning.
+- **Per-dataset TTL — IMPLEMENTED.** `_ttl_for(uri)` tiers the handle TTL by mutation cadence:
+  snapshot-partitioned (`/snapshot=`) → `GTM_HANDLE_TTL_SNAPSHOT_S` (1h, safe because a new month is a new
+  uri); flat in-place → `GTM_HANDLE_TTL_FLAT_S` (10m); `GTM_HANDLE_TTL_OVERRIDES` ("substr=seconds,…") for
+  surgical exceptions. Grounded in probed last-write times: snapshots monthly; companies/people/awards
+  ~days; `firmographics_blitz` the hottest at ~daily (28 versions).
+- **`people` cadence — CONFIRMED days, not hourly.** The registry `people` entry resolves to
+  `active/people/` (last write 2026-06-04, 9 versions) — a days-cadence flat feed, comfortably served by the
+  10-min flat tier. The diagnostic's hourly concern was a misattribution: `enrichment_blitz` is a *ledger
+  artifact name*, not a served dataset (absent from the 209-dataset registry); the high-churn served feed is
+  `firmographics_blitz`, which the flat tier covers (add it to `GTM_HANDLE_TTL_OVERRIDES` if sub-10-min
+  freshness is ever required).
 
 ## 8. Ledger-poll exact invalidation (deferred follow-up)
 

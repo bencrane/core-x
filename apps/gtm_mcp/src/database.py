@@ -141,17 +141,55 @@ _tls = threading.local()  # per-thread boto3 client (clients are not shared acro
 # funnels through open_dataset / _register_datasets). It is a SERVING-tier mirror;
 # the Lance/R2 system of record is untouched.
 #
-# FRESHNESS. Bounded by GTM_HANDLE_TTL_S (default 30 min) — trivially within the
-# real mutation cadence. On a miss the dataset's _versions/ commit log is listed
-# TWICE and required equal before the handle is trusted: a guard against the
-# non-atomic _publish_full_swap window (delete-then-recopy) — a mid-swap partial is
-# served fresh+UNCACHED, never adopted. A new snapshot=YYYY-MM month is picked up
-# because get_registry() self-refreshes on the same TTL and the new month resolves
-# to a NEW uri (a fresh cache entry), while expired old-month entries are swept.
+# FRESHNESS. Bounded by a PER-DATASET TTL tiered on mutation cadence (see _ttl_for).
+# On a miss the dataset's _versions/ commit log is listed TWICE and required equal
+# before the handle is trusted: a guard against the non-atomic _publish_full_swap
+# window (delete-then-recopy) — a mid-swap partial is served fresh+UNCACHED, never
+# adopted. A new snapshot=YYYY-MM month is picked up because get_registry()
+# self-refreshes on its own TTL and the new month resolves to a NEW uri (a fresh
+# cache entry), while expired entries are swept on write.
 _handle_cache: dict[str, tuple[float, Any]] = {}  # uri → (refresh_deadline_monotonic, LanceDataset)
 _handle_lock = threading.Lock()
-_HANDLE_TTL_S = float(os.environ.get("GTM_HANDLE_TTL_S", "1800"))
 _REGISTRY_TTL_S = float(os.environ.get("GTM_REGISTRY_TTL_S", "1800"))
+
+# Per-dataset handle TTL, tiered by mutation cadence (grounded in the active sink's
+# last-write times). The URI shape encodes the mutation semantics:
+#   * snapshot-partitioned (active/<feed>/snapshot=YYYY-MM/) is IMMUTABLE within a
+#     partition — a new month lands at a NEW uri (natural miss via the registry
+#     refresh), so same-uri revalidation only guards the rare same-month rebuild →
+#     a long TTL is safe (GTM_HANDLE_TTL_SNAPSHOT_S, default 1h).
+#   * flat / in-place (active/<feed>/) is rewritten AT THE SAME uri every few days to
+#     hourly (companies/people/awards ~days; firmographics_blitz the hottest at ~daily)
+#     → a short TTL bounds staleness (GTM_HANDLE_TTL_FLAT_S, default 10m).
+# GTM_HANDLE_TTL_OVERRIDES gives surgical per-dataset control with no code change:
+# a comma list of "uri-substring=seconds" (e.g. "firmographics_blitz=120,pdl_=300").
+_TTL_SNAPSHOT_S = float(os.environ.get("GTM_HANDLE_TTL_SNAPSHOT_S", "3600"))
+_TTL_FLAT_S = float(os.environ.get("GTM_HANDLE_TTL_FLAT_S", "600"))
+
+
+def _parse_ttl_overrides(raw: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for part in raw.split(","):
+        key, sep, val = part.strip().partition("=")
+        if sep and key.strip():
+            try:
+                out[key.strip()] = float(val.strip())
+            except ValueError:
+                log.warning("gtm-mcp: ignoring bad GTM_HANDLE_TTL_OVERRIDES entry %r", part)
+    return out
+
+
+_TTL_OVERRIDES = _parse_ttl_overrides(os.environ.get("GTM_HANDLE_TTL_OVERRIDES", ""))
+
+
+def _ttl_for(uri: str) -> float:
+    """Resolve the handle TTL for a dataset by mutation cadence: an explicit override
+    (substring match) wins; else the snapshot tier (immutable-in-partition, long) for a
+    ``/snapshot=`` uri; else the flat tier (in-place rewrite, short)."""
+    for substr, ttl in _TTL_OVERRIDES.items():
+        if substr in uri:
+            return ttl
+    return _TTL_SNAPSHOT_S if "/snapshot=" in uri else _TTL_FLAT_S
 
 
 # ── R2 endpoint / credentials ───────────────────────────────────────────────
@@ -489,7 +527,7 @@ def _cached_dataset(uri: str):
             # sweep expired entries (bounds growth as snapshots roll monthly), then cache
             for k in [k for k, v in _handle_cache.items() if v[0] <= now]:
                 del _handle_cache[k]
-            _handle_cache[uri] = (now + _HANDLE_TTL_S, ds)
+            _handle_cache[uri] = (now + _ttl_for(uri), ds)
     return ds
 
 
