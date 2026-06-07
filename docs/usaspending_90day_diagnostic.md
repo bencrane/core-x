@@ -230,6 +230,28 @@ Probed the live landing `pull_date=2026-06-04` (583,776 rows × 297 cols) direct
 
 ---
 
+### 3.6 API pull vs bulk SoR — the measured diff (besides freshness)
+
+Schema comparison (metadata-only) of the API landing against the bulk tables. **It is the same underlying facts — not "different data" — but it differs on three structural axes, only one of which is the subawards/assistance question:**
+
+| | API landing | bulk `award_search` | bulk `transaction_search_fpds` | bulk `subaward_search` |
+|---|---|---|---|---|
+| Grain | contract **txn** | **award** | contract **txn** | subaward |
+| Columns | 297 | 154 | 378 | 210 |
+| Col-names shared w/ API | — | **13** | **101** | — |
+
+**Axis 1 — coverage (which records).** API pulls **prime contracts only** (A/B/C/D). The bulk holds every class — IDVs, assistance/FABS, subawards, the 454M-row financial-accounts, 45 reference tables. The API is a record **subset**. *This is the axis "subawards / assistance / IDVs" refers to.*
+
+**Axis 2 — grain.** The API is **transaction** grain, so its true counterpart is **`transaction_search_fpds`** (101 shared columns), **not** `award_search` (only 13). The landing is mis-pathed under `award_search/`. To freshen the award-grain `award_search` you must **roll the API transactions up to awards**; to freshen `transaction_search_fpds` the API is a near-direct same-grain feed.
+
+**Axis 3 — column projection.** Even at the same grain, the two are different **projections** of the one warehouse. The API is the **download** schema — friendly/denormalized names (`awarding_agency_name`, `award_id_piid`, spelled-out socioeconomic flags) — and **omits ~141** raw `award_search` columns the dump carries (`business_categories`, `federal_accounts`, `cfda_number`, `description`, internal IDs, …). Merge keys differ by **name only**: API `contract_award_unique_key` ↔ bulk `generated_unique_award_id` (the clean award key — the `CONT_AWD_…` composite, just relabeled); API `contract_transaction_unique_key` ↔ bulk `detached_award_proc_unique`; API `award_id_piid` ↔ bulk `piid`. Same identifiers, different labels → any bulk↔API join needs an explicit **key + column map** (the core fidelity task).
+
+**So does adding subawards / assistance / IDVs "close the gap"?**
+- It closes **axis 1 (coverage)** — fresh data for every record class. **This is the gap that matters for freshness.** ✅
+- It does **not** touch axes 2–3, and shouldn't: the bulk stays the only source of the full column set; the API is a **thin fresh overlay** on a subset of mapped columns. That is exactly why the architecture is **bulk (full schema, all classes, stale) ∪ API (download projection, fresh) → resolved mirror**, never "API replaces bulk."
+
+---
+
 ## 4. API rate limits & pagination boundaries the ingestion script must respect
 
 ### 4.1 Per-endpoint cap matrix
@@ -387,6 +409,12 @@ doppler run -p core-x -c prd -- uv run --no-project \
   --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/bulkdl_filters_def.py
 # The canonical AdvancedFilterObject the catalog does NOT ingest (§6.3, 6.5):
 curl -sS "https://raw.githubusercontent.com/fedspendingtransparency/usaspending-api/master/usaspending_api/api_contracts/search_filters.md"
+
+# API-vs-bulk schema/grain/coverage diff (§3.6) — metadata-only schema compare
+doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' python3 /tmp/usaspending_api_vs_bulk.py
+# → API 297c txn-grain; award_search 154c award-grain; txn_fpds 378c txn-grain.
+#   API∩award_search=13, API∩txn_fpds=101 → API's counterpart is transaction_search_fpds.
 
 # Live ledgers (frontier + bulk vintage)
 doppler run -p core-x -c prd -- bash -c \
