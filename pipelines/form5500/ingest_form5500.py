@@ -95,6 +95,12 @@ FORCE_STRING = {
     "SPONS_DFE_EIN", "SF_SPONS_EIN", "PROVIDER_OTHER_EIN", "INS_BROKER_EIN",
     "SPONS_DFE_PN", "SF_PLAN_NUM",
     "FORM_ID", "PROVIDER_ELIGIBLE_EIN",
+    # Schedule A (carrier head) — denormalized sponsor identity + carrier identity. DOL
+    # declares FORM_ID NUMERIC (above) and NAIC_CODE TEXT/5; both carry structural leading
+    # zeros and are join keys, never arithmetic — pin them to VARCHAR regardless of layout.
+    "SCH_A_EIN", "SCH_A_PLAN_NUM", "INS_CARRIER_EIN", "INS_CARRIER_NAIC_CODE",
+    # Schedule C counterparties — indirect-comp payor + terminated accountant/actuary EINs.
+    "PROVIDER_PAYOR_EIN", "PROVIDER_TERM_EIN",
 }
 
 # ── Target Archive Registry (the diagnostic's high-signal spine) ────────────────────────
@@ -109,7 +115,21 @@ STEMS = [
     {"stem": "F_SCH_I",                   "name": "sch_i",              "biz_keys": [], "lz_col": None},
     {"stem": "F_SCH_C_PART1_ITEM2",       "name": "sch_c_provider",     "biz_keys": [], "lz_col": "PROVIDER_OTHER_EIN"},
     {"stem": "F_SCH_C_PART1_ITEM2_CODES", "name": "sch_c_provider_code","biz_keys": [], "lz_col": None},
-    {"stem": "F_SCH_A_PART1",             "name": "sch_a_broker",       "biz_keys": [], "lz_col": None},
+    # F_SCH_A_PART1 broker rows join Schedule A on the composite (ACK_ID + FORM_ID); index
+    # FORM_ID here too so the carrier↔broker join is BTREE-pushed on BOTH sides.
+    {"stem": "F_SCH_A_PART1",             "name": "sch_a_broker",       "biz_keys": ["FORM_ID"], "lz_col": None},
+    # ── Reconciliation patch (form5500_ingestion_reconciliation.md) — stranded carrier ──
+    #    identity + Schedule C counterparty-fee spine the targeted v1 ingest skipped.
+    #    F_SCH_A is the insurance-contract head carrying INS_CARRIER_NAME / INS_CARRIER_EIN /
+    #    INS_CARRIER_NAIC_CODE (the TiC triage key); F_SCH_A_PART1 (broker, above) is only its
+    #    commission detail. Schedule C: ITEM3 = indirect comp by payor (PBM/consultant flows,
+    #    PROVIDER_INDIRECT_COMP_AMT), ITEM1 = eligible-indirect-only providers, PART3 =
+    #    terminated accountants/actuaries. All detail-table *_EIN are COUNTERPARTIES (resolve
+    #    against the external entity graph), never a back-pointer to the plan sponsor.
+    {"stem": "F_SCH_A",                   "name": "sch_a_carrier",      "biz_keys": ["FORM_ID", "SCH_A_EIN", "SCH_A_PLAN_NUM"], "lz_col": "INS_CARRIER_EIN"},
+    {"stem": "F_SCH_C_PART1_ITEM1",       "name": "sch_c_eligible",     "biz_keys": [], "lz_col": "PROVIDER_ELIGIBLE_EIN"},
+    {"stem": "F_SCH_C_PART1_ITEM3",       "name": "sch_c_indirect",     "biz_keys": [], "lz_col": "PROVIDER_PAYOR_EIN"},
+    {"stem": "F_SCH_C_PART3",             "name": "sch_c_terminated",   "biz_keys": [], "lz_col": None},
 ]
 
 EMPTY = "''"
