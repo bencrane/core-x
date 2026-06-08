@@ -43,6 +43,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
+from .src.routers.proposals_v1 import router as proposals_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -125,6 +126,10 @@ app.include_router(clay_find_companies_router)
 # /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
 app.include_router(pipeline_router, prefix="/internal")
 
+# proposals: engagement-agreement rendering (DocRaptor) + Documenso v2 e-signature engine.
+# Service-token create/list/provision; PUBLIC ref read + sealed-PDF stream; X-Documenso-Secret webhook.
+app.include_router(proposals_router)
+
 
 def _info() -> dict:
     return {
@@ -137,6 +142,7 @@ def _info() -> dict:
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
+            "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
         },
     }
 

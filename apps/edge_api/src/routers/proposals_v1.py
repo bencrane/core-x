@@ -1,0 +1,173 @@
+"""Proposals — the reusable engagement-agreement + e-signature surface.
+
+Three sub-surfaces, three trust boundaries:
+  POST /api/v1/proposals                  service-token  — operator/BFF mints a proposal
+  POST /api/v1/proposals/{ref}/provision  service-token  — (re)render PDF + create Documenso envelope
+  GET  /api/v1/proposals                  service-token  — operator list
+  GET  /api/v1/proposals/{ref}            PUBLIC (ref)   — the consumer React page's data source
+  GET  /api/v1/proposals/{ref}/document   PUBLIC (ref)   — streams the sealed PDF once completed
+  POST /api/v1/proposals/webhook          X-Documenso-Secret — Documenso advances status (authoritative)
+
+Provisioning (render PDF → create envelope) is best-effort at create time and separately
+re-runnable, so the row + PDF path are exercisable even before the Documenso Platform plan is
+live; only the envelope step depends on it.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import logging
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+
+from .. import config
+from ..db import get_db_connection
+from ..proposals import queries
+from ..proposals.agreement_template import render_agreement_html
+from ..proposals.models import Proposal, ProposalCreate, ProposalPublic, ProposalSummary, format_usd
+from ..service_token import require_service_token
+from ..services import documenso_client, docraptor_client
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/proposals", tags=["proposals"])
+
+
+def _title(p: Proposal) -> str:
+    return f"Strategic Origination Mandate — {p.client_name}"
+
+
+async def _provision(conn, p: Proposal) -> tuple[bool, str | None]:
+    """Render the legal PDF (DocRaptor, live) and create the Documenso envelope; bind it to the
+    row (draft → sent). Returns (ok, error_message). Non-raising so create can be best-effort."""
+    try:
+        pdf = await docraptor_client.render_pdf(render_agreement_html(p), name=p.ref)
+        env = await documenso_client.create_signing_envelope(
+            pdf, title=_title(p), signer_name=p.client_signer_name, signer_email=p.client_email,
+        )
+        await queries.attach_envelope(conn, p.ref, env.envelope_id, env.client_token)
+        return True, None
+    except (docraptor_client.DocRaptorError, documenso_client.DocumensoError, httpx.HTTPError) as exc:
+        # Includes transport failures (timeout/connect) — the common case. Non-raising so the
+        # committed draft row survives and is re-provisionable, never stranding the caller.
+        logger.warning("proposal %s provisioning deferred: %s", p.ref, exc)
+        return False, str(exc)
+
+
+@router.post("", dependencies=[Depends(require_service_token)])
+async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
+    """Mint a proposal, persist it, then best-effort provision the signable envelope."""
+    ref = queries.new_ref()
+    effective_date = body.effective_date or _dt.date.today()
+    quarterly = body.quarterly_total_cents or body.monthly_fee_cents * 3
+    rs_name = body.rs_signer_name or config.rs_signer_name()
+    field_values = {
+        "clientName": body.client_name,
+        "clientSignerName": body.client_signer_name,
+        "clientTitle": body.client_title,
+        "clientEmail": body.client_email,
+        "effectiveDate": effective_date.isoformat(),
+        "monthlyFee": format_usd(body.monthly_fee_cents),
+        "quarterlyTotal": format_usd(quarterly),
+        "rsName": rs_name,
+    }
+    async with get_db_connection() as conn:
+        p = await queries.insert_proposal(
+            conn, ref=ref, body=body, effective_date=effective_date,
+            quarterly_total_cents=quarterly, rs_signer_name=rs_name, field_values=field_values,
+        )
+        ok, err = await _provision(conn, p)
+        fresh = await queries.get_by_ref(conn, ref)
+    return {
+        "ref": ref,
+        "path": f"/proposal/{ref}",
+        "status": fresh.status if fresh else "draft",
+        "provisioned": ok,
+        "provision_error": err,
+    }
+
+
+@router.post("/{ref}/provision", dependencies=[Depends(require_service_token)])
+async def provision_proposal(ref: str) -> dict[str, Any]:
+    """(Re)render the PDF and create the Documenso envelope for an existing proposal."""
+    async with get_db_connection() as conn:
+        p = await queries.get_by_ref(conn, ref)
+        if p is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p.documenso_envelope_id is not None:
+            # Already bound to an envelope — re-provisioning would orphan the live (possibly
+            # signed) document. Refuse rather than silently rebind.
+            raise HTTPException(status_code=409, detail="already provisioned")
+        ok, err = await _provision(conn, p)
+        fresh = await queries.get_by_ref(conn, ref)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"provisioning failed: {err}")
+    return {"ref": ref, "status": fresh.status if fresh else p.status, "provisioned": True}
+
+
+@router.get("", dependencies=[Depends(require_service_token)])
+async def list_proposals(limit: int = 100) -> list[ProposalSummary]:
+    async with get_db_connection() as conn:
+        rows = await queries.list_recent(conn, min(max(limit, 1), 500))
+    return [
+        ProposalSummary(
+            ref=p.ref, client_name=p.client_name, client_signer_name=p.client_signer_name,
+            status=p.status, monthly_fee=format_usd(p.monthly_fee_cents),
+            created_at=p.created_at.isoformat() if p.created_at else None,
+        )
+        for p in rows
+    ]
+
+
+@router.get("/{ref}")
+async def get_proposal(ref: str) -> ProposalPublic:
+    """PUBLIC — the ref is the bearer credential. The consumer React page's data source."""
+    async with get_db_connection() as conn:
+        p = await queries.get_by_ref(conn, ref)
+    if p is None:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    return ProposalPublic.from_row(p)
+
+
+@router.get("/{ref}/document")
+async def get_signed_document(ref: str) -> Response:
+    """PUBLIC — stream the sealed PDF once the agreement is completed."""
+    async with get_db_connection() as conn:
+        p = await queries.get_by_ref(conn, ref)
+    if p is None:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    if p.status != "completed" or not p.documenso_envelope_id:
+        raise HTTPException(status_code=409, detail="agreement not yet completed")
+    pdf = await documenso_client.download_signed_pdf(p.documenso_envelope_id)
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{ref}.pdf"'},
+    )
+
+
+@router.post("/webhook")
+async def documenso_webhook(
+    request: Request, x_documenso_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Documenso → status advance. Source of truth (never the client embed callback)."""
+    if config.documenso_webhook_secret() is None:
+        raise HTTPException(status_code=503, detail="webhook secret not configured")
+    if not documenso_client.verify_webhook_secret(x_documenso_secret):
+        raise HTTPException(status_code=401, detail="invalid webhook secret")
+
+    body = await request.json()
+    evt = documenso_client.normalize_event(body)
+    if evt.status is None or not evt.envelope_id:
+        return {"ok": True, "ignored": True, "event": evt.event}
+
+    async with get_db_connection() as conn:
+        signed_url: str | None = None
+        if evt.status == "completed":
+            p = await queries.get_by_envelope(conn, evt.envelope_id)
+            if p is not None:
+                signed_url = f"/api/v1/proposals/{p.ref}/document"
+        applied = await queries.advance_status(
+            conn, envelope_id=evt.envelope_id, status=evt.status, signed_pdf_url=signed_url,
+        )
+    return {"ok": True, "applied": applied, "event": evt.event, "status": evt.status}
