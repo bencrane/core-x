@@ -9,13 +9,16 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  *   PersonnelData.csv     -> cslb_personnel       (1:N child, 100% RI to master)
  *   WorkerCompData.csv    -> cslb_workers_comp    (coverage peer; soft key, 49% RI)
  *
- * Single-phase (no explode — the payloads are plain CSV): fan `ingest_target` out for the
- * three targets in PARALLEL. They write to distinct Lance datasets, so there is no
- * shared-writer manifest conflict. Each dispatch mints a waitpoint token (its `url` is a
- * pre-signed HTTP callback), POSTs the Universal Dispatcher (the ONLY Modal endpoint) with
- * the target worker + that callback url, then suspends on `wait.forToken` — checkpointed,
- * zero compute, immune to HTTP timeouts — and resumes when the Modal worker POSTs its
- * flat-JSON terminal callback.
+ * Single-phase (no explode — the payloads are plain CSV): fan the three targets out as
+ * independent CHILD runs via batchTriggerAndWait — a SINGLE batch waitpoint in the parent.
+ * They write to distinct Lance datasets, so there is no shared-writer manifest conflict.
+ * Each child (caCslbTarget) mints a waitpoint token (its `url` is a pre-signed HTTP
+ * callback), POSTs the Universal Dispatcher (the ONLY Modal endpoint) with the target worker
+ * + that callback url, then suspends on exactly one `wait.forToken` — checkpointed, zero
+ * compute, immune to HTTP timeouts — and resumes when the Modal worker POSTs its flat-JSON
+ * terminal callback. A Promise.all over wait.forToken in one run would trip
+ * TASK_DID_CONCURRENT_WAIT ("Parallel waits are not supported"); batchTriggerAndWait is the
+ * Trigger-sanctioned parallel primitive.
  *
  * Manual/on-demand by design (NO cron): refresh follows a manual R2 payload drop into
  * landing/ca_cslb/. `as_of` is the export date; operator-overridable (defaults "2026-05-31").
@@ -23,6 +26,7 @@ import { task, wait, logger } from "@trigger.dev/sdk";
 
 const TARGETS = ["licenses", "personnel", "workers_comp"] as const;
 const AS_OF_DEFAULT = "2026-05-31";
+const TARGET_CONCURRENCY = 3; // all three targets fan out at once; suspended waits consume no compute
 
 // The flat JSON body Modal POSTs to each waitpoint url becomes that step's output.
 interface IngestCallback {
@@ -35,19 +39,38 @@ interface IngestCallback {
   as_of?: string;
 }
 
+// CHILD — ingest one target. Exactly one wait.forToken per run, so the three targets fan
+// out as independent runs with no concurrent waitpoint in any single run.
+export const caCslbTarget = task({
+  id: "ca-cslb-target",
+  queue: { concurrencyLimit: TARGET_CONCURRENCY },
+  maxDuration: 3900, // ~65m; exceeds the 1h token timeout with margin
+  run: async (payload: { target: string; asOf: string }): Promise<IngestCallback> =>
+    dispatch<IngestCallback>("ingest_target", { target: payload.target, as_of: payload.asOf }),
+});
+
 export const caCslbIngest = task({
   id: "ca-cslb-ingest",
-  // Three parallel overwrites + scalar-index builds over ≤406k rows; the durable waits
-  // consume no compute while suspended.
+  // The parent suspends at a single batch waitpoint (zero compute) while the three target
+  // child runs fan out in Modal.
   maxDuration: 3600,
   run: async (payload: { as_of?: string }) => {
     const asOf = payload?.as_of ?? AS_OF_DEFAULT;
     logger.info("CA CSLB ingest starting", { as_of: asOf, targets: TARGETS });
 
-    // Fan out all three targets in parallel (distinct Lance datasets — no conflict).
-    const results = await Promise.all(
-      TARGETS.map((target) => dispatch<IngestCallback>("ingest_target", { target, as_of: asOf })),
+    // Fan out one child run per target under a SINGLE batch waitpoint (a Promise.all over
+    // wait.forToken would trip TASK_DID_CONCURRENT_WAIT).
+    const { runs } = await caCslbTarget.batchTriggerAndWait(
+      TARGETS.map((target) => ({ payload: { target, asOf } })),
     );
+
+    const results: IngestCallback[] = [];
+    for (const run of runs) {
+      if (!run.ok) {
+        throw new Error(`ca-cslb target run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      }
+      results.push(run.output);
+    }
 
     const totalRows = results.reduce((acc, r) => acc + (r.rows ?? 0), 0);
     const byTarget = Object.fromEntries(

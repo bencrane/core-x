@@ -9,9 +9,11 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  *   Phase 1 — dispatches `explode_zip` (7z-extract each member — cordata.zip is
  *             Deflate64, which stdlib zip cannot read — and re-land as .zst) and
  *             suspends on its waitpoint until done.
- *   Phase 2 — fans `ingest_target` out for master + events in PARALLEL. They write to
- *             distinct Lance datasets (fl_sos_corporations / fl_sos_events) so there is
- *             no shared-writer manifest conflict.
+ *   Phase 2 — fans master + events out as independent CHILD runs (flSosTarget) via
+ *             batchTriggerAndWait — a SINGLE batch waitpoint, sequential to Phase 1's
+ *             wait. They write to distinct Lance datasets (fl_sos_corporations /
+ *             fl_sos_events) so there is no shared-writer manifest conflict. A
+ *             Promise.all over wait.forToken in one run trips TASK_DID_CONCURRENT_WAIT.
  *
  * Each step mints a waitpoint token (its `url` is a pre-signed HTTP callback), POSTs the
  * Universal Dispatcher (the ONLY Modal endpoint) with the target worker + that callback
@@ -24,6 +26,7 @@ import { task, wait, logger } from "@trigger.dev/sdk";
 
 const TARGETS = ["master", "events"] as const;
 const AS_OF_DEFAULT = "2026-05-31";
+const TARGET_CONCURRENCY = 2; // both targets fan out at once; suspended waits consume no compute
 
 // The flat JSON body Modal POSTs to each waitpoint url becomes that step's output.
 interface ExplodeCallback {
@@ -43,6 +46,16 @@ interface IngestCallback {
   as_of?: string;
 }
 
+// CHILD — ingest one target. Exactly one wait.forToken per run, so master + events fan
+// out as independent runs with no concurrent waitpoint in any single run.
+export const flSosTarget = task({
+  id: "fl-sos-target",
+  queue: { concurrencyLimit: TARGET_CONCURRENCY },
+  maxDuration: 7500, // ~125m; exceeds the 2h token timeout with margin
+  run: async (payload: { target: string; asOf: string }): Promise<IngestCallback> =>
+    dispatch<IngestCallback>("ingest_target", { target: payload.target, as_of: payload.asOf }),
+});
+
 export const flSosIngest = task({
   id: "fl-sos-ingest",
   // Phase 1 then 2-way parallel Phase 2 (14.4M-row events + index sorts); durable waits
@@ -56,10 +69,20 @@ export const flSosIngest = task({
     const explode = await dispatch<ExplodeCallback>("explode_zip", { as_of: asOf });
     logger.info("explode complete", { members: explode.members });
 
-    // ── Phase 2 — ingest master + events in parallel (distinct Lance datasets) ──
-    const results = await Promise.all(
-      TARGETS.map((target) => dispatch<IngestCallback>("ingest_target", { target, as_of: asOf })),
+    // ── Phase 2 — fan master + events out as independent child runs under a SINGLE batch
+    // waitpoint (sequential to Phase 1's wait; a Promise.all over wait.forToken would trip
+    // TASK_DID_CONCURRENT_WAIT). Distinct Lance datasets — no conflict. ──
+    const { runs } = await flSosTarget.batchTriggerAndWait(
+      TARGETS.map((target) => ({ payload: { target, asOf } })),
     );
+
+    const results: IngestCallback[] = [];
+    for (const run of runs) {
+      if (!run.ok) {
+        throw new Error(`fl-sos target run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      }
+      results.push(run.output);
+    }
 
     const rows = results.reduce((acc, r) => acc + (r.rows ?? 0), 0);
     const byTarget = Object.fromEntries(

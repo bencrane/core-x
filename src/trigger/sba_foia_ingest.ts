@@ -3,15 +3,22 @@ import { task, wait, logger } from "@trigger.dev/sdk";
 /**
  * Control plane — SBA 7(a) & 504 FOIA loan-level bulk ingest.
  *
- * Trigger.dev v4 durable callback. Fans the two programs out in PARALLEL — they
- * write to distinct Lance datasets (sba_504 / sba_7a) so there is no shared-writer
- * conflict. For each program this task:
+ * Trigger.dev v4 durable callback. Fans the two programs out as independent CHILD
+ * runs via batchTriggerAndWait — a SINGLE batch waitpoint in the parent. They write
+ * to distinct Lance datasets (sba_504 / sba_7a) so there is no shared-writer
+ * conflict. Each child (sbaFoiaProgram):
  *   1. mints a waitpoint token (its `url` is a pre-signed HTTP callback),
  *   2. POSTs the Universal Dispatcher (the ONLY Modal endpoint) with the target
  *      worker + that callback url,
  *   3. suspends on `wait.forToken` — checkpointed, consuming no compute and immune
  *      to HTTP timeouts,
  *   4. resumes when the Modal worker POSTs the callback with its terminal metadata.
+ *
+ * Why a child, not Promise.all over wait.forToken in one run: Trigger.dev forbids
+ * concurrent waitpoints within a single run — `Promise.all(PROGRAMS.map(... wait
+ * .forToken ...))` trips TASK_DID_CONCURRENT_WAIT ("Parallel waits are not
+ * supported") and system-fails. batchTriggerAndWait is the Trigger-sanctioned
+ * parallel primitive: one batch waitpoint in the parent, N independent child runs.
  *
  * Manual/back-on-demand by design (no cron): the FOIA files refresh quarterly, so
  * trigger this task with an optional { as_of } when SBA republishes. Flip to
@@ -29,18 +36,47 @@ interface IngestCallback {
 }
 
 const PROGRAMS = ["504", "7a"] as const;
+const PROGRAM_CONCURRENCY = 2; // both programs fan out at once; suspended waits consume no compute
+
+interface ProgramResult {
+  program: string;
+  rows: number;
+  dataset_uri?: string;
+}
+
+// CHILD — ingest one SBA program. Exactly one wait.forToken per run, so the two
+// programs fan out as two independent runs with no concurrent waitpoint in any run.
+export const sbaFoiaProgram = task({
+  id: "sba-foia-program",
+  queue: { concurrencyLimit: PROGRAM_CONCURRENCY },
+  maxDuration: 3900, // ~65m; exceeds the 1h token timeout with margin
+  run: async (payload: { program: string; asOf: string }): Promise<ProgramResult> =>
+    dispatchProgram(payload.program, payload.asOf),
+});
 
 export const sbaFoiaIngest = task({
   id: "sba-foia-ingest",
-  // Both programs run concurrently in Modal; the durable waits consume no compute.
+  // The parent suspends at a single batch waitpoint (zero compute) while the two
+  // child runs fan out in Modal.
   maxDuration: 7200,
   run: async (payload: { as_of?: string }) => {
     const asOf = payload?.as_of ?? "260331";
     logger.info("SBA FOIA ingest starting", { as_of: asOf, programs: PROGRAMS });
 
-    const results = await Promise.all(
-      PROGRAMS.map((program) => dispatchProgram(program, asOf)),
+    // Fan out one child run per program under a SINGLE batch waitpoint (a Promise.all
+    // over wait.forToken would trip TASK_DID_CONCURRENT_WAIT).
+    const { runs } = await sbaFoiaProgram.batchTriggerAndWait(
+      PROGRAMS.map((program) => ({ payload: { program, asOf } })),
     );
+
+    // Fail-fast aggregation (mirrors the prior Promise.all semantics).
+    const results: ProgramResult[] = [];
+    for (const run of runs) {
+      if (!run.ok) {
+        throw new Error(`sba-foia program run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      }
+      results.push(run.output);
+    }
 
     const rows = results.reduce((acc, r) => acc + r.rows, 0);
     logger.info("SBA FOIA ingest complete", { rows, results });

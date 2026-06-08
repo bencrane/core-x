@@ -1,4 +1,4 @@
-import { schedules, wait, logger } from "@trigger.dev/sdk";
+import { schedules, task, wait, logger } from "@trigger.dev/sdk";
 
 /**
  * Control plane — SEC Form ADV Part 1 + ADV-W (Withdrawals) monthly bulk ingest.
@@ -12,13 +12,16 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
  * resolves each dataset's ZIP URL dynamically, downloads from sec.gov, transcodes cp1252→utf8,
  * and writes Lance to R2. This task is the cadence + durable-state layer only.
  *
- * Single-phase fan-out: dispatch `ingest_dataset` for part1 + advw in PARALLEL. They write to
- * distinct Lance datasets, so there is no shared-writer manifest conflict. Each dispatch mints
- * a waitpoint token (its `url` is a pre-signed HTTP callback — no API key; the callbackHash in
- * the URL authenticates), POSTs the Universal Dispatcher (the ONLY Modal endpoint) with the
- * target worker + that callback url, then suspends on `wait.forToken` — checkpointed, zero
- * compute, immune to HTTP timeouts — and resumes when the Modal worker POSTs its flat-JSON
- * terminal callback. Trigger owns true end-to-end success/failure state; no polling.
+ * Single-phase fan-out: one CHILD run per dataset (part1 + advw) via batchTriggerAndWait — a
+ * SINGLE batch waitpoint in the parent. They write to distinct Lance datasets, so there is no
+ * shared-writer manifest conflict. Each child (secAdvDataset) mints a waitpoint token (its `url`
+ * is a pre-signed HTTP callback — no API key; the callbackHash in the URL authenticates), POSTs
+ * the Universal Dispatcher (the ONLY Modal endpoint) with the target worker + that callback url,
+ * then suspends on exactly one `wait.forToken` — checkpointed, zero compute, immune to HTTP
+ * timeouts — and resumes when the Modal worker POSTs its flat-JSON terminal callback. A
+ * Promise.all over wait.forToken in one run would trip TASK_DID_CONCURRENT_WAIT ("Parallel waits
+ * are not supported"); batchTriggerAndWait is the Trigger-sanctioned parallel primitive. Trigger
+ * owns true end-to-end success/failure state; no polling.
  *
  * Monthly cadence (09:00 ET on the 1st): the SEC posts the Form ADV historical data files
  * periodically; a monthly full-snapshot overwrite keeps both datasets current.
@@ -26,6 +29,7 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
 
 const APP_NAME = "sec-adv-pipelines";
 const DATASETS = ["part1", "advw"] as const;
+const DATASET_CONCURRENCY = 2; // both datasets fan out at once; suspended waits consume no compute
 
 // The flat JSON body Modal POSTs to each waitpoint url becomes that dispatch's output.
 interface IngestCallback {
@@ -38,20 +42,39 @@ interface IngestCallback {
   source_url?: string;
 }
 
+// CHILD — ingest one dataset. Exactly one wait.forToken per run, so the datasets fan
+// out as independent runs with no concurrent waitpoint in any single run.
+export const secAdvDataset = task({
+  id: "sec-adv-dataset",
+  queue: { concurrencyLimit: DATASET_CONCURRENCY },
+  maxDuration: 3900, // ~65m; exceeds the 1h token timeout with margin
+  run: async (payload: { dataset: string }): Promise<IngestCallback> =>
+    dispatch<IngestCallback>("ingest_dataset", { dataset: payload.dataset }),
+});
+
 export const secAdvMonthly = schedules.task({
   id: "sec-adv-monthly",
   // 09:00 America/New_York on the 1st of every month.
   cron: { pattern: "0 9 1 * *", timezone: "America/New_York" },
-  // Two parallel ingests (the part1 download + ~600k-row transform + index is the long pole);
-  // durable waits consume no compute while suspended.
+  // The parent suspends at a single batch waitpoint (zero compute) while the dataset
+  // child runs fan out in Modal.
   maxDuration: 5400,
   run: async (payload) => {
     logger.info("SEC ADV monthly ingest starting", { scheduledAt: payload.timestamp, datasets: DATASETS });
 
-    // Fan out both datasets in parallel (distinct Lance datasets — no writer conflict).
-    const results = await Promise.all(
-      DATASETS.map((dataset) => dispatch<IngestCallback>("ingest_dataset", { dataset })),
+    // Fan out one child run per dataset under a SINGLE batch waitpoint (a Promise.all
+    // over wait.forToken would trip TASK_DID_CONCURRENT_WAIT).
+    const { runs } = await secAdvDataset.batchTriggerAndWait(
+      DATASETS.map((dataset) => ({ payload: { dataset } })),
     );
+
+    const results: IngestCallback[] = [];
+    for (const run of runs) {
+      if (!run.ok) {
+        throw new Error(`sec-adv dataset run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      }
+      results.push(run.output);
+    }
 
     const totalRows = results.reduce((acc, r) => acc + (r.rows ?? 0), 0);
     const byDataset = Object.fromEntries(
