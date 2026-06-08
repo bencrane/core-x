@@ -128,6 +128,7 @@ _REATTEMPT = {"requires_ocr", "extract_failed", "ocr_failed"}
 # Worker-process module globals (born ONLY in _init_worker under spawn — D8/C3). Never inherited.
 _WORKER_S3 = None
 _WORKER_BUCKET = None
+_WORKER_PREFIX = None   # CAS key prefix (e.g. active/sam_attachment_blobs_90day/) — prepended to blob_key
 _BIG_SEMA = None        # cross-process cap on concurrent extraction of files > BIG_FILE_BYTES (§7.2)
 
 
@@ -892,16 +893,18 @@ def _init_worker(big_sema=None) -> None:
     """Pool initializer (D8/C3): mint the SOLE boto3 client for this worker process as a module global
     (max_pool_connections=4). Runs under spawn, so nothing is fork-inherited. The >50MB extraction
     semaphore (§7.2) is shared in via initargs — the only safe way to share an mp primitive under spawn."""
-    global _WORKER_S3, _WORKER_BUCKET, _BIG_SEMA
+    global _WORKER_S3, _WORKER_BUCKET, _WORKER_PREFIX, _BIG_SEMA
     _WORKER_S3 = _make_s3_client(max_pool_connections=4)
-    _WORKER_BUCKET, _ = _split_s3(BLOB_PREFIX)
+    _WORKER_BUCKET, _WORKER_PREFIX = _split_s3(BLOB_PREFIX)
     _BIG_SEMA = big_sema
 
 
 def _fetch_spool(key: str):
-    """Stream a CAS blob to a SpooledTemporaryFile (RAM ≤ BLOB_SPILL, then NVMe spill)."""
+    """Stream a CAS blob to a SpooledTemporaryFile (RAM ≤ BLOB_SPILL, then NVMe spill). `key` is the
+    bare CAS address (resource_id for top-level, sha256 for expanded inner files); the blob lives under
+    the BLOB_PREFIX key prefix, so it MUST be prepended to reach the object."""
     import tempfile
-    body = _WORKER_S3.get_object(Bucket=_WORKER_BUCKET, Key=key)["Body"]
+    body = _WORKER_S3.get_object(Bucket=_WORKER_BUCKET, Key=f"{_WORKER_PREFIX}{key}")["Body"]
     spool = tempfile.SpooledTemporaryFile(max_size=BLOB_SPILL)
     while True:
         chunk = body.read(1024 * 1024)
@@ -1350,7 +1353,8 @@ def _extract_serialized(task: dict, s3, so: dict) -> dict:
     tf = time.monotonic()
     fetch_secs = compute_secs = 0.0
     try:
-        body = s3.get_object(Bucket=_split_s3(BLOB_PREFIX)[0], Key=task["blob_key"])["Body"].read()
+        _bkt, _pfx = _split_s3(BLOB_PREFIX)
+        body = s3.get_object(Bucket=_bkt, Key=f"{_pfx}{task['blob_key']}")["Body"].read()
         fetch_secs = time.monotonic() - tf
         tc = time.monotonic()
         sniff = _sniff_mime(body[:512]) or _norm_mime(task.get("mime_sniffed"))
