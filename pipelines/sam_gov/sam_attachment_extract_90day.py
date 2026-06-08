@@ -237,11 +237,17 @@ def _extraction_schema():
     ])
 
 
+# Chunk-grain text sinks (scope/pricing/unknown): the per-chunk `text` and the pricing `cells` column
+# are typed `large_string` (int64 offsets), NOT `string` (int32). At lake scale a single fragment's
+# cumulative character-offset buffer exceeds the int32 ceiling (2**31 B); `compact_files()` then fails
+# in default `reencode` mode with `LanceError(Arrow): Offset overflow`. int64 offsets fuse fragments
+# cleanly with no `compaction_mode="try_binary_copy"` fallback. Re-materialize existing string-typed
+# sinks (drop + rebuild) to adopt this — a large_string write into a string dataset is rejected by Lance.
 def _scope_schema():
     import pyarrow as pa
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
-        ("text", pa.string()), ("char_len", pa.int32()), ("header_class", pa.string()),
+        ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
         ("sensitivity", pa.string()), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
@@ -255,11 +261,11 @@ def _pricing_schema():
     import pyarrow as pa
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
-        ("text", pa.string()), ("char_len", pa.int32()), ("header_class", pa.string()),
+        ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
         ("sensitivity", pa.string()), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
-        ("reading_order_conf", pa.string()), ("cells", pa.string()),   # cell-delimited table rows (C6)
+        ("reading_order_conf", pa.string()), ("cells", pa.large_string()),  # cell-delimited table rows (C6); int64 offsets
         ("run_id", pa.string()), ("created_at", pa.timestamp("us", tz="UTC")),
     ])
 
@@ -268,7 +274,7 @@ def _unknown_schema():
     import pyarrow as pa
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
-        ("text", pa.string()), ("char_len", pa.int32()), ("header_class", pa.string()),
+        ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
         ("sensitivity", pa.string()), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
