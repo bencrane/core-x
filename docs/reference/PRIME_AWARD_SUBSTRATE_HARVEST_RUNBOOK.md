@@ -89,7 +89,7 @@ is the representative (max `action_date`). All four key fields are 100% non-null
 |---|---|
 | **MIME** | `.pdf` 91,252 · `.docx` 24,697 · null-mime 24,566 · `.xlsx` 9,181 · `.zip` 1,783 · `.doc` 1,447 · others |
 | **Access** | `public` 152,146 · **`private` 3,037 (2.0%)** — auth-gated, not anonymously downloadable |
-| **size_bytes** | 0-null; **4,830 ≥10 MB** (lower-bound corrupt); 24,570 declared 0 (≈ the null-mime set) |
+| **size_bytes** | 0-null; **4,830 ≥10 MB, max 249 MB** (verified TRUE, not corrupt — Range probe: declared == Content-Length up to 249 MB); 24,570 declared 0 (≈ the null-mime set) |
 | **Primary-target split (notices w/ substrate)** | primary 32,921 · fallback 9,042 |
 
 ---
@@ -131,8 +131,9 @@ WHERE  is_primary_target AND mime_type = '.pdf' AND access_level = 'public';
 ```
 
 Caveats: filter `access_level='public'` before any byte fetch (3,037 are gated);
-treat `size_bytes` as a lower bound (enforce real size via `Content-Length` at fetch,
-never as a storage budget above 10 MB).
+`size_bytes` here is the TRUE size (spot-verified to 249 MB; the older
+`sam_attachment_manifest.py` corruption did not reproduce) — still confirm
+`Content-Length` at fetch as defense-in-depth.
 
 ---
 
