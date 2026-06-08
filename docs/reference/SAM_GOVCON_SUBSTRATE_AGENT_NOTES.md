@@ -7,6 +7,12 @@ note is a rule + the failure signature that earned it + the exact fix. Pair with
 `PRIME_AWARD_ATTACHMENT_BRIDGE_DIAGNOSTIC.md` (the funnel) and
 `PRIME_AWARD_SUBSTRATE_HARVEST_RUNBOOK.md` (the executed Phase-1 harvest).
 
+> **Corrections folded in (2026-06-07)** from an adversarial first-principles audit —
+> full evidence in `SAM_GOVCON_SUBSTRATE_AGENT_NOTES_ADVERSARIAL_REVIEW.md`. Two
+> claims were materially wrong as first written and are corrected in place: §8
+> `size_bytes` corruption (does NOT apply to this endpoint's data) and §5 base_type
+> ranking magnitude (overstated ~30×). The recommendation directions held; the numbers did not.
+
 ---
 
 ## 1. Runtime & secrets (start here every time)
@@ -73,6 +79,11 @@ def _daemonize(logpath):              # call before importing duckdb/requests
 watcher is convenience only; never let completion depend on it. The checkpoint file is
 the source of truth — poll `wc -l` on it.
 
+The committed `sam_opps_attachment_manifest_90day_winners.py harvest --daemon` ports
+this `_daemonize()` (heavy libs are lazily imported inside the stage fns, so the fork is
+single-threaded). Without `--daemon` the harvest is resumable but NOT detached — for a
+multi-hour run either pass `--daemon` or launch it yourself under `nohup … & disown`.
+
 ---
 
 ## 3. SAM.gov access — use the frontend, not the developer gateway
@@ -125,27 +136,38 @@ regexp_replace(upper(trim(<col>)), '[^A-Z0-9]', '', 'g')
 
 ---
 
-## 5. Rank notices on `base_type`, NOT `notice_type` (decision-critical)
+## 5. Rank notices on `base_type`, NOT `notice_type` (correct key; modest impact)
 
 `sam-gov-opps` carries both. **`notice_type` flips to "Award Notice" once a
-solicitation is awarded** (inflated count 11,957 vs `base_type` 3,554). **`base_type`
-preserves the original posting type = the document-host identity** — and the PWS/SOW
-attachments live on the original solicitation notice. Ranking on `notice_type`
-mis-demotes ~8,400 awarded solicitations (exactly the notices you want).
+solicitation is awarded** (in the bridge join: `notice_type='Award Notice'` = 40,540
+vs `base_type='Award Notice'` = 24,293 — verified). **`base_type` preserves the original
+posting type = the document-host identity** — and the PWS/SOW attachments live on the
+original solicitation notice, so rank on `base_type`. *Measured impact (re-derived over
+the real bridge):* ranking on `notice_type` instead changes **~5,738** winner selections,
+of which only **~268** actually drop from a document-host tier to a non-host tier (15 to
+Award Notice) — ~76% of the changed picks still land on a genuine Combined Synopsis/
+Solicitation. So `base_type` is the correct key, but the blast radius is modest, not
+"decision-critical": a one-shot run on `notice_type` would still be ~99.5% correct. The
+earlier "~8,400 mis-demoted / 11,957-vs-3,554" framing was wrong against the artifact.
 
 Hierarchy (lower = higher-value host): Combined Synopsis/Solicitation > Solicitation >
 Presolicitation > Special Notice > Modification > Justification > Award Notice >
-Sources Sought > other. Multiplicity is real (one solnum → many lifecycle notices;
-one observed had 51 siblings) — pick the **min-rank** notice per solnum. Choose
+Sources Sought > other. Multiplicity is real and the tail is long — **observed max
+8,365 siblings** for one solnum (government-wide vehicles / IDV-BPA umbrellas, e.g.
+`47QSMD20R0001`); "51" wildly understates it. Pick the **min-rank** notice per solnum
+(size the `row_number()` dedup + DuckDB spill for thousand-sibling solnums). Choose
 Award Notice / Sources Sought only when no higher tier exists (flag those rows).
 
 ---
 
 ## 6. DuckDB + Lance footguns (each one cost an iteration)
 
-- **Don't materialize the 2.88 M-row archived opps set into DuckDB and aggregate — it
-  STALLS** (>10 min, ~0 % CPU; Arrow streaming stall). Push the predicate / a solnum
-  IN-list into the scan; reduce before materializing.
+- **Don't materialize the archived opps set (~2.84 M rows) WIDE — project first.** A
+  full/wide materialize + aggregate stalled an audit agent (>10 min, ~0 % CPU; Arrow
+  streaming stall). The nuance the first draft missed: the committed `build_bridge`
+  materializes the *entire* active∪archived set with **8 narrow columns** and does NOT
+  stall — column projection is what makes it tolerable. Rule: project to the few needed
+  columns before materializing (or push a solnum IN-list into the scan); never pull wide.
 - **Scalar BTREE pushdown only fires via `lance.dataset(...).scanner(filter=…)`**, NOT
   via a DuckDB-registered relation + SQL `WHERE` (that reads near-full columns over the
   laptop→R2 WAN).
@@ -175,14 +197,19 @@ Award Notice / Sources Sought only when no higher tier exists (flag those rows).
 
 ## 8. SAM data-quality caveats (bake into every consumer)
 
-- **`size_bytes` is a LOWER BOUND, corrupt for files ≥10 MB:** SAM returns
-  `((true_size - 1) mod 10_000_000) + 1` — not invertible (declared 5 MB may be a real
-  45 MB file). Never use it as a storage budget or cap above 10 MB; enforce real size
-  via `Content-Length` at fetch.
+- **`size_bytes` from `/resources` was TRUE (uncorrupted) as of 2026-06 — do not
+  inherit the old corruption claim.** `sam_attachment_manifest.py`'s docstring says this
+  field is `((true-1) mod 10_000_000)+1`-corrupted for ≥10 MB files; that did **NOT**
+  reproduce here. The landed manifest holds 4,830 rows >10 MB (max 249 MB) — impossible
+  under a formula bounded to [1, 10 M] — and a live Range probe (`bytes=0-0`, no full
+  download) returned `Content-Length` exactly equal to the declared size up to 249 MB.
+  Still confirm `Content-Length` at fetch as defense-in-depth, but the "5 MB may be
+  45 MB" mechanism is false for this endpoint's data.
 - **~2 % of attachments are `access_level='private'`** (auth-gated) — filter to
   `'public'` before any byte fetch.
-- **~16 % of attachment rows are null-mime / zero-size** placeholder/link resources
-  (still carry a `resourceId`) — usually skip for the text/vector substrate.
+- **~16 % of attachment rows are null-mime AND zero-size — the SAME rows (15.8 %)**,
+  placeholder/link resources that still carry a `resourceId`. One population, not two;
+  usually skip for the text/vector substrate.
 
 ---
 
@@ -219,7 +246,7 @@ worktree sits on it (clears on worktree removal); the remote branch is deleted o
 | Award-grain Sol# fill | **17.4 %** (rest are DLA `SPE*` / FSS / sole-source — no notice, structural ceiling) |
 | Solnum → notice_id resolution | **33–34 %** |
 | Substrate yield on resolved solnums | **85–90 %** |
-| **End-to-end award → downloadable substrate** | **~5.3 %** |
+| **End-to-end award → downloadable substrate** | **~4.9 %** (full-pop: 0.1736 × 0.332 × 0.852; the 5.3 % seen earlier used optimistic 172-sample yields) |
 
 The narrowness is a **filter, not a leak** — it isolates the competed-procurement,
 SOW-bearing segment. ~82 % of awards are unreachable by design. Re-run the bridge on

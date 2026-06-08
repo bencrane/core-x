@@ -43,8 +43,8 @@ files ≥10 MB; see ``sam_attachment_manifest.py``) — enforce real size at fet
     doppler run --project core-x --config prd -- \
       uv run --with pylance --with pyarrow --with 'duckdb>=1.5,<2' \
       python pipelines/sam_gov/sam_opps_attachment_manifest_90day_winners.py bridge
-    # 3 live harvest (resumable; run detached for the multi-hour sweep)
-    ... python ...90day_winners.py harvest --resume
+    # 3 live harvest (resumable + self-detaching for the multi-hour sweep)
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ... python ...90day_winners.py harvest --daemon
     # 4 sink + index + verify
     ... python ...90day_winners.py sink
     ... python ...90day_winners.py verify
@@ -99,6 +99,32 @@ RANK_SQL = """CASE upper(coalesce({bt}, {nt}, ''))
   WHEN 'AWARD NOTICE' THEN 7
   WHEN 'SOURCES SOUGHT' THEN 8
   ELSE 9 END"""
+
+
+# ─────────────────────────── daemonize (resume-safe multi-hour harvest) ───────────────────────────
+
+def _daemonize() -> None:
+    """Double-fork + os.setsid so the multi-hour harvest outlives the launching shell /
+    a session resume. macOS-safe: there is NO `setsid` binary (use os.setsid); the fork
+    happens HERE while the process is still single-threaded — duckdb/requests are imported
+    lazily inside harvest(), AFTER this fork, which avoids the macOS objc fork-safety abort
+    (`+[NSNumber initialize] ... Crashing instead`). Pair with --resume (the JSONL
+    checkpoint) so a kill at any point continues cleanly. Launch with
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES as a backstop."""
+    os.makedirs(WORKDIR, exist_ok=True)
+    logpath = os.path.join(WORKDIR, "harvest_daemon.log")
+    if os.fork() > 0:
+        os._exit(0)
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    f = open(logpath, "a", buffering=1)
+    os.dup2(f.fileno(), 1)
+    os.dup2(f.fileno(), 2)
+    try:
+        os.dup2(open(os.devnull).fileno(), 0)
+    except OSError:
+        pass
 
 
 # ─────────────────────────── R2 ───────────────────────────
@@ -377,10 +403,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("stage", choices=["bridge", "harvest", "sink", "verify"])
     ap.add_argument("--no-resume", dest="resume", action="store_false")
+    ap.add_argument("--daemon", action="store_true",
+                    help="detach the harvest (double-fork+setsid) so it survives a "
+                         "session resume; logs to WORKDIR/harvest_daemon.log")
     a = ap.parse_args()
     if a.stage == "bridge":
         build_bridge()
     elif a.stage == "harvest":
+        if a.daemon:
+            _daemonize()
         harvest(resume=a.resume)
     elif a.stage == "sink":
         sink()
