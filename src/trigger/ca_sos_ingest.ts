@@ -7,10 +7,12 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  * R2 landing holding three relational members (Filings/Agents/Principals) keyed on
  * ENTITY_NUM; this task:
  *   Phase 1 — dispatches `explode_zip` (extract each member → per-member .csv.zst
- *             landing artifacts) and suspends on its waitpoint until done.
- *   Phase 2 — fans the three members out in PARALLEL to `ingest_member`. They write
- *             to distinct Lance datasets (ca_sos_entities / ca_sos_agents /
- *             ca_sos_principals) so there is no shared-writer conflict.
+ *             landing artifacts) and suspends on its single waitpoint until done.
+ *   Phase 2 — fans the three members out as independent CHILD runs (caSosMember) via
+ *             batchTriggerAndWait — a SINGLE batch waitpoint, sequential to Phase 1's
+ *             wait. They write to distinct Lance datasets (ca_sos_entities /
+ *             ca_sos_agents / ca_sos_principals) so there is no shared-writer conflict.
+ *             A Promise.all over wait.forToken in one run trips TASK_DID_CONCURRENT_WAIT.
  *
  * Each step mints a waitpoint token (its `url` is a pre-signed HTTP callback), POSTs
  * the Universal Dispatcher (the ONLY Modal endpoint) with the target worker + that
@@ -24,6 +26,7 @@ import { task, wait, logger } from "@trigger.dev/sdk";
 
 const MEMBERS = ["entities", "agents", "principals"] as const;
 const AS_OF_DEFAULT = "2026-05-31";
+const MEMBER_CONCURRENCY = 3; // all three members fan out at once; suspended waits consume no compute
 
 // The flat JSON body Modal POSTs to each waitpoint url becomes that step's output.
 interface ExplodeCallback {
@@ -44,6 +47,16 @@ interface IngestCallback {
   as_of?: string;
 }
 
+// CHILD — ingest one member. Exactly one wait.forToken per run, so the three members fan
+// out as independent runs with no concurrent waitpoint in any single run.
+export const caSosMember = task({
+  id: "ca-sos-member",
+  queue: { concurrencyLimit: MEMBER_CONCURRENCY },
+  maxDuration: 3900, // ~65m; exceeds the 1h token timeout with margin
+  run: async (payload: { member: string; asOf: string }): Promise<IngestCallback> =>
+    dispatch<IngestCallback>("ingest_member", { member: payload.member, as_of: payload.asOf }),
+});
+
 export const caSosIngest = task({
   id: "ca-sos-ingest",
   // Phase 1 then 3-way parallel Phase 2; durable waits consume no compute while suspended.
@@ -59,12 +72,20 @@ export const caSosIngest = task({
     });
     logger.info("explode complete", { source_zip: explode.source_zip, members: explode.members });
 
-    // ── Phase 2 — ingest the three members in parallel (distinct Lance datasets) ──
-    const results = await Promise.all(
-      MEMBERS.map((member) =>
-        dispatch<IngestCallback>("ingest_member", { member, as_of: asOf }),
-      ),
+    // ── Phase 2 — fan the three members out as independent child runs under a SINGLE
+    // batch waitpoint (sequential to Phase 1's wait; a Promise.all over wait.forToken
+    // would trip TASK_DID_CONCURRENT_WAIT). Distinct Lance datasets — no conflict. ──
+    const { runs } = await caSosMember.batchTriggerAndWait(
+      MEMBERS.map((member) => ({ payload: { member, asOf } })),
     );
+
+    const results: IngestCallback[] = [];
+    for (const run of runs) {
+      if (!run.ok) {
+        throw new Error(`ca-sos member run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      }
+      results.push(run.output);
+    }
 
     const rows = results.reduce((acc, r) => acc + (r.rows ?? 0), 0);
     const byMember = Object.fromEntries(
