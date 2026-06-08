@@ -1,5 +1,9 @@
 # 90-Day SAM.gov Attachment — Text Extraction Pipeline (Architecture & Execution Spec)
 
+> ⚠️ **SUPERSEDED BY v2 — build from `SAM_90DAY_EXTRACTION_PIPELINE_SPEC_V2.md`.** v2 incorporates the 33 surviving
+> findings from `SAM_90DAY_EXTRACTION_PIPELINE_SPEC_ADVERSARIAL_REVIEW.md`. This v1 + the review are retained only
+> for traceability; do not implement from v1.
+
 **Status:** specification. **Do not implement from memory — implement from this document.** A secondary
 engineering agent should be able to build the pipeline end-to-end from §2–§9 without architectural
 ambiguity. This is Stage 4 of the GovCon substrate pipeline (Stage 3 = byte download, complete:
