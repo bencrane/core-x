@@ -83,7 +83,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
     padding: 4pt 6pt; }
   table.fees td { padding: 5pt 6pt; border-bottom: 0.5pt solid #cfd3d9; }
   table.fees td.rate { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .sig-wrap { margin-top: 26pt; page-break-inside: avoid; }
+  /* Force the execution block onto its own final page so the Documenso signature/date fields
+     (percent-positioned on the last page) land deterministically regardless of body length. */
+  .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
   .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
   .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; }
   .sig-party { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; letter-spacing: 0.12em;
