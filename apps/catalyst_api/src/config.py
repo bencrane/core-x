@@ -56,6 +56,23 @@ CONTRACTOR_AWARD_SUMMARY_URI = os.environ.get(
 AWARD_SEARCH_URI = os.environ.get(
     "AWARD_SEARCH_LANCE_URI", "s3://data-sink/active/usaspending/award_search/"
 )
+# SAM.gov entity surfaces. ``sam_entity_master`` (1 row/active UEI, BTREE uei) carries
+# the SAM identity + NAICS/PSC + raw business_types + physical city/state/zip5.
+# ``sam_pocs`` (BTREE uei, BITMAP poc_type) carries the government POC slots — no
+# email/phone columns exist at source.
+SAM_ENTITY_MASTER_URI = os.environ.get(
+    "SAM_ENTITY_MASTER_LANCE_URI", "s3://data-sink/active/sam_entity_master/"
+)
+SAM_POCS_URI = os.environ.get(
+    "SAM_POCS_LANCE_URI", "s3://data-sink/active/sam_pocs/"
+)
+# The unified Gold Mirror (entity_profile_gold v2.1, 1 row/UEI, BTREE uei) — the
+# SAM×USAspending write-time reconciliation. Pre-materializes lifetime/active
+# obligation sums + award counts, so the Overview surface and the active/past
+# count+total headlines are pure point-lookups (NO on-the-fly aggregate).
+ENTITY_PROFILE_GOLD_URI = os.environ.get(
+    "ENTITY_PROFILE_GOLD_LANCE_URI", "s3://data-sink/active/entity_profile_gold/"
+)
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
@@ -64,6 +81,16 @@ def operator_token() -> str | None:
     When unset (local dev) the token gate warns and allows; production sets it, so
     enforcement is live there. The BFF holds the same value as ``COREX_SERVICE_TOKEN``."""
     return os.environ.get("CATALYST_API_TOKEN")
+
+
+def auth_required() -> bool:
+    """Fail-closed switch: when the service runs anywhere but a bare local dev box,
+    an unset ``CATALYST_API_TOKEN`` is fatal at boot — the private gateway must never
+    silently run unauthenticated against a live R2 sink. True when the deploy sets
+    ``CATALYST_REQUIRE_AUTH`` truthy or Railway injects ``RAILWAY_ENVIRONMENT``."""
+    if os.environ.get("CATALYST_REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT"))
 
 
 def port() -> int:

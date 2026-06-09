@@ -24,11 +24,23 @@ import hmac
 import logging
 from contextlib import asynccontextmanager
 
+from datetime import date
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query
 from fastapi.responses import JSONResponse
 
 from .src import config, lance_store
-from .src.models import AwardProfile, AwardProfileResponse, Company, RecentAward
+from .src.models import (
+    ActiveContract,
+    ActiveContractsResponse,
+    AwardProfile,
+    AwardProfileResponse,
+    Company,
+    OverviewResponse,
+    PastPerformanceResponse,
+    RecentAward,
+    SamProfileResponse,
+)
 
 log = logging.getLogger("catalyst_api")
 
@@ -39,6 +51,13 @@ async def lifespan(_app: FastAPI):
     # boot rather than mid-request. A failure is logged (not fatal) so /healthz can
     # still report the degraded state.
     if config.operator_token() is None:
+        # Fail-closed in any non-local deploy: the private gateway must never serve
+        # the R2 sink unauthenticated. Local dev (no deploy markers) still warns + allows.
+        if config.auth_required():
+            raise RuntimeError(
+                "CATALYST_API_TOKEN is unset in a deployed environment — refusing to "
+                "start an unauthenticated gateway. Set the token (Doppler core-x/prd)."
+            )
         log.warning("CATALYST_API_TOKEN unset — /api/v1 routes are UNAUTHENTICATED (local dev only).")
     try:
         ok = lance_store.reachable()
@@ -72,8 +91,26 @@ def _info() -> dict:
         "endpoints": {
             "award_profile": "/api/v1/award-profile/{domain}",
             "award_profile_with_awards": "/api/v1/award-profile/{domain}?awards=N",
+            "sam_profile": "/api/v1/entities/{uei}/sam-profile",
+            "active_contracts": "/api/v1/entities/{uei}/active-contracts?limit=N",
+            "overview": "/api/v1/entities/{uei}/overview",
+            "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
         },
     }
+
+
+def _require_uei(uei: str) -> str:
+    """Trim + charset-validate the path UEI before it reaches a Lance filter. The
+    BFF resolves it from the trusted session, but the gateway validates regardless."""
+    uei = (uei or "").strip()
+    if not lance_store.valid_uei(uei):
+        raise HTTPException(status_code=400, detail="invalid uei")
+    return uei
+
+
+def _envelope(model) -> JSONResponse:
+    """The wire envelope shared with the award-profile route: ``{"data": <camelCase>}``."""
+    return JSONResponse({"data": model.model_dump(by_alias=True, exclude_none=False)})
 
 
 @app.get("/")
@@ -129,6 +166,76 @@ def award_profile(
         recent_awards=recent,
     )
     return JSONResponse({"data": resp.model_dump(by_alias=True, exclude_none=False)})
+
+
+# ── Entity UI surfaces (UEI-keyed; BFF resolves the UEI from the session) ─────
+@app.get("/api/v1/entities/{uei}/sam-profile", response_model=None, dependencies=[Depends(require_operator)])
+def sam_profile(uei: str = Path(..., description="12-char SAM.gov UEI")) -> JSONResponse:
+    """SAM.gov registration profile for a UEI: status + expiry (with days-remaining),
+    NAICS/PSC, raw business_types, physical city/state/zip, and government POC slots.
+    404 when the UEI has no active SAM registration."""
+    uei = _require_uei(uei)
+    entity = lance_store.sam_entity_by_uei(uei)
+    if entity is None:
+        raise HTTPException(status_code=404, detail=f"no SAM registration for uei {uei!r}")
+    pocs = lance_store.sam_pocs_by_uei(uei)
+    return _envelope(SamProfileResponse.from_row(entity, pocs, date.today()))
+
+
+@app.get("/api/v1/entities/{uei}/active-contracts", response_model=None, dependencies=[Depends(require_operator)])
+def active_contracts(
+    uei: str = Path(..., description="12-char SAM.gov UEI"),
+    limit: int = Query(25, ge=1, le=100, description="Max prime award line items to return."),
+) -> JSONResponse:
+    """Active prime contracts (PoP not elapsed). count + totalObligated are read off
+    the pre-materialized gold row (no aggregate); line items come from award_search."""
+    uei = _require_uei(uei)
+    gold = lance_store.entity_profile_by_uei(uei) or {}
+    today = date.today()
+    items = [ActiveContract.from_row(r, today, "active") for r in lance_store.active_awards_by_uei(uei, limit)]
+    agencies = sorted({i.awarding_agency for i in items if i.awarding_agency})
+    resp = ActiveContractsResponse(
+        count=gold.get("active_award_count"),
+        total_obligated=gold.get("total_active_obligations"),
+        agencies=agencies,
+        contracts=items,
+    )
+    return _envelope(resp)
+
+
+@app.get("/api/v1/entities/{uei}/overview", response_model=None, dependencies=[Depends(require_operator)])
+def overview(uei: str = Path(..., description="12-char SAM.gov UEI")) -> JSONResponse:
+    """Overview aggregates — a pure point-lookup off entity_profile_gold (lifetime
+    value, total/active counts, active value). 404 when the UEI is absent from gold."""
+    uei = _require_uei(uei)
+    gold = lance_store.entity_profile_by_uei(uei)
+    if gold is None:
+        raise HTTPException(status_code=404, detail=f"no entity profile for uei {uei!r}")
+    return _envelope(OverviewResponse.from_row(gold))
+
+
+@app.get("/api/v1/entities/{uei}/past-performance", response_model=None, dependencies=[Depends(require_operator)])
+def past_performance(
+    uei: str = Path(..., description="12-char SAM.gov UEI"),
+    limit: int = Query(25, ge=1, le=100, description="Max closed prime award line items to return."),
+) -> JSONResponse:
+    """Past performance — closed prime contracts (PoP elapsed). Lifetime headline +
+    closed count come off the gold row; CPARS / exclusions / recompetes are GAPs
+    (no source dataset) and surface as nulls."""
+    uei = _require_uei(uei)
+    gold = lance_store.entity_profile_by_uei(uei) or {}
+    today = date.today()
+    items = [ActiveContract.from_row(r, today, "completed") for r in lance_store.closed_awards_by_uei(uei, limit)]
+    total = gold.get("award_count")
+    active = gold.get("active_award_count")
+    closed = (total - active) if isinstance(total, int) and isinstance(active, int) else None
+    resp = PastPerformanceResponse(
+        closed_count=closed,
+        awards_lifetime=gold.get("total_lifetime_obligations"),
+        contracts_lifetime=total,
+        contracts=items,
+    )
+    return _envelope(resp)
 
 
 def main() -> None:

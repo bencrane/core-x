@@ -163,3 +163,157 @@ class AwardProfileResponse(_Model):
     company: Company | None = None
     award_profile: AwardProfile | None = None
     recent_awards: list[RecentAward] | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Entity UI surfaces (UEI-keyed): SAM profile · active contracts · overview ·
+# past performance. The BFF resolves the UEI from the trusted session and proxies
+# these 1:1 to the frontend (camelCase wire). Gaps are emitted as explicit nulls
+# (the gold layer does not carry the field) — never fabricated or parsed.
+# --------------------------------------------------------------------------- #
+def _days_between(target: Any, today: date) -> int | None:
+    return (target - today).days if isinstance(target, date) else None
+
+
+class Address(_Model):
+    # sam_entity_master carries only city/state/zip5 (lifted from entity_registrations
+    # pipe_fields). No street line, no mailing address at source — both stay null.
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+
+
+class SamPoc(_Model):
+    type: str | None = None    # wire key `type` (sam_pocs.poc_type)
+    poc_slot_no: int | None = None
+    full_name: str | None = None
+    title: str | None = None
+    city: str | None = None
+    state: str | None = None
+    email: str | None = None   # GAP — no email column in sam_pocs
+    phone: str | None = None   # GAP — no phone column in sam_pocs
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "SamPoc":
+        name = r.get("full_name") or " ".join(
+            p for p in (r.get("first_name"), r.get("last_name")) if p
+        ) or None
+        return cls(
+            type=r.get("poc_type"),
+            poc_slot_no=r.get("poc_slot_no"),
+            full_name=name,
+            title=r.get("title"),
+            city=r.get("city"),
+            state=r.get("state"),
+        )
+
+
+class SamProfileResponse(_Model):
+    uei: str | None = None
+    cage_code: str | None = None
+    legal_business_name: str | None = None
+    registration_status: str | None = None      # DERIVED: 'active' | 'expired'
+    registration_date: str | None = None
+    activation_date: str | None = None
+    expiration_date: str | None = None
+    days_until_expiration: int | None = None     # DERIVED
+    primary_naics: str | None = None
+    secondary_naics: list[str] = []              # naics_codes minus the primary
+    psc_codes: list[str] = []
+    business_types_raw: str | None = None        # raw ~-delimited; NOT parsed (operator ruling)
+    physical_address: Address = Address()
+    mailing_address: Address | None = None       # GAP — no mailing address at source
+    government_pocs: list[SamPoc] = []
+
+    @classmethod
+    def from_row(
+        cls, entity: dict[str, Any], pocs: list[dict[str, Any]], today: date
+    ) -> "SamProfileResponse":
+        exp = entity.get("expiration_date")
+        primary = (entity.get("primary_naics") or None)
+        naics = [c for c in (entity.get("naics_codes") or []) if c]
+        secondary = [c for c in naics if c != primary]
+        return cls(
+            uei=entity.get("uei"),
+            cage_code=entity.get("cage_code"),
+            legal_business_name=entity.get("legal_business_name"),
+            registration_status=("expired" if isinstance(exp, date) and exp < today else "active"),
+            registration_date=_iso(entity.get("registration_date")),
+            activation_date=_iso(entity.get("activation_date")),
+            expiration_date=_iso(exp),
+            days_until_expiration=_days_between(exp, today),
+            primary_naics=primary,
+            secondary_naics=secondary,
+            psc_codes=[c for c in (entity.get("psc_codes") or []) if c],
+            business_types_raw=entity.get("business_types"),
+            physical_address=Address(
+                city=entity.get("physical_city"),
+                state=entity.get("physical_state"),
+                zip=entity.get("physical_zip5"),
+            ),
+            government_pocs=[SamPoc.from_row(p) for p in pocs],
+        )
+
+
+class ActiveContract(RecentAward):
+    award_date: str | None = None                 # action_date
+    days_to_end: int | None = None                # DERIVED
+    status: str | None = None                     # DERIVED: 'active' | 'completed'
+    is_active: bool | None = None
+    sub_agency: str | None = None                 # GAP — no subtier column in award_search
+    option_year_decision_window: str | None = None  # GAP
+    agency_poc: str | None = None                 # GAP — no contracting-officer fields
+    modifications: list[Any] | None = None        # GAP — mod history not materialized
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any], today: date, status: str) -> "ActiveContract":
+        base = RecentAward.from_row(r).model_dump()
+        return cls(
+            **base,
+            award_date=_iso(r.get("action_date")),
+            days_to_end=_days_between(r.get("period_of_performance_current_end_date"), today),
+            status=status,
+            is_active=(status == "active"),
+        )
+
+
+class ActiveContractsResponse(_Model):
+    count: int | None = None             # entity_profile_gold.active_award_count
+    total_obligated: float | None = None  # entity_profile_gold.total_active_obligations
+    agencies: list[str] = []             # distinct awarding agency over the returned items
+    contracts: list[ActiveContract] = []
+
+
+class OverviewResponse(_Model):
+    uei: str | None = None
+    lifetime_award_value: float | None = None    # total_lifetime_obligations
+    active_contract_value: float | None = None   # total_active_obligations
+    total_contract_count: int | None = None      # award_count
+    active_contract_count: int | None = None     # active_award_count
+    has_federal_awards: bool | None = None
+    as_of_date: str | None = None                # profile_as_of_date
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "OverviewResponse":
+        return cls(
+            uei=r.get("uei"),
+            lifetime_award_value=r.get("total_lifetime_obligations"),
+            active_contract_value=r.get("total_active_obligations"),
+            total_contract_count=r.get("award_count"),
+            active_contract_count=r.get("active_award_count"),
+            has_federal_awards=r.get("has_federal_awards"),
+            as_of_date=_iso(r.get("profile_as_of_date")),
+        )
+
+
+class PastPerformanceResponse(_Model):
+    closed_count: int | None = None              # award_count − active_award_count
+    awards_lifetime: float | None = None         # total_lifetime_obligations
+    contracts_lifetime: int | None = None        # award_count
+    contracts: list[ActiveContract] = []         # status 'completed'
+    cpars_ratings: list[Any] = []                # GAP — no CPARS dataset
+    cpars_average_rating: float | None = None    # GAP
+    exclusions_status: str | None = None         # GAP — no SAM exclusions dataset
+    exclusions_last_checked: str | None = None   # GAP
+    recompetes_in_12mo: int | None = None        # GAP — no option/recompete metadata
