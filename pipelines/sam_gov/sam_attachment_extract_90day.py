@@ -27,6 +27,11 @@ ARCHITECTURE (locked — do not alter):
   * IDEMPOTENCY (§7.6/C11): chunk writes are merge_insert on `chunk_id` (the idempotency floor). A
     result's per-result checkpoint line is written ONLY AFTER its chunks (and its ledger event) are
     durably committed to LanceDB — never before — so resume never loses chunks (#19/#20).
+  * GTM SCOPE GATE (optional): Phase 1 consults `sam_attachment_gtm_scope_90day` (built by
+    sam_attachment_gtm_scope_90day.py — the "Strained Middle" mid-market cohort: NAICS set ∩ dollar band
+    ∩ frequency cap). Out-of-scope resources get a terminal `skipped_out_of_scope` and never enter a lane,
+    so no parse/chunk compute is spent on them. Absent table ⇒ no gate; disabled under --max-files (smoke).
+    A swappable lens — re-point the cohort by rebuilding that one table, zero parser change.
 
 Run (provision asserts soffice + creates datasets; then route -> expand -> extract):
     doppler run --project core-x --config prd -- \
@@ -71,6 +76,8 @@ UNKNOWN_URI = os.environ.get("SAM90_UNKNOWN_URI", "s3://data-sink/active/govcon_
 DEDUP_URI = os.environ.get("SAM90_DEDUP_URI", "s3://data-sink/active/sam_attachment_content_dedup_90day/")
 INNER_URI = os.environ.get(  # Phase-1.5 materialization of expanded inner-file metadata (§6)
     "SAM90_INNER_URI", "s3://data-sink/active/sam_attachment_inner_files_90day/")
+SCOPE_GATE_URI = os.environ.get(  # GTM "Strained Middle" gate (sam_attachment_gtm_scope_90day.py). ABSENT ⇒ no gate
+    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope_90day/")  # INPUT (read-only)
 CKPT_PATH = os.environ.get("SAM90_EXTRACT_CKPT", "/tmp/sam_90day_extract_ckpt.jsonl")
 LOG_PATH = os.environ.get("SAM90_EXTRACT_LOG", "/tmp/sam_90day_extract.log")
 SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
@@ -363,6 +370,19 @@ def _read_resolution(so: dict):
     """).to_arrow_table()
 
 
+def _read_scope_gate(so: dict):
+    """GTM "Strained Middle" verdicts per resource_id (sam_attachment_gtm_scope_90day, built by
+    sam_attachment_gtm_scope_90day.py). None ⇒ no gate (Phase 1 routes every downloaded resource).
+    When present, out-of-scope resources are diverted to a terminal `skipped_out_of_scope` BEFORE lane
+    classification, so the extract worklist never spends parse/chunk compute on them. The gate is a
+    swappable lens (NAICS set / dollar band / frequency cap live in the resolver, not here)."""
+    import lance
+    if not _dataset_exists(SCOPE_GATE_URI, so):
+        return None
+    return lance.dataset(SCOPE_GATE_URI, storage_options=so).to_table(
+        columns=["resource_id", "gtm_scope", "scope_reason"])
+
+
 # ════════════════════════════════════════════════════════════════════════ Phase 1 — dedup + route
 def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
     """Spec §5: content-canonical dedup pre-pass (§5.1) + token-boundary routing (§5.2). Writes the
@@ -404,12 +424,26 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
     else:
         seen = ""
 
+    # GTM "Strained Middle" gate (§ de-contamination): consult the precomputed scope table. Disabled on a
+    # capped smoke (max_files) to preserve raw-throughput calibration. Absent ⇒ no gate. Present ⇒ in-scope
+    # (or unscored) canonical resources get a lane; out-of-scope ones are diverted to a terminal
+    # `skipped_out_of_scope` below (which outranks any prior intermediate `routed` in the resolution view).
+    scope = None if max_files else _read_scope_gate(so)
+    if scope is not None:
+        con.register("scope", scope)
+        scope_join = "LEFT JOIN scope s ON f.resource_id = s.resource_id"
+        scope_keep = "AND (s.resource_id IS NULL OR s.gtm_scope = 'in_scope')"
+        print(f"phase1: GTM gate ON ({scope.num_rows:,} verdicts)", flush=True)
+    else:
+        scope_join = scope_keep = ""
+
     routed = con.execute(f"""
         WITH canon AS (
           SELECT f.resource_id, f.file_name, lower(coalesce(f.mime_declared,'')) AS mime,
                  f.sha256, f.notice_id, f.solicitation_number, f.naics_code
           FROM files f JOIN dedup d ON f.resource_id = d.resource_id
-          WHERE f.status = 'downloaded' AND d.resource_id = d.canonical_resource_id {seen}
+          {scope_join}
+          WHERE f.status = 'downloaded' AND d.resource_id = d.canonical_resource_id {seen} {scope_keep}
         )
         SELECT resource_id, file_name, mime, sha256, notice_id, solicitation_number, naics_code,
           CASE
@@ -430,6 +464,20 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
         {('AND d.resource_id NOT IN (SELECT resource_id FROM res)') if res is not None else ''}
     """).fetchall()
 
+    # GTM out-of-scope (terminal `skipped_out_of_scope`): downloaded canonical resources the gate rejects
+    # and that are not already terminal (avoids re-skipping extracted files / duplicate skips). The reason
+    # tag (out_of_scope_naics | below_band | above_band | failed_frequency_cap | no_award_link) rides `error`.
+    oos = []
+    if scope is not None:
+        oos = con.execute(f"""
+            SELECT f.resource_id, s.scope_reason, f.sha256
+            FROM files f JOIN dedup d ON f.resource_id = d.resource_id
+            JOIN scope s ON f.resource_id = s.resource_id
+            WHERE f.status = 'downloaded' AND d.resource_id = d.canonical_resource_id
+              AND s.gtm_scope <> 'in_scope'
+              {('AND f.resource_id NOT IN (SELECT resource_id FROM res WHERE is_terminal)') if res is not None else ''}
+        """).fetchall()
+
     _LANE_STATE = {"container": ("routed", "route"), "L4_structured": ("routed", "route"),
                    "non_text": ("skipped_non_text", "route"), "L1_scope": ("routed", "route"),
                    "L2_drop": ("dropped_boilerplate", "route"), "L3_triage": ("routed", "route")}
@@ -446,10 +494,15 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
         events.append(_ledger_row(resource_id=rid, lane="dedup", stage="route",
                                   state="dropped_duplicate", sha256_raw=sha, run_id=run_id,
                                   started_at=now, completed_at=now))
+    for rid, reason, sha in oos:
+        events.append(_ledger_row(resource_id=rid, lane="out_of_scope", stage="route",
+                                  state="skipped_out_of_scope", sha256_raw=sha, error=reason,
+                                  run_id=run_id, started_at=now, completed_at=now))
     if events:
         at = pa.Table.from_pylist(events, schema=_extraction_schema())
         _append_dataset(EXTRACTION_URI, at, so)
     counts["dropped_duplicate"] = len(noncanon)
+    counts["skipped_out_of_scope"] = len(oos)
     print(f"phase1: routed events={len(events):,} lanes={counts}", flush=True)
     return {"phase": "route", "lane": "all", "files_in": len(events), "lanes": counts,
             "started_at": started, "completed_at": dt.datetime.now(dt.timezone.utc)}
