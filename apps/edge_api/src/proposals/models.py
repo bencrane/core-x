@@ -38,6 +38,7 @@ class ProposalCreate(BaseModel):
     infrastructure fee (the agreement invoices every three months in advance).
     """
 
+    template_id: str | None = None                       # published-template slug; None → built-in default
     client_name: str = Field(..., min_length=1)          # institutional entity (<<clientName>>)
     client_signer_name: str = Field(..., min_length=1)   # the person (<<clientSignerName>>)
     client_email: str = Field(..., min_length=3)         # the Documenso recipient
