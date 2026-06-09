@@ -30,7 +30,8 @@ WHY contracts + IDVs in one call: A/B/C/D + IDV_* land in a SINGLE 297-col
 
     modal deploy pipelines/usaspending/usaspending_api_fresh.py
     modal run pipelines/usaspending/usaspending_api_fresh.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_api_fresh.py::backfill            # past 90d → create
+    modal run --detach pipelines/usaspending/usaspending_api_fresh.py::backfill            # past 90d → create (overwrite)
+    modal run --detach pipelines/usaspending/usaspending_api_fresh.py::daily 10            # past 10d → APPEND (never overwrites)
     modal run pipelines/usaspending/usaspending_api_fresh.py::verify
 """
 
@@ -208,19 +209,36 @@ def _write(csv_glob, mode, so) -> tuple[int, int]:
     return tbl.num_rows, len(tbl.column_names)
 
 
-def _build_indices(so) -> list[str]:
+def _build_indices(so, rebuild: bool = False) -> list[str]:
     import lance
     ds = lance.dataset(FRESH_URI, storage_options=so)
     present = set(ds.schema.names)
     built = []
     for col in INDEX_COLS:
-        if col in present:
-            ds.create_scalar_index(col, index_type="BTREE")
-            built.append(col)
-            print(f"  BTREE {col}", flush=True)
-        else:
+        if col not in present:
             print(f"  SKIP (absent) {col}", flush=True)
+            continue
+        try:
+            ds.create_scalar_index(col, index_type="BTREE", replace=True) if rebuild \
+                else ds.create_scalar_index(col, index_type="BTREE")
+        except TypeError:  # older lance has no `replace=` kwarg
+            ds.create_scalar_index(col, index_type="BTREE")
+        built.append(col)
+        print(f"  BTREE {col}", flush=True)
     return built
+
+
+def _optimize_indices(so) -> None:
+    """Extend existing BTREE indices over newly appended fragments (cheap incremental
+    train). Full rebuild only if the lance build lacks optimize_indices."""
+    import lance
+    ds = lance.dataset(FRESH_URI, storage_options=so)
+    try:
+        ds.optimize.optimize_indices()
+        print("optimize_indices: extended over appended fragments", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"optimize_indices unavailable ({e}); rebuilding", flush=True)
+        _build_indices(so, rebuild=True)
 
 
 # ─────────────────────────── ops ledger (audit) ───────────────────────────
@@ -254,6 +272,27 @@ def _record_run(*, run_mode, window_start, window_end, rows_written, columns,
             conn.commit()
     except Exception as exc:  # noqa: BLE001 — audit must not mask the ingest
         print(f"WARN: ops.* write failed: {exc}", flush=True)
+
+
+def _post_callback(url, payload, attempts: int = 3) -> None:
+    """POST terminal metadata to the Trigger.dev waitpoint. No-op on manual runs."""
+    if not url:
+        print("No trigger_callback_url (manual run); skipping callback.", flush=True)
+        return
+    import time
+
+    import requests
+
+    for i in range(attempts):
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code < 300:
+                print(f"Callback delivered: {payload}", flush=True)
+                return
+        except Exception as exc:  # noqa: BLE001
+            print(f"Callback attempt {i + 1} failed: {exc}", flush=True)
+        time.sleep(2 * (i + 1))
+    print(f"WARN: callback delivery failed after {attempts} attempts → {url}", flush=True)
 
 
 # ─────────────────────────── workers ───────────────────────────
@@ -311,6 +350,65 @@ def run_backfill(days: int = 90, force: bool = False) -> dict:
             "indices_built": built, "status": status}
 
 
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 200,
+    memory=32768,            # identical to run_backfill; a 10-day window is far smaller
+    cpu=4.0,
+    retries=modal.Retries(max_retries=5, backoff_coefficient=2.0, initial_delay=30.0),  # fresh IP/retry
+)
+def run_daily(days: int = 7, trigger_callback_url: str | None = None) -> dict:
+    """Trailing-window APPEND top-up. Pulls the past `days` (last_modified_date) of contract+IDV
+    transactions and APPENDS them (mode='append' — NEVER overwrites). Requires the table to exist
+    (daily only appends; first-create is backfill's job). Overlapping recent days are re-pulled on
+    purpose (publish lag) → harmless duplicate rows reconciled downstream. optimize_indices extends
+    BTREE over the new fragments. POSTs terminal metadata to trigger_callback_url on success."""
+    import datetime as dt
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    so = _r2_storage_options()
+    if not _dataset_exists(so):
+        raise RuntimeError(f"{FRESH_URI} does not exist — run backfill first (daily only appends).")
+
+    ws, we = _window(days)
+    print(f"[fresh-daily] last_modified_date ∈ [{ws} … {we}]  ({days}d APPEND, award_types={AWARD_TYPES})",
+          flush=True)
+
+    status, error, rows, cols, total, built = "error", None, 0, 0, 0, []
+    api_calls = 0
+    try:
+        csv_glob, api_calls = _fetch_window(ws, we)
+        rows, cols = _write(csv_glob, "append", so)
+        if rows == 0:
+            # Soft-block tell: a "finished" job over a multi-day window with 0 rows is the F5/IP-throttle
+            # signature, not a normal quiet day. Surface loudly; do NOT hard-fail an append.
+            print("WARN: 0 rows appended for a multi-day window — possible soft block / silent throttle.",
+                  flush=True)
+        else:
+            _optimize_indices(so)
+        import lance
+        total = lance.dataset(FRESH_URI, storage_options=so).count_rows()
+        status = "success"
+        _post_callback(trigger_callback_url,
+                       {"status": status, "rows": int(rows), "feed": FEED, "dataset_uri": FRESH_URI,
+                        "window_start": ws.isoformat(), "window_end": we.isoformat(),
+                        "table_rows_after": int(total), "run_mode": "daily"})
+    except BaseException as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__} (no message)"
+        status = "error"
+        raise
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run(run_mode="daily", window_start=ws, window_end=we, rows_written=int(rows),
+                    columns=int(cols), table_rows_after=int(total), api_calls=int(api_calls),
+                    write_mode="append", indices_built=built, status=status, error=error,
+                    started_at=started_at, completed_at=completed_at)
+
+    return {"feed": FEED, "run_mode": "daily", "window_start": ws.isoformat(),
+            "window_end": we.isoformat(), "rows_written": int(rows), "columns": int(cols),
+            "table_rows_after": int(total), "api_calls": int(api_calls), "status": status}
+
+
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=120)
 def apply_ops_ddl(sql: str) -> dict:
     import psycopg
@@ -360,6 +458,15 @@ def backfill(days: int = 90, force: bool = False) -> None:
     Use `modal run --detach …::backfill` so the long async pull survives a disconnect."""
     import json
     print(json.dumps(run_backfill.remote(days=days, force=force), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def daily(days: int = 7) -> None:
+    """Trailing-window APPEND top-up NOW (mode=append, never overwrites). 10-day window:
+        modal run --detach pipelines/usaspending/usaspending_api_fresh.py::daily 10
+    Launched locally, EXECUTES ON MODAL (fresh-IP-per-retry beats USAspending's IP throttle)."""
+    import json
+    print(json.dumps(run_daily.remote(days=days), indent=2, default=str))
 
 
 @app.local_entrypoint()
