@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .src.tools import audience, catalog, corex, dmaas, hydration, ops, parallel, provider360
+from .src.tools import audience, catalog, corex, dmaas, govcon, hydration, ops, parallel, provider360
 
 # Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
 # rejects any non-localhost Host header with `421 Invalid Host header` — which
@@ -60,6 +60,7 @@ hydration.register(mcp)  # Directive 20-Final: launch Waterfall ICP contact hydr
 corex.register(mcp)  # GTM control surface: initiative→campaign→lead→send (corex schema)
 parallel.register(mcp)  # Directive 24: Parallel.ai enrich / deep_research / web_search + refresh_catalog
 provider360.register(mcp)  # entity-360 targeting: independent platforms / acquisition groups / dual-pole (e2b479c)
+govcon.register(mcp)  # hybrid filter→ANN semantic search over govcon_scope_vectors_90day (Tier B)
 
 
 async def _info(request):  # noqa: ANN001 — Starlette endpoint
