@@ -62,16 +62,21 @@ There is one reference implementation today — SAM.gov Contract Opportunities
   reachable only by the dispatcher's `spawn()` (or `modal run` for manual ops)
   and receive `trigger_callback_url` as a kwarg.
 
-## 4. Data plane — DuckDB → LanceDB v2.0 → R2
+## 4. Data plane — DuckDB → LanceDB → R2
 
 - **100% DuckDB for transformation.** `read_csv(..., all_varchar=true)` on
   ingest, `TRY_CAST` for every type coercion, all projection / filter / shaping
   in SQL. Python does I/O only (stream the source to `/tmp`, hand the bytes to
   DuckDB).
-- Output is **LanceDB v2.0** written directly to **Cloudflare R2**:
-  `lance.write_dataset(s3://<bucket>/<path>/, data_storage_version="2.0")`.
-  Lance is the system of record; every load-bearing resolution key gets a
-  `BTREE` scalar index.
+- Output is **LanceDB** written directly to **Cloudflare R2**. We operate a
+  **bifurcated storage-version strategy** across the lake:
+  - **Bronze (raw ingest) — `data_storage_version="2.0"`.** Used exclusively for
+    immutable, append-only raw extracts (e.g. `entity_registrations`).
+  - **Silver / Gold (serving & reconciled) — `data_storage_version="2.1"`.** Used
+    for all master spines, deduplicated layers, and write-time reconciled mirrors
+    (e.g. `sam_master_entities`, `entity_profile_gold`).
+- **Indexing.** Lance is the system of record; every load-bearing resolution key
+  gets a `BTREE` scalar index. Categorical filters get a `BITMAP` index.
 - Parquet, where used, is **transport only.** **No Iceberg. No Polaris.** The
   worker writes Lance to R2 with no catalog round-trip.
 
