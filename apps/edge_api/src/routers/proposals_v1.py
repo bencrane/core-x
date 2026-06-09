@@ -23,9 +23,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from .. import config
 from ..db import get_db_connection
-from ..proposals import queries
+from ..proposals import queries, template_queries
 from ..proposals.agreement_template import render_agreement_html
 from ..proposals.models import Proposal, ProposalCreate, ProposalPublic, ProposalSummary, format_usd
+from ..proposals.template_render import (
+    proposal_token_values,
+    render_template_html,
+    substitute_tokens,
+)
 from ..service_token import require_service_token
 from ..services import documenso_client, docraptor_client
 
@@ -38,11 +43,34 @@ def _title(p: Proposal) -> str:
     return f"Strategic Origination Mandate — {p.client_name}"
 
 
+async def _agreement_html(conn, p: Proposal) -> str:
+    """The agreement body for this proposal.
+
+    If a PUBLISHED template is registered under ``p.template_id`` (authored via the Settings
+    surface), render its markdown with the proposal's merge values. Otherwise — and on ANY registry
+    error, including the table not yet existing — fall back to the built-in Strategic Origination
+    Mandate (the original, unchanged default). The live signing path must never break because of
+    the template registry."""
+    tpl = None
+    try:
+        tpl = await template_queries.get_published_by_slug(conn, p.template_id)
+    except Exception as exc:  # missing table / lookup failure → built-in default
+        logger.warning("template registry lookup failed for %r (%s); using built-in", p.template_id, exc)
+        try:
+            await conn.rollback()
+        except Exception:
+            pass
+    if tpl is not None:
+        html = render_template_html(tpl["markdown"], apply_brand=tpl["apply_brand"])
+        return substitute_tokens(html, proposal_token_values(p))
+    return render_agreement_html(p)
+
+
 async def _provision(conn, p: Proposal) -> tuple[bool, str | None]:
     """Render the legal PDF (DocRaptor, live) and create the Documenso envelope; bind it to the
     row (draft → sent). Returns (ok, error_message). Non-raising so create can be best-effort."""
     try:
-        pdf = await docraptor_client.render_pdf(render_agreement_html(p), name=p.ref)
+        pdf = await docraptor_client.render_pdf(await _agreement_html(conn, p), name=p.ref)
         env = await documenso_client.create_signing_envelope(
             pdf, title=_title(p), signer_name=p.client_signer_name, signer_email=p.client_email,
             external_id=p.ref,
