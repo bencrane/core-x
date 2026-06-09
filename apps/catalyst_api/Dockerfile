@@ -1,6 +1,10 @@
-# catalyst_api — Railway service, co-located with the rare-structure-hq
-# platform-api BFF for PRIVATE networking (no public domain; the BFF reaches it
-# at http://catalyst-api.railway.internal:8080).
+# catalyst_api — core-x federal-award read gateway. Runs as its OWN Railway
+# project (`catalyst-api`), core-x-owned — NOT nested in any product project.
+# It is a SHARED gateway: multiple product BFFs (government-contracted
+# platform-app, rare-structure platform-api, …) call it cross-project, so it is
+# exposed on a public Railway domain and gated by the CATALYST_API_TOKEN bearer.
+# (Railway has no cross-project private networking; a shared gateway cannot be
+# private. The bearer token — enforced fail-closed at boot — is the auth boundary.)
 #
 # Build context is the core-x repo ROOT so the `apps` package resolves; the
 # service sets RAILWAY_DOCKERFILE_PATH=apps/catalyst_api/Dockerfile. Doppler CLI
@@ -19,9 +23,9 @@ COPY apps/__init__.py apps/__init__.py
 COPY apps/catalyst_api apps/catalyst_api
 RUN pip install --no-cache-dir -r apps/catalyst_api/requirements.txt
 
-# Private-only service. HOST=:: binds IPv6 (Railway's private network is
-# IPv6-only — binding 0.0.0.0 would be unreachable from the BFF). PORT is fixed
-# so the BFF can target a stable catalyst-api.railway.internal:8080.
+# Railway sets $PORT and routes its public edge to the container. HOST=:: binds
+# all interfaces (IPv6/dual-stack) so the public edge — and any same-project peer
+# — can reach it. Auth is the bearer token, not network isolation.
 ENV HOST=:: \
     PORT=8080
 EXPOSE 8080

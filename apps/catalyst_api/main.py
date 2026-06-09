@@ -10,12 +10,13 @@ Run (locally and on Railway, from the repo root):
 
     python -m apps.catalyst_api.main
 
-Deployed as a Railway service co-located with the platform-api BFF, on the
-project's PRIVATE network (no public domain) — it binds ``::`` (IPv6; Railway's
-private net is IPv6-only) on a fixed ``$PORT`` (8080). Every ``/api/v1`` route is
-gated by an operator bearer token (``CATALYST_API_TOKEN``) that the BFF presents
-as Bearer — the service is NOT exposed to the public web; the BFF is the only
-caller. ``/healthz`` and ``/`` stay open for liveness probes.
+Deployed as a standalone **core-x** Railway service (its own ``catalyst-api``
+project — not nested in any product). It is a shared gateway, so it is reachable
+on a public Railway domain and every ``/api/v1`` route is gated by an operator
+bearer token (``CATALYST_API_TOKEN``) that each consuming BFF presents as Bearer.
+The token — not network isolation — is the auth boundary: boot is fail-closed, so
+an unset token in a deployed env refuses to start (see ``config.auth_required``).
+``/healthz`` and ``/`` stay open for liveness probes.
 """
 
 from __future__ import annotations

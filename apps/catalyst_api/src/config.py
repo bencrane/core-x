@@ -1,13 +1,15 @@
 """Runtime configuration for catalyst_api.
 
 Secrets and dataset coordinates come from the environment (Doppler ``core-x/prd``
-locally + on Render via the service env). Nothing is committed. Two concerns:
+locally + on the ``catalyst-api`` Railway service via ``DOPPLER_TOKEN``). Nothing
+is committed. Two concerns:
 
   • R2 credentials — identical convention to every worker in ``pipelines/*`` and
     to ``apps/gtm_mcp`` (``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY`` /
     ``R2_ENDPOINT``, with ``R2_ACCOUNT_ID`` accepted as an endpoint fallback).
-  • The operator service token (``CATALYST_API_TOKEN``) the platform-api BFF
-    must present. The service is NOT public — the BFF is the only caller.
+  • The operator service token (``CATALYST_API_TOKEN``) each consuming BFF must
+    present. The gateway is public (shared, cross-project) — the bearer token is
+    the auth boundary; boot is fail-closed in any deployed env (see ``main.py``).
 
 Dataset URIs are overridable per the worker convention (``*_LANCE_URI``) but
 default to the active sink roots verified live.

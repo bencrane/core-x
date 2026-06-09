@@ -180,20 +180,29 @@ _SAM_ENTITY_COLS = [
 ]
 
 
+def _scan(uri: str, **scanner_kwargs) -> list[dict[str, Any]]:
+    """Open + scan a committed dataset, returning rows. A dataset that is not yet
+    materialized in the sink degrades to ``[]`` (the surface renders its
+    empty-state) rather than a 500 — e.g. a gold table whose build hasn't landed.
+    Genuine errors (R2 auth, network, malformed query) still raise."""
+    try:
+        return _dataset(uri).scanner(**scanner_kwargs).to_table().to_pylist()
+    except (ValueError, OSError) as exc:  # narrow: "dataset absent" only
+        if "not found" in str(exc).lower():
+            return []
+        raise
+
+
 def sam_entity_by_uei(uei: str) -> dict[str, Any] | None:
     """BTREE point-lookup on ``sam_entity_master.uei`` (1 row/active-v2 UEI).
     Returns the SAM identity + NAICS/PSC arrays + raw ``business_types`` + physical
-    city/state/zip5, or ``None`` when the UEI has no active registration. Caller
-    pre-validates ``uei`` charset."""
+    city/state/zip5, or ``None`` when the UEI has no active registration (or the
+    dataset is not yet materialized). Caller pre-validates ``uei`` charset."""
     uei = (uei or "").strip()
     if not uei:
         return None
-    rows = (
-        _dataset(config.SAM_ENTITY_MASTER_URI)
-        .scanner(columns=_SAM_ENTITY_COLS, filter=f"uei = {_sql_str(uei)}", limit=1)
-        .to_table()
-        .to_pylist()
-    )
+    rows = _scan(config.SAM_ENTITY_MASTER_URI, columns=_SAM_ENTITY_COLS,
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
     return rows[0] if rows else None
 
 
@@ -212,16 +221,9 @@ def sam_pocs_by_uei(uei: str) -> list[dict[str, Any]]:
     uei = (uei or "").strip()
     if not uei:
         return []
-    rows = (
-        _dataset(config.SAM_POCS_URI)
-        .scanner(
-            columns=_SAM_POC_COLS,
-            filter=f"uei = {_sql_str(uei)} AND source_family = 'v2'",
-            limit=_POC_HARD_CAP,
-        )
-        .to_table()
-        .to_pylist()
-    )
+    rows = _scan(config.SAM_POCS_URI, columns=_SAM_POC_COLS,
+                 filter=f"uei = {_sql_str(uei)} AND source_family = 'v2'",
+                 limit=_POC_HARD_CAP)
     rows.sort(key=lambda r: (r.get("poc_slot_no") or 0))
     return rows
 
@@ -243,12 +245,8 @@ def entity_profile_by_uei(uei: str) -> dict[str, Any] | None:
     uei = (uei or "").strip()
     if not uei:
         return None
-    rows = (
-        _dataset(config.ENTITY_PROFILE_GOLD_URI)
-        .scanner(columns=_GOLD_COLS, filter=f"uei = {_sql_str(uei)}", limit=1)
-        .to_table()
-        .to_pylist()
-    )
+    rows = _scan(config.ENTITY_PROFILE_GOLD_URI, columns=_GOLD_COLS,
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
     return rows[0] if rows else None
 
 
@@ -272,18 +270,14 @@ def _award_line_items(uei: str, limit: int, *, active: bool) -> list[dict[str, A
     cap = max(1, min(limit, _AWARDS_HARD_CAP))
     op = ">=" if active else "<"
     today = _today_iso()
-    rows = (
-        _dataset(config.AWARD_SEARCH_URI)
-        .scanner(
-            columns=_LINE_ITEM_COLS,
-            filter=(
-                f"recipient_uei = {_sql_str(uei)} AND "
-                f"period_of_performance_current_end_date {op} CAST('{today}' AS DATE)"
-            ),
-            limit=_AWARDS_HARD_CAP,
-        )
-        .to_table()
-        .to_pylist()
+    rows = _scan(
+        config.AWARD_SEARCH_URI,
+        columns=_LINE_ITEM_COLS,
+        filter=(
+            f"recipient_uei = {_sql_str(uei)} AND "
+            f"period_of_performance_current_end_date {op} CAST('{today}' AS DATE)"
+        ),
+        limit=_AWARDS_HARD_CAP,
     )
     rows.sort(key=lambda r: (r.get("total_obligation") or r.get("award_amount") or 0.0), reverse=True)
     return rows[:cap]
