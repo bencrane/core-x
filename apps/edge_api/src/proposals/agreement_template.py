@@ -7,12 +7,14 @@ here from the Proposal row. NOTE: Documenso seals the same PDF it shows, so the 
 copy is dark too — an intentional, on-brand choice for digital-first execution.
 
 Signature placement: Rare Structure's execution block is PRE-RENDERED (RS issues a pre-signed
-mandate). The CLIENT signature + date area is left blank; the Documenso SIGNATURE + DATE fields
-are overlaid there by coordinate placement (percent-positioned on the final page; see
-``documenso_client``).
+mandate). The CLIENT signature + date lines carry the ``[[CLIENT_SIGNATURE]]`` / ``[[CLIENT_DATE]]``
+anchor markers (``signing_anchors``); Documenso resolves the SIGNATURE + DATE field positions from
+them via ``findText`` at sign-time and whites the markers out (see ``documenso_client``). No fixed
+page coordinate — position is independent of body length.
 
 Tokens are substituted by ``str.replace`` against a ``«TOKEN»`` sentinel (NOT ``str.format``)
-so the print-CSS braces are never touched.
+so the print-CSS braces are never touched; the anchor markers ride in on the same sentinel
+mechanism, sourced from the shared ``signing_anchors`` constants.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import datetime as _dt
 import html
 
 from .models import Proposal, format_usd
+from .signing_anchors import CLIENT_DATE_ANCHOR, CLIENT_SIGNATURE_ANCHOR
 
 
 def _long_date(d: _dt.date) -> str:
@@ -37,6 +40,10 @@ def render_agreement_html(p: Proposal) -> str:
         "«RS_DATE»": html.escape(_long_date(p.effective_date)),
         "«CLIENT_SIGNER_NAME»": html.escape(p.client_signer_name),
         "«CLIENT_TITLE»": html.escape(p.client_title or ""),
+        # Anchor markers — fixed literals from the shared constants, NOT escaped: they must reach
+        # the PDF byte-for-byte ([[CLIENT_SIGNATURE]] / [[CLIENT_DATE]]) for Documenso's findText.
+        "«CLIENT_SIGNATURE_ANCHOR»": CLIENT_SIGNATURE_ANCHOR,
+        "«CLIENT_DATE_ANCHOR»": CLIENT_DATE_ANCHOR,
     }
     out = _TEMPLATE
     for token, value in sub.items():
@@ -82,8 +89,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   table.fees td { padding: 6pt 6pt; border-bottom: 0.5pt solid #1c2333; color: #e4e4e7; }
   table.fees td.rate { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
     color: #fafafa; }
-  /* Force the execution block onto its own final page so the Documenso signature/date fields
-     (percent-positioned on the last page) land deterministically regardless of body length. */
+  /* The execution block is kept on its own final page as a COSMETIC choice; it is NOT load-bearing.
+     Documenso places the SIGNATURE + DATE fields by resolving the [[CLIENT_SIGNATURE]] /
+     [[CLIENT_DATE]] anchor markers via findText, so position no longer depends on a fixed page
+     coordinate (see documenso_client). */
   .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
   .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
   .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; }
@@ -96,6 +105,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
     font-size: 18pt; line-height: 30pt; padding-left: 4pt; color: #7b9fd4; }
   .sig-field { font-size: 8pt; color: #82828c; font-family: 'Helvetica Neue', Arial, sans-serif; }
   .sig-val { font-size: 10pt; color: #e4e4e7; }
+  /* Anchor marker on the client sign/date lines: a subtle placeholder, but REAL selectable text in
+     a standard font — Documenso's findText resolves + whites it out. Never display:none / zero-size
+     / a script font, or the PDF text layer loses it. */
+  .sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
+    letter-spacing: 0.08em; color: #5b6373; line-height: 30pt; padding-left: 4pt; }
 </style>
 </head>
 <body>
@@ -220,12 +234,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
       </td>
       <td>
         <div class="sig-party">Client / Institutional Partner</div>
-        <!-- Documenso overlays the SIGNATURE + DATE fields here by coordinate placement. -->
-        <div class="sig-line">&nbsp;</div>
+        <!-- Documenso resolves the SIGNATURE + DATE field positions from the «CLIENT_SIGNATURE_ANCHOR»
+             / «CLIENT_DATE_ANCHOR» markers below via findText, and whites them out at sign-time. -->
+        <div class="sig-line"><span class="sig-anchor">«CLIENT_SIGNATURE_ANCHOR»</span></div>
         <div class="sig-field">By: <span class="sig-val">&nbsp;</span></div>
         <div class="sig-field">Name: <span class="sig-val">«CLIENT_SIGNER_NAME»</span></div>
         <div class="sig-field">Title: <span class="sig-val">«CLIENT_TITLE»</span></div>
-        <div class="sig-field">Date: <span class="sig-val">&nbsp;</span></div>
+        <div class="sig-field">Date: <span class="sig-anchor">«CLIENT_DATE_ANCHOR»</span></div>
       </td>
     </tr></table>
   </div>
