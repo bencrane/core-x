@@ -45,26 +45,28 @@ async def insert_proposal(
     *,
     ref: str,
     body: ProposalCreate,
+    template_id: str,
     effective_date: _dt.date,
+    monthly_fee_cents: int,
     quarterly_total_cents: int,
     rs_signer_name: str,
     field_values: dict[str, Any],
 ) -> Proposal:
     sql = f"""
         INSERT INTO business.engagement_proposals
-            (ref, client_name, client_signer_name, client_title, client_email,
+            (ref, template_id, client_name, client_signer_name, client_title, client_email,
              effective_date, monthly_fee_cents, quarterly_total_cents, rs_signer_name,
              status, field_values, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s,%s)
         RETURNING {_SELECT_COLS}
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             sql,
             (
-                ref, body.client_name, body.client_signer_name, body.client_title, body.client_email,
-                effective_date, body.monthly_fee_cents, quarterly_total_cents, rs_signer_name,
-                Jsonb(field_values), body.created_by,
+                ref, template_id, body.client_name, body.client_signer_name, body.client_title,
+                body.client_email, effective_date, monthly_fee_cents, quarterly_total_cents,
+                rs_signer_name, Jsonb(field_values), body.created_by,
             ),
         )
         row = await cur.fetchone()

@@ -89,22 +89,38 @@ async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
     """Mint a proposal, persist it, then best-effort provision the signable envelope."""
     ref = queries.new_ref()
     effective_date = body.effective_date or _dt.date.today()
-    quarterly = body.quarterly_total_cents or body.monthly_fee_cents * 3
     rs_name = body.rs_signer_name or config.rs_signer_name()
-    field_values = {
-        "clientName": body.client_name,
-        "clientSignerName": body.client_signer_name,
-        "clientTitle": body.client_title,
-        "clientEmail": body.client_email,
-        "effectiveDate": effective_date.isoformat(),
-        "monthlyFee": format_usd(body.monthly_fee_cents),
-        "quarterlyTotal": format_usd(quarterly),
-        "rsName": rs_name,
-    }
+    template_id = body.template_id or "strategic_origination_mandate"
+    monthly_fee_cents = body.monthly_fee_cents
     async with get_db_connection() as conn:
+        # A published template's fee (set at publish) wins over the passed-in fee — edge_api owns
+        # template→fee so the BFF stays dumb. Best-effort: any registry error → the passed-in fee.
+        tpl = None
+        try:
+            tpl = await template_queries.get_published_by_slug(conn, template_id)
+        except Exception as exc:
+            logger.warning("template fee lookup failed for %r (%s); using passed fee", template_id, exc)
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+        if tpl and tpl.get("monthly_fee_cents"):
+            monthly_fee_cents = int(tpl["monthly_fee_cents"])
+        quarterly = body.quarterly_total_cents or monthly_fee_cents * 3
+        field_values = {
+            "clientName": body.client_name,
+            "clientSignerName": body.client_signer_name,
+            "clientTitle": body.client_title,
+            "clientEmail": body.client_email,
+            "effectiveDate": effective_date.isoformat(),
+            "monthlyFee": format_usd(monthly_fee_cents),
+            "quarterlyTotal": format_usd(quarterly),
+            "rsName": rs_name,
+        }
         p = await queries.insert_proposal(
-            conn, ref=ref, body=body, effective_date=effective_date,
-            quarterly_total_cents=quarterly, rs_signer_name=rs_name, field_values=field_values,
+            conn, ref=ref, body=body, template_id=template_id, effective_date=effective_date,
+            monthly_fee_cents=monthly_fee_cents, quarterly_total_cents=quarterly,
+            rs_signer_name=rs_name, field_values=field_values,
         )
         ok, err = await _provision(conn, p)
         fresh = await queries.get_by_ref(conn, ref)
