@@ -409,6 +409,61 @@ def run_daily(days: int = 7, trigger_callback_url: str | None = None) -> dict:
             "table_rows_after": int(total), "api_calls": int(api_calls), "status": status}
 
 
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60, memory=32768, cpu=4.0,
+    retries=0,        # commit-atomic; re-driven by the next weekly schedule, never auto-retried mid-rewrite
+)
+def run_compaction(min_fragments: int = 12, target_rows_per_fragment: int = 250_000,
+                   force: bool = False, trigger_callback_url: str | None = None) -> dict:
+    """Threshold-gated fragment compaction. No-op unless get_fragments() > min_fragments (or force).
+    optimize_indices (cheap guard) → compact_files → cleanup_old_versions. Row count invariant (asserted).
+    target_rows_per_fragment=250_000 is MANDATORY on R2: the Lance default (~1M) writes a file large enough
+    that object_store escalates its multipart part size mid-upload, which R2 rejects (400 InvalidPart,
+    "all non-trailing parts must have the same length" — ARCHITECTURE.md:140). 250k keeps each rewritten
+    fragment at the proven R2-safe append size AND bounds the count to ~total_rows/250k (it re-merges the
+    small daily fragments each pass). compact_files remaps the BTREE indices in-place (verified on live R2)."""
+    import datetime as dt
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    so = _r2_storage_options()
+    ds = lance.dataset(FRESH_URI, storage_options=so)
+    n0, rows0 = len(ds.get_fragments()), ds.count_rows()
+    if n0 <= min_fragments and not force:
+        print(f"[compaction] {n0} fragments ≤ {min_fragments}; no-op.", flush=True)
+        _post_callback(trigger_callback_url, {"status": "success", "run_mode": "compaction", "feed": FEED,
+                       "compacted": False, "fragments_before": n0, "fragments_after": n0, "table_rows_after": rows0})
+        return {"status": "success", "compacted": False, "fragments_before": n0, "fragments_after": n0}
+
+    status, error, n1, rows1, files_removed = "error", None, n0, rows0, None
+    try:
+        ds.optimize.optimize_indices()                                   # cheap idempotent guard (append already folds tail)
+        m = ds.optimize.compact_files(target_rows_per_fragment=target_rows_per_fragment)  # 250k = R2-safe; remaps BTREE in-place
+        files_removed = getattr(m, "files_removed", None)
+        try:
+            ds.cleanup_old_versions(retain_versions=30)                  # count cap; best-effort; never delete_unverified=True
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN cleanup_old_versions: {e}", flush=True)
+        ds2 = lance.dataset(FRESH_URI, storage_options=so)
+        n1, rows1 = len(ds2.get_fragments()), ds2.count_rows()
+        if rows1 != rows0:
+            raise RuntimeError(f"ROW COUNT CHANGED by compaction: {rows0} → {rows1} — abort.")
+        status = "success"
+        print(f"[compaction] fragments {n0} → {n1}; rows={rows1} (invariant); files_removed={files_removed}", flush=True)
+        _post_callback(trigger_callback_url, {"status": status, "run_mode": "compaction", "feed": FEED,
+                       "compacted": True, "fragments_before": n0, "fragments_after": n1, "table_rows_after": rows1})
+    except BaseException as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"; status = "error"; raise
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run(run_mode="compaction", window_start=started_at.date(), window_end=completed_at.date(),
+                    rows_written=0, columns=0, table_rows_after=int(rows1), api_calls=0, write_mode="compact",
+                    indices_built=[], status=status, error=error,   # error stays None on success
+                    started_at=started_at, completed_at=completed_at)
+    return {"status": status, "compacted": True, "fragments_before": n0, "fragments_after": n1}
+
+
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=120)
 def apply_ops_ddl(sql: str) -> dict:
     import psycopg
@@ -467,6 +522,15 @@ def daily(days: int = 7) -> None:
     Launched locally, EXECUTES ON MODAL (fresh-IP-per-retry beats USAspending's IP throttle)."""
     import json
     print(json.dumps(run_daily.remote(days=days), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def compact(min_fragments: int = 12, force: bool = False) -> None:
+    """Threshold-gated fragment compaction (no-op unless get_fragments() > min_fragments, or force).
+        modal run …::compact --force true            # force, ignore the gate
+        modal run …::compact --min-fragments 3       # exercise the GATED fire path"""
+    import json
+    print(json.dumps(run_compaction.remote(min_fragments=min_fragments, force=force), indent=2, default=str))
 
 
 @app.local_entrypoint()
