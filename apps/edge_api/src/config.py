@@ -35,6 +35,14 @@ def documenso_webhook_secret() -> str | None:
     return os.environ.get("DOCUMENSO_WEBHOOK_SECRET")
 
 
+def cal_webhook_secret() -> str | None:
+    """Secret cal.com signs each delivery with — HMAC-SHA256 over the RAW body, sent as
+    ``X-Cal-Signature-256``. When unset, ``/webhooks/cal`` refuses (503) rather than accepting
+    unverified events. From ``core-x/prd`` (``CAL_WEBHOOK_SECRET``); must match the secret set on
+    the cal.com webhook."""
+    return os.environ.get("CAL_WEBHOOK_SECRET")
+
+
 def docraptor_api_key() -> str | None:
     """DocRaptor API key. Used in LIVE mode (``test=false``) — test output is watermarked."""
     return os.environ.get("DOCRAPTOR_API_KEY")

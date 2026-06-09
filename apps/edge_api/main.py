@@ -46,6 +46,7 @@ from .src.routers.clay_find_companies_v1 import router as clay_find_companies_ro
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.proposals_v1 import router as proposals_router
+from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -91,6 +92,11 @@ async def lifespan(app_: FastAPI):
             "DOCUMENSO_WEBHOOK_SECRET unset -- the proposals webhook refuses (503), so signed/"
             "completed status will NOT advance server-side. Set it in core-x/prd and register the "
             "Documenso webhook with the same secret."
+        )
+    if config.cal_webhook_secret() is None:
+        log.warning(
+            "CAL_WEBHOOK_SECRET unset -- /webhooks/cal refuses (503), so cal.com bookings will NOT "
+            "be captured. Set it in core-x/prd to match the cal.com webhook signing secret."
         )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
@@ -147,6 +153,11 @@ app.include_router(proposal_templates_router)
 # Service-token gated; the BFF brokers it with the operator session. Read-only (Phase 1).
 app.include_router(bookings_router)
 
+# cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
+# Signature-gated (X-Cal-Signature-256 / CAL_WEBHOOK_SECRET). NOT under /api/v1 — cal.com posts /webhooks/cal.
+# Normalization into corex.bookings is a separate later step (wired against the real captured payload).
+app.include_router(webhooks_cal_router)
+
 
 def _info() -> dict:
     return {
@@ -162,6 +173,7 @@ def _info() -> dict:
             "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
+            "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
         },
     }
 
