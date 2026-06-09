@@ -61,6 +61,16 @@ def valid_domain(norm: str) -> bool:
     return bool(norm) and "." in norm and _DOMAIN_OK.match(norm) is not None
 
 
+# A UEI is exactly 12 alphanumerics. Validated before interpolation into a Lance
+# filter (defense-in-depth alongside _sql_str quote-doubling) — the BFF supplies a
+# session-resolved UEI, but the gateway never trusts its callers blindly.
+_UEI_OK = re.compile(r"^[A-Za-z0-9]{12}$")
+
+
+def valid_uei(uei: str) -> bool:
+    return bool(uei) and _UEI_OK.match(uei) is not None
+
+
 def _sql_str(value: str) -> str:
     """A safe single-quoted SQL/Lance string literal (quotes doubled)."""
     return "'" + value.replace("'", "''") + "'"
@@ -159,6 +169,138 @@ def recent_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
     )
     rows.sort(key=lambda r: (r.get("total_obligation") or r.get("award_amount") or 0.0), reverse=True)
     return rows[:cap]
+
+
+# ── Surface 1: UEI → SAM.gov entity profile ──────────────────────────────────
+_SAM_ENTITY_COLS = [
+    "uei", "legal_business_name", "cage_code", "registration_status",
+    "purpose_of_registration", "registration_date", "expiration_date",
+    "activation_date", "last_update_date", "primary_naics", "naics_codes",
+    "psc_codes", "business_types", "physical_city", "physical_state", "physical_zip5",
+]
+
+
+def sam_entity_by_uei(uei: str) -> dict[str, Any] | None:
+    """BTREE point-lookup on ``sam_entity_master.uei`` (1 row/active-v2 UEI).
+    Returns the SAM identity + NAICS/PSC arrays + raw ``business_types`` + physical
+    city/state/zip5, or ``None`` when the UEI has no active registration. Caller
+    pre-validates ``uei`` charset."""
+    uei = (uei or "").strip()
+    if not uei:
+        return None
+    rows = (
+        _dataset(config.SAM_ENTITY_MASTER_URI)
+        .scanner(columns=_SAM_ENTITY_COLS, filter=f"uei = {_sql_str(uei)}", limit=1)
+        .to_table()
+        .to_pylist()
+    )
+    return rows[0] if rows else None
+
+
+_SAM_POC_COLS = [
+    "uei", "source_family", "poc_type", "poc_slot_no", "full_name",
+    "first_name", "last_name", "title", "city", "state",
+]
+# 6 SAM POC slots × (primary + alternate) — a tight upper bound on rows per UEI.
+_POC_HARD_CAP = 12
+
+
+def sam_pocs_by_uei(uei: str) -> list[dict[str, Any]]:
+    """BTREE point-lookup on ``sam_pocs.uei`` → the government POC slots (v2 spine
+    only; legacy cage-keyed rows are out of scope), ordered by slot. The source
+    carries no email/phone columns."""
+    uei = (uei or "").strip()
+    if not uei:
+        return []
+    rows = (
+        _dataset(config.SAM_POCS_URI)
+        .scanner(
+            columns=_SAM_POC_COLS,
+            filter=f"uei = {_sql_str(uei)} AND source_family = 'v2'",
+            limit=_POC_HARD_CAP,
+        )
+        .to_table()
+        .to_pylist()
+    )
+    rows.sort(key=lambda r: (r.get("poc_slot_no") or 0))
+    return rows
+
+
+# ── Surface 2: UEI → unified gold profile (Overview + active/past headlines) ──
+_GOLD_COLS = [
+    "uei", "cage_code", "legal_business_name", "primary_naics", "is_active",
+    "total_active_obligations", "total_lifetime_obligations", "award_count",
+    "active_award_count", "has_federal_awards", "profile_as_of_date",
+]
+
+
+def entity_profile_by_uei(uei: str) -> dict[str, Any] | None:
+    """BTREE point-lookup on ``entity_profile_gold.uei`` (1 row/UEI). Carries the
+    pre-materialized lifetime/active obligation sums + award counts from the
+    SAM×USAspending reconciliation — the Overview surface and the active/past
+    count+total headlines read straight off this row (no DuckDB aggregate, per the
+    Gold-Mirror ruling). ``None`` when the UEI is absent from the gold spine."""
+    uei = (uei or "").strip()
+    if not uei:
+        return None
+    rows = (
+        _dataset(config.ENTITY_PROFILE_GOLD_URI)
+        .scanner(columns=_GOLD_COLS, filter=f"uei = {_sql_str(uei)}", limit=1)
+        .to_table()
+        .to_pylist()
+    )
+    return rows[0] if rows else None
+
+
+# ── Surface 3: UEI → active / past prime award line items ─────────────────────
+# RecentAward projection + action_date (awardDate). The PoP-end date predicate is
+# pushed into the Lance filter so the hard fan-out cap applies to the requested
+# subset (active vs. closed), not an arbitrary 100-row slice of the whole history.
+_LINE_ITEM_COLS = _AWARD_COLS + ["action_date"]
+
+
+def _today_iso() -> str:
+    import datetime as _dt
+
+    return _dt.date.today().isoformat()
+
+
+def _award_line_items(uei: str, limit: int, *, active: bool) -> list[dict[str, Any]]:
+    uei = (uei or "").strip()
+    if not uei:
+        return []
+    cap = max(1, min(limit, _AWARDS_HARD_CAP))
+    op = ">=" if active else "<"
+    today = _today_iso()
+    rows = (
+        _dataset(config.AWARD_SEARCH_URI)
+        .scanner(
+            columns=_LINE_ITEM_COLS,
+            filter=(
+                f"recipient_uei = {_sql_str(uei)} AND "
+                f"period_of_performance_current_end_date {op} CAST('{today}' AS DATE)"
+            ),
+            limit=_AWARDS_HARD_CAP,
+        )
+        .to_table()
+        .to_pylist()
+    )
+    rows.sort(key=lambda r: (r.get("total_obligation") or r.get("award_amount") or 0.0), reverse=True)
+    return rows[:cap]
+
+
+def active_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
+    """Prime award line items whose period of performance has NOT elapsed
+    (``period_of_performance_current_end_date >= today``), highest-obligation first.
+    NULL PoP-end rows are treated as non-current and excluded."""
+    return _award_line_items(uei, limit, active=True)
+
+
+def closed_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
+    """Prime award line items whose period of performance has elapsed
+    (``period_of_performance_current_end_date < today``) — the past-performance
+    counterpart, highest-obligation first."""
+    return _award_line_items(uei, limit, active=False)
 
 
 def reachable() -> bool:
