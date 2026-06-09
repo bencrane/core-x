@@ -1,13 +1,15 @@
-"""Strategic Origination Mandate — merge data → clean legal HTML for DocRaptor.
+"""Strategic Origination Mandate — merge data → brand-matched dark legal HTML for DocRaptor.
 
-This renders the LEGAL artifact (a normal, professional, white legal document), NOT the
-dark proposal page — that gestalt lives in the consumer app's React renderer. The merge
-tokens (``<<...>>`` in the source docx) are bound here from the Proposal row.
+This renders the LEGAL artifact in Rare Structure's dark visual identity (surface ``#0a0e1a``,
+steel-blue accent ``#7b9fd4`` on section labels) so it reads natively inside the dark proposal
+page + the Documenso signing embed. The merge tokens (``<<...>>`` in the source docx) are bound
+here from the Proposal row. NOTE: Documenso seals the same PDF it shows, so the sealed/downloaded
+copy is dark too — an intentional, on-brand choice for digital-first execution.
 
 Signature placement: Rare Structure's execution block is PRE-RENDERED (RS issues a pre-signed
-mandate). The CLIENT signature + date are left as a visible blank block; the Documenso v2
-SIGNATURE + DATE fields are overlaid there by coordinate placement (see ``documenso_client``),
-so nothing in the PDF shows a literal placeholder token if auto-detection is unavailable.
+mandate). The CLIENT signature + date area is left blank; the Documenso SIGNATURE + DATE fields
+are overlaid there by coordinate placement (percent-positioned on the final page; see
+``documenso_client``).
 
 Tokens are substituted by ``str.replace`` against a ``«TOKEN»`` sentinel (NOT ``str.format``)
 so the print-CSS braces are never touched.
@@ -18,13 +20,6 @@ import datetime as _dt
 import html
 
 from .models import Proposal, format_usd
-
-# Documenso v2 auto-detected text anchors for the CLIENT recipient (r1). Rendered INVISIBLY
-# (white, tiny) in the PDF; v2 envelope/create scans the uploaded document and creates the
-# signature + date fields at these tokens — robust to variable page count (no coordinate guess).
-# CALIBRATE the exact tag syntax against the live v2 instance before Platform go-live.
-CLIENT_SIGNATURE_TOKEN = "{{signature:r1}}"
-CLIENT_DATE_TOKEN = "{{date:r1}}"
 
 
 def _long_date(d: _dt.date) -> str:
@@ -42,9 +37,6 @@ def render_agreement_html(p: Proposal) -> str:
         "«RS_DATE»": html.escape(_long_date(p.effective_date)),
         "«CLIENT_SIGNER_NAME»": html.escape(p.client_signer_name),
         "«CLIENT_TITLE»": html.escape(p.client_title or ""),
-        # Raw (un-escaped) — these must reach the PDF as literal Documenso anchor tags.
-        "«CLIENT_SIG_TOKEN»": CLIENT_SIGNATURE_TOKEN,
-        "«CLIENT_DATE_TOKEN»": CLIENT_DATE_TOKEN,
     }
     out = _TEMPLATE
     for token, value in sub.items():
@@ -58,46 +50,52 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="utf-8" />
 <title>Strategic Origination Mandate</title>
 <style>
-  @page { size: Letter; margin: 1in 1in 1.1in 1in;
+  /* Rare Structure visual identity (semantic design tokens):
+     surface.base #0a0e1a · border.default #2d3548 / subtle #1c2333 / strong #3f4b63
+     text.primary #fafafa · default #e4e4e7 · muted #a1a1aa · subtle #82828c · accent #7b9fd4 */
+  @page { size: Letter; margin: 1in 1in 1.1in 1in; background: #0a0e1a;
     @bottom-center {
       content: "RARE STRUCTURE LLC  \2022  STRATEGIC ORIGINATION MANDATE  \2022  Page " counter(page);
       font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 7.5pt; letter-spacing: 0.12em;
-      color: #9aa0aa; text-transform: uppercase;
+      color: #82828c; text-transform: uppercase;
     }
   }
   * { box-sizing: border-box; }
-  body { font-family: 'Georgia', 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.5;
-    color: #14161a; margin: 0; }
+  /* Prince paints the root element's background across the whole page canvas → full-bleed dark. */
+  html { background: #0a0e1a; }
+  body { font-family: 'Georgia', 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.55;
+    color: #e4e4e7; background: #0a0e1a; margin: 0; }
+  strong { color: #fafafa; }
   .wordmark { font-family: 'Helvetica Neue', Arial, sans-serif; font-weight: 700;
-    letter-spacing: 0.34em; font-size: 12pt; color: #14161a; }
+    letter-spacing: 0.34em; font-size: 12pt; color: #fafafa; }
   h1 { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 15pt; letter-spacing: 0.06em;
-    margin: 6pt 0 2pt; }
-  .rule { border: 0; border-top: 1.5pt solid #14161a; margin: 10pt 0 16pt; }
-  h2 { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10.5pt; letter-spacing: 0.08em;
-    text-transform: uppercase; margin: 18pt 0 4pt; }
+    font-weight: 600; margin: 6pt 0 2pt; color: #fafafa; }
+  .rule { border: 0; border-top: 1pt solid #2d3548; margin: 10pt 0 16pt; }
+  h2 { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; letter-spacing: 0.16em;
+    text-transform: uppercase; font-weight: 600; margin: 18pt 0 5pt; color: #7b9fd4; }
   p { margin: 0 0 8pt; text-align: justify; }
-  .lead { font-weight: 600; }
+  .lead { color: #f4f4f5; }
   table.fees { width: 100%; border-collapse: collapse; margin: 8pt 0 4pt; font-size: 10pt; }
   table.fees th { text-align: left; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
-    letter-spacing: 0.1em; text-transform: uppercase; color: #4a4f57; border-bottom: 1pt solid #14161a;
-    padding: 4pt 6pt; }
-  table.fees td { padding: 5pt 6pt; border-bottom: 0.5pt solid #cfd3d9; }
-  table.fees td.rate { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; color: #82828c;
+    border-bottom: 1pt solid #3f4b63; padding: 5pt 6pt; }
+  table.fees td { padding: 6pt 6pt; border-bottom: 0.5pt solid #1c2333; color: #e4e4e7; }
+  table.fees td.rate { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+    color: #fafafa; }
   /* Force the execution block onto its own final page so the Documenso signature/date fields
      (percent-positioned on the last page) land deterministically regardless of body length. */
   .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
   .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
   .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; }
-  .sig-party { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; letter-spacing: 0.12em;
-    text-transform: uppercase; color: #4a4f57; margin-bottom: 14pt; }
-  .sig-line { border-bottom: 1pt solid #14161a; height: 30pt; margin-bottom: 3pt; }
-  /* Typed-name signature for the pre-signing party. Italic serif — NOT a cursive system font:
-     DocRaptor/Prince blocks filesystem font access, so named script fonts trigger a 422. */
+  .sig-party { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; letter-spacing: 0.14em;
+    text-transform: uppercase; color: #82828c; margin-bottom: 14pt; }
+  .sig-line { border-bottom: 1pt solid #2d3548; height: 30pt; margin-bottom: 3pt; }
+  /* Typed-name signature for the pre-signing party — steel-blue accent, italic serif. NOT a
+     cursive system font: DocRaptor/Prince blocks filesystem font access (named script fonts 422). */
   .sig-rs { font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 600;
-    font-size: 18pt; line-height: 30pt; padding-left: 4pt; color: #1b3a8a; }
-  .sig-field { font-size: 8pt; color: #4a4f57; font-family: 'Helvetica Neue', Arial, sans-serif; }
-  .sig-val { font-size: 10pt; }
-  .anchor { color: #ffffff; font-size: 7pt; }   /* Documenso text anchors — invisible to the reader */
+    font-size: 18pt; line-height: 30pt; padding-left: 4pt; color: #7b9fd4; }
+  .sig-field { font-size: 8pt; color: #82828c; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .sig-val { font-size: 10pt; color: #e4e4e7; }
 </style>
 </head>
 <body>
@@ -222,13 +220,12 @@ _TEMPLATE = r"""<!DOCTYPE html>
       </td>
       <td>
         <div class="sig-party">Client / Institutional Partner</div>
-        <!-- Documenso auto-creates the SIGNATURE field at the invisible anchor on this line. -->
-        <div class="sig-line"><span class="anchor">«CLIENT_SIG_TOKEN»</span></div>
+        <!-- Documenso overlays the SIGNATURE + DATE fields here by coordinate placement. -->
+        <div class="sig-line">&nbsp;</div>
         <div class="sig-field">By: <span class="sig-val">&nbsp;</span></div>
         <div class="sig-field">Name: <span class="sig-val">«CLIENT_SIGNER_NAME»</span></div>
         <div class="sig-field">Title: <span class="sig-val">«CLIENT_TITLE»</span></div>
-        <!-- Documenso auto-creates the DATE field at the invisible anchor after "Date:". -->
-        <div class="sig-field">Date: <span class="sig-val"><span class="anchor">«CLIENT_DATE_TOKEN»</span></span></div>
+        <div class="sig-field">Date: <span class="sig-val">&nbsp;</span></div>
       </td>
     </tr></table>
   </div>
