@@ -24,6 +24,12 @@ backend** — the documented reason it was kept local. So the Modal port is genu
 confirm the slow chunked job completes within the Modal timeout and that the backend doesn't throttle
 Modal's egress IP. **The local `uv-run` path is the proven fallback and must not be removed.**
 
+> **Fragmentation (handled separately):** the chunked *fetch* does NOT fragment Lance — `_combine_write`
+> assembles all chunks into one Arrow table and does one `write_dataset` (the 90-day backfill landed exactly
+> 1 fragment, verified live). The daily *append* adds +1 small fragment/run, which is closed by a separate
+> weekly compaction worker — see `USASPENDING_FRESH_COMPACTION_BUILD_PLAN.md`. Do **not** add compaction to
+> `run_daily` (blast-radius containment). Keep the append worker's `_optimize_indices` as-is.
+
 ---
 
 ## 1. The bones we already have (do not rebuild)
