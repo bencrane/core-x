@@ -84,6 +84,12 @@ async def lifespan(app_: FastAPI):
             "DMAAS_MCP_BEARER_TOKEN unset -- /mcp/* mounts are UNAUTHENTICATED "
             "(local dev only). Set it in core-x/prd for every deployed environment."
         )
+    if config.documenso_webhook_secret() is None:
+        log.warning(
+            "DOCUMENSO_WEBHOOK_SECRET unset -- the proposals webhook refuses (503), so signed/"
+            "completed status will NOT advance server-side. Set it in core-x/prd and register the "
+            "Documenso webhook with the same secret."
+        )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
     # ledger) inside it and drain on shutdown.
