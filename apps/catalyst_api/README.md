@@ -1,14 +1,18 @@
 # catalyst_api
 
-Gen-3 read API for the rare-structure client surface. Resolves a web **domain**
-to its **US federal award profile** via native Lance `BTREE` point-lookups over
-the committed R2 system-of-record sink. Read-only — it never writes a dataset
-(see `ARCHITECTURE.md`: a gateway reads the committed plane; pipelines
-materialize it).
+Gen-3 read API — a **core-x shared gateway** over the committed R2 system-of-record
+sink. Resolves a web **domain** to its **US federal award profile**, and a SAM.gov
+**UEI** to its entity surfaces (SAM profile, active/past contracts, overview), via
+native Lance `BTREE` point-lookups. Read-only — it never writes a dataset (see
+`ARCHITECTURE.md`: a gateway reads the committed plane; pipelines materialize it).
 
 This is the Gen-3 replacement for the deprecated data-engine-x (DEX) REST layer.
-The `platform-api` Hono BFF is the **only** caller; this service is not exposed
-to the public web.
+It is **core-x-owned infrastructure** — deployed as its own `catalyst-api` Railway
+project, **not** nested in any product. Multiple product BFFs consume it
+cross-project (government-contracted `platform-app`, rare-structure `platform-api`,
+…), so it is reachable on a public Railway domain and every `/api/v1` route is
+gated by the `CATALYST_API_TOKEN` bearer (the token, enforced fail-closed at boot,
+is the auth boundary — not network isolation).
 
 ## Lookup chain
 
@@ -26,7 +30,7 @@ domain ──BTREE(domain_norm)──► firmographics_blitz ──uei──► 
 Datasets are opened per request (never cached) so the gateway always reflects the
 latest committed Lance version — the gtm_mcp freshness convention. A request is a
 manifest GET + a handful of BTREE index/data GETs; **sub-100 ms holds in-region**
-(Render is co-located near R2). The figure is network-bound, not algorithmic: from
+(the Railway region is co-located near R2). The figure is network-bound, not algorithmic: from
 a cross-region dev laptop the same lookup is ~2 s of round-trips. The 78M-row
 `award_search` detail path (`?awards=N`) is materially heavier and is why it is
 opt-in rather than on the default profile response.
@@ -77,15 +81,16 @@ opt-in rather than on the default profile response.
 ## Security boundary
 
 Every `/api/v1` route requires `Authorization: Bearer <CATALYST_API_TOKEN>`,
-compared in constant time (`hmac.compare_digest`). The `platform-api` BFF holds
-the same secret as `COREX_SERVICE_TOKEN` and presents it on each proxied request.
-`/healthz` and `/` stay open for platform liveness probes. When
-`CATALYST_API_TOKEN` is unset the gate warns and allows (local dev only); set it
-in every deployed environment.
+compared in constant time (`hmac.compare_digest`). Each consuming BFF presents the
+same secret on every proxied request. `/healthz` and `/` stay open for platform
+liveness probes. The gate is **fail-closed**: when `CATALYST_API_TOKEN` is unset in
+a deployed environment (`RAILWAY_ENVIRONMENT` set, or `CATALYST_REQUIRE_AUTH`) the
+service refuses to start; only a bare local dev box warns-and-allows.
 
 ## Env vars
 
-Injected via Doppler (`core-x/prd`) locally and on Render.
+Injected via Doppler (`core-x/prd`) locally and on the `catalyst-api` Railway
+service (via the `DOPPLER_TOKEN` it holds).
 
 | Key | Description |
 |-----|-------------|
@@ -119,11 +124,11 @@ pytest apps/catalyst_api/tests          # pure composition + normalization, no n
 
 ## Deployment
 
-Railway service **co-located with the platform-api BFF** (Railway project
-`rare-structure-hq`, env `production`) on the project's **private network** — no
-public domain. The BFF reaches it at `http://catalyst-api.railway.internal:8080`.
-This is what satisfies the "not exposed to the public web" mandate: the service
-is unreachable from the public internet, *and* gated by the bearer token.
+Its own **`catalyst-api` Railway project** (core-x-owned, env `production`) with a
+**public domain**, gated by the bearer token. A shared gateway consumed by product
+BFFs in *other* Railway projects cannot use private networking
+(`*.railway.internal` resolves per-project), so consumers reach it over HTTPS with
+`CATALYST_API_TOKEN`.
 
 Build/run is the `apps/catalyst_api/Dockerfile` (Doppler CLI + `doppler run --
 python -m apps.catalyst_api.main`), context = core-x repo root.
@@ -131,17 +136,25 @@ python -m apps.catalyst_api.main`), context = core-x repo root.
 Create the service (GitHub-connected, auto-redeploys on `core-x` main):
 
 ```bash
-# from a dir linked to the rare-structure-hq Railway project (env: production)
+# from a dir linked to the catalyst-api Railway project (env: production)
 railway add --service catalyst-api --repo bencrane/core-x \
   --variables "RAILWAY_DOCKERFILE_PATH=apps/catalyst_api/Dockerfile" \
   --variables "HOST=::" \
   --variables "PORT=8080" \
   --variables "DOPPLER_TOKEN=<core-x/prd service token>"
+railway domain   # generate the public *.up.railway.app domain
 ```
 
 `DOPPLER_TOKEN` is a Doppler service token scoped to `core-x/prd`
 (`doppler configs tokens create catalyst-railway --project core-x --config prd --plain`);
 `doppler run` then injects `R2_*` + `CATALYST_API_TOKEN` at startup.
 
-> **IPv6:** Railway's private network is IPv6-only, so the service binds `::`
-> (set via `HOST`). Binding `0.0.0.0` would make it invisible to the BFF.
+Consumers point at the public URL:
+
+| Consumer | Env |
+|----------|-----|
+| government-contracted `platform-app` | `CATALYST_API_URL=https://<domain>` + `CATALYST_API_TOKEN` |
+| rare-structure `platform-api` | its catalyst base-URL var → `https://<domain>` (+ token) |
+
+> **Bind:** `HOST=::` binds all interfaces (IPv6/dual-stack) so Railway's public
+> edge can reach the container on `$PORT`.
