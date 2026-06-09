@@ -41,6 +41,7 @@ from .src.mcp.doppler import mcp as doppler_mcp
 from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
+from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
@@ -142,6 +143,10 @@ app.include_router(proposals_router)
 # Postgres (business.proposal_templates); preview PDFs are stashed in R2.
 app.include_router(proposal_templates_router)
 
+# bookings: the operator Pipeline list — recent cal.com bookings from corex.bookings.
+# Service-token gated; the BFF brokers it with the operator session. Read-only (Phase 1).
+app.include_router(bookings_router)
+
 
 def _info() -> dict:
     return {
@@ -156,6 +161,7 @@ def _info() -> dict:
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
+            "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
         },
     }
 
