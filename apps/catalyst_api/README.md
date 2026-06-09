@@ -139,10 +139,10 @@ Create the service (GitHub-connected, auto-redeploys on `core-x` main):
 # from a dir linked to the catalyst-api Railway project (env: production)
 railway add --service catalyst-api --repo bencrane/core-x \
   --variables "RAILWAY_DOCKERFILE_PATH=apps/catalyst_api/Dockerfile" \
-  --variables "HOST=::" \
+  --variables "HOST=0.0.0.0" \
   --variables "PORT=8080" \
   --variables "DOPPLER_TOKEN=<core-x/prd service token>"
-railway domain   # generate the public *.up.railway.app domain
+railway domain --port 8080   # generate the public *.up.railway.app domain
 ```
 
 `DOPPLER_TOKEN` is a Doppler service token scoped to `core-x/prd`
@@ -156,5 +156,7 @@ Consumers point at the public URL:
 | government-contracted `platform-app` | `CATALYST_API_URL=https://<domain>` + `CATALYST_API_TOKEN` |
 | rare-structure `platform-api` | its catalyst base-URL var → `https://<domain>` (+ token) |
 
-> **Bind:** `HOST=::` binds all interfaces (IPv6/dual-stack) so Railway's public
-> edge can reach the container on `$PORT`.
+> **Bind:** the public service sets `HOST=0.0.0.0` — Railway's public edge reaches
+> the container over IPv4, so an IPv6-only `::` bind returns `502 Application
+> failed to respond`. (`HOST=::` is only correct for a *private*-network deploy,
+> Railway's private net being IPv6-only — the legacy rare-structure variant.)
