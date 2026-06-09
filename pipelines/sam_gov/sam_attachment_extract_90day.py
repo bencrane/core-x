@@ -85,11 +85,18 @@ MIXED_PAGE_FRACTION = float(os.environ.get("MIXED_PAGE_FRACTION", "0.5"))
 CHUNK_CHARS = int(os.environ.get("CHUNK_CHARS", "1200"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "180"))
 LEDGER_FLUSH_K = int(os.environ.get("LEDGER_FLUSH_K", "500"))
-CHUNK_FLUSH_M = int(os.environ.get("CHUNK_FLUSH_M", "2000"))
+CHUNK_FLUSH_M = int(os.environ.get("CHUNK_FLUSH_M", "10000"))
+# Per-file extraction caps — bound worker/writer memory and keep the index clean. A handful of L4
+# spreadsheets are multi-hundred-MB data dumps (one observed: 195 MB text → 128,503 chunks in a single
+# worker result), which OOM-killed the bulk writer. p99 of real docs is ~1.4 MB / ~1,152 chunks, so a
+# 4 MB / 4,000-chunk cap preserves >99% of documents whole and truncates only data-dump tails.
+MAX_EXTRACT_CHARS = int(os.environ.get("MAX_EXTRACT_CHARS", str(4_000_000)))
+MAX_CHUNKS_PER_FILE = int(os.environ.get("MAX_CHUNKS_PER_FILE", "4000"))
 BLOB_SPILL = int(os.environ.get("BLOB_SPILL", str(16 * 1024 * 1024)))
 ZIP_MAX_UNCOMPRESSED = int(os.environ.get("ZIP_MAX_UNCOMPRESSED", str(2 * 1024 * 1024 * 1024)))
 ZIP_MAX_DEPTH = int(os.environ.get("ZIP_MAX_DEPTH", "2"))
 PDFPLUMBER_MAX_PAGES = int(os.environ.get("PDFPLUMBER_MAX_PAGES", "50"))
+COMPACT_TARGET_ROWS = int(os.environ.get("COMPACT_TARGET_ROWS", str(1_048_576)))
 
 # ── Routing regex (spec §5.2 — token-boundary, NOT substring ILIKE; applied to lower(file_name)) ──
 SCOPE_RX = (r"(^|[^a-z])(sow|pws|p\.?w\.?s|s\.?o\.?w|soo|statement of work|performance work statement|"
@@ -702,7 +709,7 @@ def _chunk_text(text: str) -> list[tuple[int, str]]:
         if piece:
             chunks.append((ix, piece))
             ix += 1
-        if end >= n:
+        if end >= n or ix >= MAX_CHUNKS_PER_FILE:   # hard backstop against pathological single files
             break
         i = max(end - CHUNK_OVERLAP, i + 1)
     return chunks
@@ -720,6 +727,7 @@ def _extract_pdf(spool, content_length: int):
         doc = pdfium.PdfDocument(spool.read())     # small → in-RAM bytes
     parts, per_page = [], []
     multi_col = False
+    acc = 0
     try:
         n_pages = len(doc)
         for pi in range(n_pages):
@@ -734,6 +742,9 @@ def _extract_pdf(spool, content_length: int):
                 page.close()
             parts.append(s)
             per_page.append(len(s))
+            acc += len(s)
+            if acc >= MAX_EXTRACT_CHARS:            # cap text; high-text PDFs never OCR, so per_page is moot
+                break
     finally:
         doc.close()
     conf = "low" if multi_col else "high"          # pdfium yields stream-order, not reading-order (#15)
@@ -776,6 +787,7 @@ def _extract_docx(spool) -> str:
     spool.seek(0)
     document = docx.Document(spool)
     out: list[str] = []
+    acc = [0]
 
     def _emit_table(tbl: Table) -> None:
         for row in tbl.rows:
@@ -789,11 +801,16 @@ def _extract_docx(spool) -> str:
                 for blk in cell.iter_inner_content():
                     if isinstance(blk, Table):
                         _emit_table(blk)
-            out.append(" | ".join(cells))
+            line = " | ".join(cells)
+            out.append(line)
+            acc[0] += len(line)
 
     for block in document.iter_inner_content():
+        if acc[0] >= MAX_EXTRACT_CHARS:
+            break
         if isinstance(block, Paragraph):
             out.append(block.text)
+            acc[0] += len(block.text)
         elif isinstance(block, Table):
             _emit_table(block)
     return "\n".join(out)
@@ -803,23 +820,23 @@ def _extract_txt(spool):
     """Charset-aware decode (#25): utf-8 strict → BOM (utf-16/utf-8-sig) → charset-normalizer →
     cp1252(replace). Returns (text, codec, replacement_ratio)."""
     spool.seek(0)
-    raw = spool.read()
+    raw = spool.read(MAX_EXTRACT_CHARS * 4 + 8)         # bound the read (utf-8 ≤ 4 bytes/char) + BOM
     if raw[:3] == b"\xef\xbb\xbf":
-        return raw.decode("utf-8-sig", "replace"), "utf-8-sig", 0.0
+        return raw.decode("utf-8-sig", "replace")[:MAX_EXTRACT_CHARS], "utf-8-sig", 0.0
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16", "replace"), "utf-16", 0.0
+        return raw.decode("utf-16", "replace")[:MAX_EXTRACT_CHARS], "utf-16", 0.0
     try:
-        return raw.decode("utf-8"), "utf-8", 0.0
+        return raw.decode("utf-8")[:MAX_EXTRACT_CHARS], "utf-8", 0.0
     except UnicodeDecodeError:
         pass
     try:
         from charset_normalizer import from_bytes
         best = from_bytes(raw).best()
         if best is not None:
-            return str(best), (best.encoding or "charset-normalizer"), 0.0
+            return str(best)[:MAX_EXTRACT_CHARS], (best.encoding or "charset-normalizer"), 0.0
     except Exception:  # noqa: BLE001
         pass
-    txt = raw.decode("cp1252", "replace")
+    txt = raw.decode("cp1252", "replace")[:MAX_EXTRACT_CHARS]
     ratio = txt.count("�") / max(1, len(txt))
     return txt, "cp1252", ratio
 
@@ -830,13 +847,22 @@ def _extract_xlsx(spool) -> str:
     spool.seek(0)
     wb = openpyxl.load_workbook(spool, read_only=True, data_only=True)
     out: list[str] = []
+    acc = 0
     try:
         for ws in wb.worksheets:
-            out.append(f"# sheet: {ws.title}")
+            if acc >= MAX_EXTRACT_CHARS:
+                break
+            head = f"# sheet: {ws.title}"
+            out.append(head)
+            acc += len(head)
             for row in ws.iter_rows(values_only=True):
                 cells = ["" if v is None else str(v) for v in row]
                 if any(c.strip() for c in cells):
-                    out.append(" | ".join(cells))
+                    line = " | ".join(cells)
+                    out.append(line)
+                    acc += len(line)
+                    if acc >= MAX_EXTRACT_CHARS:    # data-dump tail truncated; head/schema retained (§7.5)
+                        break
     finally:
         wb.close()
     return "\n".join(out)
@@ -1141,13 +1167,17 @@ class _Writer:
     def _flush_chunks(self) -> None:
         if not self.chunk_count:
             return
-        # (1) chunks durable
+        # (1) chunks durable. APPEND (O(batch), constant) rather than per-flush merge_insert on the
+        # UNINDEXED chunk_id — the latter re-scans/materializes the whole growing sink every flush
+        # (O(n) → OOM at bulk scale). chunk_id uniqueness is restored by the `finalize` dedup pass;
+        # deterministic chunk_id + resolution-view/checkpoint resume keep re-processing to the rare
+        # crash-window, so duplicates are bounded and collapsed at the end (§12).
         for sink, rows in self.chunk_buf.items():
             if not rows:
                 continue
             uri = {"scope": SCOPE_URI, "pricing": PRICING_URI, "unknown": UNKNOWN_URI}[sink]
             schema = {"scope": _scope_schema, "pricing": _pricing_schema, "unknown": _unknown_schema}[sink]()
-            _merge_dataset(uri, self.pa.Table.from_pylist(rows, schema=schema), "chunk_id", self.so)
+            _append_dataset(uri, self.pa.Table.from_pylist(rows, schema=schema), self.so)
             self.total_chunks += len(rows)
             rows.clear()
         # (2) ledger events for those results durable
@@ -1434,13 +1464,17 @@ def _soffice_doc(body: bytes) -> str | None:
         import pypdfium2 as pdfium
         doc = pdfium.PdfDocument(out)
         try:
-            parts = []
+            parts, acc = [], 0
             for pi in range(len(doc)):
                 page = doc[pi]
                 tp = page.get_textpage()
-                parts.append(tp.get_text_range() or "")
+                s = tp.get_text_range() or ""
                 tp.close()
                 page.close()
+                parts.append(s)
+                acc += len(s)
+                if acc >= MAX_EXTRACT_CHARS:
+                    break
             return "\n".join(parts)
         finally:
             doc.close()
@@ -1462,16 +1496,70 @@ def _soffice_xls(body: bytes, task: dict) -> str | None:
         import openpyxl
         wb = openpyxl.load_workbook(out, read_only=True, data_only=True)
         try:
-            lines = []
+            lines, acc = [], 0
             for ws in wb.worksheets:
-                lines.append(f"# sheet: {ws.title}")
+                if acc >= MAX_EXTRACT_CHARS:
+                    break
+                head = f"# sheet: {ws.title}"
+                lines.append(head)
+                acc += len(head)
                 for row in ws.iter_rows(values_only=True):
                     cells = ["" if v is None else str(v) for v in row]
                     if any(c.strip() for c in cells):
-                        lines.append(" | ".join(cells))
+                        line = " | ".join(cells)
+                        lines.append(line)
+                        acc += len(line)
+                        if acc >= MAX_EXTRACT_CHARS:
+                            break
             return "\n".join(lines)
         finally:
             wb.close()
+
+
+# ════════════════════════════════════════════════════════════════════════ Phase finalize (§11.6/§12)
+def phase_finalize(*, so: dict, run_id: str) -> dict:
+    """Post-Phase-2 finalize (spec §11.6/§12): collapse any crash-window duplicate `chunk_id`s left by
+    the append write path (restoring the uniqueness Phase 4's merge_insert relies on), then compact each
+    sink (compact_files + cleanup_old_versions) to clear the append-fragment debt. Scalar/IVF_PQ index
+    builds are intentionally deferred to the post-OCR §11.6 step. Idempotent; cheap when there are no
+    duplicates (a clean single-pass run)."""
+    import lance
+    started = dt.datetime.now(dt.timezone.utc)
+    report = {}
+    total_after = 0
+    for name, uri in [("scope", SCOPE_URI), ("pricing", PRICING_URI), ("unknown", UNKNOWN_URI)]:
+        if not _dataset_exists(uri, so):
+            print(f"finalize {name}: absent, skipped", flush=True)
+            continue
+        ds = lance.dataset(uri, storage_options=so)
+        before = ds.count_rows()
+        # dedup chunk_id keeping first occurrence — type-safe via take() (no embedding round-trip).
+        ids = ds.to_table(columns=["chunk_id"]).column("chunk_id").to_pylist()
+        seen, keep = set(), []
+        for idx, cid in enumerate(ids):
+            if cid not in seen:
+                seen.add(cid)
+                keep.append(idx)
+        dupes = before - len(keep)
+        if dupes > 0:
+            deduped = ds.take(keep)                  # arrow table with the dataset's exact schema
+            lance.write_dataset(deduped, uri, mode="overwrite",
+                                data_storage_version="2.1", storage_options=so)
+            ds = lance.dataset(uri, storage_options=so)
+        try:
+            ds.optimize.compact_files(target_rows_per_fragment=COMPACT_TARGET_ROWS)
+            ds.cleanup_old_versions()
+        except Exception as exc:  # noqa: BLE001
+            print(f"finalize {name}: compaction skipped: {exc}", flush=True)
+        after = lance.dataset(uri, storage_options=so).count_rows()
+        total_after += after
+        report[name] = {"before": before, "dupes_removed": dupes, "after": after}
+        print(f"finalize {name}: rows {before:,} -> {after:,} (chunk_id dupes removed {dupes:,}); compacted",
+              flush=True)
+    return {"phase": "finalize", "lane": "all", "files_in": 0, "counts": {}, "by_extractor": {},
+            "total_chars": 0, "total_chunks": total_after, "sustained_files_per_s": None,
+            "sustained_mbps": None, "cpu_wait_ratio": None, "status": "success", "error": None,
+            "report": report, "started_at": started, "completed_at": dt.datetime.now(dt.timezone.utc)}
 
 
 # ════════════════════════════════════════════════════════════════════════ ops roll-up (§3.8)
@@ -1555,14 +1643,15 @@ def _record_run(result: dict, run_id: str, dsn: str | None) -> None:
 
 # ════════════════════════════════════════════════════════════════════════ CLI (§17)
 _PHASE_ALIASES = {"0": "phase0", "phase0": "phase0", "1": "route", "route": "route",
-                  "1.5": "expand", "expand": "expand", "2": "extract", "extract": "extract"}
+                  "1.5": "expand", "expand": "expand", "2": "extract", "extract": "extract",
+                  "finalize": "finalize"}
 _ALL_EXTRACT_LANES = ["L1_scope", "L4_structured", "L3_triage"]   # spec §11 step 4 priority order
 
 
 def _cli() -> None:
     p = argparse.ArgumentParser(description="SAM.gov 90-day attachment extraction (Stage 4, Phases 0/1/1.5/2).")
     p.add_argument("--phase", required=True,
-                   help="0/phase0 | 1/route | 1.5/expand | 2/extract")
+                   help="0/phase0 | 1/route | 1.5/expand | 2/extract | finalize")
     p.add_argument("--lane", default="all",
                    help="extract phase: L1_scope | L4_structured | L3_triage | all (priority order)")
     p.add_argument("--max-files", type=int, default=0, help="cap files (calibration/smoke)")
@@ -1605,6 +1694,8 @@ def _cli() -> None:
         result = phase1_route(so=so, run_id=run_id, max_files=a.max_files)
     elif phase == "expand":
         result = phase15_expand(so=so, run_id=run_id, max_files=a.max_files)
+    elif phase == "finalize":
+        result = phase_finalize(so=so, run_id=run_id)
     else:
         lanes = set(_ALL_EXTRACT_LANES) if a.lane == "all" else {a.lane}
         result = phase2_extract(so=so, run_id=run_id, lanes=lanes, resume=a.resume,
