@@ -30,6 +30,7 @@ Blueprint: docs/reference/COREX_GTM_CONTROL_SURFACE.md.
 from __future__ import annotations
 
 import re
+import threading
 import uuid as _uuid
 from contextlib import contextmanager
 from typing import Any
@@ -249,20 +250,49 @@ def _J(obj: Any, default: Any = None):
     return Jsonb(obj if obj is not None else (default if default is not None else {}))
 
 
+# ── COREX_DDL bootstrap (hoisted: once per process, not per call) ──────────────────────────
+# The self-bootstrap DDL (~20 idempotent CREATE/INDEX/ALTER … IF NOT EXISTS) used to run on
+# EVERY _cursor() entry — real per-invocation work multiplied by every tool call (and by every
+# re-entry within a call). The schema persists in Postgres across connections, so it only needs
+# to be applied once per process. This flag+lock collapses the steady state to zero DDL: exactly
+# the first writer pays it, in its OWN committed connection (separate from the business
+# transaction, so a later business rollback can never un-apply the schema and leave the flag
+# falsely set). A concurrent first-caller race is harmless — the DDL is idempotent.
+_ddl_lock = threading.Lock()
+_ddl_applied = False
+
+
+def _ensure_corex_ddl() -> None:
+    """Apply ``COREX_DDL`` exactly once per process (idempotent bootstrap, own committed
+    connection). No-op on every subsequent call."""
+    global _ddl_applied
+    if _ddl_applied:
+        return
+    with _ddl_lock:
+        if _ddl_applied:
+            return
+        import psycopg
+
+        with psycopg.connect(database.hqx_dsn()) as conn, conn.cursor() as cur:
+            cur.execute(COREX_DDL)  # psycopg3 connection-context commits on clean __exit__
+        _ddl_applied = True
+
+
 @contextmanager
 def _cursor():
-    """Own psycopg connection on the hq-x DSN, inside one transaction, with the corex
-    DDL ensured (self-bootstrap) and a dict_row cursor — the ops.py write idiom."""
+    """Own psycopg connection on the hq-x DSN, inside one transaction, with a dict_row cursor
+    — the ops.py write idiom. The corex DDL is ensured ONCE per process via
+    ``_ensure_corex_ddl`` (hoisted out of the per-call path), not re-run on every entry."""
     dsn = database.hqx_dsn()
     if not dsn:
         raise RuntimeError("HQX_DB_URL_POOLED is not set — cannot reach hq-x to write corex state.")
+    _ensure_corex_ddl()
     import psycopg
     from psycopg.rows import dict_row
 
     with psycopg.connect(dsn) as conn:
         with conn.transaction():
             with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(COREX_DDL)
                 yield cur
 
 

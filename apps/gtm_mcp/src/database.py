@@ -52,11 +52,31 @@ client, and the DuckDB ``CREATE SECRET (TYPE S3)`` are all built from exactly
 those three variables (``R2_ACCOUNT_ID`` is accepted as a fallback to derive the
 endpoint, matching every worker in ``pipelines/``).
 
-FRESHNESS. Datasets are opened per call (never cached as long-lived handles) so
-the gateway always reflects the latest committed Lance version — the pipeline
-workers overwrite these datasets in place, and a stale handle would serve the
-prior snapshot. A dataset open is a single manifest GET; the point-lookup path
-stays sub-100 ms.
+SERVING-TIER STATE (warm, process-resident — NOT per-call fresh). The gateway is a
+serving mirror over the Lance/R2 system of record, so the hot artifacts are held in
+memory and reused across tool calls; the SoR itself is never mutated. Four objects carry
+that state, each a lazy singleton built once and shared by every tool:
+
+  • ``_con`` — the single in-memory DuckDB connection (R2 S3 secret + hq-x Postgres
+    ATTACH configured once); per-query work runs on a ``.cursor()`` of it, never a new
+    connection (``get_connection``).
+  • ``_registry`` — the discovered ``name → uri`` map, built once and self-refreshed on a
+    coarse TTL (``GTM_REGISTRY_TTL_S``) so a newly landed dataset / ``snapshot=YYYY-MM``
+    partition is picked up without a restart (``get_registry``).
+  • ``_tls.s3`` — a per-thread boto3 R2 client (clients are fork/thread-unsafe to share).
+  • ``_handle_cache`` — warm, index-resident ``LanceDataset`` handles keyed by uri
+    (``_cached_dataset``). pylance does NOT share a resident scalar index across handles,
+    so reusing the OPENED handle is what keeps point lookups in tens of ms instead of
+    re-loading the BTREE from R2 every call (~78% of a cold lookup — see
+    ``GTM_MCP_RECALL_ARCHITECTURE_DIAGNOSTIC.md``).
+
+FRESHNESS is bounded by a PER-DATASET TTL tiered on mutation cadence (``_ttl_for``):
+snapshot-partitioned roots (immutable within a month → a new month is a new uri, a natural
+miss) get a long TTL; flat in-place datasets (rewritten every few days) a short one. On a
+miss the dataset's ``_versions/`` commit log is listed twice and required EQUAL before the
+handle is trusted — a guard against the non-atomic publish swap (a mid-swap partial is
+served fresh and left UNcached, never adopted). The SoR is durability-first; this tier is a
+latency mirror with cadence-matched invalidation, not a per-request re-validation.
 """
 
 from __future__ import annotations
@@ -251,9 +271,12 @@ def _thread_s3():
 def get_object_bytes(key: str) -> bytes | None:
     """Best-effort GET of one R2 object by key (e.g. ``active/catalog.json``).
     Returns the body, or ``None`` if the object is absent/unreadable — callers
-    enrich with it when present and degrade gracefully when not."""
+    enrich with it when present and degrade gracefully when not.
+
+    Uses the per-thread cached client (``_thread_s3``), matching the discovery /
+    ``_versions`` listing paths — never a fresh per-call ``_s3_client()`` build."""
     try:
-        return _s3_client().get_object(Bucket=BUCKET, Key=key)["Body"].read()
+        return _thread_s3().get_object(Bucket=BUCKET, Key=key)["Body"].read()
     except Exception as exc:  # noqa: BLE001 — optional enrichment, never load-bearing
         log.warning("gtm-mcp: get_object %r failed: %s", key, exc)
         return None
