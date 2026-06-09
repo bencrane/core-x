@@ -5,18 +5,21 @@ the ~85% that is canonical legal text). This module:
 
   * renders that markdown to HTML (``markdown-it-py``, CommonMark + GFM tables),
   * wraps it in the Rare Structure brand SHELL — the dark identity, the letterhead, and the
-    execution/signature block that is page-broken onto its own final page so Documenso's
-    percent-positioned SIGNATURE + DATE fields land deterministically (see
-    ``documenso_client``), and
+    execution/signature block. The client sign + date lines carry the ``[[CLIENT_SIGNATURE]]`` /
+    ``[[CLIENT_DATE]]`` anchor markers (``signing_anchors``); Documenso resolves the SIGNATURE +
+    DATE field positions from them via ``findText`` at sign-time (see ``documenso_client``), and
   * substitutes ``{{handlebars}}`` merge tokens.
 
 Tokens are OPEN-ENDED: whatever ``{{snake_case}}`` the author writes in the body, PLUS the
 shell's own signature tokens (``{{rs_name}}``, ``{{client_signer_name}}`` …). ``extract_tokens``
 scans the FULLY ASSEMBLED document, so the authoring UI surfaces shell + body tokens together
-and the operator fills each — the editor never needs to know what a token *means*.
+and the operator fills each — the editor never needs to know what a token *means*. The ``[[...]]``
+anchor markers use a deliberately DIFFERENT bracket grammar, so token extraction/substitution
+ignore them and they survive verbatim into the PDF for Documenso's ``findText``.
 
-The built-in Strategic Origination Mandate (``agreement_template._TEMPLATE``) is left untouched
-and remains the fallback; this path serves templates published through the authoring surface.
+The built-in Strategic Origination Mandate (``agreement_template._TEMPLATE``) carries the same two
+client anchors and remains the fallback; this path serves templates published through the
+authoring surface.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ import re
 from markdown_it import MarkdownIt
 
 from .models import Proposal, format_usd
+from .signing_anchors import CLIENT_DATE_ANCHOR, CLIENT_SIGNATURE_ANCHOR
 
 # CommonMark + GFM tables/strikethrough. Linkify is deliberately OFF — bare URLs in legal text
 # should stay literal, and it avoids the linkify-it-py dependency. ``html=False`` (the default)
@@ -70,9 +74,19 @@ def substitute_tokens(html_doc: str, values: dict[str, str], *, escape: bool = T
 
 
 def render_branded_document(body_html: str, *, apply_brand: bool = True) -> str:
-    """Wrap authored body HTML in the brand shell + the page-broken execution block."""
+    """Wrap authored body HTML in the brand shell + execution block.
+
+    The shell's own sentinels (style + the client signature/date anchor markers) are resolved
+    FIRST, against the shared ``signing_anchors`` constants; ``«BODY»`` is injected LAST so authored
+    body content can never be mistaken for a shell sentinel.
+    """
     style = _BRAND_STYLE if apply_brand else _PLAIN_STYLE
-    return _SHELL.replace("«STYLE»", style).replace("«BODY»", body_html)
+    shell = (
+        _SHELL.replace("«STYLE»", style)
+        .replace("«CLIENT_SIGNATURE_ANCHOR»", CLIENT_SIGNATURE_ANCHOR)
+        .replace("«CLIENT_DATE_ANCHOR»", CLIENT_DATE_ANCHOR)
+    )
+    return shell.replace("«BODY»", body_html)
 
 
 def render_template_html(markdown_src: str, *, apply_brand: bool = True) -> str:
@@ -101,8 +115,10 @@ def proposal_token_values(p: Proposal) -> dict[str, str]:
 
 # ── Brand shell ───────────────────────────────────────────────────────────────────────────────
 # Reuses the Rare Structure dark identity from ``agreement_template._TEMPLATE``. The authored body
-# is injected at «BODY»; the execution block (with its {{tokens}}) is appended after it and forced
-# onto its own final page so the Documenso overlay coordinates are deterministic.
+# is injected at «BODY»; the execution block (with its {{tokens}}) is appended after it. The client
+# signature + date lines carry the [[CLIENT_SIGNATURE]] / [[CLIENT_DATE]] anchor markers (literal
+# text, NOT {{merge}} tokens) — Documenso resolves the field positions from them via ``findText``
+# at sign-time (see ``services.documenso_client``).
 
 _BRAND_STYLE = r"""
   @page { size: Letter; margin: 1in 1in 1.1in 1in; background: #0a0e1a;
@@ -138,8 +154,10 @@ _BRAND_STYLE = r"""
   td { padding: 6pt 6pt; border-bottom: 0.5pt solid #1c2333; color: #e4e4e7; }
   td:last-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
     color: #fafafa; }
-  /* Execution block — page-broken onto its own final page so the percent-positioned Documenso
-     SIGNATURE + DATE fields land deterministically regardless of body length. */
+  /* Execution block. The page break is now COSMETIC (keeps the signatures on a clean final page);
+     it is NOT load-bearing — Documenso places the SIGNATURE + DATE fields by resolving the
+     [[CLIENT_SIGNATURE]] / [[CLIENT_DATE]] anchor markers via ``findText``, so position no longer
+     depends on the block sitting at a fixed page coordinate. */
   .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
   .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
   .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; border-bottom: 0;
@@ -151,10 +169,16 @@ _BRAND_STYLE = r"""
     font-size: 18pt; line-height: 30pt; padding-left: 4pt; color: #7b9fd4; }
   .sig-field { font-size: 8pt; color: #82828c; font-family: 'Helvetica Neue', Arial, sans-serif; }
   .sig-val { font-size: 10pt; color: #e4e4e7; }
+  /* Anchor marker on the client sign/date lines: a subtle placeholder, but REAL selectable text in
+     a standard font — Documenso's findText resolves + whites it out at sign-time. Never set to
+     display:none / zero-size / a script font, or the PDF text layer loses it. */
+  .sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
+    letter-spacing: 0.08em; color: #5b6373; line-height: 30pt; padding-left: 4pt; }
 """
 
 # Light/unbranded variant — same class vocabulary (so the body + signature block still render),
-# neutral print colors. The .sig-wrap page break is preserved (Documenso depends on it).
+# neutral print colors. The .sig-wrap page break is preserved as a COSMETIC choice (not load-
+# bearing — Documenso places fields by anchor, see the brand-style note above and documenso_client).
 _PLAIN_STYLE = r"""
   @page { size: Letter; margin: 1in 1in 1.1in 1in;
     @bottom-center { content: "Page " counter(page); font-family: Arial, sans-serif;
@@ -192,6 +216,9 @@ _PLAIN_STYLE = r"""
     line-height: 30pt; padding-left: 4pt; color: #111; }
   .sig-field { font-size: 8pt; color: #555; font-family: Arial, sans-serif; }
   .sig-val { font-size: 10pt; color: #111; }
+  /* Anchor marker — subtle but REAL selectable text in a standard font (Documenso findText). */
+  .sig-anchor { font-family: Arial, sans-serif; font-size: 8pt; letter-spacing: 0.08em;
+    color: #888; line-height: 30pt; padding-left: 4pt; }
 """
 
 _SHELL = r"""<!DOCTYPE html>
@@ -216,12 +243,13 @@ _SHELL = r"""<!DOCTYPE html>
       </td>
       <td>
         <div class="sig-party">Client / Institutional Partner</div>
-        <!-- Documenso overlays the SIGNATURE + DATE fields here by coordinate placement. -->
-        <div class="sig-line">&nbsp;</div>
+        <!-- Documenso resolves the SIGNATURE + DATE field positions from the «CLIENT_SIGNATURE_ANCHOR»
+             / «CLIENT_DATE_ANCHOR» markers below via findText, and whites them out at sign-time. -->
+        <div class="sig-line"><span class="sig-anchor">«CLIENT_SIGNATURE_ANCHOR»</span></div>
         <div class="sig-field">By: <span class="sig-val">&nbsp;</span></div>
         <div class="sig-field">Name: <span class="sig-val">{{client_signer_name}}</span></div>
         <div class="sig-field">Title: <span class="sig-val">{{client_title}}</span></div>
-        <div class="sig-field">Date: <span class="sig-val">&nbsp;</span></div>
+        <div class="sig-field">Date: <span class="sig-anchor">«CLIENT_DATE_ANCHOR»</span></div>
       </td>
     </tr></table>
   </div>

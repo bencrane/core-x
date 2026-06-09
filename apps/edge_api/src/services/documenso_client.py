@@ -5,10 +5,21 @@ as the sole SIGNER (no Documenso-sent email — the consumer app controls delive
 the recipient signing token (drives the embed), pull the sealed PDF on completion, and verify
 inbound webhooks.
 
-CALIBRATION BOUNDARY — the exact v2 wire shapes (envelope/create multipart field names, the
-download operation, response key names) render client-side in Documenso's OpenAPI viewer and
-could not be byte-pinned at build time. They are isolated here behind small, defensively-parsed
-methods and marked ``# CALIBRATE``. Verify against the live Platform account's spec
+The SIGNATURE + DATE fields are placed by ANCHOR, not coordinates: the rendered agreement emits
+the ``[[CLIENT_SIGNATURE]]`` / ``[[CLIENT_DATE]]`` markers (``proposals.signing_anchors``) on the
+client execution lines, and ``field/create-many`` resolves each field's position from the marker
+via Documenso's ``findText`` (it whites the marker out at sign-time). Position is therefore
+independent of body length, page count, and template — no page math, no blind percentages.
+
+CALIBRATION BOUNDARY — the placeholder field shape used here (``field/create-many`` with a
+``placeholder`` string in place of ``page``/``positionX``/``positionY``) is CONFIRMED against
+Documenso v2 source: ``packages/trpc/.../create-envelope-fields.types.ts`` defines the request as
+a union of ``ZCoordinatePositionSchema`` and ``ZPlaceholderPositionSchema`` (``placeholder`` +
+optional ``width``/``height`` + ``matchAll``), and
+``packages/app-tests/e2e/api/v2/placeholder-fields-api.spec.ts`` exercises it over the public API.
+The remaining ``# CALIBRATE`` shapes (envelope/create multipart field names, the download
+operation, response key names) render client-side in Documenso's OpenAPI viewer and could not be
+byte-pinned at build time; verify against the live Platform account's spec
 (``{base}/api/v2/openapi``) before go-live. Auth, the webhook contract, and event names are
 confirmed and stable.
 """
@@ -24,6 +35,7 @@ from typing import Any
 import httpx
 
 from .. import config
+from ..proposals.signing_anchors import CLIENT_DATE_ANCHOR, CLIENT_SIGNATURE_ANCHOR
 
 logger = logging.getLogger(__name__)
 
@@ -110,17 +122,14 @@ def _extract_client_token(body: Any, email: str) -> str | None:
     return str(tok) if tok else None
 
 
-# Signature/date field placement — PERCENT of the page (0-100). The agreement template
-# page-breaks the signature block onto its own final page, so the client's signature sits at a
-# deterministic spot there regardless of body length.
-_SIGNATURE_FIELD = {"positionX": 52.0, "positionY": 13.0, "width": 32.0, "height": 7.0}
-_DATE_FIELD = {"positionX": 52.0, "positionY": 27.0, "width": 22.0, "height": 4.0}
-
-_PAGE_RE = re.compile(rb"/Type\s*/Page(?![s])")
-
-
-def _count_pdf_pages(pdf: bytes) -> int:
-    return max(len(_PAGE_RE.findall(pdf)), 1)
+# Field SIZE overrides — PERCENT of the page (0-100). Position is NOT set here: Documenso resolves
+# it from the anchor marker (``findText``). But the anchor's own text box (a thin one-line strip at
+# sig-line font size) is too small to be a usable signature/date target, so we override the box to
+# the same proportions the prior coordinate placement used (sig ~32×7, date ~22×4). ``width``/
+# ``height`` are the only ``ZPlaceholderPositionSchema`` fields beyond ``placeholder``; omitting
+# them would fall back to the marker's measured size.
+_SIGNATURE_FIELD_SIZE = {"width": 32.0, "height": 7.0}
+_DATE_FIELD_SIZE = {"width": 22.0, "height": 4.0}
 
 
 def _numeric_document_id(env: dict[str, Any]) -> int | None:
@@ -134,15 +143,16 @@ async def create_signing_envelope(
     external_id: str | None = None,
 ) -> EnvelopeResult:
     """Create a signable v2 envelope from the agreement PDF with the Client as the sole SIGNER,
-    place the signature + date fields, and distribute WITHOUT email (embedded-signing flow).
+    place the signature + date fields BY ANCHOR, and distribute WITHOUT email (embedded-signing
+    flow).
 
     Validated against Documenso Cloud v2: ``/envelope/create`` (multipart ``payload`` JSON +
-    ``files``), ``/envelope/field/create-many`` (percent-positioned fields), ``/envelope/distribute``
+    ``files``), ``/envelope/field/create-many`` (anchor-positioned fields — a ``placeholder``
+    string resolved by ``findText`` over the PDF, not coordinates), ``/envelope/distribute``
     (``distributionMethod: NONE``). The recipient signing token, read back from the envelope, drives
     the embed. ``external_id`` (the proposal ref) is stamped on the envelope so the webhook can
     match it back deterministically, independent of the payload's id shape.
     """
-    last_page = _count_pdf_pages(pdf_bytes)
     payload: dict[str, Any] = {
         "type": "DOCUMENT",
         "title": title,
@@ -177,10 +187,22 @@ async def create_signing_envelope(
             raise DocumensoError("envelope/create: no recipient id on the created envelope")
         document_id = _numeric_document_id(env)
 
-        # 3) place the SIGNATURE + DATE fields for the recipient on the final signature page
+        # 3) place the SIGNATURE + DATE fields for the recipient BY ANCHOR. Documenso resolves the
+        #    position (page + x/y) from the marker via ``findText`` and whites the marker out; we
+        #    only override the field box size (the marker's own text strip is too small to sign on).
         fields = [
-            {"type": "SIGNATURE", "recipientId": recipient_id, "page": last_page, **_SIGNATURE_FIELD},
-            {"type": "DATE", "recipientId": recipient_id, "page": last_page, **_DATE_FIELD},
+            {
+                "type": "SIGNATURE",
+                "recipientId": recipient_id,
+                "placeholder": CLIENT_SIGNATURE_ANCHOR,
+                **_SIGNATURE_FIELD_SIZE,
+            },
+            {
+                "type": "DATE",
+                "recipientId": recipient_id,
+                "placeholder": CLIENT_DATE_ANCHOR,
+                **_DATE_FIELD_SIZE,
+            },
         ]
         placed = await client.post(
             "/api/v2/envelope/field/create-many",
