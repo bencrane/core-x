@@ -45,6 +45,7 @@ async def _provision(conn, p: Proposal) -> tuple[bool, str | None]:
         pdf = await docraptor_client.render_pdf(render_agreement_html(p), name=p.ref)
         env = await documenso_client.create_signing_envelope(
             pdf, title=_title(p), signer_name=p.client_signer_name, signer_email=p.client_email,
+            external_id=p.ref,
         )
         await queries.attach_envelope(conn, p.ref, env.envelope_id, env.client_token)
         return True, None
@@ -158,16 +159,26 @@ async def documenso_webhook(
 
     body = await request.json()
     evt = documenso_client.normalize_event(body)
-    if evt.status is None or not evt.envelope_id:
+    if evt.status is None:
         return {"ok": True, "ignored": True, "event": evt.event}
 
     async with get_db_connection() as conn:
-        signed_url: str | None = None
-        if evt.status == "completed":
-            p = await queries.get_by_envelope(conn, evt.envelope_id)
-            if p is not None:
-                signed_url = f"/api/v1/proposals/{p.ref}/document"
+        # Resolve the proposal deterministically by externalId (the ref we stamped on the
+        # envelope), falling back to the envelope id. Advance via the row's stored envelope id.
+        proposal = None
+        if evt.external_id:
+            proposal = await queries.get_by_ref(conn, evt.external_id)
+        if proposal is None and evt.envelope_id:
+            proposal = await queries.get_by_envelope(conn, evt.envelope_id)
+        if proposal is None or not proposal.documenso_envelope_id:
+            return {"ok": True, "ignored": True, "event": evt.event, "reason": "no matching proposal"}
+        signed_url = (
+            f"/api/v1/proposals/{proposal.ref}/document" if evt.status == "completed" else None
+        )
         applied = await queries.advance_status(
-            conn, envelope_id=evt.envelope_id, status=evt.status, signed_pdf_url=signed_url,
+            conn,
+            envelope_id=proposal.documenso_envelope_id,
+            status=evt.status,
+            signed_pdf_url=signed_url,
         )
     return {"ok": True, "applied": applied, "event": evt.event, "status": evt.status}

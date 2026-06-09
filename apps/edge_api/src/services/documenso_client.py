@@ -131,6 +131,7 @@ def _numeric_document_id(env: dict[str, Any]) -> int | None:
 
 async def create_signing_envelope(
     pdf_bytes: bytes, *, title: str, signer_name: str, signer_email: str,
+    external_id: str | None = None,
 ) -> EnvelopeResult:
     """Create a signable v2 envelope from the agreement PDF with the Client as the sole SIGNER,
     place the signature + date fields, and distribute WITHOUT email (embedded-signing flow).
@@ -138,15 +139,18 @@ async def create_signing_envelope(
     Validated against Documenso Cloud v2: ``/envelope/create`` (multipart ``payload`` JSON +
     ``files``), ``/envelope/field/create-many`` (percent-positioned fields), ``/envelope/distribute``
     (``distributionMethod: NONE``). The recipient signing token, read back from the envelope, drives
-    the embed.
+    the embed. ``external_id`` (the proposal ref) is stamped on the envelope so the webhook can
+    match it back deterministically, independent of the payload's id shape.
     """
     last_page = _count_pdf_pages(pdf_bytes)
-    payload = {
+    payload: dict[str, Any] = {
         "type": "DOCUMENT",
         "title": title,
         "recipients": [{"name": signer_name, "email": signer_email, "role": "SIGNER"}],
         "distributeDocument": False,
     }
+    if external_id:
+        payload["externalId"] = external_id
     async with _client() as client:
         # 1) create the draft envelope with the PDF attached (multipart: payload JSON + files)
         created = await client.post(
@@ -252,12 +256,18 @@ def verify_webhook_secret(provided: str | None) -> bool:
 
 
 def normalize_event(body: dict[str, Any]) -> NormalizedEvent:
-    """Map a v2 (or v1-fallback) webhook payload to our internal event/status."""
-    event = str(_dig(body, "event") or "")
+    """Map a webhook payload to our internal event/status.
+
+    Documenso labels triggers as lowercase-dotted (``document.completed``) and may deliver the
+    event in that form OR the enum form (``DOCUMENT_COMPLETED``); fold both to the enum key.
+    """
+    raw = str(_dig(body, "event") or "")
+    key = raw.upper().replace(".", "_")
     payload = _dig(body, "payload", "data") or {}
+    _s = lambda v: str(v) if v is not None else None  # noqa: E731
     return NormalizedEvent(
-        event=event,
-        status=_EVENT_TO_STATUS.get(event),
-        envelope_id=(lambda v: str(v) if v is not None else None)(_dig(payload, "id", "documentId", "envelopeId")),
-        external_id=(lambda v: str(v) if v is not None else None)(_dig(payload, "externalId")),
+        event=raw,
+        status=_EVENT_TO_STATUS.get(key),
+        envelope_id=_s(_dig(payload, "id", "documentId", "envelopeId")),
+        external_id=_s(_dig(payload, "externalId")),
     )
