@@ -1,10 +1,10 @@
 """Runtime configuration for edge_api.
 
 Secrets come from the environment (Doppler ``core-x/prd`` locally and on the
-deployed public service). Nothing is committed. edge_api needs no R2 / Lance —
-only the service token + bind coordinates here; later phases read the same
-``HQX_*`` Postgres and ``MANAGED_*`` / ``DMAAS_MCP_BEARER_TOKEN`` values already
-present in ``core-x/prd``.
+deployed public service). Nothing is committed. The proposal-template authoring
+surface uses R2 for preview PDFs (creds already in ``core-x/prd``); the rest of
+edge_api reads the same ``HQX_*`` Postgres and ``MANAGED_*`` /
+``DMAAS_MCP_BEARER_TOKEN`` values already present there.
 """
 from __future__ import annotations
 
@@ -48,6 +48,29 @@ def rs_signer_name() -> str:
 def partner_platform_base_url() -> str:
     """Public base URL of the consumer proposal page — used to build shareable proposal links."""
     return os.environ.get("PARTNER_PLATFORM_BASE_URL", "http://localhost:3000").rstrip("/")
+
+
+# ── Cloudflare R2 (S3-compatible) — proposal preview/artifact storage ─────────────────
+# edge_api's first object-storage use. Endpoint + creds already live in core-x/prd
+# (the same R2 the data lake uses). Only the bucket is service-specific.
+def r2_endpoint() -> str | None:
+    """R2 S3 endpoint, e.g. ``https://<account>.r2.cloudflarestorage.com``."""
+    return os.environ.get("R2_ENDPOINT")
+
+
+def r2_access_key_id() -> str | None:
+    return os.environ.get("R2_ACCESS_KEY_ID")
+
+
+def r2_secret_access_key() -> str | None:
+    return os.environ.get("R2_SECRET_ACCESS_KEY")
+
+
+def r2_proposal_bucket() -> str:
+    """Bucket for proposal preview PDFs. Defaults to the data-lake bucket; preview objects live
+    under a segregated ``proposals/`` prefix (never the ``active/`` SoR namespace). Override with
+    ``R2_PROPOSAL_BUCKET`` to point at a dedicated bucket."""
+    return os.environ.get("R2_PROPOSAL_BUCKET", "data-sink")
 
 
 def port() -> int:

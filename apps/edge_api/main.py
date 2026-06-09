@@ -43,6 +43,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
+from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.proposals_v1 import router as proposals_router
 from .src.service_token import require_service_token
 
@@ -136,6 +137,11 @@ app.include_router(pipeline_router, prefix="/internal")
 # Service-token create/list/provision; PUBLIC ref read + sealed-PDF stream; X-Documenso-Secret webhook.
 app.include_router(proposals_router)
 
+# proposal-templates: the authoring surface (markdown → branded HTML → DocRaptor preview → publish).
+# Service-token gated; the BFF brokers it with the operator session. Markdown source lives in
+# Postgres (business.proposal_templates); preview PDFs are stashed in R2.
+app.include_router(proposal_templates_router)
+
 
 def _info() -> dict:
     return {
@@ -149,6 +155,7 @@ def _info() -> dict:
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
+            "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
         },
     }
 
