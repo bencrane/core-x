@@ -58,12 +58,17 @@ CONTRACTOR_AWARD_SUMMARY_URI = os.environ.get(
 AWARD_SEARCH_URI = os.environ.get(
     "AWARD_SEARCH_LANCE_URI", "s3://data-sink/active/usaspending/award_search/"
 )
-# SAM.gov entity surfaces. ``sam_entity_master`` (1 row/active UEI, BTREE uei) carries
-# the SAM identity + NAICS/PSC + raw business_types + physical city/state/zip5.
-# ``sam_pocs`` (BTREE uei, BITMAP poc_type) carries the government POC slots — no
+# SAM.gov entity surfaces. ``sam_master_entities`` (1.54M, 1 row/UEI, BTREE uei) carries
+# the SAM identity + NAICS/PSC lists + raw bus_type_string + physical address city/state/zip
+# + the is_active flag. ``sam_pocs`` (BTREE uei) carries the government POC slots — no
 # email/phone columns exist at source.
+#
+# NOTE: the prior default ``active/sam_entity_master/`` does NOT exist in the sink (the live
+# dataset is ``sam_master_entities`` — inverted words), so every /sam-profile 404'd as if the
+# entity were unregistered. Corrected to the live root; the column projection is remapped to
+# this schema in lance_store._SAM_ENTITY_COLS + models.SamProfileResponse.from_row.
 SAM_ENTITY_MASTER_URI = os.environ.get(
-    "SAM_ENTITY_MASTER_LANCE_URI", "s3://data-sink/active/sam_entity_master/"
+    "SAM_ENTITY_MASTER_LANCE_URI", "s3://data-sink/active/sam_master_entities/"
 )
 SAM_POCS_URI = os.environ.get(
     "SAM_POCS_LANCE_URI", "s3://data-sink/active/sam_pocs/"
@@ -74,6 +79,14 @@ SAM_POCS_URI = os.environ.get(
 # count+total headlines are pure point-lookups (NO on-the-fly aggregate).
 ENTITY_PROFILE_GOLD_URI = os.environ.get(
     "ENTITY_PROFILE_GOLD_LANCE_URI", "s3://data-sink/active/entity_profile_gold/"
+)
+# Per-UEI prime award line items Gold Mirror (entity_award_lines_gold v2.1, 1 row/UEI,
+# BTREE uei) — built by pipelines/resolution/award_lines_gold.py. Carries the top-N active
+# and closed contract line items as nested list<struct> columns, so active-contracts /
+# past-performance are sub-second point-lookups instead of a ~80s cold scan of the 78.6M-row
+# award_search on every request.
+ENTITY_AWARD_LINES_GOLD_URI = os.environ.get(
+    "ENTITY_AWARD_LINES_GOLD_LANCE_URI", "s3://data-sink/active/entity_award_lines_gold/"
 )
 
 

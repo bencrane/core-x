@@ -213,7 +213,7 @@ class SamProfileResponse(_Model):
     uei: str | None = None
     cage_code: str | None = None
     legal_business_name: str | None = None
-    registration_status: str | None = None      # DERIVED: 'active' | 'expired'
+    registration_status: str | None = None      # DERIVED: 'active' | 'expired' | 'inactive'
     registration_date: str | None = None
     activation_date: str | None = None
     expiration_date: str | None = None
@@ -230,27 +230,38 @@ class SamProfileResponse(_Model):
     def from_row(
         cls, entity: dict[str, Any], pocs: list[dict[str, Any]], today: date
     ) -> "SamProfileResponse":
-        exp = entity.get("expiration_date")
+        # Source columns are sam_master_entities' schema. registration_status has no source
+        # column: derive 'expired' (PoP-style: expiry elapsed) > 'inactive' (is_active False)
+        # > 'active'. registration_date ← initial_registration_date; expiration ←
+        # registration_expiration_date; business_types_raw ← raw bus_type_string (no parse).
+        exp = entity.get("registration_expiration_date")
+        is_active = entity.get("is_active")
         primary = (entity.get("primary_naics") or None)
         naics = [c for c in (entity.get("naics_codes") or []) if c]
         secondary = [c for c in naics if c != primary]
+        if isinstance(exp, date) and exp < today:
+            status = "expired"
+        elif is_active is False:
+            status = "inactive"
+        else:
+            status = "active"
         return cls(
             uei=entity.get("uei"),
             cage_code=entity.get("cage_code"),
             legal_business_name=entity.get("legal_business_name"),
-            registration_status=("expired" if isinstance(exp, date) and exp < today else "active"),
-            registration_date=_iso(entity.get("registration_date")),
+            registration_status=status,
+            registration_date=_iso(entity.get("initial_registration_date")),
             activation_date=_iso(entity.get("activation_date")),
             expiration_date=_iso(exp),
             days_until_expiration=_days_between(exp, today),
             primary_naics=primary,
             secondary_naics=secondary,
             psc_codes=[c for c in (entity.get("psc_codes") or []) if c],
-            business_types_raw=entity.get("business_types"),
+            business_types_raw=entity.get("bus_type_string"),
             physical_address=Address(
-                city=entity.get("physical_city"),
-                state=entity.get("physical_state"),
-                zip=entity.get("physical_zip5"),
+                city=entity.get("physical_address_city"),
+                state=entity.get("physical_address_province_or_state"),
+                zip=entity.get("physical_address_zip_postal_code"),
             ),
             government_pocs=[SamPoc.from_row(p) for p in pocs],
         )

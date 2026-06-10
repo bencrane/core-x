@@ -172,25 +172,31 @@ def recent_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
 
 
 # ── Surface 1: UEI → SAM.gov entity profile ──────────────────────────────────
+# Projection over sam_master_entities (the live SAM identity dataset). registration_status
+# and registration_date have NO direct source column here — status is DERIVED from
+# is_active + registration_expiration_date, and registration_date maps to
+# initial_registration_date (see models.SamProfileResponse.from_row). business_types_raw is
+# the raw ~-delimited bus_type_string; the parsed list lives in naics_codes/psc_codes/
+# business_types but the surface emits the raw string per the operator no-parse ruling.
 _SAM_ENTITY_COLS = [
-    "uei", "legal_business_name", "cage_code", "registration_status",
-    "purpose_of_registration", "registration_date", "expiration_date",
-    "activation_date", "last_update_date", "primary_naics", "naics_codes",
-    "psc_codes", "business_types", "physical_city", "physical_state", "physical_zip5",
+    "uei", "legal_business_name", "cage_code", "is_active", "purpose_of_registration",
+    "initial_registration_date", "registration_expiration_date", "activation_date",
+    "last_update_date", "primary_naics", "naics_codes", "psc_codes", "bus_type_string",
+    "physical_address_city", "physical_address_province_or_state", "physical_address_zip_postal_code",
 ]
 
 
 def _scan(uri: str, **scanner_kwargs) -> list[dict[str, Any]]:
-    """Open + scan a committed dataset, returning rows. A dataset that is not yet
-    materialized in the sink degrades to ``[]`` (the surface renders its
-    empty-state) rather than a 500 — e.g. a gold table whose build hasn't landed.
-    Genuine errors (R2 auth, network, malformed query) still raise."""
-    try:
-        return _dataset(uri).scanner(**scanner_kwargs).to_table().to_pylist()
-    except (ValueError, OSError) as exc:  # narrow: "dataset absent" only
-        if "not found" in str(exc).lower():
-            return []
-        raise
+    """Open + scan a committed dataset, returning rows (``[]`` when no row matches the
+    filter — a dataset that EXISTS but has no row for this UEI).
+
+    A genuinely MISSING dataset (a wrong / unmaterialized URI) is NOT swallowed — it raises,
+    surfacing the misconfiguration as a loud 5xx. The prior "not found → []" swallow made a
+    misrouted SAM URI (``sam_entity_master`` vs the real ``sam_master_entities``) indis-
+    tinguishable from "entity unregistered": every /sam-profile 404'd for a whole release.
+    Absence-of-data is a zero-row scan of a dataset that exists, never a dataset that isn't
+    there. Boot-time ``probe_surfaces()`` makes the same class of misconfig visible up front."""
+    return _dataset(uri).scanner(**scanner_kwargs).to_table().to_pylist()
 
 
 def sam_entity_by_uei(uei: str) -> dict[str, Any] | None:
@@ -250,51 +256,31 @@ def entity_profile_by_uei(uei: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-# ── Surface 3: UEI → active / past prime award line items ─────────────────────
-# RecentAward projection + action_date (awardDate). The PoP-end date predicate is
-# pushed into the Lance filter so the hard fan-out cap applies to the requested
-# subset (active vs. closed), not an arbitrary 100-row slice of the whole history.
-_LINE_ITEM_COLS = _AWARD_COLS + ["action_date"]
-
-
-def _today_iso() -> str:
-    import datetime as _dt
-
-    return _dt.date.today().isoformat()
-
-
-def _award_line_items(uei: str, limit: int, *, active: bool) -> list[dict[str, Any]]:
+# ── Surface 3: UEI → active / past prime award line items (Gold-Mirror point-lookup) ──
+# Pre-materialized per-UEI by pipelines/resolution/award_lines_gold.py into
+# entity_award_lines_gold (1 row/uei, BTREE uei). active_contracts / past_performance are
+# nested list<struct> columns, already PoP-classified (vs the build date, the same
+# convention entity_profile_gold uses for its counts) and pre-sorted by obligation desc.
+# This replaces the old per-request ~80s COLD scan of the 78.6M-row award_search — which
+# reopened a fresh dataset handle each call and re-paid the 379 MB index cold-load over R2 —
+# with a single sub-second indexed lookup. Each struct carries the EXACT award_search column
+# names ActiveContract.from_row consumes, so there is no projection drift gateway-side.
+def entity_award_lines_by_uei(uei: str, side: str, limit: int) -> list[dict[str, Any]]:
+    """Top award line items for a UEI on one side of the PoP split. ``side`` is ``"active"``
+    (period of performance not elapsed) or ``"closed"`` (elapsed → past performance). Returns
+    the pre-sorted, pre-capped nested list (≤ limit), or ``[]`` when the UEI has no row in the
+    gold mirror (no federal awards, or none on this side)."""
     uei = (uei or "").strip()
     if not uei:
         return []
     cap = max(1, min(limit, _AWARDS_HARD_CAP))
-    op = ">=" if active else "<"
-    today = _today_iso()
-    rows = _scan(
-        config.AWARD_SEARCH_URI,
-        columns=_LINE_ITEM_COLS,
-        filter=(
-            f"recipient_uei = {_sql_str(uei)} AND "
-            f"period_of_performance_current_end_date {op} CAST('{today}' AS DATE)"
-        ),
-        limit=_AWARDS_HARD_CAP,
-    )
-    rows.sort(key=lambda r: (r.get("total_obligation") or r.get("award_amount") or 0.0), reverse=True)
-    return rows[:cap]
-
-
-def active_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
-    """Prime award line items whose period of performance has NOT elapsed
-    (``period_of_performance_current_end_date >= today``), highest-obligation first.
-    NULL PoP-end rows are treated as non-current and excluded."""
-    return _award_line_items(uei, limit, active=True)
-
-
-def closed_awards_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
-    """Prime award line items whose period of performance has elapsed
-    (``period_of_performance_current_end_date < today``) — the past-performance
-    counterpart, highest-obligation first."""
-    return _award_line_items(uei, limit, active=False)
+    col = "active_contracts" if side == "active" else "past_performance"
+    rows = _scan(config.ENTITY_AWARD_LINES_GOLD_URI, columns=["uei", col],
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
+    if not rows:
+        return []
+    items = rows[0].get(col) or []
+    return items[:cap]
 
 
 def reachable() -> bool:
@@ -305,3 +291,30 @@ def reachable() -> bool:
         return True
     except Exception:
         return False
+
+
+# Point-lookup surfaces every UI read depends on. Probed at boot + surfaced on /healthz so a
+# wrong / unmaterialized URI is LOUD immediately — the failure mode that, silently swallowed,
+# masked a misrouted SAM URI for an entire release. award_search/firmographics are excluded:
+# they are heavier roots and the manifest open suffices for the point-lookup surfaces.
+_SURFACE_DATASETS = {
+    "sam_master_entities": lambda: config.SAM_ENTITY_MASTER_URI,
+    "sam_pocs": lambda: config.SAM_POCS_URI,
+    "entity_profile_gold": lambda: config.ENTITY_PROFILE_GOLD_URI,
+    "entity_award_lines_gold": lambda: config.ENTITY_AWARD_LINES_GOLD_URI,
+    "contractor_award_summary": lambda: config.CONTRACTOR_AWARD_SUMMARY_URI,
+}
+
+
+def probe_surfaces() -> dict[str, bool]:
+    """Open each point-lookup surface's manifest against R2 — a name→reachable map for the
+    boot log and /healthz. ``False`` means the configured URI does not resolve to a committed
+    dataset (a deploy/config error), not that it is merely empty."""
+    out: dict[str, bool] = {}
+    for name, uri in _SURFACE_DATASETS.items():
+        try:
+            _dataset(uri()).count_rows()
+            out[name] = True
+        except Exception:  # noqa: BLE001 — reachability probe, never fatal
+            out[name] = False
+    return out
