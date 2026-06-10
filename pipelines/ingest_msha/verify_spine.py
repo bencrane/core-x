@@ -22,7 +22,7 @@ Overall PASS == the full post-P0-P3 end state (all resolution floors held + 0 un
 keys + 0 lowercase IDs). Run it before P2/P3 to see the pending surface; run it after to prove
 green.
 
-    modal run pipelines/ingest_msha/verify_spine.py::check          # full harness, pass/fail
+    modal run pipelines/ingest_msha/verify_spine.py::check_local    # full harness, pass/fail
     modal deploy pipelines/ingest_msha/verify_spine.py              # dispatcher-resolvable
 """
 
