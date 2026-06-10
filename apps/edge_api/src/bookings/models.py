@@ -68,9 +68,26 @@ class BookingSummary(BaseModel):
         )
 
 
+class CompanyProfile(BaseModel):
+    """The domain-keyed dossier payload (``business.company_profiles``) — company-level
+    enrichment the booking-profile page reads, resolved by the booking's ``domain``.
+    Hand-seeded today; a parallel.ai/cal projection refreshes it later."""
+
+    domain: str
+    company: str | None = None
+    hq: str | None = None
+    headcount: str | None = None
+    est_revenue_range: str | None = None
+    overview: str | None = None
+    focus: list[str] = []
+    industries: list[str] = []
+    geographies: list[str] = []
+    source: str | None = None
+
+
 class BookingDetail(BaseModel):
-    """The booking-profile page projection — the full cal-derived record. Carries the
-    system identifiers + the meeting window; enrichment fields layer on later."""
+    """The booking-profile page projection — the full cal-derived record plus the company
+    dossier (``profile``) resolved by domain. Carries the system identifiers + meeting window."""
 
     booking_id: str
     ical_uid: str | None
@@ -89,9 +106,10 @@ class BookingDetail(BaseModel):
     booked_at: str | None
     created_at: str | None
     updated_at: str | None
+    profile: CompanyProfile | None = None
 
     @classmethod
-    def from_row(cls, b: Booking) -> "BookingDetail":
+    def from_row(cls, b: Booking, profile: CompanyProfile | None = None) -> "BookingDetail":
         def _iso(v: _dt.datetime | None) -> str | None:
             return v.isoformat() if v else None
 
@@ -113,4 +131,5 @@ class BookingDetail(BaseModel):
             booked_at=_iso(b.booked_at),
             created_at=_iso(b.created_at),
             updated_at=_iso(b.updated_at),
+            profile=profile,
         )

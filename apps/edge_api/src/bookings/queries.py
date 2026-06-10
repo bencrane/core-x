@@ -10,7 +10,7 @@ from typing import Any
 
 from psycopg.rows import dict_row
 
-from .models import Booking
+from .models import Booking, CompanyProfile
 
 # booking_id is uuid in-DB; cast to text so the model carries a plain string.
 _SELECT_COLS = (
@@ -49,3 +49,25 @@ async def get_by_id(conn, booking_id: str) -> Booking | None:
         )
         row = await cur.fetchone()
     return _to_booking(row) if row else None
+
+
+# business.company_profiles — the domain-keyed dossier payload (company-level). The booking
+# resolves to its profile by domain (lowercased); jsonb tag arrays come back as native lists.
+_PROFILE_COLS = (
+    "domain, company, hq, headcount, est_revenue_range, overview, "
+    "focus, industries, geographies, source"
+)
+
+
+async def get_profile_by_domain(conn, domain: str) -> CompanyProfile | None:
+    """One company dossier by domain. Returns None when the company is not yet enriched."""
+    norm = (domain or "").strip().lower()
+    if not norm:
+        return None
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"SELECT {_PROFILE_COLS} FROM business.company_profiles WHERE domain = %s",
+            (norm,),
+        )
+        row = await cur.fetchone()
+    return CompanyProfile(**row) if row else None
