@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import config
-from ..cal import normalize, queries, research
+from ..cal import enrich, normalize, queries, research
 from ..cal.signature import verify_signature
 from ..db import get_db_connection
 
@@ -90,11 +90,14 @@ async def cal_webhook(
 
     logger.info("cal webhook captured raw %s (%s) -> %s", raw_id, trigger_event, normalized.get("action"))
 
-    # 3) RESEARCH KICKOFF — only for a newly created booking (committed above). Best-effort;
-    # never affects the webhook outcome (booking + raw are already durable).
+    # 3) RESEARCH + ENRICH KICKOFF — only for a newly created booking (committed above). Both
+    # best-effort; neither affects the webhook outcome (booking + raw are already durable).
     research_result = None
+    enrich_result = None
     if isinstance(normalized, dict) and normalized.get("action") == "created":
-        research_result = await _kick_research(trigger_event, envelope, normalized.get("ical_uid"))
+        ical_uid = normalized.get("ical_uid")
+        research_result = await _kick_research(trigger_event, envelope, ical_uid)
+        enrich_result = await _kick_enrich(trigger_event, envelope, ical_uid)
 
     return {
         "ok": True,
@@ -102,6 +105,7 @@ async def cal_webhook(
         "trigger_event": trigger_event,
         "normalized": normalized,
         "research": research_result,
+        "enrich": enrich_result,
     }
 
 
@@ -138,6 +142,32 @@ async def _kick_research(
     except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
         logger.warning("research refs stamp failed for %s: %s", ical_uid, exc)
     return {"triggered": True, "run_id": run_id, "prompt_id": prompt_id}
+
+
+async def _kick_enrich(
+    trigger_event: str, envelope: dict[str, Any], ical_uid: str | None
+) -> dict[str, Any]:
+    """Fire the company enrichment task for a new booking and stamp its run id. Best-effort —
+    a missing domain or a trigger failure never affects the webhook. Sibling of _kick_research;
+    the two fire independently so one failing never blocks the other."""
+    if not ical_uid:
+        return {"triggered": False, "reason": "no ical_uid"}
+    fields = normalize.extract(trigger_event, envelope)
+    domain = fields.get("domain")
+    if not domain:
+        return {"triggered": False, "reason": "no domain"}
+    run_id = await enrich.trigger_enrich(
+        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain
+    )
+    if not run_id:
+        return {"triggered": False, "reason": "trigger returned no run id"}
+    try:
+        async with get_db_connection() as conn:
+            await queries.set_enrich_ref(conn, ical_uid, run_id)
+            await conn.commit()
+    except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
+        logger.warning("enrich ref stamp failed for %s: %s", ical_uid, exc)
+    return {"triggered": True, "run_id": run_id}
 
 
 async def _normalize(conn, trigger_event: str, envelope: dict[str, Any], raw_id: str) -> dict[str, Any]:

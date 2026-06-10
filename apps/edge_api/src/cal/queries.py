@@ -146,3 +146,13 @@ async def set_research_refs(conn, ical_uid: str, run_id: str, prompt_id: str | N
             "updated_at=now() WHERE ical_uid=%s",
             (run_id, prompt_id, ical_uid),
         )
+
+
+async def set_enrich_ref(conn, ical_uid: str, run_id: str) -> None:
+    """Stamp the Trigger.dev booking-enrich run id onto the booking (keyed on the stable
+    ical_uid) so it joins its row in booking_enrichment. Does NOT commit."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE corex.bookings SET enrich_run_id=%s, updated_at=now() WHERE ical_uid=%s",
+            (run_id, ical_uid),
+        )
