@@ -1226,6 +1226,146 @@ def run_epa_ingest(trigger_callback_url: str | None = None, only: list[str] | No
 
 
 # --------------------------------------------------------------------------- #
+# Generic landing → active MIRROR. landing/epa/ is a materialize-EVERYTHING handoff,
+# not a buffet: every CSV member with no curated table becomes its own all-varchar
+# passthrough Lance table (lossless; cast at query time), auto-BTREE on detected
+# resolution keys, r2_safe_local write, idempotent skip-existing. Curated specs keep
+# their hand-types; the mirror only ADDS what they don't cover, so active/ fully
+# reflects landing and exploration never returns to the zip pile.
+# --------------------------------------------------------------------------- #
+MIRROR_KEY_COLS = {
+    "REGISTRY_ID", "ACTIVITY_ID", "CASE_NUMBER", "NPDES_ID", "EXTERNAL_PERMIT_NMBR",
+    "PGM_SYS_ID", "RCRA_ID", "PWSID", "PWS_ID", "FACILITY_UIN", "SOURCE_ID", "AIR_ID",
+    "HANDLER_ID", "FRS_ID", "PERMIT_ID", "ENF_CONCLUSION_ID", "FACILITY_ID", "SITE_ID",
+}
+# Members already represented by a CURATED table (build_specs / history / entities / gtm)
+# — skipped so the mirror never duplicates a hand-typed dataset. The DMR FY archives all
+# roll into epa_npdes_dmrs and are matched by pattern in build_mirror_specs.
+MIRROR_CURATED_MEMBERS = {
+    "FRS_FACILITIES.CSV", "FRS_PROGRAM_LINKS.CSV", "NPDES_QNCR_HISTORY.CSV",
+    "NPDES_EFF_VIOLATIONS.CSV", "CASE_ENFORCEMENTS.CSV", "CASE_MILESTONES.CSV",
+    "PIPELINE_CAA_00_COMPLETE.CSV", "PIPELINE_RCRA_00_COMPLETE.CSV",
+    "AIM_TRIGGERING_EVENTS.CSV", "ECHO_EXPORTER.CSV", "ICIS-AIR_FACILITIES.CSV",
+    "RCRA_FACILITIES.CSV",
+}
+
+
+def _mirror_slug(member: str) -> str:
+    import re
+
+    base = member.split("/")[-1].rsplit(".", 1)[0]
+    return "epa_" + re.sub(r"[^a-z0-9]+", "_", base.lower()).strip("_")
+
+
+def build_mirror_specs(s3, only: list[str] | None = None, force: bool = False) -> list[dict]:
+    """Enumerate every CSV member of every landing/epa/*.zip → a passthrough spec
+    (all-varchar SELECT *, auto-BTREE detected keys, r2_safe_local) for each member with no
+    curated table and (unless force) not already mirrored."""
+    import io
+    import re
+    import zipfile
+
+    so = _r2_storage_options()
+    dmr_re = re.compile(r"NPDES_DMRS_(FY\d{4}|PREFY2009)\.CSV", re.I)
+    archives = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=LANDING_BUCKET, Prefix=LANDING_PREFIX):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(LANDING_PREFIX):]
+            if rel.lower().endswith(".zip"):
+                archives.append(rel)
+
+    specs: list[dict] = []
+    seen: dict[str, tuple] = {}
+    for archive in sorted(archives):
+        try:
+            zf = zipfile.ZipFile(_S3RangeReader(s3, LANDING_BUCKET, LANDING_PREFIX + archive))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[mirror] open failed {archive}: {exc}")
+            continue
+        for zi in zf.infolist():
+            member = zi.filename
+            if not member.lower().endswith(".csv"):
+                continue
+            up = member.split("/")[-1].upper()
+            if up in MIRROR_CURATED_MEMBERS or dmr_re.fullmatch(up):
+                continue
+            slug = _mirror_slug(member)
+            if slug in seen:  # cross-archive name collision → disambiguate by archive
+                tag = re.sub(r"[^a-z0-9]+", "_", archive.lower().rsplit(".", 1)[0]).strip("_")
+                slug = f"epa_{tag}__{slug[4:]}"
+            seen[slug] = (archive, member)
+            if only and slug not in set(only):
+                continue
+            if not force and _dataset_exists(ACTIVE_BASE + slug + "/", so):
+                continue
+            keys: list[str] = []
+            try:
+                with zf.open(member) as fh:
+                    hdr = io.TextIOWrapper(fh, encoding="utf-8", errors="replace").readline()
+                cols = {c.strip().strip('"').upper() for c in hdr.split(",") if c.strip()}
+                keys = sorted(cols & MIRROR_KEY_COLS)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [mirror] header read failed {archive}:{member}: {exc}")
+            specs.append(dict(
+                name=slug,
+                sources=[dict(archive=archive, member=member)],
+                sql=f"SELECT * FROM {_read()}",   # all-varchar passthrough → lossless
+                btree=keys, bitmap=[],
+                r2_safe_local=True,               # wide/large members trip R2 multipart
+            ))
+    print(f"[mirror] {len(specs)} member(s) to materialize")
+    return specs
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 300,
+    memory=4096,
+)
+def mirror_landing(only: list[str] | None = None, force: bool = False) -> dict:
+    """Mirror EVERY landing/epa member lacking a curated/mirrored table → its own Lance table
+    (one materialize_one container each). Idempotent: re-run after any new landing drop
+    materializes only what is new."""
+    import datetime as dt
+
+    started = dt.datetime.now(dt.timezone.utc)
+    run_id = started.strftime("epa_mirror_%Y%m%dT%H%M%SZ")
+    s3 = _s3_client()
+    specs = build_mirror_specs(s3, only=only, force=force)
+    if not specs:
+        print("[mirror] nothing to do — active/ already mirrors landing.")
+        return {"run_id": run_id, "status": "success", "materialized": 0, "datasets": {}}
+
+    calls = [(s["name"], materialize_one.spawn(s, run_id)) for s in specs]
+    results = []
+    for name, call in calls:
+        try:
+            results.append(call.get())
+        except Exception as exc:  # noqa: BLE001 — one bad member must not sink the batch
+            print(f"[mirror] {name} raised: {exc}")
+            results.append({"dataset": name, "rows": 0, "status": "error", "error": str(exc)})
+
+    ok = [r for r in results if r.get("status") == "success"]
+    bad = [r for r in results if r.get("status") != "success"]
+    status = "success" if not bad else ("partial" if ok else "error")
+    completed = dt.datetime.now(dt.timezone.utc)
+    _record_run(run_id=run_id, dataset="__mirror__", dataset_uri=ACTIVE_BASE,
+                source_archives=f"{len(specs)} landing members",
+                rows_written=sum(int(r.get("rows", 0)) for r in results), indexes_built="",
+                status=status, error=(None if not bad else ",".join(r["dataset"] for r in bad)),
+                metrics={"materialized": len(ok), "failed": [r["dataset"] for r in bad],
+                         "rows": {r["dataset"]: r.get("rows") for r in results}},
+                started_at=started, completed_at=completed)
+    summary = {"run_id": run_id, "status": status, "materialized": len(ok),
+               "failed": [r["dataset"] for r in bad],
+               "datasets": {r["dataset"]: {"rows": r.get("rows"), "status": r.get("status")}
+                            for r in results}}
+    print(summary)
+    return summary
+
+
+# --------------------------------------------------------------------------- #
 # Ops + verification entrypoints
 # --------------------------------------------------------------------------- #
 @app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=120)
@@ -1301,6 +1441,15 @@ def bridge() -> None:
 def run(skip_bridge: bool = False, only: str = "") -> None:
     names = [n for n in only.split(",") if n] or None
     print(run_epa_ingest.remote(trigger_callback_url=None, only=names, skip_bridge=skip_bridge))
+
+
+@app.local_entrypoint()
+def mirror(only: str = "", force: bool = False) -> None:
+    """Materialize every landing/epa member lacking a table → epa_<slug> (all-varchar
+    passthrough, auto-BTREE keys). `--only a,b` targets slugs; `--force` rebuilds existing.
+    Idempotent — safe to re-run after any new landing drop (mirrors only what is new)."""
+    names = [n for n in only.split(",") if n] or None
+    print(mirror_landing.remote(only=names, force=force))
 
 
 @app.local_entrypoint()
