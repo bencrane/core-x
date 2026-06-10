@@ -14,6 +14,9 @@
      • everything else → raw-only.
    A normalization failure NEVER fails the webhook — the raw row is already durable and
    carries ``processed`` / ``processed_by`` for reprocessing.
+4. On a NEW booking, best-effort fire the Parallel deep-research Trigger.dev task for the
+   prospect's company (cheapest processor) and stamp the run id onto the booking — idempotent
+   on iCalUID, so cal's duplicate deliveries resolve to ONE research run.
 
 Mounted at ``/webhooks/cal`` (NOT under ``/api/v1``) — the path cal.com posts to.
 """
@@ -26,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import config
-from ..cal import normalize, queries
+from ..cal import normalize, queries, research
 from ..cal.signature import verify_signature
 from ..db import get_db_connection
 
@@ -86,7 +89,45 @@ async def cal_webhook(
             normalized = {"action": "deferred", "error": str(exc)[:300]}
 
     logger.info("cal webhook captured raw %s (%s) -> %s", raw_id, trigger_event, normalized.get("action"))
-    return {"ok": True, "raw_id": raw_id, "trigger_event": trigger_event, "normalized": normalized}
+
+    # 3) RESEARCH KICKOFF — only for a newly created booking (committed above). Best-effort;
+    # never affects the webhook outcome (booking + raw are already durable).
+    research_result = None
+    if isinstance(normalized, dict) and normalized.get("action") == "created":
+        research_result = await _kick_research(trigger_event, envelope, normalized.get("ical_uid"))
+
+    return {
+        "ok": True,
+        "raw_id": raw_id,
+        "trigger_event": trigger_event,
+        "normalized": normalized,
+        "research": research_result,
+    }
+
+
+async def _kick_research(
+    trigger_event: str, envelope: dict[str, Any], ical_uid: str | None
+) -> dict[str, Any]:
+    """Fire the company deep-research task for a new booking and stamp its run id. Best-effort —
+    a missing domain or a trigger failure never affects the webhook."""
+    if not ical_uid:
+        return {"triggered": False, "reason": "no ical_uid"}
+    fields = normalize.extract(trigger_event, envelope)
+    domain = fields.get("domain")
+    if not domain:
+        return {"triggered": False, "reason": "no domain"}
+    run_id = await research.trigger_research(
+        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain
+    )
+    if not run_id:
+        return {"triggered": False, "reason": "trigger returned no run id"}
+    try:
+        async with get_db_connection() as conn:
+            await queries.set_research_run_id(conn, ical_uid, run_id)
+            await conn.commit()
+    except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
+        logger.warning("research run_id stamp failed for %s: %s", ical_uid, exc)
+    return {"triggered": True, "run_id": run_id}
 
 
 async def _normalize(conn, trigger_event: str, envelope: dict[str, Any], raw_id: str) -> dict[str, Any]:
