@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from .. import config
 from ..db import get_db_connection
+from ..payments import queries as pay_queries
 from ..proposals import queries, template_queries
 from ..proposals.agreement_template import render_agreement_html
 from ..proposals.models import Proposal, ProposalCreate, ProposalPublic, ProposalSummary, format_usd
@@ -170,9 +171,20 @@ async def get_proposal(ref: str) -> ProposalPublic:
     """PUBLIC — the ref is the bearer credential. The consumer React page's data source."""
     async with get_db_connection() as conn:
         p = await queries.get_by_ref(conn, ref)
-    if p is None:
-        raise HTTPException(status_code=404, detail="proposal not found")
-    return ProposalPublic.from_row(p)
+        if p is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        # Payment state is additive + isolated: any error (e.g. the payment migration not yet
+        # applied) collapses to 'none' and NEVER breaks the public read / signing path.
+        try:
+            payment_status = await pay_queries.get_status_by_ref(conn, ref)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("payment status read failed for %s (%s); defaulting 'none'", ref, exc)
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+            payment_status = "none"
+    return ProposalPublic.from_row(p, payment_status=payment_status)
 
 
 @router.get("/{ref}/document")

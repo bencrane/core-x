@@ -48,6 +48,24 @@ def docraptor_api_key() -> str | None:
     return os.environ.get("DOCRAPTOR_API_KEY")
 
 
+def stripe_secret_key() -> str | None:
+    """Stripe secret key (``sk_...``), server-side ONLY — never sent to the browser. From
+    ``core-x/prd``. When unset, the payment-intent route refuses (503) instead of charging."""
+    return os.environ.get("STRIPE_SECRET_KEY")
+
+
+def stripe_publishable_key() -> str | None:
+    """Stripe publishable key (``pk_...``). Public by design — surfaced to the browser (via the BFF)
+    to mount the ACH PaymentElement. Single source of truth: the SPA never carries its own copy."""
+    return os.environ.get("STRIPE_PUBLISHABLE_KEY")
+
+
+def stripe_webhook_secret() -> str | None:
+    """Signing secret (``whsec_...``) for the Stripe webhook endpoint. When unset, ``/webhooks/stripe``
+    refuses (503) rather than accepting unverified events. Must match the secret on the Stripe webhook."""
+    return os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+
 def rs_signer_name() -> str:
     """Rare Structure's signatory name pre-rendered into the agreement (Managing Director)."""
     return os.environ.get("RS_SIGNER_NAME", "Benjamin Crane")

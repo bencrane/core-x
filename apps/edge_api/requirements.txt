@@ -10,3 +10,4 @@ psycopg[binary,pool]>=3.2   # business.agent_runs ledger + pipeline (Phase 3+)
 pydantic-settings>=2        # vendored hq-x app/config.py Settings (Phase 4 pipeline)
 markdown-it-py>=3.0         # proposal-template authoring: markdown body → HTML (CommonMark + GFM tables)
 boto3>=1.34                 # R2 (S3-compatible) — proposal preview PDFs + presigned links
+stripe>=11                  # Stripe ACH (us_bank_account) PaymentIntent + webhook signature verification
