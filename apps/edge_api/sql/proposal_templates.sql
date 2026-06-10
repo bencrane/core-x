@@ -26,7 +26,15 @@ CREATE TABLE IF NOT EXISTS business.proposal_templates (
     markdown           text        NOT NULL DEFAULT '',         -- the body the operator writes (with {{tokens}})
     apply_brand        boolean     NOT NULL DEFAULT true,       -- wrap in the Rare Structure dark shell vs plain print
     token_manifest     jsonb       NOT NULL DEFAULT '[]'::jsonb,-- {{tokens}} detected in the assembled doc (body + shell)
-    monthly_fee_cents  bigint,                                  -- intended posture fee (informational; create-time fee is authoritative today)
+    monthly_fee_cents  bigint,                                  -- DEFAULT price/month ({{monthly_fee}}); a proposal inherits then may override
+    -- pricing config DEFAULTS (a minted proposal inherits these, editable per deal). total is DERIVED
+    -- (monthly_fee × duration), never stored. billing_cadence is independent of duration.
+    duration_months    integer,                                 -- DEFAULT engagement term in months ({{duration}})
+    billing_cadence    text,                                    -- DEFAULT invoicing schedule: upfront_in_full | monthly | quarterly
+    success_fee_schedule jsonb,                                 -- DEFAULT tiered success-fee %s — list of {"tier","rate"}
+    -- pre-proposal page config: the exec-summary blurb shown on the engagement / exec-summary page
+    -- (NOT the legal proposal body). Template-owned ⇒ org-keyed in practice (one template per org).
+    exec_summary       text,
     -- ownership: the issuing org. Banking resolves org.slug = business.dbas.slug → dbas.legal_entity_id
     -- → business.legal_entities (ACH/Stripe). Nullable: the in-app create path does not set it yet.
     organization_id    uuid        REFERENCES business.organizations (id) ON DELETE RESTRICT,
@@ -61,3 +69,11 @@ BEGIN
 END $$;
 CREATE INDEX IF NOT EXISTS proposal_templates_organization_idx
     ON business.proposal_templates (organization_id);
+
+-- exec_summary — additive + idempotent (pre-proposal exec-summary page copy; see CREATE TABLE).
+ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS exec_summary text;
+
+-- pricing config defaults — additive + idempotent (see CREATE TABLE). total derives, never stored.
+ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS duration_months      integer;
+ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS billing_cadence       text;
+ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS success_fee_schedule  jsonb;

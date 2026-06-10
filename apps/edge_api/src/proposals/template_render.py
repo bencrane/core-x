@@ -29,7 +29,7 @@ import re
 
 from markdown_it import MarkdownIt
 
-from .models import Proposal, format_usd
+from .models import Proposal, format_usd, total_cents
 from .signing_anchors import CLIENT_DATE_ANCHOR, CLIENT_SIGNATURE_ANCHOR
 
 # CommonMark + GFM tables/strikethrough. Linkify is deliberately OFF — bare URLs in legal text
@@ -98,9 +98,19 @@ def _long_date(d: _dt.date) -> str:
     return f"{d:%B} {d.day}, {d:%Y}"
 
 
+_CADENCE_PHRASE = {
+    "upfront_in_full": "in full upon execution",
+    "monthly": "monthly in advance",
+    "quarterly": "every three (3) months in advance",
+}
+
+
 def proposal_token_values(p: Proposal) -> dict[str, str]:
     """The standard merge values bound from a real Proposal row at generation time. A published
-    template's tokens resolve against these (anything outside this set renders literal)."""
+    template's tokens resolve against these (anything outside this set renders literal). Carries
+    BOTH ``total`` (engagement value = monthly × duration) and the legacy ``quarterly_total`` alias
+    so old and new template bodies both resolve."""
+    total = total_cents(p.monthly_fee_cents, p.duration_months)
     return {
         "client_name": p.client_name,
         "client_signer_name": p.client_signer_name,
@@ -108,7 +118,10 @@ def proposal_token_values(p: Proposal) -> dict[str, str]:
         "client_email": p.client_email,
         "effective_date": _long_date(p.effective_date),
         "monthly_fee": format_usd(p.monthly_fee_cents),
-        "quarterly_total": format_usd(p.quarterly_total_cents),
+        "duration": str(p.duration_months),
+        "billing_cadence": _CADENCE_PHRASE.get(p.billing_cadence, p.billing_cadence),
+        "total": format_usd(total),
+        "quarterly_total": format_usd(total),  # legacy alias — old bodies still resolve
         "rs_name": p.rs_signer_name,
     }
 
