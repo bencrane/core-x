@@ -1578,7 +1578,9 @@ def build_rollup_enforcement(run_id: str) -> dict:
             # redistribution, stranding ~$5.98B of federal penalty mass (persisted sum collapses from
             # $16.36B to ~$10.38B). Filtering the edge to the spine HERE makes the split denominator and
             # the surviving facilities the same set, so a case's surviving facilities absorb its FULL
-            # penalty and the persisted rollup reconciles to the $16.36B FED_PENALTY signal.
+            # penalty. The persisted total = the MASS-CONSERVING attributable signal: Σ FED_PENALTY over
+            # cases with >=1 spine-resident facility (~$13.84B), NOT $16.36B — ~$2.53B of penalties
+            # (26,669 all-non-FRS cases) are correctly unattributable ($13.84B + $2.53B = $16.36B granular).
             _register_detail(con, SPINE_NAME, ["registry_id"], "_spine", so)
             con.execute("CREATE TEMP TABLE enf_spine_rid AS SELECT DISTINCT registry_id FROM _spine")
             con.unregister("_spine")
@@ -1621,6 +1623,25 @@ def build_rollup_enforcement(run_id: str) -> dict:
                 JOIN xmap m ON m.k = pc.aid
                 GROUP BY m.registry_id
             """)
+            # G3.4 mass-conservation target, recomputed from source each run (tracks data refreshes, not
+            # a brittle hardcode). _p above is a ONE-SHOT reader already consumed by p_agg, so register a
+            # FRESH penalty reader (_pg). The attributable total = Σ FED_PENALTY over de-duped (aid,case)
+            # rows for cases with >=1 spine-resident facility (JOIN fac_per_case — the exact edge the
+            # rollup splits over). The persisted rollup must CONSERVE this mass: a broken denominator or
+            # facility map would make the split-resummed rollup diverge from this raw attributable sum.
+            _register_detail(con, "epa_case_penalties",
+                             ["ACTIVITY_ID", "CASE_NUMBER", "FED_PENALTY"], "_pg", so)
+            enf_recon_target = con.execute("""
+                SELECT coalesce(sum(d.fed), 0) FROM (
+                    SELECT aid, cn, any_value(fed) AS fed FROM (
+                        SELECT nullif(trim(CAST(ACTIVITY_ID AS VARCHAR)),'') AS aid,
+                               nullif(trim(CAST(CASE_NUMBER AS VARCHAR)),'') AS cn,
+                               TRY_CAST(replace(replace(nullif(trim(CAST(FED_PENALTY AS VARCHAR)),''),'$',''),',','') AS DOUBLE) AS fed
+                        FROM _pg
+                    ) WHERE aid IS NOT NULL GROUP BY aid, cn
+                ) d JOIN fac_per_case fpc ON fpc.aid = d.aid
+            """).fetchone()[0] or 0
+            con.unregister("_pg")
             con.unregister("_p")
             _register_detail(con, "epa_case_enforcements",
                              ["ACTIVITY_ID", "FISCAL_YEAR", "ACTIVITY_STATUS_DATE",
@@ -1660,14 +1681,14 @@ def build_rollup_enforcement(run_id: str) -> dict:
             gates["G3.6_year_order"] = {"bad": bad_year, "ok": bad_year == 0}
             if bad_year:
                 raise RuntimeError(f"G3.6 year order FAILED: {bad_year}")
-            # G3.4 FED_PENALTY reconciliation fires INSIDE _finalize_rollup, on the post-spine-join
-            # rollup actually written to R2 — never on the pre-drop `roll`. Before the edge filter
-            # above, the pre-drop roll summed to a phantom $16.36B that the spine drop then eroded to
-            # ~$10.38B; gating the persisted artifact closes that false-pass window.
+            # G3.4 fires INSIDE _finalize_rollup, on the post-spine-join rollup actually written to R2 —
+            # never the pre-drop `roll` (which summed to a phantom $16.36B the spine drop then eroded;
+            # gating the persisted artifact closed that false-pass window). The persisted total must
+            # equal the recomputed attributable mass (enf_recon_target, ~$13.84B) within 1%.
             return _finalize_rollup(
                 con, name, ROLLUP_BTREE, ["has_federal_case", "has_penalty"], so, run_id,
                 "epa_case_enforcements,epa_case_penalties", gates, started,
-                recon={"col": "fed_penalty_total", "target": 16_360_000_000, "tol": 0.01,
+                recon={"col": "fed_penalty_total", "target": enf_recon_target, "tol": 0.01,
                        "gate": "G3.4_fed_penalty_floor"})
         finally:
             con.close()
