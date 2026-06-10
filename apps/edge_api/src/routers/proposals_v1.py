@@ -31,6 +31,7 @@ from ..proposals.models import (
     DEFAULT_DURATION_MONTHS,
     SUCCESS_FEE_TIERS,
     Proposal,
+    ProposalConfirm,
     ProposalCreate,
     ProposalPublic,
     ProposalSummary,
@@ -40,6 +41,7 @@ from ..proposals.models import (
 from ..proposals.template_render import (
     proposal_token_values,
     render_template_html,
+    substitute_markdown_tokens,
     substitute_tokens,
 )
 from ..service_token import require_service_token
@@ -72,7 +74,10 @@ async def _agreement_html(conn, p: Proposal) -> str:
         except Exception:
             pass
     if tpl is not None:
-        html = render_template_html(tpl["markdown"], apply_brand=tpl["apply_brand"])
+        # Pre-render BLOCK tokens (the structured success-fee table) into the markdown source, then
+        # markdown→HTML, then substitute the inline scalar tokens (fee/cadence/total/duration/…).
+        md = substitute_markdown_tokens(tpl["markdown"], p)
+        html = render_template_html(md, apply_brand=tpl["apply_brand"])
         return substitute_tokens(html, proposal_token_values(p))
     return render_agreement_html(p)
 
@@ -95,9 +100,34 @@ async def _provision(conn, p: Proposal) -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _field_values(
+    *, client_name, client_signer_name, client_title, client_email,
+    effective_date: _dt.date, monthly_fee_cents: int, duration_months: int,
+    billing_cadence: str, rs_name: str,
+) -> dict[str, Any]:
+    """The display merge values stamped onto the row (`field_values`). Recomputed from the
+    structured pricing so it always mirrors the row's actuals."""
+    total = total_cents(monthly_fee_cents, duration_months)
+    return {
+        "clientName": client_name,
+        "clientSignerName": client_signer_name,
+        "clientTitle": client_title,
+        "clientEmail": client_email,
+        "effectiveDate": effective_date.isoformat(),
+        "monthlyFee": format_usd(monthly_fee_cents),
+        "duration": str(duration_months),
+        "billingCadence": billing_cadence,
+        "total": format_usd(total),
+        "quarterlyTotal": format_usd(total),
+        "rsName": rs_name,
+    }
+
+
 @router.post("", dependencies=[Depends(require_service_token)])
 async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
-    """Mint a proposal, persist it, then best-effort provision the signable envelope."""
+    """Mint a DRAFT proposal (pricing seeded from the template defaults). Provisioning — render the
+    PDF + create the Documenso envelope — is DEFERRED to `/confirm`, where it runs against the
+    operator's locked-in values. So the heavy legal artifact is never built from stale defaults."""
     ref = queries.new_ref()
     effective_date = body.effective_date or _dt.date.today()
     rs_name = body.rs_signer_name or config.rs_signer_name()
@@ -133,32 +163,75 @@ async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail="monthly_fee_cents required (no template default)")
         # total = monthly × duration; persisted into the legacy quarterly_total_cents for back-compat.
         total = total_cents(monthly_fee_cents, duration_months)
-        field_values = {
-            "clientName": body.client_name,
-            "clientSignerName": body.client_signer_name,
-            "clientTitle": body.client_title,
-            "clientEmail": body.client_email,
-            "effectiveDate": effective_date.isoformat(),
-            "monthlyFee": format_usd(monthly_fee_cents),
-            "duration": str(duration_months),
-            "total": format_usd(total),
-            "quarterlyTotal": format_usd(total),
-            "rsName": rs_name,
-        }
+        field_values = _field_values(
+            client_name=body.client_name, client_signer_name=body.client_signer_name,
+            client_title=body.client_title, client_email=body.client_email,
+            effective_date=effective_date, monthly_fee_cents=monthly_fee_cents,
+            duration_months=duration_months, billing_cadence=billing_cadence, rs_name=rs_name,
+        )
         p = await queries.insert_proposal(
             conn, ref=ref, body=body, template_id=template_id, effective_date=effective_date,
             monthly_fee_cents=monthly_fee_cents, duration_months=duration_months,
             billing_cadence=billing_cadence, success_fee_schedule=success_fee_schedule,
             quarterly_total_cents=total, rs_signer_name=rs_name, field_values=field_values,
         )
-        ok, err = await _provision(conn, p)
-        fresh = await queries.get_by_ref(conn, ref)
     return {
         "ref": ref,
         "path": f"/proposal/{ref}",
-        "status": fresh.status if fresh else "draft",
+        "status": p.status,
+        "provisioned": False,
+        "provision_error": None,
+    }
+
+
+@router.post("/{ref}/confirm", dependencies=[Depends(require_service_token)])
+async def confirm_proposal(ref: str, body: ProposalConfirm) -> dict[str, Any]:
+    """Originate: STAMP the operator's locked-in structured values onto the draft instance, then
+    render the PDF from them + create the signing envelope. Idempotent on a still-draft row; once an
+    envelope exists (already originated) it refuses (409) — the document the prospect sees is frozen.
+
+    Every field is optional: an omitted value keeps the row's current actual, so a zero-edit Confirm
+    simply re-stamps the seed defaults and provisions them."""
+    async with get_db_connection() as conn:
+        p = await queries.get_by_ref(conn, ref)
+        if p is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p.documenso_envelope_id is not None:
+            raise HTTPException(status_code=409, detail="already originated")
+        # Omitted field → keep the row's current actual. monthly_fee_cents/duration_months are gt=0
+        # (0 can't arrive), so `or` is safe; success_fee_schedule uses an explicit None-check so a
+        # deliberate empty list (no tiers) is honored rather than falling back to the seed.
+        monthly_fee_cents = body.monthly_fee_cents or p.monthly_fee_cents
+        duration_months = body.duration_months or p.duration_months
+        billing_cadence = body.billing_cadence or p.billing_cadence
+        success_fee_schedule = (
+            p.success_fee_schedule if body.success_fee_schedule is None else body.success_fee_schedule
+        )
+        effective_date = body.effective_date or p.effective_date
+        total = total_cents(monthly_fee_cents, duration_months)
+        field_values = _field_values(
+            client_name=p.client_name, client_signer_name=p.client_signer_name,
+            client_title=p.client_title, client_email=p.client_email,
+            effective_date=effective_date, monthly_fee_cents=monthly_fee_cents,
+            duration_months=duration_months, billing_cadence=billing_cadence,
+            rs_name=p.rs_signer_name,
+        )
+        updated = await queries.update_pricing(
+            conn, ref=ref, monthly_fee_cents=monthly_fee_cents, duration_months=duration_months,
+            billing_cadence=billing_cadence, success_fee_schedule=success_fee_schedule,
+            quarterly_total_cents=total, effective_date=effective_date, field_values=field_values,
+        )
+        if updated is None:
+            # The row left 'draft' between read and write (concurrent originate) — refuse.
+            raise HTTPException(status_code=409, detail="already originated")
+        ok, err = await _provision(conn, updated)
+        fresh = await queries.get_by_ref(conn, ref)
+    return {
+        "ref": ref,
+        "status": fresh.status if fresh else updated.status,
         "provisioned": ok,
         "provision_error": err,
+        "signing_token": fresh.documenso_client_token if fresh else None,
     }
 
 
