@@ -14,7 +14,7 @@ What it builds (clean-room data plane — no Iceberg, no Polaris):
       → lance.write_dataset(s3://data-sink/active/<name>/, data_storage_version="2.1")
       → create_scalar_index BTREE on every load-bearing key (direct-R2, in place)
 
-Datasets (11):
+Datasets (12):
   Spine        epa_facilities            FRS_FACILITIES            BTREE registry_id
                epa_program_links         FRS_PROGRAM_LINKS         BTREE registry_id, pgm_sys_id
   Compliance   epa_npdes_dmrs            DMR FY2024+FY2025+FY2026   BTREE ext_permit, period_end
@@ -25,6 +25,7 @@ Datasets (11):
                epa_pipeline_caa          PIPELINE_CAA_00_COMPLETE  BTREE registry_id, source_id
                epa_pipeline_rcra         PIPELINE_RCRA_00_COMPLETE BTREE registry_id, source_id
                epa_aim_triggering_events aim_triggering_events     BTREE npdes_id
+  Signal       epa_echo_exporter         ECHO_EXPORTER             BTREE registry_id
   Bridge       epa_to_sos_bridge         REGISTRY_ID ↔ sos_normalized_master  BTREE registry_id, name
 
 Control plane (Trigger v4 durable callback): the orchestrator accepts
@@ -382,6 +383,39 @@ def build_specs() -> list[dict]:
         btree=["NPDES_ID"], bitmap=["ACTIVE_EXCEPTION"],
     ))
 
+    # 12) epa_echo_exporter <- ECHO_EXPORTER.csv
+    echo_money = ["FAC_TOTAL_PENALTIES", "FAC_LAST_PENALTY_AMT", "FEC_TOTAL_PENALTIES"]
+    echo_int   = ["FAC_INSPECTION_COUNT", "FAC_DAYS_LAST_INSPECTION", "FAC_FORMAL_ACTION_COUNT",
+                  "FAC_INFORMAL_COUNT", "FAC_PENALTY_COUNT", "FAC_QTRS_WITH_NC",
+                  "FAC_PROGRAMS_WITH_SNC", "FEC_NUMBER_OF_CASES"]
+    echo_date  = ["FAC_DATE_LAST_INSPECTION", "FAC_DATE_LAST_FORMAL_ACTION",
+                  "FAC_DATE_LAST_PENALTY", "FEC_LAST_CASE_DATE"]
+    echo_num   = ["FAC_LAT", "FAC_LONG"]
+    echo_excl  = ["REGISTRY_ID", *echo_money, *echo_int, *echo_date, *echo_num]
+
+    echo_recasts = {
+        "REGISTRY_ID": _txt("REGISTRY_ID"),  # Must be string, never int
+        **{c: _money(c) for c in echo_money},
+        **{c: _int(c)   for c in echo_int},
+        **{c: _date(c)  for c in echo_date},
+        **{c: _num(c)   for c in echo_num}
+    }
+
+    specs.append(dict(
+        name="epa_echo_exporter",
+        sources=[dict(archive="echo_exporter.zip", member="ECHO_EXPORTER.csv")],
+        sql=_retype(echo_excl, echo_recasts),
+        btree=["REGISTRY_ID"],
+        bitmap=["FAC_SNC_FLG", "FAC_COMPLIANCE_STATUS", "FAC_MAJOR_FLAG",
+                "AIR_FLAG", "NPDES_FLAG", "RCRA_FLAG", "SDWIS_FLAG", "TRI_FLAG", "GHG_FLAG",
+                "CAA_HPV_FLAG", "CWA_SNC_FLAG", "RCRA_SNC_FLAG", "FAC_STATE"],
+        # 133-col facility row → a 1.05M-row Lance data file crosses Lance's multipart-escalation
+        # boundary and R2 rejects it (400 InvalidPart, proven on the first direct-write attempt).
+        # Stage to local NVMe + publish via boto3 (uniform parts → R2-safe). Standalone table only —
+        # NOT joined to epa_to_sos_bridge (legal/permit name-mapping bug handled separately).
+        r2_safe_local=True,
+    ))
+
     return specs
 
 
@@ -603,6 +637,25 @@ def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> in
     return len(new)
 
 
+def _delete_r2_prefix(s3, prefix: str) -> int:
+    """Delete every object under an R2 prefix (batched ≤1000). Clears a failed partial write so the
+    local round-trip publishes a clean slate. Safe only for full-snapshot / net-new datasets."""
+    paginator = s3.get_paginator("list_objects_v2")
+    batch: list[dict] = []
+    deleted = 0
+    for page in paginator.paginate(Bucket=LANDING_BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            batch.append({"Key": o["Key"]})
+            if len(batch) == 1000:
+                s3.delete_objects(Bucket=LANDING_BUCKET, Delete={"Objects": batch})
+                deleted += len(batch)
+                batch = []
+    if batch:
+        s3.delete_objects(Bucket=LANDING_BUCKET, Delete={"Objects": batch})
+        deleted += len(batch)
+    return deleted
+
+
 @app.function(
     image=index_image,
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
@@ -795,6 +848,15 @@ def materialize_one(spec: dict, run_id: str) -> dict:
                     f"overwrite accumulated FY1982+ history."
                 )
 
+        # R2-safe write routing: wide-schema specs (epa_echo_exporter) stage to LOCAL NVMe and
+        # publish via boto3, because a direct streaming write of a 133-col Lance data file trips
+        # R2's multipart rule (400 InvalidPart) — see the write call + reindex_dmrs_local note.
+        r2_safe = bool(spec.get("r2_safe_local"))
+        local = f"{SCRATCH_DIR}/{name}_local"
+        if r2_safe:
+            import shutil
+            shutil.rmtree(local, ignore_errors=True)
+
         for i, src in enumerate(spec["sources"]):
             gz = f"{SCRATCH_DIR}/{name}_{i}.csv.gz"
             unc, comp = _member_to_gz(src["archive"], src["member"], gz)
@@ -826,12 +888,15 @@ def materialize_one(spec: dict, run_id: str) -> dict:
             # replace-mode: the window FYs were deleted above → every source appends.
             # otherwise the first source overwrites (full snapshot) and the rest append.
             write_mode = "append" if (replace_col and existed) else ("overwrite" if i == 0 else "append")
+            # r2_safe specs write to local disk (storage_options=None) → no R2 multipart on the wide
+            # data file; the committed local dataset is published to R2 by boto3 below. Every other
+            # spec writes straight to R2 exactly as before.
             lance.write_dataset(
-                reader, uri,
+                reader, (local if r2_safe else uri),
                 mode=write_mode,
                 data_storage_version=DATA_STORAGE_VERSION,
                 max_rows_per_file=MAX_ROWS_PER_FILE,
-                storage_options=so,
+                storage_options=(None if r2_safe else so),
             )
             try:
                 os.remove(pq)
@@ -839,23 +904,37 @@ def materialize_one(spec: dict, run_id: str) -> dict:
                 pass
             print(f"[{name}] wrote source {i + 1}/{len(spec['sources'])} ({src['member']})")
 
-        rows = lance.dataset(uri, storage_options=so).count_rows()
-        if replace_col and existed:
-            # Floor tripwire FIRST: a normal replace leaves history (≥floor) intact, so rows<floor
-            # means history is missing — surface loudly rather than publish a truncated SoR.
-            if name == "epa_npdes_dmrs" and rows < DMR_HISTORICAL_FLOOR:
-                raise RuntimeError(
-                    f"POST-WRITE FLOOR BREACH: epa_npdes_dmrs={rows:,} < floor "
-                    f"{DMR_HISTORICAL_FLOOR:,} after partition-replace — investigate."
-                )
-            # Index refresh is DEFERRED to reindex_dmrs_local (R2-safe local round-trip),
-            # dispatched by run_epa_ingest after this append. In-place optimize_indices /
-            # create_scalar_index on the 422M-row table trips R2 multipart (InvalidPart) —
-            # proven 2026-06. The append commits the data; the new window fragments are indexed
-            # by that separate container (blast-radius separation).
-            built = ["(deferred → reindex_dmrs_local)"]
+        if r2_safe:
+            # Build BTREE/BITMAP on the LOCAL dataset (no R2 multipart), then publish the whole
+            # committed dataset (data + indices + manifest) to R2 via boto3 uniform-part uploads —
+            # manifest last, so the R2 URI resolves the new version only once every referenced file
+            # is present. Mirrors reindex_dmrs_local; this is the fleet R2-safe idiom.
+            built = _build_indexes(local, spec.get("btree", []), spec.get("bitmap", []), None)
+            prefix = "active/" + name + "/"
+            s3 = _s3_client()
+            removed = _delete_r2_prefix(s3, prefix)
+            published = _upload_new_files(s3, prefix, local, set())
+            print(f"[{name}] R2-safe local round-trip: indices={built}; cleared {removed} stale, "
+                  f"published {published} files → R2")
+            rows = lance.dataset(uri, storage_options=so).count_rows()   # read-back proof from R2
         else:
-            built = _build_indexes(uri, spec.get("btree", []), spec.get("bitmap", []), so)
+            rows = lance.dataset(uri, storage_options=so).count_rows()
+            if replace_col and existed:
+                # Floor tripwire FIRST: a normal replace leaves history (≥floor) intact, so rows<floor
+                # means history is missing — surface loudly rather than publish a truncated SoR.
+                if name == "epa_npdes_dmrs" and rows < DMR_HISTORICAL_FLOOR:
+                    raise RuntimeError(
+                        f"POST-WRITE FLOOR BREACH: epa_npdes_dmrs={rows:,} < floor "
+                        f"{DMR_HISTORICAL_FLOOR:,} after partition-replace — investigate."
+                    )
+                # Index refresh is DEFERRED to reindex_dmrs_local (R2-safe local round-trip),
+                # dispatched by run_epa_ingest after this append. In-place optimize_indices /
+                # create_scalar_index on the 422M-row table trips R2 multipart (InvalidPart) —
+                # proven 2026-06. The append commits the data; the new window fragments are indexed
+                # by that separate container (blast-radius separation).
+                built = ["(deferred → reindex_dmrs_local)"]
+            else:
+                built = _build_indexes(uri, spec.get("btree", []), spec.get("bitmap", []), so)
         print(f"[{name}] committed rows={rows:,} indexes={built}")
         status = "success"
     except Exception as exc:  # noqa: BLE001
