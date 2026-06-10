@@ -84,6 +84,61 @@ def test_sam_poc_falls_back_to_name_parts():
     assert SamPoc.from_row(poc).full_name == "John Smith"
 
 
+# ── sam_pocs re-sourced from the gold spine (cold-scan avoidance) ──────────────
+def test_sam_pocs_sources_from_gold_and_orders_by_slot(monkeypatch):
+    captured: dict = {}
+
+    def fake_scan(uri, **kw):
+        captured["uri"], captured["columns"] = uri, kw.get("columns")
+        # gold pocs struct carries MORE fields than SamPoc reads + arrives unordered.
+        return [{"uei": "WBBSNBA9GBL7", "pocs": [
+            {"poc_type": "electronic_business", "poc_slot_no": 5, "full_name": "Vic T",
+             "title": "FSO", "city": "Charlotte", "state": "NC", "zip5": "28202", "country": "USA"},
+            {"poc_type": "government_business", "poc_slot_no": 1, "full_name": "Fred P",
+             "title": "PRESIDENT", "city": "Charlotte", "state": "NC", "zip5": "28202"},
+        ]}]
+
+    monkeypatch.setattr(lance_store, "_scan", fake_scan)
+    pocs = lance_store.sam_pocs_by_uei("WBBSNBA9GBL7")
+    assert captured["uri"] == lance_store.config.ENTITY_PROFILE_GOLD_URI  # gold, NOT sam_pocs
+    assert captured["columns"] == ["uei", "pocs"]
+    assert [p["poc_slot_no"] for p in pocs] == [1, 5]                     # ordered by slot
+    # The gold struct flows straight into the wire model (field names == SamPoc.from_row).
+    assert SamPoc.from_row(pocs[0]).model_dump(by_alias=True)["type"] == "government_business"
+
+
+def test_sam_pocs_gold_empty_slots_is_authoritative_no_fallback(monkeypatch):
+    # Gold row present with no populated slots → authoritative [] (NULL pocs), never the
+    # sam_pocs fallback. Asserting a single scan call proves the fallback is not reached.
+    calls: list[str] = []
+
+    def fake_scan(uri, **kw):
+        calls.append(uri)
+        return [{"uei": "WBBSNBA9GBL7", "pocs": None}]
+
+    monkeypatch.setattr(lance_store, "_scan", fake_scan)
+    assert lance_store.sam_pocs_by_uei("WBBSNBA9GBL7") == []
+    assert calls == [lance_store.config.ENTITY_PROFILE_GOLD_URI]          # no sam_pocs touch
+
+
+def test_sam_pocs_falls_back_to_source_when_uei_absent_from_gold(monkeypatch):
+    # UEI in sam_master_entities but absent from the gold spine → fall back to sam_pocs.
+    calls: list[str] = []
+
+    def fake_scan(uri, **kw):
+        calls.append(uri)
+        if uri == lance_store.config.ENTITY_PROFILE_GOLD_URI:
+            return []                                                     # absent from gold
+        return [{"uei": "WBBSNBA9GBL7", "source_family": "v2", "poc_type": "government_business",
+                 "poc_slot_no": 1, "full_name": "Fred P", "title": "PRESIDENT",
+                 "city": "Charlotte", "state": "NC"}]
+
+    monkeypatch.setattr(lance_store, "_scan", fake_scan)
+    pocs = lance_store.sam_pocs_by_uei("WBBSNBA9GBL7")
+    assert calls == [lance_store.config.ENTITY_PROFILE_GOLD_URI, lance_store.config.SAM_POCS_URI]
+    assert pocs[0]["full_name"] == "Fred P"
+
+
 # ── Active / past contract line items ──────────────────────────────────────────
 def _award_row():
     return {

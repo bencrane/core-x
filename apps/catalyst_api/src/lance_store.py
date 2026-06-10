@@ -216,17 +216,43 @@ _SAM_POC_COLS = [
     "uei", "source_family", "poc_type", "poc_slot_no", "full_name",
     "first_name", "last_name", "title", "city", "state",
 ]
+# The POC slots come pre-nested per-UEI on the gold spine — a point-lookup on the
+# 1.54M-row entity_profile_gold (BTREE uei) instead of the 8.07M-row sam_pocs scan.
+_GOLD_POC_COLS = ["uei", "pocs"]
 # 6 SAM POC slots × (primary + alternate) — a tight upper bound on rows per UEI.
 _POC_HARD_CAP = 12
 
 
 def sam_pocs_by_uei(uei: str) -> list[dict[str, Any]]:
-    """BTREE point-lookup on ``sam_pocs.uei`` → the government POC slots (v2 spine
-    only; legacy cage-keyed rows are out of scope), ordered by slot. The source
-    carries no email/phone columns."""
+    """Government POC slots for a UEI, ordered by slot. Primary source is the
+    pre-nested ``entity_profile_gold.pocs`` list<struct> (built by pipelines/resolution/
+    reconcile_entity_profiles.py _build_sam_spine → pocs_nested). Re-sourcing the POCs from
+    that 1.54M-row indexed gold row collapses the lookup from a per-request COLD index load
+    over the 8.07M-row ``sam_pocs`` dataset (~6–8 s — the same per-call-open / index-cold-load
+    pattern that gated active-contracts/past-performance before they moved to the gold mirror)
+    to a single sub-2 s point-lookup. The gold struct carries the EXACT fields
+    ``models.SamPoc.from_row`` reads (poc_type, poc_slot_no, full_name, first/last_name, title,
+    city, state), so there is no projection drift.
+
+    ``sam_pocs`` stays the fallback ONLY when a UEI is absent from the gold spine (present in
+    sam_master_entities but not in the normalized-name JOIN that builds gold). A gold row with
+    no populated slots is authoritative ``[]`` — it does NOT trigger the fallback."""
     uei = (uei or "").strip()
     if not uei:
         return []
+    gold = _scan(config.ENTITY_PROFILE_GOLD_URI, columns=_GOLD_POC_COLS,
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
+    if gold:
+        pocs = list(gold[0].get("pocs") or [])
+        pocs.sort(key=lambda r: (r.get("poc_slot_no") or 0))
+        return pocs[:_POC_HARD_CAP]
+    return _sam_pocs_from_source(uei)
+
+
+def _sam_pocs_from_source(uei: str) -> list[dict[str, Any]]:
+    """Fallback: direct BTREE point-lookup on ``sam_pocs.uei`` → the government POC slots
+    (v2 spine only; legacy cage-keyed rows are out of scope), ordered by slot. The source
+    carries no email/phone columns. Reached only for a UEI absent from the gold spine."""
     rows = _scan(config.SAM_POCS_URI, columns=_SAM_POC_COLS,
                  filter=f"uei = {_sql_str(uei)} AND source_family = 'v2'",
                  limit=_POC_HARD_CAP)
