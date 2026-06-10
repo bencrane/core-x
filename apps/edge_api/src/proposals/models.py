@@ -87,6 +87,19 @@ class ProposalCreate(BaseModel):
     created_by: str | None = None
 
 
+class ProposalConfirm(BaseModel):
+    """Operator → engine: the values LOCKED IN on the mandate editor at originate ("Confirm &
+    originate"). Every field optional — an omitted value keeps the draft row's current actual, so a
+    zero-edit Confirm re-stamps the seed defaults. ``total`` is never sent (derives from monthly ×
+    duration)."""
+
+    monthly_fee_cents: int | None = Field(default=None, gt=0)
+    duration_months: int | None = Field(default=None, gt=0)
+    billing_cadence: str | None = None
+    success_fee_schedule: list[dict[str, str]] | None = None
+    effective_date: _dt.date | None = None
+
+
 class Proposal(BaseModel):
     """The full persisted row (backend bookkeeping included)."""
 
@@ -129,6 +142,7 @@ class ProposalPublic(BaseModel):
     client: dict[str, str | None]
     effective_date: str
     monthly_fee: str
+    monthly_fee_cents: int  # raw — the mandate editor seeds the structured fee input from this
     duration_months: int
     billing_cadence: str
     total: str                                    # = monthly_fee × duration (derived)
@@ -160,6 +174,7 @@ class ProposalPublic(BaseModel):
             },
             effective_date=p.effective_date.isoformat(),
             monthly_fee=format_usd(p.monthly_fee_cents),
+            monthly_fee_cents=p.monthly_fee_cents,
             duration_months=p.duration_months,
             billing_cadence=p.billing_cadence,
             total=format_usd(full),

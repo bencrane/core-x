@@ -105,6 +105,38 @@ _CADENCE_PHRASE = {
 }
 
 
+def success_fee_markdown_table(schedule: list[dict[str, str]]) -> str:
+    """The success-fee schedule as a GFM markdown table (tier | rate), built from the proposal's
+    STRUCTURED ``success_fee_schedule`` so operator edits to the tiers flow into the rendered PDF.
+    Empty schedule → empty string (the token simply disappears)."""
+    if not schedule:
+        return ""
+    rows = [
+        "| Total Contract Value Tier | Success Fee Percentage |",
+        "| :--- | :--- |",
+    ]
+    for item in schedule:
+        # Collapse ALL interior whitespace (newlines/CR/tabs) to single spaces FIRST — a stray \n or
+        # \r in a cell would otherwise break the single-line GFM row and corrupt the legal table —
+        # then escape pipes so a literal "|" can't add a column.
+        tier = " ".join(str(item.get("tier", "")).split()).replace("|", "\\|")
+        rate = " ".join(str(item.get("rate", "")).split()).replace("|", "\\|")
+        rows.append(f"| {tier} | {rate} |")
+    return "\n".join(rows)
+
+
+def substitute_markdown_tokens(markdown_src: str, p: Proposal) -> str:
+    """Pre-render dynamic BLOCK tokens into the markdown SOURCE (before markdown→HTML) so they
+    render as native markdown. Currently just ``{{success_fee_table}}`` → the structured tier
+    table; a no-op when the token is absent. Inline scalar tokens (fee/cadence/total/duration) are
+    handled later by ``substitute_tokens`` against ``proposal_token_values``."""
+    if "{{success_fee_table}}" in markdown_src:
+        markdown_src = markdown_src.replace(
+            "{{success_fee_table}}", success_fee_markdown_table(p.success_fee_schedule)
+        )
+    return markdown_src
+
+
 def proposal_token_values(p: Proposal) -> dict[str, str]:
     """The standard merge values bound from a real Proposal row at generation time. A published
     template's tokens resolve against these (anything outside this set renders literal). Carries

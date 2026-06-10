@@ -85,6 +85,51 @@ async def insert_proposal(
     return _to_proposal(row)
 
 
+async def update_pricing(
+    conn,
+    *,
+    ref: str,
+    monthly_fee_cents: int,
+    duration_months: int,
+    billing_cadence: str,
+    success_fee_schedule: list[dict[str, str]],
+    quarterly_total_cents: int,
+    effective_date: _dt.date,
+    field_values: dict[str, Any],
+) -> Proposal | None:
+    """STAMP the operator's locked-in structured values onto a DRAFT instance (the originate path).
+
+    The ``status = 'draft'`` predicate is the durability gate: once a proposal is originated
+    (envelope bound, status advanced) the terms the counterparty sees/signs are immutable, so this
+    no-ops (returns None) on any non-draft row. Returns the updated row on success.
+    """
+    sql = f"""
+        UPDATE business.engagement_proposals
+           SET monthly_fee_cents = %s,
+               duration_months = %s,
+               billing_cadence = %s,
+               success_fee_schedule = %s,
+               quarterly_total_cents = %s,
+               effective_date = %s,
+               field_values = %s,
+               updated_at = now()
+         WHERE ref = %s AND status = 'draft'
+        RETURNING {_SELECT_COLS}
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            sql,
+            (
+                monthly_fee_cents, duration_months, billing_cadence,
+                Jsonb(success_fee_schedule), quarterly_total_cents, effective_date,
+                Jsonb(field_values), ref,
+            ),
+        )
+        row = await cur.fetchone()
+    await conn.commit()
+    return _to_proposal(row) if row else None
+
+
 async def get_by_ref(conn, ref: str) -> Proposal | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(f"SELECT {_SELECT_COLS} FROM business.engagement_proposals WHERE ref = %s", (ref,))
