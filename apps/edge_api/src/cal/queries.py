@@ -124,11 +124,25 @@ async def mark_raw_processed(conn, raw_id: str, by: str) -> None:
         )
 
 
-async def set_research_run_id(conn, ical_uid: str, run_id: str) -> None:
-    """Stamp the Trigger.dev research run id onto the booking (links it to its company-research
-    run). Keyed on the stable ical_uid. Does NOT commit."""
+async def get_active_research_prompt(conn, slug: str) -> tuple[str, str] | None:
+    """The active prompt template for ``slug`` from corex.research_prompts. Returns
+    (prompt_id, template), or None when no active version exists (caller falls back)."""
     async with conn.cursor() as cur:
         await cur.execute(
-            "UPDATE corex.bookings SET research_run_id=%s, updated_at=now() WHERE ical_uid=%s",
-            (run_id, ical_uid),
+            "SELECT prompt_id::text, template FROM corex.research_prompts "
+            "WHERE slug=%s AND is_active LIMIT 1",
+            (slug,),
+        )
+        row = await cur.fetchone()
+    return (row[0], row[1]) if row else None
+
+
+async def set_research_refs(conn, ical_uid: str, run_id: str, prompt_id: str | None) -> None:
+    """Stamp the Trigger.dev research run id + the prompt version used onto the booking (keyed on
+    the stable ical_uid) for prompt-version attribution. Does NOT commit."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE corex.bookings SET research_run_id=%s, research_prompt_id=%s::uuid, "
+            "updated_at=now() WHERE ical_uid=%s",
+            (run_id, prompt_id, ical_uid),
         )

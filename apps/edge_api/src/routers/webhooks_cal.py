@@ -116,18 +116,28 @@ async def _kick_research(
     domain = fields.get("domain")
     if not domain:
         return {"triggered": False, "reason": "no domain"}
+    # The ACTIVE registry prompt is the source of truth; None → the built-in fallback.
+    prompt_id: str | None = None
+    template: str | None = None
+    try:
+        async with get_db_connection() as conn:
+            active = await queries.get_active_research_prompt(conn, research.RESEARCH_PROMPT_SLUG)
+        if active:
+            prompt_id, template = active
+    except Exception as exc:  # noqa: BLE001 — fall back to the built-in template
+        logger.warning("active research prompt lookup failed (%s); using fallback", exc)
     run_id = await research.trigger_research(
-        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain
+        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain, template=template
     )
     if not run_id:
         return {"triggered": False, "reason": "trigger returned no run id"}
     try:
         async with get_db_connection() as conn:
-            await queries.set_research_run_id(conn, ical_uid, run_id)
+            await queries.set_research_refs(conn, ical_uid, run_id, prompt_id)
             await conn.commit()
     except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
-        logger.warning("research run_id stamp failed for %s: %s", ical_uid, exc)
-    return {"triggered": True, "run_id": run_id}
+        logger.warning("research refs stamp failed for %s: %s", ical_uid, exc)
+    return {"triggered": True, "run_id": run_id, "prompt_id": prompt_id}
 
 
 async def _normalize(conn, trigger_event: str, envelope: dict[str, Any], raw_id: str) -> dict[str, Any]:
