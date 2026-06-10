@@ -25,7 +25,10 @@ WHAT THIS WORKER DOES
          enriched_at; arrays → LIST, nested → JSON; MISSING/renamed keys are null-filled
          (drift never throws mid-batch),
       6. lance.write_dataset(merge_insert "company_id") to
-         s3://data-sink/active/enrichment/<spec>/ ; BTREE on company_id (+ normalized_domain),
+         s3://data-sink/active/enrichment/<spec>/ ; BTREE on company_id (+ normalized_domain).
+         The COMPLETE Parallel result per group-run is ALSO captured VERBATIM to
+         s3://data-sink/active/enrichment_raw/<spec>/ (keyed by parallel_run_id, append-only) —
+         written independently of the typed projection so the provider's raw is never discarded,
       7. CONFIDENCE GATE — null/low/medium per-field cells → ops.parallel_review (the
          VALUE still lands); high is trusted,
       8. land completed rows, persist failed company_ids; ops.parallel_runs ledger;
@@ -70,6 +73,11 @@ from core.parallel_client import (
 # ── Landing target (per-spec dataset root; env-overridable) ──────────────────────────────
 _ACTIVE = "s3://data-sink/active"
 ENRICHMENT_ROOT = os.environ.get("PARALLEL_ENRICHMENT_ROOT", f"{_ACTIVE}/enrichment")
+# Raw capture — the COMPLETE Parallel result per group-run ({run, output, …}) lands here
+# VERBATIM, nothing dropped. Per-spec root (parity with the typed dataset); keyed by the
+# Parallel run_id (unique per run → append-only: a re-enrich never overwrites a prior run's
+# raw). We do NOT discard what the provider returns; the raw payload is the SoR for a run.
+ENRICHMENT_RAW_ROOT = os.environ.get("PARALLEL_ENRICHMENT_RAW_ROOT", f"{_ACTIVE}/enrichment_raw")
 
 # Tier ceiling (§0/§9): enrichment v1 caps at 'core'. ultra needs the per-run webhook path.
 ALLOWED_PROCESSORS = ("lite", "base", "core")
@@ -446,6 +454,90 @@ def _index_enrichment(uri: str, so: dict) -> None:
             print(f"  BTREE  ✗ {col}: {exc}")
 
 
+# ── Raw capture (the COMPLETE Parallel result per group-run, verbatim) ───────────────────
+def _json_dump(v) -> str | None:
+    """Stable JSON string for a value (verbatim raw capture). None stays None."""
+    import json
+
+    if v is None:
+        return None
+    return v if isinstance(v, str) else json.dumps(v, default=str)
+
+
+def _evolve_columns(ds, want_cols, uri: str, so: dict):
+    """Add any missing string columns to an EXISTING dataset BEFORE merge_insert. lance 7.x
+    merge_insert REJECTS a superset schema ('Append with different schema … unexpected=[…]'),
+    so a net-new column must be materialized first (existing rows → NULL). Idempotent;
+    append-only metadata commit (no fragment rewrite)."""
+    missing = [c for c in want_cols if c not in {f.name for f in ds.schema}]
+    if not missing:
+        return ds
+    import lance
+
+    ds.add_columns({c: "CAST(NULL AS STRING)" for c in missing})
+    print(f"  schema-evolve: +{missing} → {uri}")
+    return lance.dataset(uri, storage_options=so)
+
+
+# Raw-capture columns — the COMPLETE per-run Parallel record ({run, output, …}) as a verbatim
+# JSON string. ``parallel_run_id`` is the merge key (unique per run → append-only); ``run_id``
+# is the dispatching run id and ``company_id`` rides along (NULL for a keying_miss run).
+_RAW_COLUMNS = ("run_id", "parallel_run_id", "company_id", "spec_id", "raw_result",
+                "processor", "created_at")
+
+
+def _write_enrichment_raw(raw_uri: str, rows: list[dict], so: dict) -> int:
+    """Land the COMPLETE Parallel result per group-run VERBATIM → enrichment_raw/<spec>/
+    (merge_insert on ``parallel_run_id``, unique per run → append-only: a re-enrich never
+    overwrites a prior run's raw). The entire {run, output, …} payload is kept so NOTHING the
+    vendor returns (cost/usage/timing/citations/etc.) is ever discarded. Self-creating +
+    schema-evolution-safe. A write failure RAISES (terminal) — the raw is the SoR for a run, so
+    failing loud beats silently dropping it."""
+    import lance
+    import pyarrow as pa
+
+    if not rows:
+        return 0
+
+    def _s(v):
+        return None if v is None else (v if isinstance(v, str) else str(v))
+
+    schema = pa.schema([pa.field(c, pa.string()) for c in _RAW_COLUMNS])
+    columns = {c: pa.array([_s(r.get(c)) for r in rows], type=pa.string()) for c in _RAW_COLUMNS}
+    table = pa.table(columns, schema=schema)
+
+    # Probe existence: dataset-NOT-FOUND → create; any other open error propagates.
+    exists = True
+    try:
+        lance.dataset(raw_uri, storage_options=so)
+    except Exception as exc:  # noqa: BLE001
+        if _is_dataset_absent(exc):
+            exists = False
+        else:
+            raise
+    if not exists:
+        lance.write_dataset(
+            table, raw_uri, mode="create", data_storage_version=DATA_STORAGE_VERSION,
+            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+            storage_options=so,
+        )
+    else:
+        ds = lance.dataset(raw_uri, storage_options=so)
+        ds = _evolve_columns(ds, _RAW_COLUMNS, raw_uri, so)
+        ds.merge_insert("parallel_run_id").when_matched_update_all().when_not_matched_insert_all().execute(table)
+
+    ds = lance.dataset(raw_uri, storage_options=so)
+    names = [f.name for f in ds.schema]
+    for col in ("parallel_run_id", "run_id", "company_id"):
+        if col in names:
+            try:
+                ds.create_scalar_index(col, index_type="BTREE", replace=True)
+                print(f"  BTREE  ✓ raw {col}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  BTREE  ✗ raw {col}: {exc}")
+    return table.num_rows
+
+
 # ── ops.* writes ─────────────────────────────────────────────────────────────────────────
 def _record_run(row: dict) -> None:
     """Terminal run row → ops.parallel_runs (psycopg). Best-effort."""
@@ -656,8 +748,9 @@ def enrich_companies(
     spec = (spec_id or "").strip()
     proc = (processor or "core").strip().lower()
     dataset_uri = f"{ENRICHMENT_ROOT}/{spec}/"
+    raw_uri = f"{ENRICHMENT_RAW_ROOT}/{spec}/"
     counts = {"requested": 0, "skipped_no_domain": 0, "completed": 0, "failed": 0,
-              "keying_miss": 0}
+              "keying_miss": 0, "raw": 0}
     failed_ids: list[str] = []
     group_id = None
     status, error = "failed", None
@@ -682,10 +775,10 @@ def enrich_companies(
         })
         _post_callback(trigger_callback_url, {
             "status": st, "run_id": run_id, "workflow": "enrich", "spec_id": spec,
-            "group_id": group_id, "dataset_uri": dataset_uri,
+            "group_id": group_id, "dataset_uri": dataset_uri, "raw_dataset_uri": raw_uri,
             "requested": counts["requested"], "skipped_no_domain": counts["skipped_no_domain"],
             "completed": counts["completed"], "failed": counts["failed"],
-            "keying_miss": counts["keying_miss"],
+            "keying_miss": counts["keying_miss"], "raw_landed": counts["raw"],
             "failed_company_ids": failed_ids[:200], **extra,
         })
         if reraise_msg:
@@ -758,8 +851,19 @@ def enrich_companies(
         #    so the first live run makes a metadata-keying problem obvious instead of silent.
         dispatched_ids = {c["company_id"] for c in companies}
         results: dict[str, dict] = {}
+        raw_rows: list[dict] = []  # the COMPLETE per-run Parallel record, verbatim (raw capture)
+        created_at = dt.datetime.now(dt.timezone.utc).isoformat()
         for rec in run_recs:
             cid, st, content, basis, rid = _extract_run_record(rec)
+            # RAW CAPTURE — keep the ENTIRE {run, output, …} record verbatim, keyed by the
+            # Parallel run_id, REGARDLESS of whether it re-keys to a dispatched company. A
+            # keying_miss run still returned a full provider payload; we discard NOTHING.
+            if rid:
+                raw_rows.append({
+                    "run_id": run_id, "parallel_run_id": rid, "company_id": cid,
+                    "spec_id": spec, "raw_result": _json_dump(rec), "processor": proc,
+                    "created_at": created_at,
+                })
             if not cid or cid not in dispatched_ids:
                 counts["keying_miss"] += 1
                 continue
@@ -774,8 +878,15 @@ def enrich_companies(
             print(f"  WARN {counts['keying_miss']} run(s) returned with no recognizable "
                   "company_id metadata (keying_miss) — not attributable to a company.")
 
-        # 6) Project content+basis → typed rows, write Lance (merge_insert), index.
         so = _r2_storage_options()
+        # 6) RAW CAPTURE — land the verbatim provider payload FIRST and INDEPENDENTLY of the
+        #    typed projection. A raw-write failure RAISES (terminal, fail loud); because raw is
+        #    committed before the projection runs, a later projection failure can NEVER lose it.
+        if raw_rows:
+            counts["raw"] = _write_enrichment_raw(raw_uri, raw_rows, so)
+            print(f"  landed {counts['raw']} raw row(s) → {raw_uri}")
+
+        # 7) Project content+basis → typed rows, write Lance (merge_insert), index.
         table, review_items, completed_ids = _build_rows(
             companies, results, schema_props=schema_props, spec_id=spec,
             run_id_label=run_id, processor=proc,
@@ -785,7 +896,7 @@ def enrich_companies(
             _write_enrichment(dataset_uri, table, so)
             _index_enrichment(dataset_uri, so)
             print(f"  landed {table.num_rows} rows → {dataset_uri}")
-        # 7) Confidence gate → review queue (value already landed).
+        # 8) Confidence gate → review queue (value already landed).
         _queue_review(spec, review_items)
 
         if status != "partial":

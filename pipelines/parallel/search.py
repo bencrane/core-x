@@ -15,6 +15,14 @@ WHAT THIS WORKER DOES
     (one row per excerpt, keyed run_id) for later reuse; default is inline-only (the
     directive's §11 decision: persist + inline for tests, inline for in-loop reasoning).
 
+    On the persist path the COMPLETE /v1/search response is ALSO captured VERBATIM to
+    s3://data-sink/active/parallel_search_raw/ (one row, keyed run_id) — the flattened excerpts
+    keep only url/title/excerpt, so the full ranked-results payload (sources, scores, settings
+    echo) would otherwise be discarded. Raw is written independently of the excerpt projection
+    and a raw-write failure is terminal (fail loud). The inline-only default (persist=false) is
+    evidence-gathering read in-loop by the agent (§11) and engages NO persistence layer — there
+    is nothing stored to discard, so it stays a single synchronous call with no R2 write.
+
 CONTROL PLANE: Trigger v4 durable callback — flat JSON to the waitpoint url; ops.parallel_runs.
 Even though the call is synchronous, the worker keeps the trigger→dispatcher→Modal→callback
 shape so the gtm-mcp surface is uniform across all three workflows (the mandate).
@@ -35,6 +43,10 @@ from core.parallel_client import search as parallel_search
 
 _ACTIVE = "s3://data-sink/active"
 SEARCH_URI = os.environ.get("PARALLEL_SEARCH_URI", f"{_ACTIVE}/parallel_search/")
+# Raw capture (persist path) — the COMPLETE /v1/search response lands here VERBATIM, keyed by
+# run_id (unique per dispatch → append-only). We do NOT discard what the provider returns; the
+# excerpt projection is derived, this is the SoR for the response.
+SEARCH_RAW_URI = os.environ.get("PARALLEL_SEARCH_RAW_URI", f"{_ACTIVE}/parallel_search_raw/")
 
 MAX_ROWS_PER_FILE = 1_048_576
 MAX_BYTES_PER_FILE = 90 * 1024**3
@@ -200,6 +212,85 @@ def _write_search(rows: list[dict], so: dict) -> int:
     return table.num_rows
 
 
+# ── Raw capture (the COMPLETE /v1/search response, verbatim) ─────────────────────────────
+def _json_dump(v) -> str | None:
+    """Stable JSON string for a value (verbatim raw capture). None stays None."""
+    import json
+
+    if v is None:
+        return None
+    return v if isinstance(v, str) else json.dumps(v, default=str)
+
+
+def _evolve_columns(ds, want_cols, uri: str, so: dict):
+    """Add any missing string columns to an EXISTING dataset BEFORE merge_insert. lance 7.x
+    merge_insert REJECTS a superset schema ('Append with different schema … unexpected=[…]'),
+    so a net-new column must be materialized first (existing rows → NULL). Idempotent;
+    append-only metadata commit (no fragment rewrite)."""
+    missing = [c for c in want_cols if c not in {f.name for f in ds.schema}]
+    if not missing:
+        return ds
+    import lance
+
+    ds.add_columns({c: "CAST(NULL AS STRING)" for c in missing})
+    print(f"  schema-evolve: +{missing} → {uri}")
+    return lance.dataset(uri, storage_options=so)
+
+
+# Raw-capture columns — the COMPLETE /v1/search response as a verbatim JSON string, keyed by
+# ``run_id`` (the dispatching run id, unique per dispatch → append-only). ``search_queries`` is
+# stored as a JSON-encoded string for reconstructability.
+_RAW_COLUMNS = ("run_id", "spec_id", "objective", "search_queries", "raw_result", "created_at")
+
+
+def _write_search_raw(*, run_id: str, spec_id: str, objective: str | None,
+                      search_queries: str | None, raw_result: str | None, created_at: str,
+                      so: dict) -> int:
+    """Land the COMPLETE /v1/search response VERBATIM → parallel_search_raw (merge_insert on
+    ``run_id``, unique per dispatch → append-only). The full ranked-results payload is kept so
+    nothing the provider returns (sources/scores/settings echo/etc.) is discarded — the excerpt
+    projection keeps only url/title/excerpt. Self-creating + schema-evolution-safe. A write
+    failure RAISES (terminal) — raw is the SoR for the search, so failing loud beats dropping it."""
+    import lance
+    import pyarrow as pa
+
+    if raw_result is None:
+        return 0
+    rec = {"run_id": run_id, "spec_id": spec_id, "objective": objective,
+           "search_queries": search_queries, "raw_result": raw_result, "created_at": created_at}
+    schema = pa.schema([pa.field(c, pa.string()) for c in _RAW_COLUMNS])
+    table = pa.table({c: pa.array([rec.get(c)], type=pa.string()) for c in _RAW_COLUMNS}, schema=schema)
+
+    # Probe existence: dataset-NOT-FOUND → create; any other open error propagates.
+    exists = True
+    try:
+        lance.dataset(SEARCH_RAW_URI, storage_options=so)
+    except Exception as exc:  # noqa: BLE001
+        if _is_dataset_absent(exc):
+            exists = False
+        else:
+            raise
+    if not exists:
+        lance.write_dataset(
+            table, SEARCH_RAW_URI, mode="create", data_storage_version=DATA_STORAGE_VERSION,
+            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+            storage_options=so,
+        )
+    else:
+        ds = lance.dataset(SEARCH_RAW_URI, storage_options=so)
+        ds = _evolve_columns(ds, _RAW_COLUMNS, SEARCH_RAW_URI, so)
+        ds.merge_insert("run_id").when_matched_update_all().when_not_matched_insert_all().execute(table)
+
+    ds = lance.dataset(SEARCH_RAW_URI, storage_options=so)
+    if "run_id" in [f.name for f in ds.schema]:
+        try:
+            ds.create_scalar_index("run_id", index_type="BTREE", replace=True)
+            print("  BTREE  ✓ raw run_id")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  BTREE  ✗ raw run_id: {exc}")
+    return table.num_rows
+
+
 def _record_run(row: dict) -> None:
     import psycopg
 
@@ -286,6 +377,7 @@ def web_search(
     status, error = "failed", None
     excerpts: list[dict] = []
     landed = 0
+    raw_landed = 0
 
     def _terminal(st, *, reraise_msg=None):
         finished = dt.datetime.now(dt.timezone.utc)
@@ -301,6 +393,8 @@ def web_search(
             "objective": objective, "search_queries": queries,
             "excerpt_count": len(excerpts), "persisted": landed if persist else 0,
             "dataset_uri": SEARCH_URI if persist else None,
+            "raw_persisted": raw_landed if persist else 0,
+            "raw_dataset_uri": SEARCH_RAW_URI if persist else None,
             # Inline payload — the agent reads these directly (capped to keep the callback sane).
             "excerpts": excerpts[:50], "error": error,
         })
@@ -317,9 +411,22 @@ def web_search(
         created = dt.datetime.now(dt.timezone.utc).isoformat()
         excerpts = _flatten_excerpts(resp, run_id, objective, created)
 
-        if persist and excerpts:
-            landed = _write_search(excerpts, _r2_storage_options())
-            print(f"  persisted {landed} excerpt(s) → {SEARCH_URI}")
+        if persist:
+            so = _r2_storage_options()
+            # RAW CAPTURE — land the COMPLETE provider response VERBATIM and INDEPENDENTLY of the
+            # excerpt projection (which keeps only url/title/excerpt). Written FIRST so an
+            # excerpt-write failure never loses raw; a raw-write failure RAISES (terminal, fail
+            # loud). Inline-only runs (persist=false) engage no persistence layer — nothing stored
+            # to discard — so they stay a single synchronous call (§11).
+            raw_landed = _write_search_raw(
+                run_id=run_id, spec_id=spec, objective=objective or None,
+                search_queries=_json_dump(queries) if queries else None,
+                raw_result=_json_dump(resp), created_at=created, so=so,
+            )
+            print(f"  captured raw search response → {SEARCH_RAW_URI}")
+            if excerpts:
+                landed = _write_search(excerpts, so)
+                print(f"  persisted {landed} excerpt(s) → {SEARCH_URI}")
 
         status, error = "success", None
         return _terminal("success") or {"status": "success", "run_id": run_id,
