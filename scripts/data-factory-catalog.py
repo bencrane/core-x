@@ -58,9 +58,12 @@ RUN_TS_COLS = ("recorded_at", "completed_at", "started_at", "created_at")
 # as spines are built for other feeds.
 SPINE_REGISTRY: dict[str, dict[str, str]] = {
     "msha": {
-        "anchor": "msha_site_master",
-        "anchor_desc": "1 deterministic row per MINE_ID — current controller/operator (Option D: "
-                       "latest-start-wins, NULL on genuine ties) + pre-computed GTM signal rollups",
+        "anchors": [
+            ("msha_site_master", "1 row per MINE_ID — current controller/operator (Option D: "
+             "latest-start-wins, NULL on genuine ties) + pre-computed GTM signal rollups"),
+            ("msha_contractor_master", "1 row per CONTRACTOR_ID — the contractor third spine's full "
+             "cross-spine footprint (registry production + violations + accidents + exposure samples)"),
+        ],
         "harness": "modal run pipelines/ingest_msha/verify_spine.py::check_local",
         "harness_desc": "asserts every spine resolution edge, present-key index coverage, ID "
                         "hygiene (whitespace/lowercase), and the SCD tie-collapse; fails on drift",
@@ -237,8 +240,8 @@ def format_catalog(
         for feed in sorted(SPINE_REGISTRY):
             s = SPINE_REGISTRY[feed]
             out += [
-                f"**`{feed}`** — anchor `{s['anchor']}`",
-                f"  - {s['anchor_desc']}",
+                f"**`{feed}`** — {_count(len(s['anchors']), 'anchor')}:",
+                *[f"  - `{nm}` — {desc}" for nm, desc in s["anchors"]],
                 f"  - harness: `{s['harness']}`",
                 f"    - {s['harness_desc']}",
                 f"  - contract: `{s['contract']}`",
