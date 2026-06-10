@@ -38,6 +38,10 @@ async def get_booking(booking_id: str) -> BookingDetail:
         raise HTTPException(status_code=404, detail="booking not found")
     async with get_db_connection() as conn:
         booking = await queries.get_by_id(conn, booking_id)
-    if booking is None:
-        raise HTTPException(status_code=404, detail="booking not found")
-    return BookingDetail.from_row(booking)
+        if booking is None:
+            raise HTTPException(status_code=404, detail="booking not found")
+        # The dossier content is resolved by domain (never email); None until the company is enriched.
+        profile = (
+            await queries.get_profile_by_domain(conn, booking.domain) if booking.domain else None
+        )
+    return BookingDetail.from_row(booking, profile)
