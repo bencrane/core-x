@@ -141,6 +141,8 @@ CASTS: dict[str, dict[str, str]] = {
         "FISCAL_QTR": "INTEGER", "NO_INJURIES": "INTEGER",
         "TOT_EXPER": "DOUBLE", "MINE_EXPER": "DOUBLE", "JOB_EXPER": "DOUBLE",
         "SCHEDULE_CHARGE": "DOUBLE", "DAYS_RESTRICT": "DOUBLE", "DAYS_LOST": "DOUBLE",
+        # ID hygiene (P3/R4): normalize the lowercase-drift contractor cell (e.g. 4kk→4KK).
+        "CONTRACTOR_ID": "UPPER",
     },
 }
 
@@ -347,6 +349,10 @@ def _cast_expr(qualified: str, cast: str | None) -> str:
         return f"try_cast({base} AS INTEGER)"
     if cast == "DOUBLE":
         return f"try_cast({base} AS DOUBLE)"
+    if cast == "UPPER":
+        # ID hygiene (P3/R4): fold lowercase-drift ID cells into the uppercase namespace.
+        # No-op on already-upper / all-digit IDs (preserves leading zeros).
+        return f"upper({base})"
     return base  # VARCHAR passthrough (lossless)
 
 
