@@ -65,6 +65,16 @@ async def lifespan(_app: FastAPI):
         log.info("catalyst_api: R2 anchor dataset reachable=%s", ok)
     except Exception as exc:  # noqa: BLE001 — boot probe is best-effort
         log.warning("catalyst_api: R2 anchor probe failed at boot: %s", exc)
+    # Surface reachability map — a wrong/unmaterialized URI is LOUD here at boot instead of
+    # silently 404-ing every request (the failure mode that masked a misrouted SAM URI).
+    try:
+        surfaces = lance_store.probe_surfaces()
+        log.info("catalyst_api: surface datasets reachable=%s", surfaces)
+        unreachable = [n for n, ok in surfaces.items() if not ok]
+        if unreachable:
+            log.warning("catalyst_api: UNREACHABLE surface datasets (check *_LANCE_URI): %s", unreachable)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning("catalyst_api: surface probe failed at boot: %s", exc)
     yield
 
 
@@ -189,11 +199,13 @@ def active_contracts(
     limit: int = Query(25, ge=1, le=100, description="Max prime award line items to return."),
 ) -> JSONResponse:
     """Active prime contracts (PoP not elapsed). count + totalObligated are read off
-    the pre-materialized gold row (no aggregate); line items come from award_search."""
+    the pre-materialized entity_profile_gold row (no aggregate); line items are a point-lookup
+    on entity_award_lines_gold (pre-classified active list, obligation desc)."""
     uei = _require_uei(uei)
     gold = lance_store.entity_profile_by_uei(uei) or {}
     today = date.today()
-    items = [ActiveContract.from_row(r, today, "active") for r in lance_store.active_awards_by_uei(uei, limit)]
+    items = [ActiveContract.from_row(r, today, "active")
+             for r in lance_store.entity_award_lines_by_uei(uei, "active", limit)]
     agencies = sorted({i.awarding_agency for i in items if i.awarding_agency})
     resp = ActiveContractsResponse(
         count=gold.get("active_award_count"),
@@ -226,7 +238,8 @@ def past_performance(
     uei = _require_uei(uei)
     gold = lance_store.entity_profile_by_uei(uei) or {}
     today = date.today()
-    items = [ActiveContract.from_row(r, today, "completed") for r in lance_store.closed_awards_by_uei(uei, limit)]
+    items = [ActiveContract.from_row(r, today, "completed")
+             for r in lance_store.entity_award_lines_by_uei(uei, "closed", limit)]
     total = gold.get("award_count")
     active = gold.get("active_award_count")
     closed = (total - active) if isinstance(total, int) and isinstance(active, int) else None
