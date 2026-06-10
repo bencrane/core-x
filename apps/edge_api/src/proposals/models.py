@@ -25,6 +25,16 @@ SUCCESS_FEE_TIERS: list[dict[str, str]] = [
 DEFAULT_DURATION_MONTHS = 6
 DEFAULT_BILLING_CADENCE = "upfront_in_full"
 
+# The exec-summary blurb shown on the engagement page when the resolved template carries no
+# ``exec_summary`` of its own (NULL column, unpublished template, or registry lookup failure).
+# Per-template copy (``business.proposal_templates.exec_summary``) overrides this; it is the
+# built-in floor so the public projection is never empty.
+DEFAULT_EXEC_SUMMARY = (
+    "Rare Structure originates and structures off-market deal flow against your investment "
+    "mandate. This engagement deploys dedicated sourcing infrastructure on a success-based fee "
+    "schedule — the transaction success fee below applies only to capital that closes and funds."
+)
+
 ProposalStatus = str  # one of: draft|sent|opened|signed|completed|rejected|voided
 
 
@@ -113,6 +123,9 @@ class ProposalPublic(BaseModel):
     ref: str
     status: ProposalStatus
     template_label: str = "Strategic Origination Mandate"
+    # The engagement-page blurb, resolved from the proposal's template (read-time); falls back to
+    # DEFAULT_EXEC_SUMMARY when the template carries none.
+    exec_summary: str = DEFAULT_EXEC_SUMMARY
     client: dict[str, str | None]
     effective_date: str
     monthly_fee: str
@@ -130,12 +143,16 @@ class ProposalPublic(BaseModel):
     amount_due_cents: int = 0
 
     @classmethod
-    def from_row(cls, p: Proposal, *, payment_status: str = "none") -> "ProposalPublic":
+    def from_row(
+        cls, p: Proposal, *, payment_status: str = "none", exec_summary: str | None = None,
+    ) -> "ProposalPublic":
         full = total_cents(p.monthly_fee_cents, p.duration_months)
         charge = charge_cents(p.monthly_fee_cents, p.duration_months, p.billing_cadence)
         return cls(
             ref=p.ref,
             status=p.status,
+            # Template-owned copy wins; empty/NULL/lookup-miss collapses to the built-in floor.
+            exec_summary=exec_summary or DEFAULT_EXEC_SUMMARY,
             client={
                 "name": p.client_name,
                 "signer_name": p.client_signer_name,

@@ -212,7 +212,21 @@ async def get_proposal(ref: str) -> ProposalPublic:
             except Exception:
                 pass
             payment_status = "none"
-    return ProposalPublic.from_row(p, payment_status=payment_status)
+        # Engagement-page blurb — read-time from the proposal's template (template-owned, org-keyed).
+        # Isolated like payment: any miss (NULL column, unpublished/absent template, lookup error)
+        # collapses to the built-in default in from_row and NEVER breaks the public read.
+        exec_summary: str | None = None
+        try:
+            tpl = await template_queries.get_published_by_slug(conn, p.template_id)
+            if tpl:
+                exec_summary = tpl.get("exec_summary")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("exec_summary lookup failed for %s (%s); using default", ref, exc)
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+    return ProposalPublic.from_row(p, payment_status=payment_status, exec_summary=exec_summary)
 
 
 @router.get("/{ref}/document")
