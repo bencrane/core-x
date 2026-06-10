@@ -118,7 +118,9 @@ def extract(trigger_event: str | None, envelope: dict[str, Any]) -> dict[str, An
     responses = inner.get("responses") or {}
     first, last = _names(att0, responses)
     return {
-        # system identifiers — present regardless of form config
+        # the STABLE per-meeting anchor — constant across the whole reschedule chain
+        "ical_uid": inner.get("iCalUID"),
+        # current live-booking identifiers — these ROLL on every reschedule
         "cal_event_uid": inner.get("uid"),
         "cal_booking_id": _as_int(inner.get("bookingId")),
         "event_type_id": _as_int(inner.get("eventTypeId")),
