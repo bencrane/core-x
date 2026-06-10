@@ -42,6 +42,7 @@ from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
+from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
@@ -164,6 +165,11 @@ app.include_router(proposal_templates_router)
 # bookings: the operator Pipeline list — recent cal.com bookings from corex.bookings.
 # Service-token gated; the BFF brokers it with the operator session. Read-only (Phase 1).
 app.include_router(bookings_router)
+
+# company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
+# (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator
+# session. The booking-profile read resolves the latest snapshot by domain (else the seed).
+app.include_router(company_profiles_router)
 
 # cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
 # Signature-gated (X-Cal-Signature-256 / CAL_WEBHOOK_SECRET). NOT under /api/v1 — cal.com posts /webhooks/cal.

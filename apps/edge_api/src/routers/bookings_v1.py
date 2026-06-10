@@ -14,10 +14,15 @@ import uuid as _uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
+import logging
+
 from ..bookings import queries
 from ..bookings.models import BookingDetail, BookingSummary
+from ..company_profiles import queries as snapshot_queries
 from ..db import get_db_connection
 from ..service_token import require_service_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/bookings", tags=["bookings"])
 
@@ -44,4 +49,17 @@ async def get_booking(booking_id: str) -> BookingDetail:
         profile = (
             await queries.get_profile_by_domain(conn, booking.domain) if booking.domain else None
         )
-    return BookingDetail.from_row(booking, profile)
+        # The operator's latest saved snapshot wins when present (the page seeds from it). Isolated:
+        # any miss (no snapshot, table not yet applied, lookup error) collapses to the seed and
+        # NEVER breaks the booking read.
+        latest_snapshot = None
+        if booking.domain:
+            try:
+                latest_snapshot = await snapshot_queries.get_latest_by_domain(conn, booking.domain)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("snapshot lookup failed for %s (%s); using seed", booking.domain, exc)
+                try:
+                    await conn.rollback()
+                except Exception:
+                    pass
+    return BookingDetail.from_row(booking, profile, latest_snapshot)
