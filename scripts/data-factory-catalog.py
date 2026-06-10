@@ -52,6 +52,22 @@ ACTIVE_WINDOW_DAYS = 90
 # Priority order for the per-row "when did this run happen" timestamp.
 RUN_TS_COLS = ("recorded_at", "completed_at", "started_at", "created_at")
 
+# Derived spine artifacts + integrity harnesses per feed. These are CODE artifacts (Modal apps,
+# plan docs) — not discoverable from R2/Postgres — so they are registered here, letting
+# /factory-state surface what anchors and verifies each feed's deterministic ID spine. Extend
+# as spines are built for other feeds.
+SPINE_REGISTRY: dict[str, dict[str, str]] = {
+    "msha": {
+        "anchor": "msha_site_master",
+        "anchor_desc": "1 deterministic row per MINE_ID — current controller/operator (Option D: "
+                       "latest-start-wins, NULL on genuine ties) + pre-computed GTM signal rollups",
+        "harness": "modal run pipelines/ingest_msha/verify_spine.py::check_local",
+        "harness_desc": "asserts every spine resolution edge, present-key index coverage, ID "
+                        "hygiene (whitespace/lowercase), and the SCD tie-collapse; fails on drift",
+        "contract": "docs/plans/MSHA_ID_SPINE_EXECUTION_PLAN.md §9 (join contract)",
+    },
+}
+
 
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
@@ -214,6 +230,22 @@ def format_catalog(
     else:
         out += ["_(none)_"]
     out.append("")
+
+    out += ["## ID spines — derived anchors & integrity harnesses", ""]
+    if SPINE_REGISTRY:
+        out += [f"_({_count(len(SPINE_REGISTRY), 'feed')} with a hardened deterministic ID spine)_", ""]
+        for feed in sorted(SPINE_REGISTRY):
+            s = SPINE_REGISTRY[feed]
+            out += [
+                f"**`{feed}`** — anchor `{s['anchor']}`",
+                f"  - {s['anchor_desc']}",
+                f"  - harness: `{s['harness']}`",
+                f"    - {s['harness_desc']}",
+                f"  - contract: `{s['contract']}`",
+                "",
+            ]
+    else:
+        out += ["_(none)_", ""]
 
     if ingest_sources is not None:
         cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
