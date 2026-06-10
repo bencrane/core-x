@@ -10,6 +10,8 @@ SHAPE
     edge_api (cal webhook) → Trigger ``booking-enrich`` → Universal Dispatcher → THIS Modal app
     → ONE Parallel Task run (POST /v1/tasks/runs + blocking GET /result, §0) → typed columns →
     s3://data-sink/active/booking_enrichment/ (merge_insert on ``ical_uid``) → flat callback.
+    The COMPLETE Parallel result is ALSO captured verbatim to booking_enrichment_raw (keyed by
+    parallel_run_id, append-only) — the provider's raw output is never discarded.
 
 SCHEMA-DRIVEN (the deliberate design property)
     ``_OUTPUT_SCHEMA`` below is the SINGLE source of truth for what gets pulled back. Every
@@ -45,6 +47,10 @@ from core.parallel_client import create_task_run, get_task_result, wrap_json_sch
 
 _ACTIVE = "s3://data-sink/active"
 ENRICH_URI = os.environ.get("BOOKING_ENRICH_URI", f"{_ACTIVE}/booking_enrichment/")
+# Raw capture — the COMPLETE Parallel result per run lands here VERBATIM, nothing dropped. Keyed
+# by parallel_run_id (unique per run) → append-only history: a re-enrich never overwrites a prior
+# run's raw. We do NOT discard what the provider returns; the raw payload is the SoR for a run.
+ENRICH_RAW_URI = os.environ.get("BOOKING_ENRICH_RAW_URI", f"{_ACTIVE}/booking_enrichment_raw/")
 
 # ── ▼▼▼ EDIT HERE — the enrichment contract ▼▼▼ ──────────────────────────────────────────────
 # The ONE place that defines what is pulled back. Add a property → it becomes a typed Lance
@@ -169,6 +175,10 @@ def _json_dump(v) -> str | None:
 _PROVENANCE = ("ical_uid", "company_name", "normalized_domain", "run_id", "parallel_run_id",
                "processor", "enriched_at", "_basis")
 
+# Raw-capture columns — the full Parallel result {run, output} as a verbatim JSON string, keyed
+# by parallel_run_id. We discard NOTHING the vendor returns.
+_RAW_COLUMNS = ("parallel_run_id", "run_id", "ical_uid", "raw_result", "processor", "created_at")
+
 
 def _field_names() -> list[str]:
     return list((_OUTPUT_SCHEMA.get("properties") or {}).keys())
@@ -183,9 +193,10 @@ def _all_columns() -> list[str]:
 
 
 # ── Blocking Parallel result (§0) ───────────────────────────────────────────────────────────
-def _await_result(run_id: str) -> tuple[str, dict | None, list]:
+def _await_result(run_id: str) -> tuple[str, dict | None, list, str | None]:
     """Block on GET /result, re-call on 408 until the per-run deadline. Returns
-    (status, content_dict, basis)."""
+    (status, content_dict, basis, raw_result) — raw_result is the COMPLETE Parallel result
+    (run + output) as a verbatim JSON string, kept for raw capture (never discarded)."""
     import time
 
     deadline = time.monotonic() + PER_RUN_DEADLINE_S
@@ -199,8 +210,9 @@ def _await_result(run_id: str) -> tuple[str, dict | None, list]:
         status = str(run_obj.get("status") or "completed").lower()
         content = output.get("content") if isinstance(output, dict) else None
         basis = output.get("basis") if isinstance(output, dict) else []
-        return status, (content if isinstance(content, dict) else None), (basis or [])
-    return "timeout", None, []
+        return (status, (content if isinstance(content, dict) else None), (basis or []),
+                _json_dump(res))
+    return "timeout", None, [], None
 
 
 # ── content+basis → ONE typed all-string Arrow row (schema-driven) ──────────────────────────
@@ -307,6 +319,56 @@ def _write_enrichment(table, so: dict) -> int:
                 ds.create_scalar_index(col, index_type="BTREE", replace=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"  BTREE  ✗ {col}: {exc}")
+    return table.num_rows
+
+
+def _write_raw(*, parallel_run_id: str, trigger_run_id: str, ical_uid: str, raw_result: str,
+               processor: str, so: dict) -> int:
+    """Land the COMPLETE Parallel result VERBATIM → booking_enrichment_raw (merge_insert on
+    parallel_run_id, unique per run → append-only; a re-enrich never overwrites a prior run's
+    raw). The entire {run, output} payload is kept so NOTHING the vendor returns is discarded.
+    Self-creating + schema-evolution-safe. A write failure RAISES (terminal) — the raw is the
+    SoR for the run, so failing loud beats silently dropping it."""
+    import datetime as dt
+
+    import lance
+    import pyarrow as pa
+
+    if raw_result is None:
+        return 0
+    rec = {"parallel_run_id": parallel_run_id, "run_id": trigger_run_id, "ical_uid": ical_uid,
+           "raw_result": raw_result, "processor": processor,
+           "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    schema = pa.schema([pa.field(c, pa.string()) for c in _RAW_COLUMNS])
+    table = pa.table({c: pa.array([rec.get(c)], type=pa.string()) for c in _RAW_COLUMNS}, schema=schema)
+
+    exists = True
+    try:
+        lance.dataset(ENRICH_RAW_URI, storage_options=so)
+    except Exception as exc:  # noqa: BLE001
+        if _is_dataset_absent(exc):
+            exists = False
+        else:
+            raise
+    if not exists:
+        lance.write_dataset(
+            table, ENRICH_RAW_URI, mode="create", data_storage_version=DATA_STORAGE_VERSION,
+            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+            storage_options=so,
+        )
+    else:
+        ds = lance.dataset(ENRICH_RAW_URI, storage_options=so)
+        ds = _evolve_columns(ds, _RAW_COLUMNS, ENRICH_RAW_URI, so)
+        ds.merge_insert("parallel_run_id").when_matched_update_all().when_not_matched_insert_all().execute(table)
+
+    ds = lance.dataset(ENRICH_RAW_URI, storage_options=so)
+    names = [f.name for f in ds.schema]
+    for col in ("parallel_run_id", "ical_uid", "run_id"):
+        if col in names:
+            try:
+                ds.create_scalar_index(col, index_type="BTREE", replace=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  BTREE  ✗ raw {col}: {exc}")
     return table.num_rows
 
 
@@ -431,7 +493,13 @@ def enrich_booking(
             status, error = "failed", f"create returned no run_id: {str(run)[:200]}"
             return _terminal("failed") or {"status": status, "error": error}
 
-        st, content, basis = _await_result(parallel_run_id)
+        st, content, basis, raw_res = _await_result(parallel_run_id)
+        so = _r2_storage_options()
+        # RAW CAPTURE — the verbatim provider payload, landed FIRST and independently of the
+        # typed projection. We never discard what Parallel returns, even on a non-completed run.
+        if raw_res is not None:
+            _write_raw(parallel_run_id=parallel_run_id, trigger_run_id=run_id, ical_uid=ical_uid,
+                       raw_result=raw_res, processor=proc, so=so)
         if st != "completed" or content is None:
             status, error = "failed", f"parallel run did not complete (status={st})"
             return _terminal("failed") or {"status": status, "error": error}
@@ -441,7 +509,6 @@ def enrich_booking(
             trigger_run_id=run_id, parallel_run_id=parallel_run_id, processor=proc,
             content=content, basis=basis,
         )
-        so = _r2_storage_options()
         _write_enrichment(table, so)
         completed, review_n = 1, len(review_fields)
         print(f"  landed 1 booking_enrichment row → {ENRICH_URI} (ical_uid={ical_uid}, "
