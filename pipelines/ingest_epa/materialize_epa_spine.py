@@ -1046,8 +1046,12 @@ def _register_detail(con, ds_name: str, cols: list[str], alias: str, so: dict) -
 
 
 def _finalize_rollup(con, name: str, btree: list[str], bitmap: list[str], so: dict,
-                     run_id: str, sources: str, gates: dict, started) -> dict:
-    """Common tail: PK/null/⊆-spine gate, write local + publish, provenance, ledger row."""
+                     run_id: str, sources: str, gates: dict, started,
+                     recon: dict | None = None) -> dict:
+    """Common tail: PK/null/⊆-spine gate, optional reconciliation gate, write local + publish,
+    provenance, ledger row. `recon` (when set: {col, target, tol, gate}) asserts sum(col) ≈ target
+    within tol on the PERSISTED rollup — the post-spine-join table actually written, not an
+    intermediate."""
     import datetime as dt
 
     import pyarrow as pa
@@ -1086,6 +1090,18 @@ def _finalize_rollup(con, name: str, btree: list[str], bitmap: list[str], so: di
         raise RuntimeError(f"G3.x null registry_id: {null_rid}")
     if orphans != 0:
         raise RuntimeError(f"G3.3 rollup⊄spine FAILED: {orphans} orphan registry_ids")
+
+    # Reconciliation gate (optional, per-rollup) — fires on the FINAL post-spine-join `roll`, the
+    # exact table written below. Measuring the artifact that ships closes the false-pass window where
+    # a pre-drop intermediate reconciled but the persisted rollup did not.
+    if recon is not None:
+        measured = con.execute(f"SELECT sum({recon['col']}) FROM roll").fetchone()[0] or 0
+        measured = float(measured)
+        ok = abs(measured - recon["target"]) <= recon["tol"] * recon["target"]
+        gates[recon["gate"]] = {recon["col"]: measured, "recon": recon["target"],
+                                "tol": recon["tol"], "ok": ok, "measured_on": "persisted_rollup"}
+        if not ok:
+            raise RuntimeError(f"{recon['gate']} FAILED (post-finalize): {gates[recon['gate']]}")
 
     table = con.execute("SELECT * FROM roll ORDER BY registry_id").fetch_arrow_table()
     reader = pa.Table.to_reader(table, max_chunksize=65_536)
@@ -1553,12 +1569,31 @@ def build_rollup_enforcement(run_id: str) -> dict:
         con = _new_con()
         try:
             _register_crosswalk_map(con, "crosswalk_epa_registry_enforcement", "ACTIVITY_ID", so)
+            # Constrain the enforcement edge to spine-resident facilities BEFORE attribution. The
+            # enforcement crosswalk is built from the full epa_case_facilities edge (no spine filter),
+            # so it carries 58,021 non-FRS REGISTRY_IDs the current FRS download cannot resolve.
+            # _finalize_rollup inner-joins the rollup to the spine and DROPS those RIDs — but the
+            # equal-split below divides each case penalty by the facility count. If that count includes
+            # non-FRS facilities, their penalty shares are computed and then dropped with no
+            # redistribution, stranding ~$5.98B of federal penalty mass (persisted sum collapses from
+            # $16.36B to ~$10.38B). Filtering the edge to the spine HERE makes the split denominator and
+            # the surviving facilities the same set, so a case's surviving facilities absorb its FULL
+            # penalty and the persisted rollup reconciles to the $16.36B FED_PENALTY signal.
+            _register_detail(con, SPINE_NAME, ["registry_id"], "_spine", so)
+            con.execute("CREATE TEMP TABLE enf_spine_rid AS SELECT DISTINCT registry_id FROM _spine")
+            con.unregister("_spine")
+            non_frs_edge = con.execute(
+                "SELECT count(DISTINCT registry_id) FROM xmap x WHERE NOT EXISTS "
+                "(SELECT 1 FROM enf_spine_rid s WHERE s.registry_id = x.registry_id)").fetchone()[0]
+            con.execute("DELETE FROM xmap WHERE NOT EXISTS "
+                        "(SELECT 1 FROM enf_spine_rid s WHERE s.registry_id = xmap.registry_id)")
+            gates["G3.4a_non_frs_edge_excluded"] = {"non_frs_registry_ids": non_frs_edge}
             # Facility count per case (ACTIVITY_ID) — the enforcement edge is many-to-many (plan D5,
             # avg 1.21 / max 834 facilities per case). A naive join multiplies each case penalty across
             # every facility on the case (→ $35.6B, 2.17x the granular $16.36B). Correct facility
-            # attribution splits each case penalty EQUALLY across its distinct facilities, so the
-            # summed facility-level total reconciles to the granular FED_PENALTY signal (plan D5:
-            # "a case-level penalty total is NOT a facility-level total").
+            # attribution splits each case penalty EQUALLY across its distinct (spine-resident)
+            # facilities, so the summed facility-level total reconciles to the granular FED_PENALTY
+            # signal (plan D5: "a case-level penalty total is NOT a facility-level total").
             con.execute("CREATE TEMP TABLE fac_per_case AS "
                         "SELECT k AS aid, count(DISTINCT registry_id) AS nf FROM xmap GROUP BY k")
             # Penalties: FED_PENALTY is STRING in the mirror → TRY_CAST money to DOUBLE; suppressed counter.
@@ -1620,21 +1655,20 @@ def build_rollup_enforcement(run_id: str) -> dict:
                 LEFT JOIN p_agg p USING (registry_id)
                 LEFT JOIN c_agg c USING (registry_id)
             """)
-            fed_total = con.execute("SELECT sum(fed_penalty_total) FROM roll").fetchone()[0] or 0
-            fed_total = float(fed_total)
-            gates["G3.4_fed_penalty_floor"] = {
-                "fed_penalty_total": fed_total, "recon": 16_360_000_000,
-                "ok": abs(fed_total - 16_360_000_000) <= 0.01 * 16_360_000_000}
             bad_year = con.execute(
                 "SELECT count(*) FROM roll WHERE last_case_year < first_case_year").fetchone()[0]
             gates["G3.6_year_order"] = {"bad": bad_year, "ok": bad_year == 0}
-            if not gates["G3.4_fed_penalty_floor"]["ok"]:
-                raise RuntimeError(f"G3.4 FED_PENALTY floor FAILED: {gates['G3.4_fed_penalty_floor']}")
             if bad_year:
                 raise RuntimeError(f"G3.6 year order FAILED: {bad_year}")
+            # G3.4 FED_PENALTY reconciliation fires INSIDE _finalize_rollup, on the post-spine-join
+            # rollup actually written to R2 — never on the pre-drop `roll`. Before the edge filter
+            # above, the pre-drop roll summed to a phantom $16.36B that the spine drop then eroded to
+            # ~$10.38B; gating the persisted artifact closes that false-pass window.
             return _finalize_rollup(
                 con, name, ROLLUP_BTREE, ["has_federal_case", "has_penalty"], so, run_id,
-                "epa_case_enforcements,epa_case_penalties", gates, started)
+                "epa_case_enforcements,epa_case_penalties", gates, started,
+                recon={"col": "fed_penalty_total", "target": 16_360_000_000, "tol": 0.01,
+                       "gate": "G3.4_fed_penalty_floor"})
         finally:
             con.close()
     except Exception as exc:  # noqa: BLE001
