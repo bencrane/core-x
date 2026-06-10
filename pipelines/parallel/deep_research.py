@@ -52,6 +52,8 @@ from core.parallel_client import auto_output, create_task_run, get_task_result, 
 
 _ACTIVE = "s3://data-sink/active"
 RESEARCH_URI = os.environ.get("PARALLEL_RESEARCH_URI", f"{_ACTIVE}/parallel_research/")
+# Raw capture — the COMPLETE Parallel result per run lands here, verbatim, nothing dropped.
+RAW_URI = os.environ.get("PARALLEL_RESEARCH_RAW_URI", f"{_ACTIVE}/parallel_research_raw/")
 
 # §0/§9: deep research v1 supports up to 'pro'. ultra deferred (per-run webhook path).
 ALLOWED_PROCESSORS = ("lite", "base", "core", "pro")
@@ -265,7 +267,8 @@ def _names_dataset(sql: str, name: str) -> bool:
 # ── Blocking-result loop (§0) ────────────────────────────────────────────────────────────
 def _await_report(run_id: str) -> tuple[str, str | None, list]:
     """Block on GET /result (§0), re-calling on 408 until the per-run deadline. Returns
-    (status, report_md, basis). report_md is pulled from the text output content."""
+    (status, report_md, basis, raw_result) — raw_result is the COMPLETE result JSON (run +
+    output), kept verbatim for raw capture. report_md is pulled from the text output content."""
     import time
 
     deadline = time.monotonic() + PER_RUN_DEADLINE_S
@@ -285,8 +288,13 @@ def _await_report(run_id: str) -> tuple[str, str | None, list]:
         if isinstance(content, dict):  # auto mode may nest
             content = content.get("text") or content.get("report") or _json_dump(content)
         basis = output.get("basis") if isinstance(output, dict) else []
-        return status, (content if isinstance(content, str) else _json_dump(content)), (basis or [])
-    return "timeout", None, []
+        return (
+            status,
+            (content if isinstance(content, str) else _json_dump(content)),
+            (basis or []),
+            _json_dump(res),   # the COMPLETE Parallel result (run + output) — raw capture
+        )
+    return "timeout", None, [], None
 
 
 def _json_dump(v) -> str | None:
@@ -306,6 +314,10 @@ _RESEARCH_COLUMNS = (
     "run_id", "company_id", "normalized_domain", "objective", "report_md",
     "basis", "processor", "spec_id", "grain", "created_at",
 )
+
+# Raw-capture dataset columns — the full Parallel TaskRunResult (run object + output) as a
+# verbatim JSON string, keyed by run_id. We discard NOTHING; this is the raw SoR for a run.
+_RAW_COLUMNS = ("run_id", "raw_result", "processor", "grain", "created_at")
 
 
 def _is_dataset_absent(exc: Exception) -> bool:
@@ -366,6 +378,49 @@ def _write_research(rows: list[dict], grain: str, so: dict) -> int:
                 print(f"  BTREE  ✓ {col}")
             except Exception as exc:  # noqa: BLE001
                 print(f"  BTREE  ✗ {col}: {exc}")
+    return table.num_rows
+
+
+def _write_raw(rows: list[dict], so: dict) -> int:
+    """Land the COMPLETE Parallel result per run to the ``parallel_research_raw`` dataset
+    (merge_insert on run_id). Append-only raw SoR — the entire ``{run, output}`` payload is kept
+    so nothing the vendor returns (cost/usage/timing/etc.) is ever discarded. Self-creating."""
+    import lance
+    import pyarrow as pa
+
+    if not rows:
+        return 0
+    schema = pa.schema([pa.field(c, pa.string()) for c in _RAW_COLUMNS])
+
+    def _s(v):
+        return None if v is None else (v if isinstance(v, str) else str(v))
+
+    columns = {c: pa.array([_s(r.get(c)) for r in rows], type=pa.string()) for c in _RAW_COLUMNS}
+    table = pa.table(columns, schema=schema)
+
+    exists = True
+    try:
+        lance.dataset(RAW_URI, storage_options=so)
+    except Exception as exc:  # noqa: BLE001
+        if _is_dataset_absent(exc):
+            exists = False
+        else:
+            raise
+    if not exists:
+        lance.write_dataset(
+            table, RAW_URI, mode="create", data_storage_version=DATA_STORAGE_VERSION,
+            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+            storage_options=so,
+        )
+    else:
+        ds = lance.dataset(RAW_URI, storage_options=so)
+        ds.merge_insert("run_id").when_matched_update_all().when_not_matched_insert_all().execute(table)
+
+    ds = lance.dataset(RAW_URI, storage_options=so)
+    try:
+        ds.create_scalar_index("run_id", index_type="BTREE", replace=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  BTREE  ✗ raw run_id: {exc}")
     return table.num_rows
 
 
@@ -509,6 +564,7 @@ def deep_research(
         created = dt.datetime.now(dt.timezone.utc).isoformat()
         so = _r2_storage_options()
         rows: list[dict] = []
+        raw_rows: list[dict] = []  # the verbatim Parallel result per run (raw capture)
 
         if grain == "topic":
             counts["requested"] = 1
@@ -517,7 +573,10 @@ def deep_research(
             if not rid:
                 status, error = "failed", f"create returned no run_id: {str(run)[:200]}"
                 return _terminal("failed", reraise_msg=error)
-            st, report_md, basis = _await_report(rid)
+            st, report_md, basis, raw_res = _await_report(rid)
+            if raw_res is not None:
+                raw_rows.append({"run_id": rid, "raw_result": raw_res, "processor": proc,
+                                 "grain": grain, "created_at": created})
             if st == "completed" and report_md:
                 rows.append({"run_id": rid, "company_id": None, "normalized_domain": None,
                              "objective": objective, "report_md": report_md,
@@ -547,7 +606,10 @@ def deep_research(
                     counts["failed"] += 1
                     failed_ids.append(c["company_id"])
                     continue
-                st, report_md, basis = _await_report(rid)
+                st, report_md, basis, raw_res = _await_report(rid)
+                if raw_res is not None:
+                    raw_rows.append({"run_id": rid, "raw_result": raw_res, "processor": proc,
+                                     "grain": grain, "created_at": created})
                 if st == "completed" and report_md:
                     rows.append({"run_id": rid, "company_id": c["company_id"],
                                  "normalized_domain": c.get("normalized_domain"),
@@ -562,6 +624,9 @@ def deep_research(
         if rows:
             _write_research(rows, grain, so)
             print(f"  landed {len(rows)} report row(s) → {RESEARCH_URI} (grain={grain})")
+        if raw_rows:
+            _write_raw(raw_rows, so)
+            print(f"  landed {len(raw_rows)} raw row(s) → {RAW_URI}")
 
         status = "success" if counts["failed"] == 0 and counts["completed"] > 0 else (
             "partial" if counts["completed"] > 0 else "failed")
