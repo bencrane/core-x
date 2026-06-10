@@ -11,6 +11,8 @@ import datetime as _dt
 
 from pydantic import BaseModel
 
+from ..company_profiles.models import CompanyProfileSnapshot
+
 
 class Booking(BaseModel):
     """The full persisted ``corex.bookings`` row. The list query selects a lean subset
@@ -107,9 +109,18 @@ class BookingDetail(BaseModel):
     created_at: str | None
     updated_at: str | None
     profile: CompanyProfile | None = None
+    # The operator's latest saved dossier snapshot for this domain (append-only history). When
+    # present the page seeds from it (a superset of profile — incl. Main Contact + Verified); when
+    # absent the page seeds from the canonical ``profile`` (the company_profiles seed).
+    latest_snapshot: CompanyProfileSnapshot | None = None
 
     @classmethod
-    def from_row(cls, b: Booking, profile: CompanyProfile | None = None) -> "BookingDetail":
+    def from_row(
+        cls,
+        b: Booking,
+        profile: CompanyProfile | None = None,
+        latest_snapshot: CompanyProfileSnapshot | None = None,
+    ) -> "BookingDetail":
         def _iso(v: _dt.datetime | None) -> str | None:
             return v.isoformat() if v else None
 
@@ -132,4 +143,5 @@ class BookingDetail(BaseModel):
             created_at=_iso(b.created_at),
             updated_at=_iso(b.updated_at),
             profile=profile,
+            latest_snapshot=latest_snapshot,
         )
