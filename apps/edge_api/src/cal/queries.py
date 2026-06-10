@@ -122,3 +122,13 @@ async def mark_raw_processed(conn, raw_id: str, by: str) -> None:
             "UPDATE public.cal_raw_events SET processed=true, processed_by=%s WHERE id=%s::uuid",
             (by, raw_id),
         )
+
+
+async def set_research_run_id(conn, ical_uid: str, run_id: str) -> None:
+    """Stamp the Trigger.dev research run id onto the booking (links it to its company-research
+    run). Keyed on the stable ical_uid. Does NOT commit."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE corex.bookings SET research_run_id=%s, updated_at=now() WHERE ical_uid=%s",
+            (run_id, ical_uid),
+        )
