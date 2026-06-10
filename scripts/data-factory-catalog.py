@@ -43,6 +43,7 @@ OUTPUT_PATH = STATE_DIR / "factory-catalog.md"
 R2_BUCKET = "data-sink"
 ACTIVE_PREFIX = "active/"
 SAM_OPPS_PREFIX = "sam-gov-opps/"
+LANDING_PREFIX = "landing/"
 
 # Datasets whose name carries one of these prefixes are cross-source identity products.
 BRIDGE_PREFIXES = ("bridge_", "crosswalk_")
@@ -86,6 +87,25 @@ def describe_prefix(client, prefix: str) -> tuple[list[str], bool]:
         return children, False
     resp = client.list_objects_v2(Bucket=R2_BUCKET, Prefix=prefix, MaxKeys=1)
     return [], resp.get("KeyCount", 0) > 0
+
+
+def list_landing_zones(client) -> dict[str, list[str]]:
+    """Each ``landing/<feed>/`` raw drop zone → its member files. This is the operator's
+    materialize-EVERYTHING handoff area; surfacing it here means never hand-listing R2 to see
+    what was dropped. Exact landing→active parity per feed is checked by that feed's mirror
+    dry-run (e.g. ``materialize_msha_mirror.py::show``) — this is the inventory half."""
+    out: dict[str, list[str]] = {}
+    paginator = client.get_paginator("list_objects_v2")
+    for feed in list_immediate_children(client, LANDING_PREFIX):
+        prefix = f"{LANDING_PREFIX}{feed}/"
+        members: list[str] = []
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix=prefix):
+            for o in (page.get("Contents") or []):
+                rel = o["Key"][len(prefix):]
+                if rel and not rel.endswith("/") and not rel.endswith(".keep"):
+                    members.append(rel)
+        out[feed] = sorted(members)
+    return out
 
 
 def list_ingest_sources() -> list[dict] | None:
@@ -139,6 +159,7 @@ def format_catalog(
     active_datasets: list[str],
     sam_opps: tuple[list[str], bool],
     ingest_sources: list[dict] | None,
+    landing_zones: dict[str, list[str]] | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     bridges = [d for d in active_datasets if d.startswith(BRIDGE_PREFIXES)]
@@ -176,6 +197,24 @@ def format_catalog(
         out += ["_(empty)_"]
     out.append("")
 
+    out += ["## Landing zones (raw drop area — data-sink/landing/<feed>/)", ""]
+    if landing_zones:
+        total_members = sum(len(v) for v in landing_zones.values())
+        out += [f"_({_count(len(landing_zones), 'feed')} · {total_members} members · "
+                "materialize-everything handoff)_", "",
+                "| feed | members | sample |", "|---|---:|---|"]
+        for feed in sorted(landing_zones):
+            members = landing_zones[feed]
+            sample = ", ".join(members[:6])
+            if len(members) > 6:
+                sample += f", … (+{len(members) - 6} more)"
+            out.append(f"| `{feed}` | {len(members)} | {sample or '—'} |")
+        out += ["", "_Exact landing→active parity per feed is checked by that feed's mirror "
+                "dry-run (e.g. `modal run pipelines/ingest_msha/materialize_msha_mirror.py::show`)._"]
+    else:
+        out += ["_(none)_"]
+    out.append("")
+
     if ingest_sources is not None:
         cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
         floor = datetime.min.replace(tzinfo=timezone.utc)
@@ -202,9 +241,10 @@ def main() -> int:
     client = r2_client()
     active = list_immediate_children(client, ACTIVE_PREFIX)
     sam_opps = describe_prefix(client, SAM_OPPS_PREFIX)
+    landing_zones = list_landing_zones(client)
     ingest_sources = list_ingest_sources()
 
-    catalog = format_catalog(active, sam_opps, ingest_sources)
+    catalog = format_catalog(active, sam_opps, ingest_sources, landing_zones)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(catalog)

@@ -1,5 +1,28 @@
 # MSHA Lance/R2 — Schema & State Diagnostic
 
+> ## 🔄 STATE UPDATE — 2026-06-10: MSHA is now 20/20 archives · 17 active datasets · 14,600,141 rows
+>
+> The clinical body below profiles the **original 3** curated datasets (as-of 2026-06-03).
+> Two developments since supersede every "3 of 20 / staged-not-materialized" coverage claim:
+>
+> - **PR #144** added curated `msha_accidents` (273,065) + `msha_contractors` (1,630,676) → **5 curated**.
+> - **2026-06-10** — `pipelines/ingest_msha/materialize_msha_mirror.py` (generic landing→active
+>   **mirror**, the EPA #375 pattern: materialize EVERY landing member) materialized the **12
+>   remaining archives** as all-varchar **passthrough** Lance tables — lossless (cast at query
+>   time), auto-BTREE on detected resolution keys, idempotent skip-existing. Re-run after any
+>   landing drop mirrors only what is new.
+>
+> | Tier | Datasets |
+> |---|---|
+> | **Curated** (hand-typed, `_norm`/bridge-ready) | `msha_mines`, `msha_corporate_history`, `msha_enforcement_ledger`, `msha_accidents`, `msha_contractors` |
+> | **Mirror** (passthrough, 2026-06-10) | `msha_inspections` (1,147,232), `msha_contested_violations` (448,158), `msha_civil_penalty_dockets_decisions` (479,439), `msha_conferences` (161,623), `msha_orders_issued` (3,830), `msha_mines_prod_quarterly` (2,714,840), `msha_mines_prod_yearly` (657,546), `msha_coal_dust_samples` (2,985,614), `msha_personal_health_samples` (310,908), `msha_noise_samples` (274,645), `msha_quartz_samples` (167,238), `msha_area_samples` (8,368) |
+>
+> §0 / §4.4 / §5 coverage statements below ("3 of 20", "Part-50 Accident/Injury absent",
+> "staged in landing, not materialized") are **SUPERSEDED** — those feeds are live. Read-back
+> verified 2026-06-10: 17 `active/msha_*` datasets, 14.6M rows, all auto-BTREE keys committed.
+> Deep per-dataset clinical profiling of the 12 mirror sets is the next follow-up; they land as
+> lossless passthrough until any one earns a curated (typed + `_norm`) home.
+
 Clinical state diagnostic of the **live R2-backed Lance system of record** for MSHA (Mine
 Safety & Health Administration) data. Companion to `MSHA_DATA_PROFILING_REPORT.md` (that
 file profiles the *raw landing zone*, Directive 26; **this file profiles what actually
