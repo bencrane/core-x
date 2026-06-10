@@ -740,30 +740,79 @@ def _pg_connect():
     return psycopg.connect(dsn)
 
 
-def _record_run(*, run_id, dataset, dataset_uri, source_archives, rows_written, indexes_built,
-                status, error, metrics, started_at, completed_at) -> None:
-    """Terminal row → ops.epa_ingest_runs (psycopg). Best-effort; never masks the ingest."""
-    import json
-
-    from psycopg.types.json import Jsonb
-
+def _ensure_ops_ledger() -> None:
+    """Run OPS_DDL exactly once from an orchestrator BEFORE fanning out materialize_one.
+    The IF-NOT-EXISTS DDL is cheap but NOT concurrency-safe: ~100 workers each running
+    CREATE SCHEMA/TABLE/INDEX IF NOT EXISTS at terminal time deadlock Postgres on the shared
+    catalog locks (observed on the landing→active mirror batch run_id
+    epa_mirror_20260610T174615Z → repeated 'deadlock detected' WARNs, partial audit trail).
+    Creating the table up front means every worker's _record_run sees it already present (the
+    to_regclass guard) and skips the DDL entirely. Best-effort: a failure here is non-fatal
+    because _record_run still self-bootstraps when the table is absent."""
     conn = _pg_connect()
     if conn is None:
         return
     try:
         with conn, conn.cursor() as cur:
             cur.execute(OPS_DDL)
-            cur.execute(
-                """
-                INSERT INTO ops.epa_ingest_runs
-                    (run_id, feed, dataset, dataset_uri, source_archives, rows_written,
-                     indexes_built, status, error, metrics, started_at, completed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (run_id, FEED, dataset, dataset_uri, source_archives, rows_written,
-                 indexes_built, status, error,
-                 Jsonb(metrics) if metrics is not None else None, started_at, completed_at),
-            )
+    except Exception as exc:  # noqa: BLE001 — bootstrap is best-effort, never fatal
+        print(f"WARN: ops.epa_ingest_runs bootstrap failed: {exc}")
+    finally:
+        conn.close()
+
+
+def _record_run(*, run_id, dataset, dataset_uri, source_archives, rows_written, indexes_built,
+                status, error, metrics, started_at, completed_at) -> None:
+    """Terminal row → ops.epa_ingest_runs (psycopg). Best-effort; never masks the ingest.
+
+    DDL is NOT run on the hot path: the orchestrators (run_epa_ingest / mirror_landing) call
+    _ensure_ops_ledger() once before fanning out, so the ~100 concurrent workers never race the
+    IF-NOT-EXISTS DDL (which deadlocks Postgres on the catalog locks). The to_regclass guard
+    below self-bootstraps the table ONLY for direct single-container invocations (one / bridge /
+    reindex), where there is no concurrency. The INSERT is retried on deadlock/serialization
+    failure with a small backoff as a final guard. Each transaction uses conn.transaction()
+    (NOT `with conn:`, which in psycopg3 CLOSES the connection on exit) so the single connection
+    survives the guard txn + every retry attempt."""
+    import time
+
+    from psycopg import errors as pg_errors
+    from psycopg.types.json import Jsonb
+
+    conn = _pg_connect()
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            # Self-bootstrap ONLY when absent (direct single-container runs). Fan-out workers see
+            # the orchestrator-created table and skip the DDL → no concurrent IF-NOT-EXISTS deadlock.
+            with conn.transaction():
+                cur.execute("SELECT to_regclass('ops.epa_ingest_runs')")
+                if cur.fetchone()[0] is None:
+                    cur.execute(OPS_DDL)
+
+            params = (run_id, FEED, dataset, dataset_uri, source_archives, rows_written,
+                      indexes_built, status, error,
+                      Jsonb(metrics) if metrics is not None else None, started_at, completed_at)
+            for attempt in range(3):
+                try:
+                    with conn.transaction():
+                        cur.execute(
+                            """
+                            INSERT INTO ops.epa_ingest_runs
+                                (run_id, feed, dataset, dataset_uri, source_archives, rows_written,
+                                 indexes_built, status, error, metrics, started_at, completed_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            params,
+                        )
+                    break
+                except (pg_errors.DeadlockDetected, pg_errors.SerializationFailure) as exc:
+                    # conn.transaction() already rolled the aborted txn back; the conn is reusable.
+                    if attempt == 2:
+                        raise
+                    print(f"WARN: ops.epa_ingest_runs INSERT retry {attempt + 1}/3 "
+                          f"({exc.__class__.__name__})")
+                    time.sleep(0.25 * (attempt + 1))
     except Exception as exc:  # noqa: BLE001 — audit must not mask the ingest
         print(f"WARN: ops.epa_ingest_runs write failed: {exc}")
     finally:
@@ -1180,6 +1229,11 @@ def run_epa_ingest(trigger_callback_url: str | None = None, only: list[str] | No
         specs = [s for s in specs if s["name"] in set(only)]
     run_id = started.strftime("epa_%Y%m%dT%H%M%SZ")
 
+    # Create the ops ledger ONCE up front: ~100 workers racing the IF-NOT-EXISTS DDL at terminal
+    # time deadlocks Postgres on the catalog locks, so every worker's _record_run now sees the
+    # table already present and skips the DDL.
+    _ensure_ops_ledger()
+
     # Fan out one container per dataset (spawn → get; robust positional arg passing).
     calls = [(s["name"], materialize_one.spawn(s, run_id)) for s in specs]
     results = []
@@ -1336,6 +1390,10 @@ def mirror_landing(only: list[str] | None = None, force: bool = False) -> dict:
     if not specs:
         print("[mirror] nothing to do — active/ already mirrors landing.")
         return {"run_id": run_id, "status": "success", "materialized": 0, "datasets": {}}
+
+    # Create the ops ledger ONCE up front so the fanned-out workers never race the IF-NOT-EXISTS
+    # DDL (concurrent CREATE … IF NOT EXISTS across ~100 workers deadlocks Postgres).
+    _ensure_ops_ledger()
 
     calls = [(s["name"], materialize_one.spawn(s, run_id)) for s in specs]
     results = []
