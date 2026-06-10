@@ -1236,17 +1236,21 @@ def run_epa_ingest(trigger_callback_url: str | None = None, only: list[str] | No
 MIRROR_KEY_COLS = {
     "REGISTRY_ID", "ACTIVITY_ID", "CASE_NUMBER", "NPDES_ID", "EXTERNAL_PERMIT_NMBR",
     "PGM_SYS_ID", "RCRA_ID", "PWSID", "PWS_ID", "FACILITY_UIN", "SOURCE_ID", "AIR_ID",
-    "HANDLER_ID", "FRS_ID", "PERMIT_ID", "ENF_CONCLUSION_ID", "FACILITY_ID", "SITE_ID",
+    "HANDLER_ID", "ID_NUMBER", "FRS_ID", "PERMIT_ID", "ENF_CONCLUSION_ID", "FACILITY_ID", "SITE_ID",
 }
-# Members already represented by a CURATED table (build_specs / history / entities / gtm)
-# — skipped so the mirror never duplicates a hand-typed dataset. The DMR FY archives all
-# roll into epa_npdes_dmrs and are matched by pattern in build_mirror_specs.
+# Members whose CURATED table is a faithful SELECT* (every source column present, only
+# retyped) — skipped so the mirror never duplicates a hand-typed dataset. DMR FY archives
+# roll into epa_npdes_dmrs (pattern-matched in build_mirror_specs).
+# DELIBERATELY ABSENT: RCRA_FACILITIES.csv and ICIS-AIR_FACILITIES.csv. Their curated entity
+# tables (epa_rcra_handlers, epa_air_facilities) rename the source key (ID_NUMBER→RCRA_ID),
+# join-derive REGISTRY_ID, and/or drop rows — so the mirror materializes a faithful raw
+# passthrough (epa_rcra_facilities, epa_icis_air_facilities) ALONGSIDE them, preserving the
+# exact source columns/names/rows (incl. raw ID_NUMBER). Fidelity-verified 2026-06-10.
 MIRROR_CURATED_MEMBERS = {
     "FRS_FACILITIES.CSV", "FRS_PROGRAM_LINKS.CSV", "NPDES_QNCR_HISTORY.CSV",
     "NPDES_EFF_VIOLATIONS.CSV", "CASE_ENFORCEMENTS.CSV", "CASE_MILESTONES.CSV",
     "PIPELINE_CAA_00_COMPLETE.CSV", "PIPELINE_RCRA_00_COMPLETE.CSV",
-    "AIM_TRIGGERING_EVENTS.CSV", "ECHO_EXPORTER.CSV", "ICIS-AIR_FACILITIES.CSV",
-    "RCRA_FACILITIES.CSV",
+    "AIM_TRIGGERING_EVENTS.CSV", "ECHO_EXPORTER.CSV",
 }
 
 
