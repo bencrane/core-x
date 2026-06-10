@@ -17,6 +17,9 @@ _SELECT_COLS = (
     "id, slug, name, status, markdown, apply_brand, token_manifest, monthly_fee_cents, "
     "created_by, created_at, updated_at, published_at"
 )
+# Same columns, ``pt.``-qualified — for the org-scoped list, where a JOIN to
+# business.organizations makes the bare names (id/slug/name/status) ambiguous.
+_SELECT_COLS_PT = ", ".join(f"pt.{c.strip()}" for c in _SELECT_COLS.split(","))
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -107,13 +110,33 @@ async def get_published_by_slug(conn, slug: str) -> dict[str, Any] | None:
         return await cur.fetchone()
 
 
-async def list_all(conn, *, published_only: bool = False, limit: int = 200) -> list[dict[str, Any]]:
-    where = "WHERE status = 'published'" if published_only else ""
+async def list_all(
+    conn,
+    *,
+    published_only: bool = False,
+    org_domain: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Templates newest-first. ``org_domain`` scopes to the issuing org whose
+    ``organizations.metadata->>'domain'`` matches (the engagement picker is per
+    operator-org: an ``@activeoperators.com`` operator sees only Active Operators
+    templates). Unattributed templates (NULL ``organization_id``) are excluded when
+    a domain is supplied — the JOIN drops them."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    join = ""
+    if published_only:
+        clauses.append("pt.status = 'published'")
+    if org_domain:
+        join = "JOIN business.organizations o ON o.id = pt.organization_id"
+        clauses.append("lower(o.metadata->>'domain') = lower(%s)")
+        params.append(org_domain)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS} FROM business.proposal_templates {where} "
-            f"ORDER BY updated_at DESC LIMIT %s",
-            (limit,),
+            f"SELECT {_SELECT_COLS_PT} FROM business.proposal_templates pt {join} {where} "
+            f"ORDER BY pt.updated_at DESC LIMIT %s",
+            params + [limit],
         )
         return await cur.fetchall()
 
