@@ -18,6 +18,13 @@ _SELECT_COLS = (
     "company_name, domain, title, status, start_time, created_at"
 )
 
+# Full row for the booking-profile page (everything the cal booking gives us).
+_SELECT_DETAIL_COLS = (
+    "booking_id::text AS booking_id, ical_uid, cal_event_uid, cal_booking_id, event_type_id, "
+    "first_name, last_name, email, company_name, domain, title, status, "
+    "start_time, end_time, booked_at, created_at, updated_at"
+)
+
 
 def _to_booking(row: dict[str, Any]) -> Booking:
     return Booking(**row)
@@ -31,3 +38,14 @@ async def list_recent(conn, limit: int = 100) -> list[Booking]:
         )
         rows = await cur.fetchall()
     return [_to_booking(r) for r in rows]
+
+
+async def get_by_id(conn, booking_id: str) -> Booking | None:
+    """One booking by its (our) ``booking_id`` uuid. Returns None when not found."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            f"SELECT {_SELECT_DETAIL_COLS} FROM corex.bookings WHERE booking_id = %s::uuid",
+            (booking_id,),
+        )
+        row = await cur.fetchone()
+    return _to_booking(row) if row else None
