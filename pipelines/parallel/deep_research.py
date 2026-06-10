@@ -13,14 +13,17 @@ LANDING DECISION (documented per the mandate)
 
       • grain="per_entity"  → ONE row per company_id, keyed company_id (BTREE):
           {company_id, normalized_domain, report_md, basis, objective, processor,
-           spec_id, run_id, created_at}
+           spec_id, run_id, parallel_run_id, created_at}
         Use when researching each member of an audience ("write a deep profile of every
         company"). Joins to the companies spine on company_id, exactly like enrichment.
+        (run_id = parallel_run_id = the Parallel run id, unique per company.)
 
-      • grain="topic"      → ONE row keyed run_id (BTREE):
-          {run_id, objective, report_md, basis, processor, created_at}
-        Use for a single standalone research question not tied to an entity set ("research
-        the SBA 7(a) secondary market").
+      • grain="topic"      → ONE row keyed run_id = the DISPATCHING Trigger run id (BTREE),
+          with the Parallel run id carried in parallel_run_id:
+          {run_id, objective, report_md, basis, processor, spec_id, parallel_run_id, created_at}
+        Keying topic by the Trigger run id makes corex.bookings.research_run_id (stamped by the
+        cal kickoff / any Trigger caller) a DIRECT equi-join to the report. Use for a single
+        standalone research question not tied to an entity set ("research the SBA 7(a) market").
 
     WHY one dataset, two grains (not two datasets): both are the same artifact (a cited
     report) and share the same downstream consumer (read the report by its key). A single
@@ -312,12 +315,13 @@ def _json_dump(v) -> str | None:
 # makes merge_insert raise and the old bare-except clobbered the dataset via overwrite.
 _RESEARCH_COLUMNS = (
     "run_id", "company_id", "normalized_domain", "objective", "report_md",
-    "basis", "processor", "spec_id", "grain", "created_at",
+    "basis", "processor", "spec_id", "grain", "created_at", "parallel_run_id",
 )
 
 # Raw-capture dataset columns — the full Parallel TaskRunResult (run object + output) as a
-# verbatim JSON string, keyed by run_id. We discard NOTHING; this is the raw SoR for a run.
-_RAW_COLUMNS = ("run_id", "raw_result", "processor", "grain", "created_at")
+# verbatim JSON string. ``run_id`` is the merge key (Trigger run id for topic, Parallel run id
+# for per_entity); ``parallel_run_id`` always carries the Parallel id. We discard NOTHING.
+_RAW_COLUMNS = ("run_id", "raw_result", "processor", "grain", "created_at", "parallel_run_id")
 
 
 def _is_dataset_absent(exc: Exception) -> bool:
@@ -327,6 +331,27 @@ def _is_dataset_absent(exc: Exception) -> bool:
     needles = ("not found", "does not exist", "no such", "dataset not", "table not",
                "no version", "not a dataset", "could not find")
     return any(n in msg for n in needles)
+
+
+def _evolve_columns(ds, want_cols, uri: str, so: dict):
+    """Materialize any missing string columns on an EXISTING Lance dataset, then re-open it.
+
+    lance 7.x ``merge_insert`` requires the input table schema to match the dataset EXACTLY — an
+    extra field raises ``Append with different schema … unexpected=[…]`` (verified empirically vs
+    lance 7.0.0). When a new column (``parallel_run_id``) is added to ``_RESEARCH_COLUMNS`` /
+    ``_RAW_COLUMNS`` the live dataset is one column short, so the merge would raise on the first
+    post-deploy write. This adds each missing column (existing rows backfilled NULL via the
+    DataFusion expression) BEFORE the merge — idempotent (no-op once present) and future-proof for
+    any later additive column. Schema evolution is an append-only metadata commit; it never
+    rewrites or clobbers existing fragments."""
+    missing = [c for c in want_cols if c not in {f.name for f in ds.schema}]
+    if not missing:
+        return ds
+    import lance
+
+    ds.add_columns({c: "CAST(NULL AS STRING)" for c in missing})
+    print(f"  schema-evolve: +{missing} → {uri}")
+    return lance.dataset(uri, storage_options=so)
 
 
 # ── Lance write per grain ────────────────────────────────────────────────────────────────
@@ -366,12 +391,14 @@ def _write_research(rows: list[dict], grain: str, so: dict) -> int:
         )
     else:
         ds = lance.dataset(RESEARCH_URI, storage_options=so)
+        ds = _evolve_columns(ds, _RESEARCH_COLUMNS, RESEARCH_URI, so)
         ds.merge_insert(key).when_matched_update_all().when_not_matched_insert_all().execute(table)
 
-    # BTREE on both possible keys (idempotent; the populated one is the live key).
+    # BTREE on every resolution key (idempotent). company_id/run_id are the grain merge keys;
+    # parallel_run_id enables vendor-id lookups across both grains.
     ds = lance.dataset(RESEARCH_URI, storage_options=so)
     names = [f.name for f in ds.schema]
-    for col in ("company_id", "run_id"):
+    for col in ("company_id", "run_id", "parallel_run_id"):
         if col in names:
             try:
                 ds.create_scalar_index(col, index_type="BTREE", replace=True)
@@ -414,13 +441,17 @@ def _write_raw(rows: list[dict], so: dict) -> int:
         )
     else:
         ds = lance.dataset(RAW_URI, storage_options=so)
+        ds = _evolve_columns(ds, _RAW_COLUMNS, RAW_URI, so)
         ds.merge_insert("run_id").when_matched_update_all().when_not_matched_insert_all().execute(table)
 
     ds = lance.dataset(RAW_URI, storage_options=so)
-    try:
-        ds.create_scalar_index("run_id", index_type="BTREE", replace=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"  BTREE  ✗ raw run_id: {exc}")
+    names = [f.name for f in ds.schema]
+    for col in ("run_id", "parallel_run_id"):
+        if col in names:
+            try:
+                ds.create_scalar_index(col, index_type="BTREE", replace=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  BTREE  ✗ raw {col}: {exc}")
     return table.num_rows
 
 
@@ -574,14 +605,17 @@ def deep_research(
                 status, error = "failed", f"create returned no run_id: {str(run)[:200]}"
                 return _terminal("failed", reraise_msg=error)
             st, report_md, basis, raw_res = _await_report(rid)
+            # topic: key BOTH rows by the dispatching Trigger run id (the `run_id` param the cal
+            # kickoff stamped onto corex.bookings) so bookings.research_run_id equi-joins the
+            # report; carry the Parallel run id (`rid`) in parallel_run_id for vendor traceability.
             if raw_res is not None:
-                raw_rows.append({"run_id": rid, "raw_result": raw_res, "processor": proc,
-                                 "grain": grain, "created_at": created})
+                raw_rows.append({"run_id": run_id, "raw_result": raw_res, "processor": proc,
+                                 "grain": grain, "created_at": created, "parallel_run_id": rid})
             if st == "completed" and report_md:
-                rows.append({"run_id": rid, "company_id": None, "normalized_domain": None,
+                rows.append({"run_id": run_id, "company_id": None, "normalized_domain": None,
                              "objective": objective, "report_md": report_md,
                              "basis": _json_dump(basis), "processor": proc, "spec_id": spec,
-                             "grain": grain, "created_at": created})
+                             "grain": grain, "created_at": created, "parallel_run_id": rid})
                 counts["completed"] = 1
             else:
                 counts["failed"] = 1
@@ -607,15 +641,19 @@ def deep_research(
                     failed_ids.append(c["company_id"])
                     continue
                 st, report_md, basis, raw_res = _await_report(rid)
+                # per_entity: keying UNCHANGED — report row merges on company_id, raw row keys on
+                # the Parallel run id (rid, unique per company). One Trigger run fans out to N
+                # companies, so keying by the Trigger id here would collapse N rows into one.
+                # parallel_run_id mirrors rid so both grains expose the Parallel id in one column.
                 if raw_res is not None:
                     raw_rows.append({"run_id": rid, "raw_result": raw_res, "processor": proc,
-                                     "grain": grain, "created_at": created})
+                                     "grain": grain, "created_at": created, "parallel_run_id": rid})
                 if st == "completed" and report_md:
                     rows.append({"run_id": rid, "company_id": c["company_id"],
                                  "normalized_domain": c.get("normalized_domain"),
                                  "objective": objective, "report_md": report_md,
                                  "basis": _json_dump(basis), "processor": proc, "spec_id": spec,
-                                 "grain": grain, "created_at": created})
+                                 "grain": grain, "created_at": created, "parallel_run_id": rid})
                     counts["completed"] += 1
                 else:
                     counts["failed"] += 1

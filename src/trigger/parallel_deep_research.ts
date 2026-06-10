@@ -98,8 +98,14 @@ export const parallelDeepResearch = task({
     const requestedCap = testLimit > 0 ? testLimit : (payload?.maxRuns ?? HARD_RUN_CAP);
     const maxRuns = Math.max(1, Math.min(requestedCap, HARD_RUN_CAP));
     const specId = (payload?.specId ?? "").trim();
+    // The waitpoint idempotency key is PROJECT-scoped (30-day TTL), not run-scoped. The fallback
+    // MUST be run-unique — appending ctx.run.id (mirrors parallel_search.ts) — or every caller that
+    // omits payload.idempotencyKey (the cal booking path; gtm-mcp topic-no-spec) collides on the
+    // shared constant `research:topic:full` and resolves on the FIRST run's cached token. Callers
+    // that pass payload.idempotencyKey keep their intentional same-spec dedup (the `??` only changes
+    // the fallback — do NOT strip it).
     const idempotencyKey =
-      payload?.idempotencyKey ?? `${specId || "research"}:${audienceId || "topic"}:${runKind}`;
+      payload?.idempotencyKey ?? `${specId || "research"}:${audienceId || "topic"}:${runKind}:${ctx.run.id}`;
 
     const kwargs: Record<string, unknown> = {
       run_id: ctx.run.id,

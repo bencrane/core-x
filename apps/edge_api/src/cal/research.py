@@ -62,6 +62,12 @@ async def trigger_research(
         "grain": "topic",
         "processor": RESEARCH_PROCESSOR,
         "outputType": "text",
+        # Per-booking WAITPOINT key (a layer distinct from the run-enqueue idempotency_key below;
+        # both are per-booking by ical_uid). Without it the task falls back to the shared constant
+        # `research:topic:full` and every booking resolves on the first run's cached token. Makes
+        # edge_api correct independent of the Trigger task deploy order; redundant once the task's
+        # run-unique fallback ships, but harmless (same booking → same key both layers).
+        "idempotencyKey": f"research:{ical_uid}",
         # Carried for traceability in the Trigger run view (the task reads `objective`).
         "domain": domain,
         "company_name": company_name,
