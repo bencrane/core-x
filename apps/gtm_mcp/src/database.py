@@ -572,6 +572,46 @@ def open_dataset(name: str):
     return _cached_dataset(uri)
 
 
+def scan_table(
+    name: str,
+    *,
+    columns: list[str] | None = None,
+    filter: str | None = None,  # noqa: A002 — mirrors the Lance scanner kwarg name
+    limit: int | None = None,
+    offset: int | None = None,
+):
+    """Materialize a projected/filtered slice of a registered dataset as a pyarrow Table,
+    pushing the predicate + projection through the LANCE scanner's own filter engine
+    (BTREE/BITMAP pushdown) — NOT DuckDB's substrait pushdown.
+
+    WHY (the correctness rail). Registering a ``LanceDataset`` as a DuckDB relation and
+    letting DuckDB push a WHERE filter down into Lance routes the predicate through the
+    DuckDB→substrait→Lance bridge, which PANICS on some predicate/column-index shapes
+    (``lance-datafusion/substrait.rs`` index-out-of-bounds — observed on a
+    ``physical_address_state`` equality over ``entity_profile_gold``). The proven path
+    used everywhere else in the gateway (audience point-lookups, govcon ANN) is the Lance
+    scanner directly: ``ds.scanner(filter=..., columns=...).to_table()``. This helper is
+    that path, generalized — for the federal aggregations, which scan-then-GROUP-BY in
+    DuckDB OVER the returned Arrow table (so DuckDB only ever sees a materialized Arrow
+    relation, never a registered Lance manifest it would try to push into). Column
+    projection also cuts the scan to the few columns an aggregation needs.
+
+    ``filter`` is a Lance scanner predicate string (SQL-ish, e.g.
+    ``"primary_naics LIKE '3364%' AND is_active = TRUE"``). The warm handle cache keeps
+    the scalar index resident across calls."""
+    ds = open_dataset(name)
+    kwargs: dict[str, Any] = {}
+    if columns is not None:
+        kwargs["columns"] = columns
+    if filter:
+        kwargs["filter"] = filter
+    if limit is not None:
+        kwargs["limit"] = int(limit)
+    if offset is not None:
+        kwargs["offset"] = int(offset)
+    return ds.scanner(**kwargs).to_table()
+
+
 # ── hq-x Postgres attach (Directive 18 §1) ──────────────────────────────────
 def _hqx_dsn() -> str | None:
     """The hq-x Postgres DSN (pooled / Supavisor) with TLS enforced — the exact form
@@ -661,6 +701,26 @@ def _configure_r2_s3(con) -> None:
     )
 
 
+def _ensure_resource_limits(con) -> None:
+    """Set an explicit ``memory_limit`` + ``temp_directory`` for out-of-core safety.
+
+    The federal aggregations (tools/federal.py) GROUP BY over the full 1.54M-row
+    ``entity_profile_gold`` scan; an unbounded in-memory connection can spike RSS on a
+    small serving instance. Capping ``memory_limit`` and pointing ``temp_directory`` at
+    spillable disk lets DuckDB stream the grouped aggregate out-of-core instead of OOMing.
+    Both are env-tunable (``GTM_DUCKDB_MEMORY_LIMIT`` default 4GB,
+    ``GTM_DUCKDB_TEMP_DIR`` default ``/tmp/gtm_mcp_duckdb``) and best-effort — a set
+    failure logs and leaves DuckDB's defaults rather than sinking the gateway."""
+    mem = os.environ.get("GTM_DUCKDB_MEMORY_LIMIT", "4GB")
+    tmp = os.environ.get("GTM_DUCKDB_TEMP_DIR", "/tmp/gtm_mcp_duckdb")
+    try:
+        os.makedirs(tmp, exist_ok=True)
+        con.execute(f"SET memory_limit = '{mem}';")
+        con.execute(f"SET temp_directory = '{tmp}';")
+    except Exception as exc:  # noqa: BLE001 — resource hint, never load-bearing
+        log.warning("gtm-mcp: could not set DuckDB resource limits (%s); using defaults.", exc)
+
+
 def get_connection():
     """The single, shared in-memory DuckDB connection, configured for R2 S3 AND with
     the hq-x Postgres ATTACHed (Directive 18) on first use. Per-query work runs on a
@@ -675,6 +735,7 @@ def get_connection():
 
                 con = duckdb.connect(":memory:")
                 con.execute("PRAGMA threads=4;")
+                _ensure_resource_limits(con)
                 _configure_r2_s3(con)
                 _hqx_attached = _attach_hqx(con)
                 _con = con
