@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS business.proposal_templates (
     apply_brand        boolean     NOT NULL DEFAULT true,       -- wrap in the Rare Structure dark shell vs plain print
     token_manifest     jsonb       NOT NULL DEFAULT '[]'::jsonb,-- {{tokens}} detected in the assembled doc (body + shell)
     monthly_fee_cents  bigint,                                  -- intended posture fee (informational; create-time fee is authoritative today)
+    -- ownership: the issuing org. Banking resolves org.slug = business.dbas.slug → dbas.legal_entity_id
+    -- → business.legal_entities (ACH/Stripe). Nullable: the in-app create path does not set it yet.
+    organization_id    uuid        REFERENCES business.organizations (id) ON DELETE RESTRICT,
     -- provenance / timeline
     created_by         text,                                    -- operator user id (optional)
     created_at         timestamptz NOT NULL DEFAULT now(),
@@ -39,3 +42,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS proposal_templates_slug_uidx
     ON business.proposal_templates (slug) WHERE slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS proposal_templates_status_idx  ON business.proposal_templates (status);
 CREATE INDEX IF NOT EXISTS proposal_templates_created_idx ON business.proposal_templates (created_at DESC);
+
+-- organization_id — additive + idempotent for already-provisioned control planes (the CREATE TABLE
+-- above only fires on a fresh DB). FK added guardedly (Postgres has no ADD CONSTRAINT IF NOT EXISTS).
+ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS organization_id uuid;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_schema = 'business'
+          AND table_name = 'proposal_templates'
+          AND constraint_name = 'proposal_templates_organization_id_fkey'
+    ) THEN
+        ALTER TABLE business.proposal_templates
+            ADD CONSTRAINT proposal_templates_organization_id_fkey
+            FOREIGN KEY (organization_id) REFERENCES business.organizations (id) ON DELETE RESTRICT;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS proposal_templates_organization_idx
+    ON business.proposal_templates (organization_id);
