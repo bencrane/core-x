@@ -46,7 +46,9 @@ from .src.routers.clay_find_companies_v1 import router as clay_find_companies_ro
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.proposals_v1 import router as proposals_router
+from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
+from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -98,6 +100,16 @@ async def lifespan(app_: FastAPI):
             "CAL_WEBHOOK_SECRET unset -- /webhooks/cal refuses (503), so cal.com bookings will NOT "
             "be captured. Set it in core-x/prd to match the cal.com webhook signing secret."
         )
+    if config.stripe_secret_key() is None or config.stripe_publishable_key() is None:
+        log.warning(
+            "STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY unset -- /api/v1/proposals/{ref}/payment-intent "
+            "refuses (503), so ACH payment cannot be initiated. Set both in core-x/prd."
+        )
+    if config.stripe_webhook_secret() is None:
+        log.warning(
+            "STRIPE_WEBHOOK_SECRET unset -- /webhooks/stripe refuses (503), so ACH payment status will "
+            "NOT advance server-side. Set it in core-x/prd and register the Stripe webhook with it."
+        )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
     # ledger) inside it and drain on shutdown.
@@ -112,7 +124,7 @@ async def lifespan(app_: FastAPI):
             await close_pool()
 
 
-app = FastAPI(title="edge_api", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="edge_api", version="0.4.0", lifespan=lifespan)
 
 # Mount the MCP servers. Managed agents authenticate via
 # Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
@@ -158,6 +170,15 @@ app.include_router(bookings_router)
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
 app.include_router(webhooks_cal_router)
 
+# payments: Stripe ACH (us_bank_account) PaymentIntent + Elements for the engagement fee. PUBLIC ref
+# endpoints (mint/reuse the intent, read state); the charge amount is resolved server-side from the
+# proposal content. ``paid`` is set only by the webhook, never the browser. Reuses the /api/v1/proposals prefix.
+app.include_router(payments_router)
+
+# stripe webhook: authoritative ACH payment-state advance + append-only audit (business.engagement_events).
+# Signature-gated (Stripe-Signature / STRIPE_WEBHOOK_SECRET). NOT under /api/v1 — Stripe posts /webhooks/stripe.
+app.include_router(webhooks_stripe_router)
+
 
 def _info() -> dict:
     return {
@@ -174,6 +195,8 @@ def _info() -> dict:
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
+            "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
+            "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
         },
     }
 

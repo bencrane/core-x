@@ -91,9 +91,13 @@ class ProposalPublic(BaseModel):
     signing_token: str | None
     signed_pdf_url: str | None
     created_at: str | None
+    # Payment surface (additive; defaults keep the projection valid before any payment exists).
+    payment_status: str = "none"
+    amount_due: str = ""
+    amount_due_cents: int = 0
 
     @classmethod
-    def from_row(cls, p: Proposal) -> "ProposalPublic":
+    def from_row(cls, p: Proposal, *, payment_status: str = "none") -> "ProposalPublic":
         return cls(
             ref=p.ref,
             status=p.status,
@@ -109,6 +113,12 @@ class ProposalPublic(BaseModel):
             signing_token=p.documenso_client_token,
             signed_pdf_url=p.signed_pdf_url,
             created_at=p.created_at.isoformat() if p.created_at else None,
+            payment_status=payment_status,
+            # The amount the client will be debited — the quarterly fee billed in advance (the same
+            # figure payments.amount.resolve_charge_cents resolves and that is rendered into the
+            # signed PDF). Never hardcoded; derived from the persisted proposal content.
+            amount_due=format_usd(p.quarterly_total_cents),
+            amount_due_cents=int(p.quarterly_total_cents),
         )
 
 
