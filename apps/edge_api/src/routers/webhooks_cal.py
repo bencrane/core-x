@@ -5,12 +5,13 @@
 1. Verify the HMAC signature against the RAW body (401 on mismatch; 503 if the secret
    is unconfigured — never accept unverified).
 2. Land the VERBATIM envelope in ``public.cal_raw_events`` (COMMITTED — guaranteed).
-3. Best-effort normalize into ``corex.bookings``:
-     • BOOKING_CREATED   → idempotent upsert on cal_event_uid (handles cal.com's
-                           duplicate deliveries).
-     • BOOKING_CANCELLED → status='cancelled' by cal_event_uid.
-     • BOOKING_RESCHEDULED / everything else → raw-only (normalization wired once a real
-       reschedule payload is captured; its uid semantics are not assumed here).
+3. Best-effort normalize into ``corex.bookings`` (anchored on the stable ``iCalUID``):
+     • BOOKING_CREATED / BOOKING_RESCHEDULED → idempotent upsert on ``ical_uid``. A
+       reschedule advances the SAME row's live ``uid``/``bookingId`` + time (both roll on
+       reschedule; ``iCalUID`` does not), guarded by monotonic ``bookingId`` so a stale /
+       out-of-order delivery cannot regress it.
+     • BOOKING_CANCELLED → status='cancelled' by ``ical_uid``.
+     • everything else → raw-only.
    A normalization failure NEVER fails the webhook — the raw row is already durable and
    carries ``processed`` / ``processed_by`` for reprocessing.
 
@@ -89,27 +90,27 @@ async def cal_webhook(
 
 
 async def _normalize(conn, trigger_event: str, envelope: dict[str, Any], raw_id: str) -> dict[str, Any]:
-    """Drain one raw event into corex.bookings. Caller owns the commit/rollback."""
+    """Drain one raw event into corex.bookings, anchored on the stable iCalUID. Caller owns
+    the commit/rollback."""
     kind = normalize.event_kind(trigger_event)
 
-    if kind == "created":
+    # created + rescheduled are ONE path: upsert on ical_uid. A reschedule advances the same
+    # row's live identifiers + time (uid/bookingId roll; ical_uid does not).
+    if kind in ("created", "rescheduled"):
         fields = normalize.extract(trigger_event, envelope)
-        uid = fields.get("cal_event_uid")
-        if not uid:
-            return {"action": "skipped_no_uid"}
+        ical_uid = fields.get("ical_uid")
+        if not ical_uid:
+            return {"action": "skipped_no_ical_uid"}
         await queries.upsert_booking(conn, fields=fields, source_raw_event_id=raw_id)
         await queries.mark_raw_processed(conn, raw_id, _PROCESSED_BY)
-        return {"action": "created", "cal_event_uid": uid}
+        return {"action": kind, "ical_uid": ical_uid, "cal_event_uid": fields.get("cal_event_uid")}
 
     if kind == "cancelled":
-        inner = envelope.get("payload") or {}
-        uid = inner.get("uid")
-        if not uid:
-            return {"action": "skipped_no_uid"}
-        matched = await queries.cancel_booking(conn, uid)
+        ical_uid = (envelope.get("payload") or {}).get("iCalUID")
+        if not ical_uid:
+            return {"action": "skipped_no_ical_uid"}
+        matched = await queries.cancel_booking(conn, ical_uid)
         await queries.mark_raw_processed(conn, raw_id, _PROCESSED_BY)
-        return {"action": "cancelled", "cal_event_uid": uid, "matched": matched}
+        return {"action": "cancelled", "ical_uid": ical_uid, "matched": matched}
 
-    # rescheduled + everything else: raw is captured; normalization is wired against the real
-    # payload once one is observed (reschedule uid semantics are not assumed here).
     return {"action": "raw_only", "kind": kind}
