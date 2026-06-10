@@ -65,7 +65,11 @@ HOW TO ADD A DATASET
     3. Run. The fingerprint guard makes it safe to re-run for every dataset at once.
 
 RUN
-    # default targets (the two SAM datasets), populate + index + verify:
+    # default targets (the canonical entity/govcon substrate — SAM masters, the gold
+    # mirror, USAspending leaves, the gtm_mcp substrate, crosswalks/bridges), populate +
+    # index + verify. Per-dataset error isolation: a missing/corrupt leaf is logged and
+    # skipped, never aborting the batch; the fingerprint guard makes the whole run a
+    # safe no-op for unchanged datasets:
     doppler run -p core-x -c prd -- python -m pipelines.catalog.schema_catalog
 
     # catalog one more dataset (repeatable --target), then verify:
@@ -115,14 +119,42 @@ BTREE_INDEXES = [
     "catalog_run_id", "schema_fingerprint", "captured_at",
 ]
 
-# Default target manifest: (source_group, dataset_uri). Seeded with the two SAM
-# datasets. Append future datasets here, or pass --target on the CLI. The
-# contract_prime_txn line below is the documented next target (commented so the
-# default run stays SAM-only and deterministic until that dataset is wired).
+# Default target manifest: (source_group, dataset_uri). The canonical entity/govcon
+# substrate — every URI below is a VERIFIED live Lance leaf (carries `_versions/`) in the
+# active R2 sink, resolved by listing the sink one level deep (parent prefixes like
+# `usaspending_api_fresh/` are namespaces; their LEAVES are cataloged, never the parent).
+# Append future datasets here, or pass --target on the CLI. The fingerprint idempotency
+# guard makes re-running the whole manifest a safe no-op for unchanged datasets, and
+# per-dataset error isolation (see `run`) means a single missing/corrupt dataset is logged
+# and skipped, never aborting the batch.
+#
+# NOTE on `active/enrichment/`: it is an EMPTY namespace prefix (Parallel writes
+# spec-named sub-datasets under it at runtime), NOT a flat Lance leaf — so it is
+# intentionally absent here; it auto-catalogs once a spec materializes a leaf.
 TARGETS: list[tuple[str, str]] = [
+    # SAM entity substrate — the positional-spine source + the structured masters.
     ("sam_gov", "s3://data-sink/active/entity_registrations/"),
     ("sam_gov", "s3://data-sink/active/sam_pocs/"),
-    # ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/"),
+    ("sam_gov", "s3://data-sink/active/sam_master_entities/"),
+    ("sam_gov", "s3://data-sink/active/sam_normalized_entities/"),
+    ("sam_gov", "s3://data-sink/active/sam_master_contacts/"),
+    ("sam_gov", "s3://data-sink/active/sam_master_domains/"),
+    # Gold mirror — the unified SAM identity ⋈ USAspending financial profile (1/uei).
+    ("resolution", "s3://data-sink/active/entity_profile_gold/"),
+    # USAspending leaves — live API-fresh override feeds, the api-catalog leaf, rollups.
+    ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/"),
+    ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"),
+    ("usaspending", "s3://data-sink/active/usaspending_api_catalog/"),
+    ("usaspending", "s3://data-sink/active/contractor_award_summary/"),
+    ("usaspending", "s3://data-sink/active/ffata_exec_comp/"),
+    # gtm_mcp current substrate (for the entity-substrate decision comparison).
+    ("gtm", "s3://data-sink/active/companies/"),
+    ("gtm", "s3://data-sink/active/people/"),
+    # Crosswalks / bridges — the resolution edges across spines.
+    ("resolution", "s3://data-sink/active/crosswalk_sam_usaspending/"),
+    ("resolution", "s3://data-sink/active/crosswalk_sos_sam/"),
+    ("resolution", "s3://data-sink/active/bridge_sam_pdl/"),
+    ("resolution", "s3://data-sink/active/bridge_sam_fmcsa_domain/"),
 ]
 
 
@@ -462,17 +494,32 @@ def run(targets: list[tuple[str, str]], *, dry_run: bool, do_verify: bool) -> di
     appended_rows: list[dict] = []
     appended_names: list[str] = []
     skipped_names: list[str] = []
+    errored: list[dict] = []  # [{dataset_name, dataset_uri, error}] — per-dataset isolation
+    ok_targets: list[tuple[str, str]] = []  # targets that read cleanly (drives verify)
     per_dataset: list[dict] = []
 
     for source_group, dataset_uri in targets:
-        rows, fp, n_cols, n_rows, version = capture_dataset(
-            source_group, dataset_uri, catalog_run_id, captured_at, so)
         name = _dataset_name_from_uri(dataset_uri)
+        # PER-DATASET ERROR ISOLATION. One dataset being absent, corrupt, or otherwise
+        # unreadable must NEVER abort the batch — log it, record it, and continue. The
+        # guaranteed substrate is large and heterogeneous; a single bad leaf is isolated,
+        # never allowed to sink the whole run (and never to silently shrink it).
+        try:
+            rows, fp, n_cols, n_rows, version = capture_dataset(
+                source_group, dataset_uri, catalog_run_id, captured_at, so)
+        except Exception as exc:  # noqa: BLE001 — isolate the bad dataset, keep going
+            log.warning("ERRORED %s (%s): %s — skipping, batch continues",
+                        name, dataset_uri, exc)
+            errored.append({"dataset_name": name, "dataset_uri": dataset_uri,
+                            "error": str(exc)})
+            continue
+
         log.info("read %s: %d cols · %s rows · v%s · fp=%s",
                  name, n_cols, f"{n_rows:,}", version, fp[:12])
         per_dataset.append({"dataset_name": name, "source_group": source_group,
                             "dataset_uri": dataset_uri, "n_columns": n_cols,
                             "n_rows": n_rows, "version": version, "fingerprint": fp})
+        ok_targets.append((source_group, dataset_uri))
 
         if dry_run:
             print(f"\n[dry-run] {name} ({n_cols} cols, {n_rows:,} rows, v{version})")
@@ -481,7 +528,15 @@ def run(targets: list[tuple[str, str]], *, dry_run: bool, do_verify: bool) -> di
                       f"{r['arrow_type']:<26} nullable={r['nullable']}")
             continue
 
-        prior_fp = _latest_fingerprint(name, so)
+        try:
+            prior_fp = _latest_fingerprint(name, so)
+        except Exception as exc:  # noqa: BLE001 — a guard-read failure isolates this dataset only
+            log.warning("ERRORED %s fingerprint-guard read (%s): %s — skipping",
+                        name, dataset_uri, exc)
+            errored.append({"dataset_name": name, "dataset_uri": dataset_uri,
+                            "error": f"fingerprint guard: {exc}"})
+            ok_targets.remove((source_group, dataset_uri))
+            continue
         if prior_fp == fp:
             log.info("unchanged: %s (fingerprint %s already current) — skipping append",
                      name, fp[:12])
@@ -525,6 +580,10 @@ def run(targets: list[tuple[str, str]], *, dry_run: bool, do_verify: bool) -> di
     except Exception as exc:  # noqa: BLE001
         status, error = "error", str(exc)
 
+    if errored:
+        log.warning("%d dataset(s) errored and were skipped (batch not aborted): %s",
+                    len(errored), ", ".join(e["dataset_name"] for e in errored))
+
     completed_at = dt.datetime.now(dt.timezone.utc)
     _record_run(
         catalog_run_id=catalog_run_id,
@@ -535,7 +594,7 @@ def run(targets: list[tuple[str, str]], *, dry_run: bool, do_verify: bool) -> di
         indexes_built=indexes_built,
         status=status, error=error,
         metrics={"appended": appended_names, "skipped": skipped_names,
-                 "per_dataset": per_dataset},
+                 "errored": errored, "per_dataset": per_dataset},
         started_at=started_at, completed_at=completed_at,
     )
 
@@ -544,11 +603,13 @@ def run(targets: list[tuple[str, str]], *, dry_run: bool, do_verify: bool) -> di
 
     result = {"catalog_run_id": catalog_run_id, "catalog_uri": CATALOG_URI,
               "appended": appended_names, "skipped": skipped_names,
-              "rows_appended": len(appended_rows), "indexes_built": indexes_built,
-              "per_dataset": per_dataset}
+              "errored": errored, "rows_appended": len(appended_rows),
+              "indexes_built": indexes_built, "per_dataset": per_dataset}
 
     if do_verify and not dry_run:
-        report = verify(targets, so)
+        # Verify ONLY the datasets that read cleanly — an errored/missing leaf was
+        # already isolated above and must not re-raise here and sink an otherwise-good run.
+        report = verify(ok_targets, so)
         _print_report(report)
         result["verify"] = {"catalog_rows": report["catalog_rows"],
                             "indices": report["indices"],
