@@ -3,7 +3,7 @@
   POST /api/v1/proposal-templates/convert        service-token  markdown → HTML + detected {{tokens}}
   POST /api/v1/proposal-templates/preview        service-token  render → DocRaptor → R2 → presigned PDF link
   POST /api/v1/proposal-templates                service-token  create a draft
-  GET  /api/v1/proposal-templates                service-token  list (``?published=true`` for the intake picker)
+  GET  /api/v1/proposal-templates                service-token  list (``?published=true``; ``?org_domain=`` scopes to one operator-org)
   GET  /api/v1/proposal-templates/{id}           service-token  one template (markdown included)
   PUT  /api/v1/proposal-templates/{id}           service-token  update a draft
   POST /api/v1/proposal-templates/{id}/publish   service-token  name + slug → publishable/selectable
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg import errors as pg_errors
@@ -103,9 +102,13 @@ async def create_draft(body: TemplateDraftCreate) -> TemplateRow:
 
 
 @router.get("")
-async def list_templates(published: bool = False) -> list[TemplateSummary]:
+async def list_templates(
+    published: bool = False, org_domain: str | None = None
+) -> list[TemplateSummary]:
+    """List templates. ``?org_domain=`` scopes to one operator-org (the BFF passes the
+    signed-in operator's email domain so the engagement picker is org-specific)."""
     async with get_db_connection() as conn:
-        rows = await q.list_all(conn, published_only=published)
+        rows = await q.list_all(conn, published_only=published, org_domain=org_domain)
     return [TemplateSummary.from_row(r) for r in rows]
 
 
