@@ -99,6 +99,8 @@ MIRROR_KEY_COLS = {
     "MINE_ID", "EVENT_NO", "VIOLATION_NO", "CITATION_NO", "CONTROLLER_ID", "OPERATOR_ID",
     "CONTRACTOR_ID", "VIOLATOR_ID", "DOCUMENT_NO", "DOCKET_NO", "ASSESS_CASE_NO",
     "CONFERENCE_NO", "ISSUANCE_NO", "SAMPLE_NO", "LABORATORY_NO", "CASS_NUM", "ASMT_CASE_NO",
+    # OrdersIssued's Excel-export controller key (sanitized, suffixed); auto-BTREE it on mirror.
+    "CONTROLLER_ID_VIOLATIONS",
 }
 
 # ── ops.msha_ingest_runs DDL — verbatim mirror of the curated workers (same feed ledger). ──

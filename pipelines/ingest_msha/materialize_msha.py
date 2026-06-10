@@ -158,6 +158,9 @@ CASTS: dict[str, dict[str, str]] = {
         "NO_AFFECTED": "INTEGER", "VIOLATOR_VIOLATION_CNT": "INTEGER",
         "VIOLATOR_INSPECTION_DAY_CNT": "INTEGER",
         "PROPOSED_PENALTY": "DOUBLE", "AMOUNT_DUE": "DOUBLE", "AMOUNT_PAID": "DOUBLE",
+        # ID hygiene (P3/R4): the cited-party keys carry rare lowercase-drift cells
+        # (e.g. f466/m837); fold them into the registry's uppercase namespace at the source.
+        "VIOLATOR_ID": "UPPER", "CONTRACTOR_ID": "UPPER",
     },
     "AssessedViolations.zip": {
         "ASSESS_CASE_STATUS_DT": "DATE", "OCCURRENCE_DT": "DATE", "ISSUE_DT": "DATE",
@@ -232,7 +235,7 @@ INDEX_PLAN: dict[str, dict[str, list[str]]] = {
     "msha_enforcement_ledger": {
         "BTREE": ["MINE_ID", "VIOLATOR_ID", "VIOLATION_NO", "CONTROLLER_ID",
                   "EVENT_NO", "ASSESS_CASE_NO", "VIOLATION_ISSUE_DT", "PROPOSED_PENALTY_AMT",
-                  "VIOLATOR_NAME", "CONTROLLER_NAME"],
+                  "VIOLATOR_NAME", "CONTROLLER_NAME", "CONTRACTOR_ID", "DOCKET_NO"],
         "BITMAP": ["SIG_SUB", "CIT_ORD_SAFE", "VIOLATOR_TYPE_CD", "COAL_METAL_IND"],
     },
 }
@@ -403,6 +406,10 @@ def _cast_expr(qualified: str, cast: str | None) -> str:
         return f"try_cast({base} AS INTEGER)"
     if cast == "DOUBLE":
         return f"try_cast({base} AS DOUBLE)"
+    if cast == "UPPER":
+        # ID hygiene (P3/R4): fold lowercase-drift cells into the registry's uppercase
+        # namespace. No-op on already-upper / all-digit IDs (preserves leading zeros).
+        return f"upper({base})"
     return base  # VARCHAR passthrough (lossless)
 
 
