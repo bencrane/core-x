@@ -12,8 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# ── The fixed Transaction Success Fee schedule (baked into the agreement body) ────────────
-# These do NOT vary per deal — they are surfaced to the proposal page for the headline only.
+# ── Default Success Fee schedule — the fallback when a template carries none. Per-template
+# schedules (business.proposal_templates.success_fee_schedule) override this; it is the seed only.
 SUCCESS_FEE_TIERS: list[dict[str, str]] = [
     {"tier": "First $1,000,000 of Enterprise Value", "rate": "5.0%"},
     {"tier": "Second $1,000,000 of Enterprise Value", "rate": "4.0%"},
@@ -21,6 +21,9 @@ SUCCESS_FEE_TIERS: list[dict[str, str]] = [
     {"tier": "Fourth $1,000,000 of Enterprise Value", "rate": "2.0%"},
     {"tier": "All Enterprise Value Exceeding $4,000,000", "rate": "1.5%"},
 ]
+
+DEFAULT_DURATION_MONTHS = 6
+DEFAULT_BILLING_CADENCE = "upfront_in_full"
 
 ProposalStatus = str  # one of: draft|sent|opened|signed|completed|rejected|voided
 
@@ -31,22 +34,46 @@ def format_usd(cents: int) -> str:
     return f"${whole:,}" if frac == 0 else f"${whole:,}.{frac:02d}"
 
 
+def total_cents(monthly_fee_cents: int, duration_months: int) -> int:
+    """Full engagement value = monthly fee × duration. DERIVED, never stored — so it can never
+    drift from the two inputs the operator actually sets."""
+    return int(monthly_fee_cents) * int(duration_months)
+
+
+def charge_cents(monthly_fee_cents: int, duration_months: int, billing_cadence: str | None) -> int:
+    """Amount billed PER INVOICE, by cadence (independent of duration): ``upfront_in_full`` → the
+    whole engagement in one charge; ``monthly`` → one month; ``quarterly`` → three months. Unknown
+    cadence falls back to upfront-in-full."""
+    cadence = (billing_cadence or DEFAULT_BILLING_CADENCE).lower()
+    if cadence == "monthly":
+        return int(monthly_fee_cents)
+    if cadence == "quarterly":
+        return int(monthly_fee_cents) * 3
+    return total_cents(monthly_fee_cents, duration_months)
+
+
 class ProposalCreate(BaseModel):
     """The intake-form contract a platform-app BFF POSTs to mint a proposal.
 
-    ``quarterly_total_cents`` is optional — when omitted it is computed as 3× the monthly
-    infrastructure fee (the agreement invoices every three months in advance).
+    Pricing is dynamic-with-defaults: every field below may be omitted, in which case it INHERITS
+    the selected template's default (``business.proposal_templates``). The proposal stores the
+    resolved actuals; the operator can still override any of them per deal. ``total`` is never sent
+    or stored — it derives from ``monthly_fee × duration``.
     """
 
     template_id: str | None = None                       # published-template slug; None → built-in default
-    client_name: str = Field(..., min_length=1)          # institutional entity (<<clientName>>)
-    client_signer_name: str = Field(..., min_length=1)   # the person (<<clientSignerName>>)
+    client_name: str = Field(..., min_length=1)          # institutional entity ({{client_name}})
+    client_signer_name: str = Field(..., min_length=1)   # the person ({{client_signer_name}})
     client_email: str = Field(..., min_length=3)         # the Documenso recipient
-    client_title: str | None = None                      # (<<clientTitle>>)
-    effective_date: _dt.date | None = None               # (<<effectiveDate>>); defaults to today
-    monthly_fee_cents: int = Field(..., gt=0)            # (<<monthlyFee>>)
-    quarterly_total_cents: int | None = Field(default=None, gt=0)  # (<<quarterlyTotal>>)
-    rs_signer_name: str | None = None                    # (<<rsName>>); defaults from config
+    client_title: str | None = None                      # ({{client_title}})
+    effective_date: _dt.date | None = None               # ({{effective_date}}); defaults to today
+    # Pricing config — None ⇒ inherit the template default (never empty on the proposal).
+    monthly_fee_cents: int | None = Field(default=None, gt=0)       # ({{monthly_fee}})
+    duration_months: int | None = Field(default=None, gt=0)         # ({{duration}}) — engagement term
+    billing_cadence: str | None = None                             # ({{billing_cadence}}) — when billed
+    success_fee_schedule: list[dict[str, str]] | None = None        # tiered %s; None ⇒ template default
+    quarterly_total_cents: int | None = Field(default=None, gt=0)   # deprecated; total derives from duration
+    rs_signer_name: str | None = None                    # ({{rs_name}}); defaults from config
     created_by: str | None = None
 
 
@@ -61,6 +88,9 @@ class Proposal(BaseModel):
     client_email: str
     effective_date: _dt.date
     monthly_fee_cents: int
+    duration_months: int = DEFAULT_DURATION_MONTHS
+    billing_cadence: str = DEFAULT_BILLING_CADENCE
+    success_fee_schedule: list[dict[str, str]] = Field(default_factory=lambda: list(SUCCESS_FEE_TIERS))
     quarterly_total_cents: int
     rs_signer_name: str
     status: ProposalStatus
@@ -86,7 +116,10 @@ class ProposalPublic(BaseModel):
     client: dict[str, str | None]
     effective_date: str
     monthly_fee: str
-    quarterly_total: str
+    duration_months: int
+    billing_cadence: str
+    total: str                                    # = monthly_fee × duration (derived)
+    quarterly_total: str                          # back-compat alias of ``total`` (legacy field name)
     success_fee_tiers: list[dict[str, str]]
     signing_token: str | None
     signed_pdf_url: str | None
@@ -98,6 +131,8 @@ class ProposalPublic(BaseModel):
 
     @classmethod
     def from_row(cls, p: Proposal, *, payment_status: str = "none") -> "ProposalPublic":
+        full = total_cents(p.monthly_fee_cents, p.duration_months)
+        charge = charge_cents(p.monthly_fee_cents, p.duration_months, p.billing_cadence)
         return cls(
             ref=p.ref,
             status=p.status,
@@ -108,17 +143,20 @@ class ProposalPublic(BaseModel):
             },
             effective_date=p.effective_date.isoformat(),
             monthly_fee=format_usd(p.monthly_fee_cents),
-            quarterly_total=format_usd(p.quarterly_total_cents),
-            success_fee_tiers=SUCCESS_FEE_TIERS,
+            duration_months=p.duration_months,
+            billing_cadence=p.billing_cadence,
+            total=format_usd(full),
+            quarterly_total=format_usd(full),
+            success_fee_tiers=p.success_fee_schedule or SUCCESS_FEE_TIERS,
             signing_token=p.documenso_client_token,
             signed_pdf_url=p.signed_pdf_url,
             created_at=p.created_at.isoformat() if p.created_at else None,
             payment_status=payment_status,
-            # The amount the client will be debited — the quarterly fee billed in advance (the same
-            # figure payments.amount.resolve_charge_cents resolves and that is rendered into the
-            # signed PDF). Never hardcoded; derived from the persisted proposal content.
-            amount_due=format_usd(p.quarterly_total_cents),
-            amount_due_cents=int(p.quarterly_total_cents),
+            # The amount the client will be debited — derived from the persisted proposal content by
+            # billing cadence (upfront_in_full → the full engagement total; monthly/quarterly → that
+            # slice). Never hardcoded.
+            amount_due=format_usd(charge),
+            amount_due_cents=int(charge),
         )
 
 

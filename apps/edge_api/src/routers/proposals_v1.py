@@ -26,7 +26,17 @@ from ..db import get_db_connection
 from ..payments import queries as pay_queries
 from ..proposals import queries, template_queries
 from ..proposals.agreement_template import render_agreement_html
-from ..proposals.models import Proposal, ProposalCreate, ProposalPublic, ProposalSummary, format_usd
+from ..proposals.models import (
+    DEFAULT_BILLING_CADENCE,
+    DEFAULT_DURATION_MONTHS,
+    SUCCESS_FEE_TIERS,
+    Proposal,
+    ProposalCreate,
+    ProposalPublic,
+    ProposalSummary,
+    format_usd,
+    total_cents,
+)
 from ..proposals.template_render import (
     proposal_token_values,
     render_template_html,
@@ -93,21 +103,36 @@ async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
     rs_name = body.rs_signer_name or config.rs_signer_name()
     template_id = body.template_id or "strategic_origination_mandate"
     monthly_fee_cents = body.monthly_fee_cents
+    duration_months = body.duration_months
+    billing_cadence = body.billing_cadence
+    success_fee_schedule = body.success_fee_schedule
     async with get_db_connection() as conn:
-        # A published template's fee (set at publish) wins over the passed-in fee — edge_api owns
-        # template→fee so the BFF stays dumb. Best-effort: any registry error → the passed-in fee.
+        # Pricing is dynamic-with-defaults: each unset field INHERITS the published template's
+        # default (edge_api owns template→pricing so the BFF stays dumb). Best-effort: a registry
+        # error just leaves the body values and the final fallbacks below.
         tpl = None
         try:
             tpl = await template_queries.get_published_by_slug(conn, template_id)
         except Exception as exc:
-            logger.warning("template fee lookup failed for %r (%s); using passed fee", template_id, exc)
+            logger.warning("template pricing lookup failed for %r (%s); using passed values", template_id, exc)
             try:
                 await conn.rollback()
             except Exception:
                 pass
-        if tpl and tpl.get("monthly_fee_cents"):
-            monthly_fee_cents = int(tpl["monthly_fee_cents"])
-        quarterly = body.quarterly_total_cents or monthly_fee_cents * 3
+        if tpl:
+            if not monthly_fee_cents and tpl.get("monthly_fee_cents"):
+                monthly_fee_cents = int(tpl["monthly_fee_cents"])
+            duration_months = duration_months or tpl.get("duration_months")
+            billing_cadence = billing_cadence or tpl.get("billing_cadence")
+            success_fee_schedule = success_fee_schedule or tpl.get("success_fee_schedule")
+        # Final fallbacks — the proposal is never left empty.
+        duration_months = duration_months or DEFAULT_DURATION_MONTHS
+        billing_cadence = billing_cadence or DEFAULT_BILLING_CADENCE
+        success_fee_schedule = success_fee_schedule or list(SUCCESS_FEE_TIERS)
+        if not monthly_fee_cents:
+            raise HTTPException(status_code=422, detail="monthly_fee_cents required (no template default)")
+        # total = monthly × duration; persisted into the legacy quarterly_total_cents for back-compat.
+        total = total_cents(monthly_fee_cents, duration_months)
         field_values = {
             "clientName": body.client_name,
             "clientSignerName": body.client_signer_name,
@@ -115,13 +140,16 @@ async def create_proposal(body: ProposalCreate) -> dict[str, Any]:
             "clientEmail": body.client_email,
             "effectiveDate": effective_date.isoformat(),
             "monthlyFee": format_usd(monthly_fee_cents),
-            "quarterlyTotal": format_usd(quarterly),
+            "duration": str(duration_months),
+            "total": format_usd(total),
+            "quarterlyTotal": format_usd(total),
             "rsName": rs_name,
         }
         p = await queries.insert_proposal(
             conn, ref=ref, body=body, template_id=template_id, effective_date=effective_date,
-            monthly_fee_cents=monthly_fee_cents, quarterly_total_cents=quarterly,
-            rs_signer_name=rs_name, field_values=field_values,
+            monthly_fee_cents=monthly_fee_cents, duration_months=duration_months,
+            billing_cadence=billing_cadence, success_fee_schedule=success_fee_schedule,
+            quarterly_total_cents=total, rs_signer_name=rs_name, field_values=field_values,
         )
         ok, err = await _provision(conn, p)
         fresh = await queries.get_by_ref(conn, ref)

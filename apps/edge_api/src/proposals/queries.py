@@ -23,9 +23,15 @@ _STATUS_TS_COL: dict[str, str] = {
 }
 _TERMINAL = {"rejected", "voided"}
 
+# COALESCE the pricing config so proposals minted before these columns existed read cleanly
+# (duration/cadence/schedule default in-query; the Proposal model never sees a NULL).
 _SELECT_COLS = (
     "ref, template_id, client_name, client_signer_name, client_title, client_email, "
-    "effective_date, monthly_fee_cents, quarterly_total_cents, rs_signer_name, status, "
+    "effective_date, monthly_fee_cents, "
+    "COALESCE(duration_months, 6) AS duration_months, "
+    "COALESCE(billing_cadence, 'upfront_in_full') AS billing_cadence, "
+    "COALESCE(success_fee_schedule, '[]'::jsonb) AS success_fee_schedule, "
+    "quarterly_total_cents, rs_signer_name, status, "
     "documenso_envelope_id, documenso_client_token, signed_pdf_url, field_values, created_by, "
     "created_at, sent_at, opened_at, signed_at, completed_at"
 )
@@ -48,6 +54,9 @@ async def insert_proposal(
     template_id: str,
     effective_date: _dt.date,
     monthly_fee_cents: int,
+    duration_months: int,
+    billing_cadence: str,
+    success_fee_schedule: list[dict[str, str]],
     quarterly_total_cents: int,
     rs_signer_name: str,
     field_values: dict[str, Any],
@@ -55,9 +64,10 @@ async def insert_proposal(
     sql = f"""
         INSERT INTO business.engagement_proposals
             (ref, template_id, client_name, client_signer_name, client_title, client_email,
-             effective_date, monthly_fee_cents, quarterly_total_cents, rs_signer_name,
+             effective_date, monthly_fee_cents, duration_months, billing_cadence,
+             success_fee_schedule, quarterly_total_cents, rs_signer_name,
              status, field_values, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s,%s)
         RETURNING {_SELECT_COLS}
     """
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -65,7 +75,8 @@ async def insert_proposal(
             sql,
             (
                 ref, template_id, body.client_name, body.client_signer_name, body.client_title,
-                body.client_email, effective_date, monthly_fee_cents, quarterly_total_cents,
+                body.client_email, effective_date, monthly_fee_cents, duration_months,
+                billing_cadence, Jsonb(success_fee_schedule), quarterly_total_cents,
                 rs_signer_name, Jsonb(field_values), body.created_by,
             ),
         )
