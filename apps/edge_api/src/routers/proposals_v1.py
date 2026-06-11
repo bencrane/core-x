@@ -81,7 +81,7 @@ async def _agreement_html(conn, p: Proposal) -> str:
         # org's identity (business.organizations.name + theme_config), not a hardcoded brand. NULL
         # org / missing theme falls back to the built-in Rare Structure default inside the renderer.
         identity = await queries.get_org_identity(conn, tpl.get("organization_id"))
-        html = render_template_html(md, apply_brand=tpl["apply_brand"], identity=identity)
+        html = render_template_html(md, identity=identity)
         return substitute_tokens(html, proposal_token_values(p))
     return render_agreement_html(p)
 

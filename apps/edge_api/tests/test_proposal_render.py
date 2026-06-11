@@ -84,7 +84,7 @@ def test_full_render_carries_every_dynamic_value() -> None:
         "## 6. Term\n\nInitial committed term of {{duration}} months.\n"
     )
     md = template_render.substitute_markdown_tokens(body, p)
-    html = template_render.render_template_html(md, apply_brand=True)
+    html = template_render.render_template_html(md)
     out = template_render.substitute_tokens(html, template_render.proposal_token_values(p))
     # Inline scalars (edited):
     assert "$40,000" in out  # monthly fee

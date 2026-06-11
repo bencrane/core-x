@@ -11,7 +11,6 @@ class TemplateConvertRequest(BaseModel):
     """Live markdown → HTML for the editor's right pane. Stateless (no DB, no DocRaptor)."""
 
     markdown: str = ""
-    apply_brand: bool = True
 
 
 class TemplateConvertResult(BaseModel):
@@ -25,7 +24,6 @@ class TemplatePreviewRequest(BaseModel):
     {{handlebars}} for the preview render (the operator types one value per detected token)."""
 
     markdown: str = ""
-    apply_brand: bool = True
     token_values: dict[str, str] = Field(default_factory=dict)
 
 
@@ -37,14 +35,12 @@ class TemplatePreviewResult(BaseModel):
 
 class TemplateDraftCreate(BaseModel):
     markdown: str = ""
-    apply_brand: bool = True
     name: str | None = None
     created_by: str | None = None
 
 
 class TemplateDraftUpdate(BaseModel):
     markdown: str | None = None
-    apply_brand: bool | None = None
     name: str | None = None
 
 
@@ -62,7 +58,6 @@ class TemplateRow(BaseModel):
     name: str | None
     status: str
     markdown: str
-    apply_brand: bool
     token_manifest: list[str]
     monthly_fee_cents: int | None
     created_by: str | None
@@ -82,7 +77,6 @@ class TemplateRow(BaseModel):
             name=r.get("name"),
             status=r["status"],
             markdown=r.get("markdown") or "",
-            apply_brand=bool(r.get("apply_brand", True)),
             token_manifest=list(manifest) if isinstance(manifest, list) else [],
             monthly_fee_cents=r.get("monthly_fee_cents"),
             created_by=r.get("created_by"),
