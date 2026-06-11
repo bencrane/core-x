@@ -70,7 +70,11 @@ async def create_payment_intent(ref: str) -> PaymentInitPublic:
                         currency=pay.get("payment_currency") or "usd",
                         payment_status=existing_status,
                     )
-            except stripe_client.StripeError as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Reuse is a pure optimization (avoid duplicate intents); ANY failure here — a Stripe
+                # error, a stale/absent client_secret, a projection hiccup — must degrade to a fresh
+                # mint, never 500. The mint below is idempotent (idempotency_key=ach_{ref}), so it
+                # returns the SAME intent rather than duplicating.
                 logger.warning("reuse of intent %s failed (%s); minting a new one", existing_intent, exc)
 
         # Mint a new Customer (if needed) + ACH PaymentIntent.
