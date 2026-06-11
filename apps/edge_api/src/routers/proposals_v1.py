@@ -82,9 +82,21 @@ async def _agreement_html(conn, p: Proposal) -> str:
     return render_agreement_html(p)
 
 
-async def _provision(conn, p: Proposal) -> tuple[bool, str | None]:
+async def _provision(
+    conn, p: Proposal, render_mode: str | None = None
+) -> tuple[bool, str | None]:
     """Render the legal PDF (DocRaptor, live) and create the Documenso envelope; bind it to the
-    row (draft → sent). Returns (ok, error_message). Non-raising so create can be best-effort."""
+    row (draft → sent). Returns (ok, error_message). Non-raising so create can be best-effort.
+
+    `render_mode` selects the originate pathway (resolved server-side from the operator's settings):
+      - 'through-docraptor' (default / None): render PDF → Documenso envelope. CURRENT behavior.
+      - 'direct-to-documenso': the no-DocRaptor pathway — NOT YET WIRED (stub below).
+    """
+    if render_mode == "direct-to-documenso":
+        # Prototype branch — intentionally unimplemented. Non-raising, mirroring the deferred-
+        # provision contract: the committed draft row survives, the operator sees a clear status.
+        logger.info("proposal %s: direct-to-documenso requested — pathway not yet wired", p.ref)
+        return False, "direct-to-documenso pathway not yet wired"
     try:
         pdf = await docraptor_client.render_pdf(await _agreement_html(conn, p), name=p.ref)
         env = await documenso_client.create_signing_envelope(
@@ -224,7 +236,7 @@ async def confirm_proposal(ref: str, body: ProposalConfirm) -> dict[str, Any]:
         if updated is None:
             # The row left 'draft' between read and write (concurrent originate) — refuse.
             raise HTTPException(status_code=409, detail="already originated")
-        ok, err = await _provision(conn, updated)
+        ok, err = await _provision(conn, updated, render_mode=body.render_mode)
         fresh = await queries.get_by_ref(conn, ref)
     return {
         "ref": ref,
