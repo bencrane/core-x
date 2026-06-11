@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 _SELECT_COLS = (
     "id, slug, name, status, markdown, apply_brand, token_manifest, monthly_fee_cents, "
-    "duration_months, billing_cadence, success_fee_schedule, exec_summary, "
+    "duration_months, billing_cadence, success_fee_schedule, exec_summary, organization_id, "
     "created_by, created_at, updated_at, published_at"
 )
 # Same columns, ``pt.``-qualified — for the org-scoped list, where a JOIN to

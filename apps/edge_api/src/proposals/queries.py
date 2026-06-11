@@ -222,3 +222,27 @@ async def advance_status(
         changed = cur.rowcount == 1
     await conn.commit()
     return changed
+
+
+async def get_org_identity(conn, organization_id: str | None) -> dict[str, Any] | None:
+    """The organization's RENDER identity for the brand shell — display name (wordmark), footer
+    legal name, and the visual theme (``theme_config``). ``None`` when no org / not found, so the
+    render falls back to the built-in Rare Structure default. Read-only against the upstream
+    ``business.organizations`` table."""
+    if not organization_id:
+        return None
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT name, theme_config FROM business.organizations "
+            "WHERE id = %s AND deleted_at IS NULL",
+            (organization_id,),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    theme = row.get("theme_config") or {}
+    return {
+        "display_name": row["name"],
+        "legal_name": theme.get("legal_name") or row["name"],
+        "theme": theme,
+    }
