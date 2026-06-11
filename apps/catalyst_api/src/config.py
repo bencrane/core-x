@@ -89,6 +89,19 @@ ENTITY_AWARD_LINES_GOLD_URI = os.environ.get(
     "ENTITY_AWARD_LINES_GOLD_LANCE_URI", "s3://data-sink/active/entity_award_lines_gold/"
 )
 
+# ── Map serving tables (the portal map read surface) ─────────────────────────
+# Denormalized, pre-geocoded read models (1 row per winner / per company), each
+# carrying lat/lon + the indexed filter columns. The map EXECUTE endpoint filters
+# these via a Lance scanner predicate (no DuckDB). Built by pipelines/serving/
+# materialize_winners_map.py and materialize_company_map.py.
+WINNERS_MAP_URI = os.environ.get(
+    "WINNERS_MAP_LANCE_URI", "s3://data-sink/active/usaspending_winners_map_serving/"
+)
+COMPANY_MAP_URI = os.environ.get(
+    "COMPANY_MAP_LANCE_URI", "s3://data-sink/active/firmographics_company_map_serving/"
+)
+MAP_DATASET_URIS = {"winners": WINNERS_MAP_URI, "company": COMPANY_MAP_URI}
+
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
 def operator_token() -> str | None:

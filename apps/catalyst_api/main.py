@@ -27,16 +27,18 @@ from contextlib import asynccontextmanager
 
 from datetime import date
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query
 from fastapi.responses import JSONResponse
 
 from .src import config, lance_store
+from .src.map_decoders import DECODERS
 from .src.models import (
     ActiveContract,
     ActiveContractsResponse,
     AwardProfile,
     AwardProfileResponse,
     Company,
+    MapQueryRequest,
     OverviewResponse,
     PastPerformanceResponse,
     RecentAward,
@@ -106,7 +108,9 @@ def _info() -> dict:
             "active_contracts": "/api/v1/entities/{uei}/active-contracts?limit=N",
             "overview": "/api/v1/entities/{uei}/overview",
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
+            "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
         },
+        "map_datasets": list(DECODERS),
     }
 
 
@@ -250,6 +254,45 @@ def past_performance(
         contracts=items,
     )
     return _envelope(resp)
+
+
+# ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──
+@app.post("/api/v1/map/{dataset}/query", response_model=None, dependencies=[Depends(require_operator)])
+def map_query(
+    dataset: str = Path(..., description="Map serving table: 'winners' | 'company'"),
+    body: MapQueryRequest = Body(default=MapQueryRequest()),
+) -> JSONResponse:
+    """Compiled filter object → Lance scanner predicate → GeoJSON FeatureCollection.
+
+    The deterministic EXECUTE side of the portal map: the body is a constrained
+    ``{filters:[{field,op,value}]}`` object (never NL, never SQL). Filters are
+    AND-combined and the scan is restricted to plottable rows. An off-allowlist
+    field/op or a mistyped value is a 422; an unknown dataset is a 404. The response
+    is ``{"data": <FeatureCollection>, "meta": {...}}``; ``meta.capped`` flags a
+    result truncated at the hard row cap (narrow the filter)."""
+    decoder = DECODERS.get(dataset)
+    if decoder is None:
+        raise HTTPException(status_code=404, detail=f"unknown map dataset {dataset!r}")
+    try:
+        predicate = lance_store.compile_map_filter(
+            decoder, [c.model_dump() for c in body.filters]
+        )
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    cap = lance_store.MAP_HARD_ROW_CAP
+    limit = min(body.limit or cap, cap)
+    rows = lance_store.map_query(decoder, predicate, limit + 1)   # +1 detects over-cap
+    capped = len(rows) > cap
+    fc = lance_store.to_geojson(decoder, rows[:cap])
+    return JSONResponse({
+        "data": fc,
+        "meta": {
+            "dataset": dataset,
+            "decoderVersion": decoder.version,
+            "returned": len(fc["features"]),
+            "capped": capped,
+        },
+    })
 
 
 def main() -> None:
