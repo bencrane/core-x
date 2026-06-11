@@ -4,9 +4,11 @@ read it from every surface (awards, SAM entities, SoS) forever.
 
 GRAIN  1 row per addr_hash = md5(normalized street|city|state|zip5).
 SoR    s3://data-sink/active/geocode_xwalk/   (Lance v2.1, BTREE addr_hash)
-SOURCE distinct recipient + subawardee addresses from the rolling 90d USAspending
-       prime + subaward feeds (env GEOCODE_WINDOW_DAYS). Address text is verbatim in
-       the feeds — no entity_profile_gold join.
+SOURCE two worklist builders, both feeding the SAME accretive crosswalk:
+       • awards (default) — distinct recipient + subawardee addresses from the rolling
+         90d prime + subaward feeds (env GEOCODE_WINDOW_DAYS); address text is verbatim.
+       • blitz_sam — firmographics_blitz domain ↦ sam_master_domains (domain-only, the
+         blitz uei is ignored) ↦ UEIs ↦ entity_profile_gold physical_address_*.
 GEOCODE Census Bulk Geocoder (geocoding.geo.census.gov, no key, ≤10k/batch), rooftop only.
        No-match rows are skipped (no centroid fallback) — a later run can fill them.
 WRITE  ACCRETIVE. merge_insert(addr_hash).when_not_matched_insert_all — a known address
@@ -17,7 +19,7 @@ LEDGER ops.geocode_xwalk_runs (HQX_DB_URL_POOLED) on every terminal state.
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' \
       --with 'requests>=2.32' --with 'psycopg[binary]>=3.2' \
-      python3 pipelines/usaspending/geocode_xwalk.py <init_ops|build|verify> [window_days]
+      python3 pipelines/usaspending/geocode_xwalk.py <init_ops|build|build_blitz|verify> [window_days]
 """
 from __future__ import annotations
 
@@ -34,6 +36,10 @@ ACTIVE = "s3://data-sink/active"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+# blitz_sam source: firmographics domain ↦ SAM domain crosswalk ↦ UEIs ↦ SAM addresses.
+FIRMO_URI = f"{ACTIVE}/firmographics_blitz/"
+SAM_DOMAINS_URI = f"{ACTIVE}/sam_master_domains/"
+EPG_URI = f"{ACTIVE}/entity_profile_gold/"
 WINDOW_DAYS = int(os.environ.get("GEOCODE_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["addr_hash"]
@@ -129,6 +135,49 @@ def _worklist(so) -> list[tuple]:
     return rows
 
 
+def _worklist_blitz_sam(so) -> list[tuple]:
+    """Distinct (addr_hash, street, city, state, zip5) for every UEI reachable from a
+    firmographics_blitz domain via sam_master_domains, addressed from entity_profile_gold.
+    Domain-only match (lower/trim equality — 86% parity); the blitz `uei` is ignored;
+    one domain ↦ many UEIs is expected and kept. One row per addr_hash."""
+    import lance
+    fb = lance.dataset(FIRMO_URI, storage_options=so)
+    sd = lance.dataset(SAM_DOMAINS_URI, storage_options=so)
+    epg = lance.dataset(EPG_URI, storage_options=so)
+    con = _duck()
+    con.register("fb", fb.scanner(columns=["domain_norm"]).to_reader())
+    con.register("sd", sd.scanner(columns=["normalized_domain", "uei"]).to_reader())
+    con.register("epg", epg.scanner(columns=[
+        "uei", "physical_address_line_1", "physical_address_city",
+        "physical_address_state", "physical_address_zip_postal_code"]).to_reader())
+    hexpr = addr_hash_sql("street", "city", "state", "zip")
+    sql = f"""
+    WITH bd AS (
+        SELECT DISTINCT lower(trim(domain_norm)) AS d FROM fb
+        WHERE domain_norm IS NOT NULL AND length(trim(domain_norm)) > 0),
+    sdd AS (
+        SELECT DISTINCT lower(trim(normalized_domain)) AS d, uei FROM sd
+        WHERE normalized_domain IS NOT NULL AND uei IS NOT NULL AND length(trim(uei)) > 0),
+    ueis AS (SELECT DISTINCT s.uei FROM bd b JOIN sdd s USING (d)),
+    a AS (
+        SELECT physical_address_line_1 AS street, physical_address_city AS city,
+               physical_address_state AS state, physical_address_zip_postal_code AS zip
+        FROM epg WHERE uei IN (SELECT uei FROM ueis)),
+    h AS (
+        SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
+               upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
+        FROM a
+        WHERE street IS NOT NULL AND length(trim(street)) > 0
+          AND state IS NOT NULL AND length(trim(state)) > 0)
+    SELECT addr_hash, any_value(street) AS street, any_value(city) AS city,
+           any_value(state) AS state, any_value(zip5) AS zip5
+    FROM h GROUP BY addr_hash
+    """
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return rows
+
+
 def _existing_hashes(so) -> set[str]:
     import lance
     try:
@@ -189,7 +238,7 @@ def _arrow(records: list[dict]):
     return pa.table(cols, schema=schema)
 
 
-def _record_run(*, window_days, worklist, already, geocoded, matched, table_after,
+def _record_run(*, feed, window_days, worklist, already, geocoded, matched, table_after,
                 write_mode, indices, status, error, started):
     import psycopg
     dsn = os.environ.get("HQX_DB_URL_POOLED")
@@ -207,7 +256,7 @@ def _record_run(*, window_days, worklist, already, geocoded, matched, table_afte
                 "already_present, newly_geocoded, matched, match_rate, table_rows_after, "
                 "write_mode, indices_built, status, error_message, started_at, completed_at) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                ("geocode_xwalk", window_days, worklist, already, geocoded, matched, match_rate,
+                (feed, window_days, worklist, already, geocoded, matched, match_rate,
                  table_after, write_mode, ",".join(indices), status, error, started,
                  dt.datetime.now(dt.timezone.utc)))
             c.commit()
@@ -215,17 +264,20 @@ def _record_run(*, window_days, worklist, already, geocoded, matched, table_afte
         log(f"WARN: ops.* write failed: {exc}")
 
 
-def build(window_days: int = WINDOW_DAYS):
+def build(window_days: int = WINDOW_DAYS, source: str = "awards"):
     import lance
     started = dt.datetime.now(dt.timezone.utc)
     so = _r2_so()
+    feed = f"geocode_xwalk:{source}"
     status, error = "error", None
-    worklist_n = already_n = geocoded_n = matched_n = table_after = 0
+    worklist_n = already_n = geocoded_n = matched_n = table_after = skipped_n = 0
     write_mode = "none"
     try:
-        worklist = _worklist(so)
+        worklist = _worklist(so) if source == "awards" else _worklist_blitz_sam(so)
         worklist_n = len(worklist)
-        log(f"worklist: {worklist_n:,} distinct addresses ({window_days}d window)")
+        src = (f"{window_days}d awards window" if source == "awards"
+               else "blitz↦sam_master_domains↦entity_profile_gold")
+        log(f"worklist: {worklist_n:,} distinct addresses ({src})")
         existing = _existing_hashes(so)
         already_n = len(existing)
         new = [r for r in worklist if r[0] not in existing]
@@ -240,7 +292,15 @@ def build(window_days: int = WINDOW_DAYS):
                 batch = new[i:i + CENSUS_BATCH]
                 bn = i // CENSUS_BATCH + 1
                 log(f"  census batch {bn}/{n_batches} ({len(batch):,} addrs)…")
-                hits = _geocode_batch(batch)
+                try:
+                    hits = _geocode_batch(batch)
+                except Exception as exc:  # noqa: BLE001
+                    # A flaky-endpoint batch must NOT kill a 200-batch run. Skip it — its
+                    # addresses stay non-resident, so the next run retries them (accretive).
+                    skipped_n += len(batch)
+                    log(f"    batch {bn} SKIPPED after retries ({str(exc)[:120]}); "
+                        f"{len(batch):,} addrs deferred to next run · skipped_total {skipped_n:,}")
+                    continue
                 by_hash = {r[0]: r for r in batch}
                 recs = [{"addr_hash": h, "street": by_hash[h][1], "city": by_hash[h][2],
                          "state": by_hash[h][3], "zip5": by_hash[h][4], "latitude": lat,
@@ -256,10 +316,15 @@ def build(window_days: int = WINDOW_DAYS):
                             .when_not_matched_insert_all().execute(tbl)
                         write_mode = "merge_insert"
                     else:
-                        lance.write_dataset(tbl, XWALK_URI, mode="overwrite",
+                        # mode="create" (NOT overwrite): the create path may only ever run
+                        # on a genuinely absent dataset. If existence was misjudged (transient
+                        # R2 read error, empty read), create ERRORS loudly instead of wiping
+                        # the resident crosswalk. The only write that touches an existing
+                        # dataset is merge_insert above — non-destructive by construction.
+                        lance.write_dataset(tbl, XWALK_URI, mode="create",
                                             data_storage_version=DATA_STORAGE_VERSION,
                                             storage_options=so)
-                        dataset_exists, write_mode = True, "overwrite"
+                        dataset_exists, write_mode = True, "create"
                     matched_n += len(recs)
                 log(f"    batch {bn} matched {len(recs):,} · cumulative {matched_n:,}")
             log(f"matched {matched_n:,}/{geocoded_n:,} "
@@ -283,13 +348,13 @@ def build(window_days: int = WINDOW_DAYS):
         error = str(exc)
         log(f"FAILED: {error}")
     finally:
-        _record_run(window_days=window_days, worklist=worklist_n, already=already_n,
+        _record_run(feed=feed, window_days=window_days, worklist=worklist_n, already=already_n,
                     geocoded=geocoded_n, matched=matched_n, table_after=table_after,
                     write_mode=write_mode, indices=BTREE_INDEXES, status=status,
                     error=error, started=started)
     if status != "success":
         raise SystemExit(1)
-    return {"worklist": worklist_n, "new": geocoded_n, "matched": matched_n,
+    return {"source": source, "worklist": worklist_n, "new": geocoded_n, "matched": matched_n,
             "table_rows": table_after, "write_mode": write_mode}
 
 
@@ -321,12 +386,14 @@ def main():
     arg = int(sys.argv[2]) if len(sys.argv) > 2 else WINDOW_DAYS
     if cmd == "build":
         print(json.dumps(build(window_days=arg), indent=2, default=str))
+    elif cmd == "build_blitz":
+        print(json.dumps(build(source="blitz_sam"), indent=2, default=str))
     elif cmd == "verify":
         verify()
     elif cmd == "init_ops":
         init_ops()
     else:
-        print(f"unknown command: {cmd} (init_ops|build|verify)"); sys.exit(2)
+        print(f"unknown command: {cmd} (init_ops|build|build_blitz|verify)"); sys.exit(2)
 
 
 if __name__ == "__main__":
