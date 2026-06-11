@@ -26,6 +26,26 @@ def _iso(v: Any) -> str | None:
     return v.isoformat() if isinstance(v, date) else (v or None)
 
 
+# ── Map query request contract (POST body for /api/v1/map/{dataset}/query) ──
+class MapFilterClause(_Model):
+    """One AND-combined filter clause. ``field``/``op``/``value`` are validated against
+    the dataset's decoder in ``lance_store.compile_map_filter`` — NOT here (Pydantic
+    only checks JSON shape; the typed allowlist is the security boundary)."""
+
+    field: str
+    op: str
+    value: Any = None                 # scalar | list (for `in` / `between`)
+
+
+class MapQueryRequest(_Model):
+    """Compiled filter object — never NL, never SQL. ``filters`` are AND-combined; an
+    empty list returns the whole (plottable) table up to the hard row cap."""
+
+    title: str | None = None          # echo-through label from the compiler (unused by EXECUTE)
+    filters: list[MapFilterClause] = []
+    limit: int | None = None          # caller hint, clamped to MAP_HARD_ROW_CAP
+
+
 class Company(_Model):
     name: str | None = None
     uei: str | None = None

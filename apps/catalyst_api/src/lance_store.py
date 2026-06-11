@@ -309,6 +309,126 @@ def entity_award_lines_by_uei(uei: str, side: str, limit: int) -> list[dict[str,
     return items[:cap]
 
 
+# ── Map surface: compiled filter object → Lance scanner predicate → GeoJSON ──
+# The deterministic EXECUTE side of the portal map. No DuckDB, no SQL engine: a
+# decoder (map_decoders.py) names the allowlisted columns + ops + types, and the
+# compiler builds a Lance scanner filter string from hardcoded column names +
+# type-validated, _sql_str-escaped values. The Lance scanner filter grammar
+# (=, >=, <=, IN(...), `a >= lo AND a <= hi`, unquoted bool, multi-clause AND) is
+# verified against the live serving tables; index pushdown serves the BITMAP/BTREE
+# filter columns. This is the same scanner(...).to_pylist() shape the per-entity
+# lookups use — only the predicate is richer and the limit higher.
+MAP_HARD_ROW_CAP = 20_000
+
+
+class MapCompileError(ValueError):
+    """An off-allowlist field/op, or a value that fails per-field type validation.
+    Surfaced as a 422 by the route — never reaches Lance as a malformed predicate."""
+
+
+def _map_coerce(value: Any, type_: str) -> str:
+    """Return a Lance-literal token for a scalar. Strings go through _sql_str (the
+    ONLY place a caller-supplied string is escaped); numbers/bools become bare
+    literals. Raises MapCompileError on a type mismatch (a bool is NOT an int)."""
+    if type_ == "bool":
+        if not isinstance(value, bool):
+            raise MapCompileError(f"expected bool, got {type(value).__name__}")
+        return "true" if value else "false"            # unquoted Arrow boolean literal
+    if type_ == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise MapCompileError(f"expected int, got {type(value).__name__}")
+        return str(value)
+    if type_ == "float":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise MapCompileError(f"expected number, got {type(value).__name__}")
+        return repr(float(value))
+    if type_ == "string":
+        if not isinstance(value, str):
+            raise MapCompileError(f"expected string, got {type(value).__name__}")
+        return _sql_str(value)
+    raise MapCompileError(f"unknown field type {type_!r}")
+
+
+def _map_enum_check(spec, values) -> None:
+    if spec.enum is not None:
+        for v in values:
+            if v not in spec.enum:
+                raise MapCompileError(f"value {v!r} not allowed for this field")
+
+
+def _map_clause_sql(spec, op: str, value: Any) -> str:
+    if op not in spec.ops:
+        raise MapCompileError(f"op {op!r} not allowed for this field")
+    if op in ("=", ">=", "<="):
+        _map_enum_check(spec, [value])
+        return f"{spec.column} {op} {_map_coerce(value, spec.type)}"
+    if op == "in":
+        if not isinstance(value, list) or not value:
+            raise MapCompileError("'in' needs a non-empty array value")
+        _map_enum_check(spec, value)
+        lits = ", ".join(_map_coerce(v, spec.type) for v in value)
+        return f"{spec.column} IN ({lits})"
+    if op == "between":
+        if not (isinstance(value, list) and len(value) == 2):
+            raise MapCompileError("'between' needs a [lo, hi] array value")
+        lo, hi = _map_coerce(value[0], spec.type), _map_coerce(value[1], spec.type)
+        return f"{spec.column} >= {lo} AND {spec.column} <= {hi}"
+    raise MapCompileError(f"unsupported op {op!r}")
+
+
+def compile_map_filter(decoder, filters: list[dict[str, Any]]) -> str:
+    """Compile an AND-combined list of ``{field, op, value}`` clauses into a Lance
+    scanner predicate. Column names come ONLY from ``FieldSpec.column`` (a dict-key
+    lookup on the decoder, never interpolated); values are type-validated + escaped.
+    A trailing ``<lat_col> IS NOT NULL`` is ALWAYS appended so the scan — and the row
+    cap — cover only PLOTTABLE rows (the map never wants a row it cannot draw, and
+    this makes ``meta.returned`` equal the feature count exactly). Raises
+    ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
+    parts: list[str] = []
+    for clause in filters:
+        field = clause.get("field")
+        spec = decoder.fields.get(field)
+        if spec is None:
+            raise MapCompileError(f"field {field!r} not in allowlist")
+        parts.append(_map_clause_sql(spec, clause.get("op"), clause.get("value")))
+    parts.append(f"{decoder.geometry[1]} IS NOT NULL")     # plottable-only
+    return " AND ".join(parts)
+
+
+def map_query(decoder, predicate: str, limit: int) -> list[dict[str, Any]]:
+    """Scan the decoder's serving table with a compiled predicate, projecting only
+    the GeoJSON property + geometry columns. A genuinely missing dataset RAISES
+    (loud 5xx) per ``_scan``; a zero-row match returns ``[]``."""
+    uri = config.MAP_DATASET_URIS[decoder.dataset_key]
+    cols = list(decoder.properties) + [decoder.geometry[0], decoder.geometry[1]]
+    return _scan(uri, columns=cols, filter=predicate, limit=limit)
+
+
+def _map_jsonable(v: Any) -> Any:
+    """Lance ``date32[day]`` → ISO ``YYYY-MM-DD``; everything else (str/num/bool/None)
+    passes through. Mirrors models._iso so the wire shape is consistent."""
+    from datetime import date as _date
+    return v.isoformat() if isinstance(v, _date) else v
+
+
+def to_geojson(decoder, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Rows → GeoJSON ``FeatureCollection``. ``Point`` geometry as ``[lon, lat]``
+    (GeoJSON axis order). A row missing either coordinate is dropped (defensive — the
+    predicate already requires ``lat IS NOT NULL``, but ``lon`` could still be null)."""
+    lon_c, lat_c = decoder.geometry
+    feats: list[dict[str, Any]] = []
+    for r in rows:
+        lon, lat = r.get(lon_c), r.get(lat_c)
+        if lon is None or lat is None:
+            continue
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {k: _map_jsonable(r.get(k)) for k in decoder.properties},
+        })
+    return {"type": "FeatureCollection", "features": feats}
+
+
 def reachable() -> bool:
     """Cheap liveness probe used at boot + /healthz: can we open the anchor
     dataset's manifest against R2 with the configured credentials?"""
@@ -329,6 +449,8 @@ _SURFACE_DATASETS = {
     "entity_profile_gold": lambda: config.ENTITY_PROFILE_GOLD_URI,
     "entity_award_lines_gold": lambda: config.ENTITY_AWARD_LINES_GOLD_URI,
     "contractor_award_summary": lambda: config.CONTRACTOR_AWARD_SUMMARY_URI,
+    "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
+    "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],
 }
 
 
