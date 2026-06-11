@@ -115,6 +115,36 @@ def r2_proposal_bucket() -> str:
     return os.environ.get("R2_PROPOSAL_BUCKET", "data-sink")
 
 
+# ── Map /ask TRANSLATE (forced-tool Anthropic Messages → filter object) ──────
+def anthropic_api_key() -> str | None:
+    """Key for the forced-tool Messages call that compiles a map NL query into a
+    constrained filter object. DISTINCT from ANTHROPIC_MANAGED_AGENTS_API_KEY (the
+    gtm-agent surface). When unset, the /ask route refuses (503)."""
+    return os.environ.get("ANTHROPIC_API_KEY")
+
+
+def map_compiler_model() -> str:
+    """Model id for the map NL→filter translate (forced single-tool extraction over a
+    cached prompt). Defaults to ``claude-opus-4-7``: the map search box is low-volume
+    and operator-facing, so translation QUALITY is worth the cost over a faster Haiku.
+    Override with ``MAP_COMPILER_MODEL``."""
+    return os.environ.get("MAP_COMPILER_MODEL", "claude-opus-4-7")
+
+
+# ── catalyst_api (the map EXECUTE tier edge_api delegates the read to) ───────
+def catalyst_base_url() -> str | None:
+    """Base URL of the catalyst_api read-tier where the map EXECUTE endpoint lives
+    (Railway private net in prod). When unset, the /ask route refuses (503)."""
+    base = os.environ.get("CATALYST_API_BASE_URL")
+    return base.rstrip("/") if base else None
+
+
+def catalyst_service_token() -> str | None:
+    """Bearer edge_api presents to catalyst_api's ``require_operator`` gate — the same
+    secret value catalyst reads as ``CATALYST_API_TOKEN``."""
+    return os.environ.get("CATALYST_API_TOKEN")
+
+
 def port() -> int:
     """Bind port. The deployed service injects ``$PORT``; default for a bare local run."""
     return int(os.environ.get("PORT", "8080"))

@@ -45,6 +45,7 @@ from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
+from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.proposals_v1 import router as proposals_router
 from .src.routers.payments_v1 import router as payments_router
@@ -171,6 +172,11 @@ app.include_router(bookings_router)
 # session. The booking-profile read resolves the latest snapshot by domain (else the seed).
 app.include_router(company_profiles_router)
 
+# map /ask: the portal map TRANSLATE route. NL → forced-tool Anthropic Messages call
+# (tool_choice → emit_filter) → constrained filter object → catalyst_api EXECUTE → GeoJSON.
+# Service-token gated; the single LLM touchpoint of the map. No gtm_mcp / gtm-agent.
+app.include_router(map_ask_router)
+
 # cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
 # Signature-gated (X-Cal-Signature-256 / CAL_WEBHOOK_SECRET). NOT under /api/v1 — cal.com posts /webhooks/cal.
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
@@ -200,6 +206,7 @@ def _info() -> dict:
             "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
+            "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
