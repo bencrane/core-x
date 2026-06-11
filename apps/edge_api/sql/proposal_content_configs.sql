@@ -14,7 +14,7 @@
 
 CREATE SCHEMA IF NOT EXISTS business;
 
-CREATE TABLE IF NOT EXISTS business.proposal_templates (
+CREATE TABLE IF NOT EXISTS business.proposal_content_configs (
     -- identity
     id                 text        PRIMARY KEY,                 -- stable id, minted at draft creation (tpl_…)
     slug               text,                                    -- selector a proposal references; set at publish
@@ -46,34 +46,34 @@ CREATE TABLE IF NOT EXISTS business.proposal_templates (
 );
 
 -- Exactly one template per published slug (the proposal's template_id resolves to ≤1 row).
-CREATE UNIQUE INDEX IF NOT EXISTS proposal_templates_slug_uidx
-    ON business.proposal_templates (slug) WHERE slug IS NOT NULL;
-CREATE INDEX IF NOT EXISTS proposal_templates_status_idx  ON business.proposal_templates (status);
-CREATE INDEX IF NOT EXISTS proposal_templates_created_idx ON business.proposal_templates (created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS proposal_content_configs_slug_uidx
+    ON business.proposal_content_configs (slug) WHERE slug IS NOT NULL;
+CREATE INDEX IF NOT EXISTS proposal_content_configs_status_idx  ON business.proposal_content_configs (status);
+CREATE INDEX IF NOT EXISTS proposal_content_configs_created_idx ON business.proposal_content_configs (created_at DESC);
 
 -- organization_id — additive + idempotent for already-provisioned control planes (the CREATE TABLE
 -- above only fires on a fresh DB). FK added guardedly (Postgres has no ADD CONSTRAINT IF NOT EXISTS).
-ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS organization_id uuid;
+ALTER TABLE business.proposal_content_configs ADD COLUMN IF NOT EXISTS organization_id uuid;
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.table_constraints
         WHERE constraint_schema = 'business'
-          AND table_name = 'proposal_templates'
-          AND constraint_name = 'proposal_templates_organization_id_fkey'
+          AND table_name = 'proposal_content_configs'
+          AND constraint_name = 'proposal_content_configs_organization_id_fkey'
     ) THEN
-        ALTER TABLE business.proposal_templates
-            ADD CONSTRAINT proposal_templates_organization_id_fkey
+        ALTER TABLE business.proposal_content_configs
+            ADD CONSTRAINT proposal_content_configs_organization_id_fkey
             FOREIGN KEY (organization_id) REFERENCES business.organizations (id) ON DELETE RESTRICT;
     END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS proposal_templates_organization_idx
-    ON business.proposal_templates (organization_id);
+CREATE INDEX IF NOT EXISTS proposal_content_configs_organization_idx
+    ON business.proposal_content_configs (organization_id);
 
 -- exec_summary — additive + idempotent (pre-proposal exec-summary page copy; see CREATE TABLE).
-ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS exec_summary text;
+ALTER TABLE business.proposal_content_configs ADD COLUMN IF NOT EXISTS exec_summary text;
 
 -- pricing config defaults — additive + idempotent (see CREATE TABLE). total derives, never stored.
-ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS duration_months      integer;
-ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS billing_cadence       text;
-ALTER TABLE business.proposal_templates ADD COLUMN IF NOT EXISTS success_fee_schedule  jsonb;
+ALTER TABLE business.proposal_content_configs ADD COLUMN IF NOT EXISTS duration_months      integer;
+ALTER TABLE business.proposal_content_configs ADD COLUMN IF NOT EXISTS billing_cadence       text;
+ALTER TABLE business.proposal_content_configs ADD COLUMN IF NOT EXISTS success_fee_schedule  jsonb;

@@ -1,4 +1,4 @@
-"""business.proposal_templates persistence — psycopg async.
+"""business.proposal_content_configs persistence — psycopg async.
 
 The authoring registry: drafts the operator edits, published templates the Proposals intake
 picker reads, and the slug→template resolution the real proposal-create path uses. The markdown
@@ -45,7 +45,7 @@ async def create_draft(
     created_by: str | None,
 ) -> dict[str, Any]:
     sql = f"""
-        INSERT INTO business.proposal_templates
+        INSERT INTO business.proposal_content_configs
             (id, status, markdown, apply_brand, token_manifest, name, created_by)
         VALUES (%s, 'draft', %s, %s, %s, %s, %s)
         RETURNING {_SELECT_COLS}
@@ -82,7 +82,7 @@ async def update_draft(
         params.append(Jsonb(token_manifest))
 
     sql = (
-        f"UPDATE business.proposal_templates SET {', '.join(sets)} "
+        f"UPDATE business.proposal_content_configs SET {', '.join(sets)} "
         f"WHERE id = %s RETURNING {_SELECT_COLS}"
     )
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -95,7 +95,7 @@ async def update_draft(
 async def get(conn, id: str) -> dict[str, Any] | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS} FROM business.proposal_templates WHERE id = %s", (id,)
+            f"SELECT {_SELECT_COLS} FROM business.proposal_content_configs WHERE id = %s", (id,)
         )
         return await cur.fetchone()
 
@@ -104,7 +104,7 @@ async def get_published_by_slug(conn, slug: str) -> dict[str, Any] | None:
     """Resolve a published template by its selector — the real proposal-create path's lookup."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS} FROM business.proposal_templates "
+            f"SELECT {_SELECT_COLS} FROM business.proposal_content_configs "
             f"WHERE slug = %s AND status = 'published'",
             (slug,),
         )
@@ -135,7 +135,7 @@ async def list_all(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS_PT} FROM business.proposal_templates pt {join} {where} "
+            f"SELECT {_SELECT_COLS_PT} FROM business.proposal_content_configs pt {join} {where} "
             f"ORDER BY pt.updated_at DESC LIMIT %s",
             params + [limit],
         )
@@ -148,7 +148,7 @@ async def publish(
     """Promote a template to ``published`` with its name + selector. The caller maps a unique-slug
     collision (another template already owns this slug) to a 409."""
     sql = f"""
-        UPDATE business.proposal_templates
+        UPDATE business.proposal_content_configs
            SET status = 'published', name = %s, slug = %s, monthly_fee_cents = %s,
                published_at = COALESCE(published_at, now()), updated_at = now()
          WHERE id = %s
