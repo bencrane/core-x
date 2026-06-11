@@ -48,22 +48,38 @@ def docraptor_api_key() -> str | None:
     return os.environ.get("DOCRAPTOR_API_KEY")
 
 
+def stripe_mode() -> str:
+    """``live`` | ``test`` — selects which Stripe key set to use. From ``core-x/prd`` (``STRIPE_MODE``);
+    defaults to ``test`` so an unset/typo'd mode can never accidentally hit live rails."""
+    return os.environ.get("STRIPE_MODE", "test").strip().lower()
+
+
+def _stripe_secret(base: str) -> str | None:
+    """Resolve a mode-suffixed Stripe secret. ``core-x/prd`` carries ``{base}_LIVE`` / ``{base}_TEST``
+    selected by ``STRIPE_MODE``; fall back to the bare ``{base}`` for any env that sets it directly."""
+    suffix = "LIVE" if stripe_mode() == "live" else "TEST"
+    return os.environ.get(f"{base}_{suffix}") or os.environ.get(base)
+
+
 def stripe_secret_key() -> str | None:
-    """Stripe secret key (``sk_...``), server-side ONLY — never sent to the browser. From
-    ``core-x/prd``. When unset, the payment-intent route refuses (503) instead of charging."""
-    return os.environ.get("STRIPE_SECRET_KEY")
+    """Stripe secret key (``sk_...``), server-side ONLY — never sent to the browser. Resolved from
+    ``STRIPE_SECRET_KEY_{LIVE,TEST}`` by ``STRIPE_MODE`` (``core-x/prd``). When unset, the
+    payment-intent route refuses (503) instead of charging."""
+    return _stripe_secret("STRIPE_SECRET_KEY")
 
 
 def stripe_publishable_key() -> str | None:
     """Stripe publishable key (``pk_...``). Public by design — surfaced to the browser (via the BFF)
-    to mount the ACH PaymentElement. Single source of truth: the SPA never carries its own copy."""
-    return os.environ.get("STRIPE_PUBLISHABLE_KEY")
+    to mount the ACH PaymentElement. Resolved from ``STRIPE_PUBLISHABLE_KEY_{LIVE,TEST}`` by
+    ``STRIPE_MODE``. Single source of truth: the SPA never carries its own copy."""
+    return _stripe_secret("STRIPE_PUBLISHABLE_KEY")
 
 
 def stripe_webhook_secret() -> str | None:
-    """Signing secret (``whsec_...``) for the Stripe webhook endpoint. When unset, ``/webhooks/stripe``
-    refuses (503) rather than accepting unverified events. Must match the secret on the Stripe webhook."""
-    return os.environ.get("STRIPE_WEBHOOK_SECRET")
+    """Signing secret (``whsec_...``) for the Stripe webhook endpoint. Resolved from
+    ``STRIPE_WEBHOOK_SECRET_{LIVE,TEST}`` by ``STRIPE_MODE``. When unset, ``/webhooks/stripe`` refuses
+    (503) rather than accepting unverified events. Must match the secret on the Stripe webhook."""
+    return _stripe_secret("STRIPE_WEBHOOK_SECRET")
 
 
 def rs_signer_name() -> str:
