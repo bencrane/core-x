@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS business.proposal_content_configs (
                        CHECK (status IN ('draft','published')),
     -- authored content
     markdown           text        NOT NULL DEFAULT '',         -- the body the operator writes (with {{tokens}})
-    apply_brand        boolean     NOT NULL DEFAULT true,       -- wrap in the Rare Structure dark shell vs plain print
     token_manifest     jsonb       NOT NULL DEFAULT '[]'::jsonb,-- {{tokens}} detected in the assembled doc (body + shell)
     monthly_fee_cents  bigint,                                  -- DEFAULT price/month ({{monthly_fee}}); a proposal inherits then may override
     -- pricing config DEFAULTS (a minted proposal inherits these, editable per deal). total is DERIVED

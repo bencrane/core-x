@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 _SELECT_COLS = (
-    "id, slug, name, status, markdown, apply_brand, token_manifest, monthly_fee_cents, "
+    "id, slug, name, status, markdown, token_manifest, monthly_fee_cents, "
     "duration_months, billing_cadence, success_fee_schedule, exec_summary, organization_id, "
     "created_by, created_at, updated_at, published_at"
 )
@@ -39,19 +39,18 @@ async def create_draft(
     *,
     id: str,
     markdown: str,
-    apply_brand: bool,
     name: str | None,
     token_manifest: list[str],
     created_by: str | None,
 ) -> dict[str, Any]:
     sql = f"""
         INSERT INTO business.proposal_content_configs
-            (id, status, markdown, apply_brand, token_manifest, name, created_by)
-        VALUES (%s, 'draft', %s, %s, %s, %s, %s)
+            (id, status, markdown, token_manifest, name, created_by)
+        VALUES (%s, 'draft', %s, %s, %s, %s)
         RETURNING {_SELECT_COLS}
     """
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(sql, (id, markdown, apply_brand, Jsonb(token_manifest), name, created_by))
+        await cur.execute(sql, (id, markdown, Jsonb(token_manifest), name, created_by))
         row = await cur.fetchone()
     await conn.commit()
     return row
@@ -62,7 +61,6 @@ async def update_draft(
     id: str,
     *,
     markdown: str | None = None,
-    apply_brand: bool | None = None,
     name: str | None = None,
     token_manifest: list[str] | None = None,
 ) -> dict[str, Any] | None:
@@ -71,9 +69,6 @@ async def update_draft(
     if markdown is not None:
         sets.append("markdown = %s")
         params.append(markdown)
-    if apply_brand is not None:
-        sets.append("apply_brand = %s")
-        params.append(apply_brand)
     if name is not None:
         sets.append("name = %s")
         params.append(name)

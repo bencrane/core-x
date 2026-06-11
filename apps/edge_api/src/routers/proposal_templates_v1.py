@@ -52,15 +52,15 @@ router = APIRouter(
 _PREVIEW_TTL_SECONDS = 3600
 
 
-def _manifest(markdown: str, apply_brand: bool) -> list[str]:
+def _manifest(markdown: str) -> list[str]:
     """Tokens detected in the FULLY ASSEMBLED document (body + brand-shell signature block)."""
-    return extract_tokens(render_template_html(markdown, apply_brand=apply_brand))
+    return extract_tokens(render_template_html(markdown))
 
 
 @router.post("/convert")
 def convert(body: TemplateConvertRequest) -> TemplateConvertResult:
     """Stateless markdown → branded HTML for the editor's live preview pane."""
-    html = render_template_html(body.markdown, apply_brand=body.apply_brand)
+    html = render_template_html(body.markdown)
     return TemplateConvertResult(html=html, detected_tokens=extract_tokens(html))
 
 
@@ -68,7 +68,7 @@ def convert(body: TemplateConvertRequest) -> TemplateConvertResult:
 async def preview(body: TemplatePreviewRequest) -> TemplatePreviewResult:
     """Render the current content to a real PDF via DocRaptor, stash it in R2, return a presigned
     link. Stateless — previews UNSAVED content; ``token_values`` fills the {{handlebars}}."""
-    html = render_template_html(body.markdown, apply_brand=body.apply_brand)
+    html = render_template_html(body.markdown)
     rendered = substitute_tokens(html, body.token_values)
     try:
         pdf = await docraptor_client.render_pdf(rendered, name="proposal-template-preview")
@@ -93,9 +93,8 @@ async def create_draft(body: TemplateDraftCreate) -> TemplateRow:
             conn,
             id=tid,
             markdown=body.markdown,
-            apply_brand=body.apply_brand,
             name=body.name,
-            token_manifest=_manifest(body.markdown, body.apply_brand),
+            token_manifest=_manifest(body.markdown),
             created_by=body.created_by,
         )
     return TemplateRow.from_row(row)
@@ -127,17 +126,15 @@ async def update_draft(template_id: str, body: TemplateDraftUpdate) -> TemplateR
         existing = await q.get(conn, template_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="template not found")
-        # Recompute the token manifest when the content (markdown or brand wrap) changes.
+        # Recompute the token manifest when the markdown content changes.
         manifest: list[str] | None = None
-        if body.markdown is not None or body.apply_brand is not None:
-            md = body.markdown if body.markdown is not None else existing["markdown"]
-            brand = body.apply_brand if body.apply_brand is not None else existing["apply_brand"]
-            manifest = _manifest(md, brand)
+        if body.markdown is not None:
+            md = body.markdown
+            manifest = _manifest(md)
         row = await q.update_draft(
             conn,
             template_id,
             markdown=body.markdown,
-            apply_brand=body.apply_brand,
             name=body.name,
             token_manifest=manifest,
         )

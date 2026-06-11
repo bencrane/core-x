@@ -104,7 +104,7 @@ def _brand_style(theme: dict[str, Any] | None, legal_name: str) -> str:
 
 
 def render_branded_document(
-    body_html: str, *, apply_brand: bool = True, identity: dict[str, Any] | None = None
+    body_html: str, *, identity: dict[str, Any] | None = None
 ) -> str:
     """Wrap authored body HTML in the brand shell + execution block.
 
@@ -116,7 +116,7 @@ def render_branded_document(
     ident = identity or {}
     display_name = ident.get("display_name") or _DEFAULT_DISPLAY
     legal_name = ident.get("legal_name") or (display_name if identity else _DEFAULT_LEGAL)
-    style = _brand_style(ident.get("theme"), legal_name) if apply_brand else _PLAIN_STYLE
+    style = _brand_style(ident.get("theme"), legal_name)
     shell = (
         _SHELL.replace("«STYLE»", style)
         .replace("«WORDMARK»", html.escape(display_name.upper()))
@@ -127,12 +127,10 @@ def render_branded_document(
 
 
 def render_template_html(
-    markdown_src: str, *, apply_brand: bool = True, identity: dict[str, Any] | None = None
+    markdown_src: str, *, identity: dict[str, Any] | None = None
 ) -> str:
     """markdown → body HTML → branded, signable document (tokens NOT yet substituted)."""
-    return render_branded_document(
-        markdown_to_html(markdown_src), apply_brand=apply_brand, identity=identity
-    )
+    return render_branded_document(markdown_to_html(markdown_src), identity=identity)
 
 
 def _long_date(d: _dt.date) -> str:
@@ -260,51 +258,6 @@ _BRAND_STYLE = r"""
      display:none / zero-size / a script font, or the PDF text layer loses it. */
   .sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
     letter-spacing: 0.08em; color: #5b6373; line-height: 30pt; padding-left: 4pt; }
-"""
-
-# Light/unbranded variant — same class vocabulary (so the body + signature block still render),
-# neutral print colors. The .sig-wrap page break is preserved as a COSMETIC choice (not load-
-# bearing — Documenso places fields by anchor, see the brand-style note above and documenso_client).
-_PLAIN_STYLE = r"""
-  @page { size: Letter; margin: 1in 1in 1.1in 1in;
-    @bottom-center { content: "Page " counter(page); font-family: Arial, sans-serif;
-      font-size: 7.5pt; color: #666; } }
-  * { box-sizing: border-box; }
-  body { font-family: 'Georgia', 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.55;
-    color: #111; margin: 0; }
-  strong { color: #000; }
-  .wordmark { font-family: Arial, sans-serif; font-weight: 700; letter-spacing: 0.34em;
-    font-size: 12pt; color: #000; }
-  h1 { font-family: Arial, sans-serif; font-size: 15pt; letter-spacing: 0.06em; font-weight: 600;
-    margin: 6pt 0 2pt; color: #000; }
-  .rule { border: 0; border-top: 1pt solid #ccc; margin: 10pt 0 16pt; }
-  h2 { font-family: Arial, sans-serif; font-size: 9pt; letter-spacing: 0.16em;
-    text-transform: uppercase; font-weight: 600; margin: 18pt 0 5pt; color: #333; }
-  h3 { font-family: Arial, sans-serif; font-size: 8.5pt; letter-spacing: 0.1em;
-    text-transform: uppercase; font-weight: 600; margin: 12pt 0 4pt; color: #555; }
-  p { margin: 0 0 8pt; text-align: justify; }
-  ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
-  li { margin: 0 0 4pt; }
-  table { width: 100%; border-collapse: collapse; margin: 8pt 0 4pt; font-size: 10pt; }
-  th { text-align: left; font-family: Arial, sans-serif; font-size: 8pt; letter-spacing: 0.12em;
-    text-transform: uppercase; font-weight: 600; color: #555; border-bottom: 1pt solid #999;
-    padding: 5pt 6pt; }
-  td { padding: 6pt 6pt; border-bottom: 0.5pt solid #ddd; }
-  td:last-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
-  .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
-  .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; border-bottom: 0;
-    text-align: left; }
-  .sig-party { font-family: Arial, sans-serif; font-size: 8pt; letter-spacing: 0.14em;
-    text-transform: uppercase; color: #555; margin-bottom: 14pt; }
-  .sig-line { border-bottom: 1pt solid #999; height: 30pt; margin-bottom: 3pt; }
-  .sig-rs { font-family: Georgia, serif; font-style: italic; font-weight: 600; font-size: 18pt;
-    line-height: 30pt; padding-left: 4pt; color: #111; }
-  .sig-field { font-size: 8pt; color: #555; font-family: Arial, sans-serif; }
-  .sig-val { font-size: 10pt; color: #111; }
-  /* Anchor marker — subtle but REAL selectable text in a standard font (Documenso findText). */
-  .sig-anchor { font-family: Arial, sans-serif; font-size: 8pt; letter-spacing: 0.08em;
-    color: #888; line-height: 30pt; padding-left: 4pt; }
 """
 
 _SHELL = r"""<!DOCTYPE html>
