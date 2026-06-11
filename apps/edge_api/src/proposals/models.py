@@ -98,6 +98,9 @@ class ProposalConfirm(BaseModel):
     billing_cadence: str | None = None
     success_fee_schedule: list[dict[str, str]] | None = None
     effective_date: _dt.date | None = None
+    # Originate pathway, resolved server-side from the operator's settings by the BFF:
+    # 'through-docraptor' (default; render PDF → Documenso envelope) | 'direct-to-documenso'.
+    render_mode: str | None = None
 
 
 class Proposal(BaseModel):
