@@ -77,7 +77,11 @@ async def _agreement_html(conn, p: Proposal) -> str:
         # Pre-render BLOCK tokens (the structured success-fee table) into the markdown source, then
         # markdown→HTML, then substitute the inline scalar tokens (fee/cadence/total/duration/…).
         md = substitute_markdown_tokens(tpl["markdown"], p)
-        html = render_template_html(md, apply_brand=tpl["apply_brand"])
+        # Render under the config's ORGANIZATION — wordmark, footer, and palette come from the
+        # org's identity (business.organizations.name + theme_config), not a hardcoded brand. NULL
+        # org / missing theme falls back to the built-in Rare Structure default inside the renderer.
+        identity = await queries.get_org_identity(conn, tpl.get("organization_id"))
+        html = render_template_html(md, apply_brand=tpl["apply_brand"], identity=identity)
         return substitute_tokens(html, proposal_token_values(p))
     return render_agreement_html(p)
 

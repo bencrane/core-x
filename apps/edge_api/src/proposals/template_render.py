@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime as _dt
 import html
 import re
+from typing import Any
 
 from markdown_it import MarkdownIt
 
@@ -73,25 +74,65 @@ def substitute_tokens(html_doc: str, values: dict[str, str], *, escape: bool = T
     return _TOKEN_RE.sub(repl, html_doc)
 
 
-def render_branded_document(body_html: str, *, apply_brand: bool = True) -> str:
+# Render identity, resolved from an organization (``proposals.queries.get_org_identity``):
+#   {"display_name": str, "legal_name": str, "theme": {color tokens}}
+# Absent identity (or any missing key) → the built-in Rare Structure default, so a null/partial org
+# theme can never break a render.
+_DEFAULT_DISPLAY = "Rare Structure"
+_DEFAULT_LEGAL = "Rare Structure LLC"
+
+# theme_config key → the default (current Rare Structure) hex it overrides in _BRAND_STYLE.
+_THEME_TOKENS = (
+    ("surface", "#0a0e1a"),
+    ("ink", "#e4e4e7"),
+    ("ink_strong", "#fafafa"),
+    ("accent", "#7b9fd4"),
+    ("muted", "#82828c"),
+    ("rule", "#2d3548"),
+)
+
+
+def _brand_style(theme: dict[str, Any] | None, legal_name: str) -> str:
+    """The dark brand CSS with the org's footer name + palette substituted in. Tokens the theme
+    omits keep the Rare Structure default — identical output for an org whose palette matches."""
+    style = _BRAND_STYLE.replace("RARE STRUCTURE LLC", html.escape(legal_name.upper()))
+    for token, default in _THEME_TOKENS:
+        val = (theme or {}).get(token)
+        if isinstance(val, str) and val and val != default:
+            style = style.replace(default, val)
+    return style
+
+
+def render_branded_document(
+    body_html: str, *, apply_brand: bool = True, identity: dict[str, Any] | None = None
+) -> str:
     """Wrap authored body HTML in the brand shell + execution block.
 
-    The shell's own sentinels (style + the client signature/date anchor markers) are resolved
-    FIRST, against the shared ``signing_anchors`` constants; ``«BODY»`` is injected LAST so authored
-    body content can never be mistaken for a shell sentinel.
+    ``identity`` (an org's resolved render identity) drives the wordmark, the page footer, and the
+    palette; absent → the built-in Rare Structure default. The shell's own sentinels (style + the
+    client signature/date anchor markers) are resolved FIRST, against the shared ``signing_anchors``
+    constants; ``«BODY»`` is injected LAST so authored body content can't be mistaken for a sentinel.
     """
-    style = _BRAND_STYLE if apply_brand else _PLAIN_STYLE
+    ident = identity or {}
+    display_name = ident.get("display_name") or _DEFAULT_DISPLAY
+    legal_name = ident.get("legal_name") or (display_name if identity else _DEFAULT_LEGAL)
+    style = _brand_style(ident.get("theme"), legal_name) if apply_brand else _PLAIN_STYLE
     shell = (
         _SHELL.replace("«STYLE»", style)
+        .replace("«WORDMARK»", html.escape(display_name.upper()))
         .replace("«CLIENT_SIGNATURE_ANCHOR»", CLIENT_SIGNATURE_ANCHOR)
         .replace("«CLIENT_DATE_ANCHOR»", CLIENT_DATE_ANCHOR)
     )
     return shell.replace("«BODY»", body_html)
 
 
-def render_template_html(markdown_src: str, *, apply_brand: bool = True) -> str:
+def render_template_html(
+    markdown_src: str, *, apply_brand: bool = True, identity: dict[str, Any] | None = None
+) -> str:
     """markdown → body HTML → branded, signable document (tokens NOT yet substituted)."""
-    return render_branded_document(markdown_to_html(markdown_src), apply_brand=apply_brand)
+    return render_branded_document(
+        markdown_to_html(markdown_src), apply_brand=apply_brand, identity=identity
+    )
 
 
 def _long_date(d: _dt.date) -> str:
@@ -274,7 +315,7 @@ _SHELL = r"""<!DOCTYPE html>
 <style>«STYLE»</style>
 </head>
 <body>
-  <div class="wordmark">RARE STRUCTURE</div>
+  <div class="wordmark">«WORDMARK»</div>
   <hr class="rule" />
 «BODY»
   <div class="sig-wrap">
