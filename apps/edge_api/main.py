@@ -43,6 +43,8 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
+from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
+from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
@@ -171,6 +173,14 @@ app.include_router(bookings_router)
 # opportunities: the operator Pipeline list — CRM opportunities materialized on a booking
 # (business.opportunities). Service-token gated; the BFF brokers it with the operator session.
 app.include_router(opportunities_router)
+
+# engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
+# (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
+app.include_router(engagement_mappings_router)
+
+# engagement-mandate-drafts: the direct-to-documenso Originate Mandate stamp — inserts
+# (opportunity_id, documenso_template_id) into business.engagement_mandate_draft_content.
+app.include_router(engagement_mandate_drafts_router)
 
 # company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
 # (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator
