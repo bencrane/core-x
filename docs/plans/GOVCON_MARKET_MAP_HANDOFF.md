@@ -47,7 +47,7 @@ A **natural-language market map**: a public cockpit search box compiles a plain-
 | BFF `/ask` proxy | **DONE [V]** | `federal.ts` `/ask` → `askMarket` |
 | Cockpit free-text wiring + Table view | **DONE [V]** | `runAsk` reachable via `runQuery` |
 | **Geo-dot rendering (map view)** | **SHIPPED — pending visual confirm [rsh #101]** | lat/lon projected via recovered Albers-USA (`demo/projection.ts`); 99.5% of live coords in-bounds vs the 7126-payload; on-screen render not yet eyeballed in portal (§7-1, R-07) |
-| Boot **schema/index** contract check | **PARTIAL** | reachability done; column/index assertion NOT done (§7-5) |
+| Boot **schema/index** contract check | **DONE [V]** | `verify_decoder_contract` at boot + `/healthz` `contract_ok`; live `{winners:ok, company:ok}` (#431, §7-5) |
 | Public `/ask` rate-limit / auth | **N/A — R-04 closed** | public `/map` un-hosted 2026-06-11; no public surface (§7-3) |
 | `winners` dataset exposed in box | **PARTIAL** | plumbed end-to-end; UI defaults to `company`, no winners affordance (§7-7) |
 
@@ -216,7 +216,7 @@ These are **separate data sources** — the warm snapshot and the live serving t
 | **R-06** | feed completeness (rolling window) | **HIGH** | Prime feed is a rolling ~100-day `last_modified_date` window, not a full year. A real federal winner with no recent transaction is **absent** from the winners map. Users will read the map as comprehensive; it is a recency slice. | Either widen to 365d (§7-7) or label the map "active in the last ~100 days." Measure: a known long-tail winner appears/doesn't per the documented window. |
 | **R-07** | geo-dot layer unrealized + lat/lon dropped | **HIGH** (headline) | Two-part: (a) no runtime lon/lat→viewBox projection; (b) `askRowToCompany` discards `lat`/`lon` so even with a projection there's nothing to project. Map view shows zero dots for live queries. | §7-1. Measure: live "construction federal" query renders thousands of dots inside US state outlines, AK/HI included. |
 | **R-08** | two-data-source UI (warm vs live) | **MED** | Canned commands (warm snapshot) and free-text (`/ask` live) can show inconsistent numbers for "the same" query; users can't tell which source they're seeing. | Stamp each result with its source + vintage; ideally converge both on the live serving tables. Measure: same logical query via both paths reconciles, or the UI labels the divergence. |
-| **R-09** | boot contract check is reachability-only | **MED** | `probe_surfaces()` opens manifests (`count_rows`) but does NOT assert decoder columns/indices exist. A renamed column or dropped BITMAP index → EXECUTE 5xx or silent full-scan, not caught at boot. | §7-5 (Plan §6.4). Measure: boot fails loud if any decoder column or declared index is missing from the live schema. |
+| **R-09** | ~~boot contract check is reachability-only~~ **[RESOLVED]** | ~~MED~~ | Was: `probe_surfaces()` did `count_rows()` only; a renamed column / dropped BITMAP index → EXECUTE 5xx or silent full-scan, not caught at boot. | **Closed by PR #431 (§7-5):** `verify_decoder_contract` asserts every `FieldSpec.column`+geometry+property exists in `ds.schema` and every declared index in `ds.list_indices()` at boot; drift → loud log + `/healthz` 503; opt-in `CATALYST_CONTRACT_STRICT` hard-fails. Live: zero violations. |
 | **R-10** | memo is process-local + unbounded | **LOW** | `_MEMO` is a plain dict, never evicted, lost on deploy. Unbounded growth under high query diversity (small risk given low volume); no cross-instance sharing. | Bound with an LRU; acceptable as-is at current volume. Measure: memory flat under a large distinct-query set. |
 
 ---
@@ -250,10 +250,10 @@ These are **separate data sources** — the warm snapshot and the live serving t
 **Mechanism:** in `geocode_xwalk.py`, on a Census no-match, fall back to a ZIP5-centroid lookup (a static ZIP→lat/lon table) with a `match_type='zip_centroid'` marker so the UI can render those dots at lower confidence. Keep rooftop matches authoritative.
 **Measure of done:** company-map coord coverage rises from 87.7% toward ~99%; `match_type` distinguishes centroid dots; no rooftop coord is overwritten.
 
-### 7-5 · catalyst boot schema/index contract check (Plan §6.4) — **MED**
-**Goal:** fail loud at boot if a decoder column or declared index is missing from the live Lance schema (R-09).
-**Mechanism:** extend `probe_surfaces()` (or add `verify_decoder_contract()`) in `apps/catalyst_api/src/lance_store.py`: for each decoder, open the dataset, assert every `FieldSpec.column` + geometry column exists in `ds.schema`, and every declared BTREE/BITMAP index exists in `ds.list_indices()`. Call it from `main.py` `lifespan` and surface on `/healthz`. Today `lifespan` only does `count_rows()` reachability.
-**Measure of done:** booting against a dataset missing a decoder column or index logs a loud error / fails the deploy; `/healthz` reports per-decoder contract status.
+### 7-5 · catalyst boot schema/index contract check (Plan §6.4) — **✅ DONE (PR #431)**
+**Shipped:** `lance_store.verify_decoder_contract()` (pure, unit-tested) + `check_decoder_contracts()` (live caller) assert, per decoder at boot, that every `FieldSpec.column` + geometry + property column exists in `ds.schema` and every **declared** index exists in `ds.list_indices()` (declared-⊆-actual; index `type` `.upper()`-normalized since live reports `'BTree'`/`'Bitmap'`; lookup keys on `FieldSpec.column`, not the query-name — `state` → `physical_address_state`). `main.py` lifespan runs it and stashes the report on `app.state`; `/healthz` surfaces `contract_ok` + per-decoder `contracts`.
+**Fail policy:** observe-only by default (log loud + `/healthz` 503, boot proceeds) so a false-positive can never brick EXECUTE; `CATALYST_CONTRACT_STRICT` (explicit, NOT auto-enabled by Railway) promotes a violation to a fatal boot abort once trusted.
+**Verified:** 8 hermetic tests (drift fires; known-good clean; mixed-case + query-name traps); the live check returns zero violations on both serving datasets; deployed `/healthz` → `contract_ok:true`, `contracts:{winners:ok, company:ok}`; catalyst boots clean; canonical regression still **7126**.
 
 ### 7-6 · Cadence / scheduling — **MED**
 **Goal:** keep geocode, serving tables, and the warm federal snapshot fresh on a schedule.
@@ -379,5 +379,5 @@ Expected live answers (2026-06-11): catalyst no-auth → **401**; edge `/ask` �
 - `docs/plans/NL_QUERY_MAP_COMPILER_STRATEGY.md`
 
 ### PRs (all MERGED [V])
-core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · **#423** this handoff · **#424** edge type+enum parity (closes R-02) · **#425** `addr_hash` single-source (closes R-01) · **#428** company decoder enums + `company.v2` (§7-2) · `d90b455` deploy-trigger.
+core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · **#423** this handoff · **#424** edge type+enum parity (closes R-02) · **#425** `addr_hash` single-source (closes R-01) · **#428** company decoder enums + `company.v2` (§7-2) · **#431** boot decoder contract check (closes R-09, §7-5) · `d90b455` deploy-trigger.
 rare-structure-hq: **#98** NL wiring · **#99** table + Map/Table toggle · **#101** geo-dot Albers-USA projection (§7-1).
