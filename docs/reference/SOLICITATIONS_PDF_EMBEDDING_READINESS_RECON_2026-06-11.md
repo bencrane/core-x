@@ -155,13 +155,13 @@ WITH prime_award AS (
     WHERE TRY_CAST(last_modified_date AS DATE) >= CURRENT_DATE - INTERVAL 90 DAY
   ) WHERE rn = 1
 )
-SELECT  c.chunk_id, c.chunk_ix, c.text, c.char_len, c.header_class, c.sensitivity,
+SELECT  c.chunk_id, c.chunk_ix, c.text, c.char_len, c.header_class, c.content_marking,
         c.notice_id, c.solicitation_number,
         a.contract_award_unique_key, a.award_id_piid, a.recipient_uei, a.recipient_name,
         a.awarding_agency_name, a.naics_code, a.action_date, a.last_modified_date
 FROM    govcon_scope_vectors_90day AS c
 JOIN    prime_award                AS a USING (contract_award_unique_key)
-WHERE   c.sensitivity = 'public';     -- route 'cui' to an isolated/self-hosted embed path
+WHERE   len(c.content_marking) = 0;   -- no marking detected; route marked rows to isolated/self-hosted embed
 ```
 
 ### 3.4 Coverage funnel (trailing-90-day prime awards)
@@ -185,10 +185,15 @@ Dominant loss is **Stage 1** (no Sol# on the award) then the GTM scope gate
    build.* (1024-dim is a reservation; the model is unfixed — pin it before first write so the
    column dim and the model agree.)
 
-2. **CUI egress.** **42,307 chunks** are `sensitivity='cui'` (scope 22,271 · unknown 19,244 ·
-   pricing 792). Sending these to a third-party embedding API is a Controlled-Unclassified-
-   Information spill. The `sensitivity` column is the gate — it must be honored: embed CUI on a
-   self-hosted model or exclude it from external egress.
+2. **Control-marking egress.** **42,307 chunks** carry a detected control marking
+   (`len(content_marking) > 0`; scope 22,271 · unknown 19,244 · pricing 792). Sending these to a
+   third-party embedding API risks a Controlled-Unclassified-Information spill. The `content_marking`
+   list is the gate — it must be honored: embed marked rows on a self-hosted model or exclude them from
+   external egress. (Field renamed `sensitivity`→`content_marking` and retyped `string`→`list<string>`
+   on 2026-06-12; legacy detected rows carry the sentinel `['unspecified']` — the specific caveat was
+   not persisted pre-rename and was deliberately not backfilled. Go-forward extraction captures the
+   actual caveats, e.g. `['itar','dist_stmt_c']`. `[]` = none detected, which is **not** proof of
+   public — see flags 4 and the 2,000-char/­scan blind spots.)
 
 3. **Container expansion never ran.** Zero `expanded_container` events, zero non-null
    `parent_resource_id` across 243,801 events, and `sam_attachment_inner_files_90day` is
@@ -226,6 +231,6 @@ so = {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
 d = lance.dataset("s3://data-sink/active/govcon_scope_vectors_90day/", storage_options=so)
 d.count_rows(), d.count_rows(filter="embedding IS NULL")   # → (1348983, 1348983)
 ```
-Disposition / text-length / join / sensitivity queries: project only scalar columns via
+Disposition / text-length / join / content_marking queries: project only scalar columns via
 `to_table(columns=[…])` into DuckDB; never pull `embedding`. Join proof in §3.2 is
 `SELECT count(DISTINCT w.contract_award_unique_key) … LEFT JOIN prime USING(contract_award_unique_key)`.

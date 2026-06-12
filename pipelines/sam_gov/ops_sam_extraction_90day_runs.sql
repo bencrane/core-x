@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS ops.sam_extraction_90day_runs (
     dropped_boilerplate   int,                    -- filename DROP_RX match (terminal, §5.2)
     dropped_duplicate     int,                    -- non-canonical sha256 (terminal, §5.1 dedup pre-pass)
     dropped_content_noise int,                    -- content-truth boilerplate header (terminal, §7.4)
-    cui_tagged            int,                    -- sensitivity='cui' TAG applied (NOT a diverting state, §7.4/C10)
+    content_marked        int,                    -- count of files w/ >=1 detected content marking (§7.4/C10; was cui_tagged)
     expanded_container    int,                    -- zip parents expanded (terminal, §6/D10)
     requires_ocr          int,                    -- low text-yield PDFs deferred to Phase 3 (re-attemptable, §7.3)
     extract_failed        int,                    -- per-file exception / converter miss (re-attemptable, §13)
@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS ops.sam_extraction_90day_runs (
     started_at            timestamptz,
     completed_at          timestamptz
 );
+
+-- Forward-rename for tables provisioned before the rename: cui_tagged -> content_marked. Idempotent.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='ops'
+             AND table_name='sam_extraction_90day_runs' AND column_name='cui_tagged') THEN
+    ALTER TABLE ops.sam_extraction_90day_runs RENAME COLUMN cui_tagged TO content_marked;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx
     ON ops.sam_extraction_90day_runs (run_id);

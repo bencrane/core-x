@@ -113,9 +113,32 @@ DROP_RX = (r"(^|[^a-z])(sf ?1449|sf ?30|sf ?33|sf ?18|ppq|past performance quest
 
 # ── Content-truth triage regex (spec §7.4 — run on extracted text; case-insensitive: header patterns
 #    are upper-cased, the labor lexicon lower-cased, both matched against the same body) ───────────
-CUI_RX = re.compile(
-    r"CONTROLLED UNCLASSIFIED INFORMATION|\bCUI\b|FOR OFFICIAL USE ONLY|\bFOUO\b|EXPORT CONTROLLED|"
-    r"\bITAR\b|\bEAR\b|DISTRIBUTION STATEMENT [B-F]", re.IGNORECASE)
+# Per-caveat control markings (spec §7.4). The ACTUAL matched caveat tokens are captured into the
+# `content_marking` list<string> on each chunk/ledger row (NOT collapsed to a single flag), e.g.
+# ['itar','dist_stmt_c']. Empty list = none detected in the scanned head (absence of evidence within
+# the 2,000-char window, NOT a guarantee of public). Distribution Statements capture the letter (B–F).
+_MARKING_PATTERNS = (
+    ("cui", re.compile(r"CONTROLLED UNCLASSIFIED INFORMATION|\bCUI\b", re.IGNORECASE)),
+    ("fouo", re.compile(r"FOR OFFICIAL USE ONLY|\bFOUO\b", re.IGNORECASE)),
+    ("export_controlled", re.compile(r"EXPORT CONTROLLED", re.IGNORECASE)),
+    ("itar", re.compile(r"\bITAR\b", re.IGNORECASE)),
+    ("ear", re.compile(r"\bEAR\b", re.IGNORECASE)),
+)
+_DIST_STMT_RX = re.compile(r"DISTRIBUTION STATEMENT ([B-F])", re.IGNORECASE)
+
+
+def _detect_markings(head: str) -> list[str]:
+    """Ordered, de-duplicated control-marking caveats literally present in `head` (the document's own
+    banner text). [] = none detected within the 2,000-char window (NOT proof of public)."""
+    out: list[str] = []
+    for name, rx in _MARKING_PATTERNS:
+        if rx.search(head):
+            out.append(name)
+    for m in _DIST_STMT_RX.finditer(head):
+        tok = f"dist_stmt_{m.group(1).lower()}"
+        if tok not in out:
+            out.append(tok)
+    return out
 SCOPE_HDR_RX = re.compile(
     r"PERFORMANCE WORK STATEMENT|STATEMENT OF WORK|STATEMENT OF OBJECTIVES|SCOPE OF WORK|\bPWS\b|"
     r"\bSOW\b|SPECIFICATIONS?|TECHNICAL REQUIREMENTS|SALIENT CHARACTERISTICS", re.IGNORECASE)
@@ -243,7 +266,7 @@ def _extraction_schema():
         ("lane", pa.string()), ("stage", pa.string()), ("state", pa.string()),
         ("extractor", pa.string()), ("n_pages", pa.int32()), ("text_chars", pa.int64()),
         ("text_yield_ratio", pa.float64()), ("header_class", pa.string()),
-        ("sensitivity", pa.string()), ("n_chunks", pa.int32()),
+        ("content_marking", pa.list_(pa.string())), ("n_chunks", pa.int32()),
         ("sha256_raw", pa.string()), ("sha256_text", pa.string()), ("codec", pa.string()),
         ("attempt", pa.int32()), ("worker_id", pa.string()), ("run_id", pa.string()),
         ("error", pa.string()),
@@ -262,7 +285,7 @@ def _scope_schema():
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
         ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
-        ("sensitivity", pa.string()), ("notice_id", pa.string()),
+        ("content_marking", pa.list_(pa.string())), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
         ("reading_order_conf", pa.string()),
@@ -276,7 +299,7 @@ def _pricing_schema():
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
         ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
-        ("sensitivity", pa.string()), ("notice_id", pa.string()),
+        ("content_marking", pa.list_(pa.string())), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
         ("reading_order_conf", pa.string()), ("cells", pa.large_string()),  # cell-delimited table rows (C6); int64 offsets
@@ -289,7 +312,7 @@ def _unknown_schema():
     return pa.schema([
         ("chunk_id", pa.string()), ("resource_id", pa.string()), ("chunk_ix", pa.int32()),
         ("text", pa.large_string()), ("char_len", pa.int32()), ("header_class", pa.string()),
-        ("sensitivity", pa.string()), ("notice_id", pa.string()),
+        ("content_marking", pa.list_(pa.string())), ("notice_id", pa.string()),
         ("solicitation_number", pa.string()), ("naics_code", pa.string()),
         ("contract_award_unique_key", pa.string()), ("source_extractor", pa.string()),
         ("reading_order_conf", pa.string()),
@@ -707,13 +730,13 @@ def _route_inner(inner_path: str, mime: str) -> str:
 # ════════════════════════════════════════════════════════════════════════ ledger row factory
 def _ledger_row(*, resource_id, lane, stage, state, parent_resource_id=None, extractor=None,
                 n_pages=None, text_chars=None, text_yield_ratio=None, header_class=None,
-                sensitivity=None, n_chunks=None, sha256_raw=None, sha256_text=None, codec=None,
+                content_marking=None, n_chunks=None, sha256_raw=None, sha256_text=None, codec=None,
                 attempt=1, worker_id=None, run_id=None, error=None, started_at=None,
                 completed_at=None) -> dict:
     return {"resource_id": resource_id, "parent_resource_id": parent_resource_id, "lane": lane,
             "stage": stage, "state": state, "extractor": extractor, "n_pages": n_pages,
             "text_chars": text_chars, "text_yield_ratio": text_yield_ratio, "header_class": header_class,
-            "sensitivity": sensitivity, "n_chunks": n_chunks, "sha256_raw": sha256_raw,
+            "content_marking": content_marking, "n_chunks": n_chunks, "sha256_raw": sha256_raw,
             "sha256_text": sha256_text, "codec": codec, "attempt": attempt, "worker_id": worker_id,
             "run_id": run_id, "error": error, "started_at": started_at, "completed_at": completed_at}
 
@@ -941,24 +964,24 @@ def _pdf_pricing_cells(spool) -> str | None:
 
 
 # ════════════════════════════════════════════════════════════════════════ content triage (§7.4)
-def _triage(text: str, lane: str) -> tuple[str, str, str, bool]:
-    """Return (state, header_class, sensitivity, lexicon_hit). Classify on the NORMALIZED text (§7.4)
-    so header phrases broken by runs of spaces/tabs in the raw text layer still match. CUI scanned FIRST
-    (tag, not a diverting state). L1_scope bypasses the boilerplate-drop branch (never drop a
-    filename-confirmed SOW)."""
+def _triage(text: str, lane: str) -> tuple[str, str, list[str], bool]:
+    """Return (state, header_class, markings, lexicon_hit). Classify on the NORMALIZED text (§7.4)
+    so header phrases broken by runs of spaces/tabs in the raw text layer still match. Control markings
+    are detected FIRST (a captured list tag, not a diverting state). L1_scope bypasses the
+    boilerplate-drop branch (never drop a filename-confirmed SOW)."""
     norm = _normalize_ws(text)
     head = norm[:TRIAGE_HEAD_CHARS]
-    sensitivity = "cui" if CUI_RX.search(head) else "public"
+    markings = _detect_markings(head)
     if SCOPE_HDR_RX.search(head):
-        return "extracted_scope", "scope", sensitivity, False
+        return "extracted_scope", "scope", markings, False
     if PRICING_HDR_RX.search(head):
-        return "extracted_pricing", "pricing", sensitivity, False
+        return "extracted_pricing", "pricing", markings, False
     if lane != "L1_scope" and BOILERPLATE_HDR_RX.search(head):
-        return "dropped_content_noise", "boilerplate", sensitivity, False
+        return "dropped_content_noise", "boilerplate", markings, False
     # unknown: labor-lexicon admission gate over the FULL (normalized) body (#1). Hit and miss BOTH land
     # in the unknown sink (never silently dropped); miss flagged lexicon_hit=false for cheap exclusion.
     hit = bool(LABOR_LEXICON_RX.search(norm))
-    return "extracted_unknown", "unknown", sensitivity, hit
+    return "extracted_unknown", "unknown", markings, hit
 
 
 def _requires_ocr(text_chars: int, n_pages: int, per_page: list[int]) -> bool:
@@ -1049,12 +1072,12 @@ def _extract_one(task: dict) -> dict:
                                             error=f"no_pool_engine:{engine}", started=started),
                               fetch_secs, time.monotonic() - tc)
 
-            state, header_class, sensitivity, lexicon_hit = _triage(text, task["lane"])
+            state, header_class, markings, lexicon_hit = _triage(text, task["lane"])
             extractor = {"pdfium": "pdfium", "python_docx": "python_docx",
                          "openpyxl": "openpyxl", "txt": "txt"}[engine]
             if state == "dropped_content_noise":
                 return _timed(_result_event(task, state=state, extractor=extractor,
-                                            header_class=header_class, sensitivity=sensitivity,
+                                            header_class=header_class, content_marking=markings,
                                             n_pages=n_pages, text_chars=text_chars,
                                             text_yield_ratio=yield_ratio, codec=codec, started=started),
                               fetch_secs, time.monotonic() - tc)
@@ -1067,10 +1090,10 @@ def _extract_one(task: dict) -> dict:
             sink = {"extracted_scope": "scope", "extracted_pricing": "pricing",
                     "extracted_unknown": "unknown"}[state]
             sha_text = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
-            chunks = _build_chunks(task, text, header_class, sensitivity, extractor, conf,
+            chunks = _build_chunks(task, text, header_class, markings, extractor, conf,
                                    lexicon_hit, cells, sink)
             res = _result_event(task, state=state, extractor=extractor, header_class=header_class,
-                                sensitivity=sensitivity, n_pages=n_pages, text_chars=text_chars,
+                                content_marking=markings, n_pages=n_pages, text_chars=text_chars,
                                 text_yield_ratio=yield_ratio, n_chunks=len(chunks),
                                 sha256_text=sha_text, codec=codec, started=started,
                                 sink=sink, chunks=chunks)
@@ -1113,13 +1136,13 @@ def _effective_class(mime_declared: str, mime_sniffed: str | None, mime_match) -
     return "serialized"
 
 
-def _build_chunks(task, text, header_class, sensitivity, extractor, conf, lexicon_hit, cells, sink):
+def _build_chunks(task, text, header_class, markings, extractor, conf, lexicon_hit, cells, sink):
     rid = task["resource_id"]
     now = dt.datetime.now(dt.timezone.utc)
     rows = []
     for ix, piece in _chunk_text(text):
         base = {"chunk_id": f"{rid}:{ix:04d}", "resource_id": rid, "chunk_ix": ix, "text": piece,
-                "char_len": len(piece), "header_class": header_class, "sensitivity": sensitivity,
+                "char_len": len(piece), "header_class": header_class, "content_marking": markings,
                 "notice_id": task.get("notice_id"), "solicitation_number": task.get("solicitation_number"),
                 "naics_code": task.get("naics_code"),
                 "contract_award_unique_key": task.get("contract_award_unique_key"),
@@ -1135,19 +1158,19 @@ def _build_chunks(task, text, header_class, sensitivity, extractor, conf, lexico
     return rows
 
 
-def _result_event(task, *, state, extractor=None, header_class=None, sensitivity=None, n_pages=None,
+def _result_event(task, *, state, extractor=None, header_class=None, content_marking=None, n_pages=None,
                   text_chars=None, text_yield_ratio=None, n_chunks=None, sha256_text=None, codec=None,
                   error=None, started=None, sink=None, chunks=None) -> dict:
     completed = dt.datetime.now(dt.timezone.utc)
     led = _ledger_row(resource_id=task["resource_id"], parent_resource_id=task.get("parent_resource_id"),
                       lane=task["lane"], stage="extract", state=state, extractor=extractor,
                       n_pages=n_pages, text_chars=text_chars, text_yield_ratio=text_yield_ratio,
-                      header_class=header_class, sensitivity=sensitivity, n_chunks=n_chunks,
+                      header_class=header_class, content_marking=content_marking, n_chunks=n_chunks,
                       sha256_raw=task.get("sha256_raw"), sha256_text=sha256_text, codec=codec,
                       attempt=int(task.get("attempt", 1)), worker_id=str(os.getpid()),
                       run_id=task.get("run_id"), error=error, started_at=started, completed_at=completed)
     return {"ledger": led, "sink": sink, "chunks": chunks or [], "resource_id": task["resource_id"],
-            "state": state, "extractor": extractor or "none", "sensitivity": sensitivity,
+            "state": state, "extractor": extractor or "none", "content_marking": content_marking,
             "text_chars": text_chars or 0, "content_length": int(task.get("content_length") or 0)}
 
 
@@ -1182,8 +1205,8 @@ class _Writer:
         self.n_results += 1
         st = res["state"]
         self.counts[st] = self.counts.get(st, 0) + 1
-        if res.get("sensitivity") == "cui":
-            self.counts["cui_tagged"] = self.counts.get("cui_tagged", 0) + 1
+        if res.get("content_marking"):                  # non-empty list => >=1 marking detected
+            self.counts["content_marked"] = self.counts.get("content_marked", 0) + 1
         ext = res["extractor"]
         slot = self.by_extractor.setdefault(ext, {"ok": 0, "fail": 0})
         slot["fail" if st in ("extract_failed", "ocr_failed") else "ok"] += 1
@@ -1472,19 +1495,19 @@ def _extract_serialized(task: dict, s3, so: dict) -> dict:
                                         error="soffice_no_output_retriable", started=started),
                           fetch_secs, time.monotonic() - tc)
         text_chars = len(text)
-        state, header_class, sensitivity, lexicon_hit = _triage(text, task["lane"])
+        state, header_class, markings, lexicon_hit = _triage(text, task["lane"])
         if state == "dropped_content_noise":
             return _timed(_result_event(task, state=state, extractor=extractor, header_class=header_class,
-                                        sensitivity=sensitivity, text_chars=text_chars, started=started),
+                                        content_marking=markings, text_chars=text_chars, started=started),
                           fetch_secs, time.monotonic() - tc)
         cells = text if state == "extracted_pricing" and extractor == "libreoffice+xlsx" else None
         sink = {"extracted_scope": "scope", "extracted_pricing": "pricing",
                 "extracted_unknown": "unknown"}[state]
         sha_text = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
-        chunks = _build_chunks(task, text, header_class, sensitivity, extractor, "high",
+        chunks = _build_chunks(task, text, header_class, markings, extractor, "high",
                                lexicon_hit, cells, sink)
         return _timed(_result_event(task, state=state, extractor=extractor, header_class=header_class,
-                                    sensitivity=sensitivity, text_chars=text_chars, n_chunks=len(chunks),
+                                    content_marking=markings, text_chars=text_chars, n_chunks=len(chunks),
                                     sha256_text=sha_text, started=started, sink=sink, chunks=chunks),
                       fetch_secs, time.monotonic() - tc)
     except Exception as exc:  # noqa: BLE001
@@ -1621,11 +1644,19 @@ CREATE SCHEMA IF NOT EXISTS ops;
 CREATE TABLE IF NOT EXISTS ops.sam_extraction_90day_runs (
     id bigserial PRIMARY KEY, run_id text NOT NULL, phase text, lane text, files_in int,
     extracted_scope int, extracted_pricing int, extracted_spreadsheet int, extracted_unknown int,
-    dropped_boilerplate int, dropped_duplicate int, dropped_content_noise int, cui_tagged int,
+    dropped_boilerplate int, dropped_duplicate int, dropped_content_noise int, content_marked int,
     expanded_container int, requires_ocr int, extract_failed int, by_extractor jsonb,
     total_chars bigint, total_chunks bigint, sustained_files_per_s numeric, sustained_mbps numeric,
     cpu_wait_ratio numeric, status text, error text, started_at timestamptz, completed_at timestamptz
 );
+-- Forward-rename: existing tables carried `cui_tagged`; the column is now `content_marked`
+-- (count of rows with >=1 detected content marking). Idempotent.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='ops'
+             AND table_name='sam_extraction_90day_runs' AND column_name='cui_tagged') THEN
+    ALTER TABLE ops.sam_extraction_90day_runs RENAME COLUMN cui_tagged TO content_marked;
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx ON ops.sam_extraction_90day_runs (run_id);
 CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_started_at_idx ON ops.sam_extraction_90day_runs (started_at DESC);
 """
@@ -1659,7 +1690,7 @@ def _record_run(result: dict, run_id: str, dsn: str | None) -> None:
         "extracted_unknown": c.get("extracted_unknown", 0),
         "dropped_boilerplate": c.get("dropped_boilerplate", 0) + c.get("L2_drop", 0),
         "dropped_duplicate": c.get("dropped_duplicate", 0),
-        "dropped_content_noise": c.get("dropped_content_noise", 0), "cui_tagged": c.get("cui_tagged", 0),
+        "dropped_content_noise": c.get("dropped_content_noise", 0), "content_marked": c.get("content_marked", 0),
         "expanded_container": c.get("expanded_container", 0) + c.get("container", 0),
         "requires_ocr": c.get("requires_ocr", 0), "extract_failed": c.get("extract_failed", 0),
         "by_extractor": result.get("by_extractor", {}),
@@ -1679,13 +1710,13 @@ def _record_run(result: dict, run_id: str, dsn: str | None) -> None:
                 INSERT INTO ops.sam_extraction_90day_runs
                   (run_id, phase, lane, files_in, extracted_scope, extracted_pricing,
                    extracted_spreadsheet, extracted_unknown, dropped_boilerplate, dropped_duplicate,
-                   dropped_content_noise, cui_tagged, expanded_container, requires_ocr, extract_failed,
+                   dropped_content_noise, content_marked, expanded_container, requires_ocr, extract_failed,
                    by_extractor, total_chars, total_chunks, sustained_files_per_s, sustained_mbps,
                    cpu_wait_ratio, status, error, started_at, completed_at)
                 VALUES (%(run_id)s,%(phase)s,%(lane)s,%(files_in)s,%(extracted_scope)s,
                    %(extracted_pricing)s,%(extracted_spreadsheet)s,%(extracted_unknown)s,
                    %(dropped_boilerplate)s,%(dropped_duplicate)s,%(dropped_content_noise)s,
-                   %(cui_tagged)s,%(expanded_container)s,%(requires_ocr)s,%(extract_failed)s,
+                   %(content_marked)s,%(expanded_container)s,%(requires_ocr)s,%(extract_failed)s,
                    %(by_extractor)s,%(total_chars)s,%(total_chunks)s,%(sustained_files_per_s)s,
                    %(sustained_mbps)s,%(cpu_wait_ratio)s,%(status)s,%(error)s,%(started_at)s,%(completed_at)s)
                 """, row)
