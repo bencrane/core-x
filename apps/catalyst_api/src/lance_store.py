@@ -466,3 +466,87 @@ def probe_surfaces() -> dict[str, bool]:
         except Exception:  # noqa: BLE001 — reachability probe, never fatal
             out[name] = False
     return out
+
+
+def verify_decoder_contract(schema_field_names, indices, decoder) -> list[str]:
+    """PURE decoder schema/index contract checker (no R2 — unit-testable with synthetic
+    inputs). For one decoder against one live dataset's schema + index inventory, assert:
+      1. every geometry column exists in the schema,
+      2. every property column exists in the schema,
+      3. every ``FieldSpec.column`` exists in the schema,
+      4. every FieldSpec that DECLARES an index (``spec.index`` in BTREE/BITMAP) has a live
+         index whose ``fields`` list contains that column — declared-⊆-actual (NEVER the
+         reverse; live legitimately carries more indexes than the decoder declares).
+
+    Returns a list of human-readable violation strings (empty == contract holds).
+
+    Matching is grounded in the real ``ds.list_indices()`` shape: entries are dicts with
+    key ``fields`` (list of physical columns) and key ``type`` (mixed-case 'BTree'/'Bitmap').
+    We match on column membership in ``fields`` and normalize ``type`` via ``.upper()``. A
+    column that IS indexed but with a different scalar kind is a soft, non-fatal note (never
+    a brick); a column with NO index at all is the real violation. Column lookups use
+    ``spec.column`` (the physical column), never the decoder dict key (the query-name).
+    """
+    violations: list[str] = []
+    schema_cols = set(schema_field_names)
+    dk = decoder.dataset_key
+
+    for col in decoder.geometry:
+        if col not in schema_cols:
+            violations.append(f"{dk}: geometry column {col!r} missing from live schema")
+
+    for col in decoder.properties:
+        if col not in schema_cols:
+            violations.append(f"{dk}: property column {col!r} missing from live schema")
+
+    for qname, spec in decoder.fields.items():
+        if spec.column not in schema_cols:
+            violations.append(
+                f"{dk}: field {qname!r} -> column {spec.column!r} missing from live schema"
+            )
+
+    # column -> set of live index types, built from the real `fields` lists.
+    indexed_types: dict[str, set] = {}
+    for entry in indices:
+        etype = str(entry.get("type", "")).upper()
+        for fcol in entry.get("fields", []):
+            indexed_types.setdefault(fcol, set()).add(etype)
+    for qname, spec in decoder.fields.items():
+        declared = getattr(spec, "index", None)
+        if declared is None:
+            continue
+        declared_u = str(declared).upper()
+        live_types = indexed_types.get(spec.column)
+        if not live_types:
+            violations.append(
+                f"{dk}: field {qname!r} declares {declared_u} index on column "
+                f"{spec.column!r} but NO live index covers that column"
+            )
+        elif declared_u not in live_types:
+            violations.append(
+                f"{dk}: field {qname!r} column {spec.column!r} is indexed as "
+                f"{sorted(live_types)} but decoder declares {declared_u} "
+                f"(type-mismatch note, non-fatal)"
+            )
+    return violations
+
+
+def check_decoder_contracts() -> dict[str, list[str]]:
+    """LIVE caller: open each map decoder's dataset against R2 (via ``_dataset``) and run
+    the pure checker. Returns ``{dataset_key: [violations...]}`` — an empty list per decoder
+    means the contract holds. A dataset that cannot be opened/introspected is itself reported
+    as a violation (a contract that cannot read the schema is a failed contract, surfaced not
+    swallowed). Never raises: the caller (lifespan) owns the fail policy."""
+    from .map_decoders import DECODERS  # local import: avoid import-time coupling
+
+    report: dict[str, list[str]] = {}
+    for name, decoder in DECODERS.items():
+        try:
+            ds = _dataset(config.MAP_DATASET_URIS[decoder.dataset_key])
+            schema_names = ds.schema.names
+            indices = ds.list_indices()
+        except Exception as exc:  # noqa: BLE001 — open/introspect failure IS a contract failure
+            report[name] = [f"{decoder.dataset_key}: could not open/introspect dataset: {exc}"]
+            continue
+        report[name] = verify_decoder_contract(schema_names, indices, decoder)
+    return report

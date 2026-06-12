@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 
 from datetime import date
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 
 from .src import config, lance_store
@@ -77,6 +77,27 @@ async def lifespan(_app: FastAPI):
             log.warning("catalyst_api: UNREACHABLE surface datasets (check *_LANCE_URI): %s", unreachable)
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.warning("catalyst_api: surface probe failed at boot: %s", exc)
+    # Decoder schema/index contract check (R-09): assert every FieldSpec.column + geometry
+    # column exists in the live schema and every DECLARED index exists. Drift is LOUD here at
+    # boot and surfaced on /healthz. Default is observe-only (log + /healthz 503, boot
+    # proceeds) so a false-positive can never brick EXECUTE; CATALYST_CONTRACT_STRICT promotes
+    # a real violation to a fatal boot abort. The whole block is best-effort so a checker bug
+    # cannot brick boot in non-strict mode.
+    contract_report: dict[str, list[str]] = {}
+    try:
+        contract_report = lance_store.check_decoder_contracts()
+        drift = {k: v for k, v in contract_report.items() if v}
+        if drift:
+            log.error("catalyst_api: DECODER CONTRACT DRIFT (R-09): %s", drift)
+            if config.contract_check_strict():
+                raise RuntimeError(f"decoder schema/index contract violated at boot: {drift}")
+        else:
+            log.info("catalyst_api: decoder contracts OK for %s", list(contract_report))
+    except RuntimeError:
+        raise  # strict-mode abort — fail the deploy (mirror the auth fail-closed path)
+    except Exception as exc:  # noqa: BLE001 — checker bug must never brick boot (non-strict)
+        log.warning("catalyst_api: contract check failed to run at boot: %s", exc)
+    _app.state.contract_report = contract_report
     yield
 
 
@@ -134,11 +155,20 @@ def root() -> dict:
 
 
 @app.get("/healthz")
-def healthz() -> JSONResponse:
-    """Liveness + R2 reachability. Open (no token) for platform probes."""
+def healthz(request: Request) -> JSONResponse:
+    """Liveness + R2 reachability + decoder contract status. Open (no token) for platform
+    probes. A 503 reflects EITHER an unreachable R2 anchor OR decoder schema/index contract
+    drift detected at boot (R-09)."""
     ok = lance_store.reachable()
-    body = {**_info(), "r2_reachable": ok}
-    return JSONResponse(body, status_code=200 if ok else 503)
+    report = getattr(request.app.state, "contract_report", {}) or {}
+    contract_ok = all(not v for v in report.values())
+    body = {
+        **_info(),
+        "r2_reachable": ok,
+        "contract_ok": contract_ok,
+        "contracts": {k: ("ok" if not v else v) for k, v in report.items()},
+    }
+    return JSONResponse(body, status_code=200 if (ok and contract_ok) else 503)
 
 
 # ── The read surface ─────────────────────────────────────────────────────────
