@@ -6,9 +6,15 @@ GRAIN  1 row per UEI reachable from a firmographics_blitz domain via sam_master_
        (domain-only link; 1 UEI ↦ exactly 1 firmographics domain on disk → naturally 1/UEI).
 SoR    s3://data-sink/active/firmographics_company_map_serving/  (Lance v2.1, derived, overwrite)
 INPUTS firmographics_blitz (domain firmographics) ⋈ sam_master_domains (domain↦uei)
-       ⋈ entity_profile_gold (uei → SAM address + award rollups) ⋈ geocode_xwalk (addr_hash → coords).
+       ⋈ entity_profile_gold (uei → SAM address + award rollups) ⋈ geocode_xwalk (addr_hash → coords)
+       + RECENCY: contractor_award_summary (prime/subaward most-recent action dates, rebuilt
+       daily — summary_as_of) ∪ usaspending_api_fresh prime/subaward feeds (rolling 90d),
+       max()'d per UEI into latest_award_action_date (DATE).
 SIGNALS industry, employee_size_band, company_type (firmographics) + naics, has_federal_awards,
-       total_active_obligations, award_count (govcon) — the prospecting filters.
+       total_active_obligations, award_count, latest_award_action_date (govcon) — the
+       prospecting filters. latest_award_action_date STALENESS: as fresh as the most recent
+       contractor_award_summary / fresh-feed ingest (NOT request-time); the decoder's
+       days_since_last_award axis resolves against it at query time.
 LEDGER ops.company_map_serving_runs (HQX_DB_URL_POOLED) on every terminal state.
 
     doppler run -p core-x -c prd -- uv run --no-project \
@@ -35,8 +41,12 @@ FIRMO_URI = f"{ACTIVE}/firmographics_blitz/"
 SAM_DOMAINS_URI = f"{ACTIVE}/sam_master_domains/"
 EPG_URI = f"{ACTIVE}/entity_profile_gold/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
+# Recency sources for latest_award_action_date (max across all three per UEI).
+CAS_URI = f"{ACTIVE}/contractor_award_summary/"
+FRESH_PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
+FRESH_SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 DATA_STORAGE_VERSION = "2.1"
-BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics"]
+BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics", "latest_award_action_date"]
 BITMAP_INDEXES = ["naics2", "industry", "employee_size_band", "company_type",
                   "physical_address_state", "has_federal_awards"]
 
@@ -76,6 +86,9 @@ def _assemble(so):
     sd = lance.dataset(SAM_DOMAINS_URI, storage_options=so)
     epg = lance.dataset(EPG_URI, storage_options=so)
     xw = lance.dataset(XWALK_URI, storage_options=so)
+    cas = lance.dataset(CAS_URI, storage_options=so)
+    fp = lance.dataset(FRESH_PRIME_URI, storage_options=so)
+    fs = lance.dataset(FRESH_SUB_URI, storage_options=so)
     con = _duck()
     # materialize projected scans (NOT to_reader — one-shot); single assembly query.
     con.register("fb", fb.scanner(columns=[
@@ -89,6 +102,12 @@ def _assemble(so):
         "physical_address_line_1", "physical_address_city", "physical_address_state",
         "physical_address_zip_postal_code"]).to_table())
     con.register("xw", xw.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_table())
+    # Recency sources: the all-time per-recipient summary (date32, rebuilt daily) plus the
+    # rolling-90d fresh feeds (ISO-string action dates) — max()'d per UEI below.
+    con.register("cas", cas.scanner(columns=[
+        "recipient_uei", "prime_most_recent_action_date", "subaward_most_recent_action_date"]).to_table())
+    con.register("fp", fp.scanner(columns=["recipient_uei", "action_date"]).to_table())
+    con.register("fs", fs.scanner(columns=["subawardee_uei", "subaward_action_date"]).to_table())
     hexpr = addr_hash_sql("e.physical_address_line_1", "e.physical_address_city",
                           "e.physical_address_state", "e.physical_address_zip_postal_code")
     sql = f"""
@@ -105,6 +124,17 @@ def _assemble(so):
                f.employees_on_linkedin, f.company_type, f.founded_year, f.followers, f.hq_city,
                f.hq_state, f.hq_region, f.linkedin_url, f.specialties
         FROM dom d JOIN fbx f ON d.domain = f.domain),
+    recency AS (
+        SELECT uei, max(d) AS latest_award_action_date FROM (
+            SELECT recipient_uei AS uei, prime_most_recent_action_date AS d FROM cas
+            UNION ALL
+            SELECT recipient_uei, subaward_most_recent_action_date FROM cas
+            UNION ALL
+            SELECT recipient_uei, try_cast(action_date AS DATE) FROM fp
+            UNION ALL
+            SELECT subawardee_uei, try_cast(subaward_action_date AS DATE) FROM fs
+        ) WHERE uei IS NOT NULL AND length(trim(uei)) > 0
+        GROUP BY uei),
     asm AS (
         SELECT l.uei, e.cage_code, l.domain_norm, l.company_name, e.legal_business_name,
                l.industry, l.employee_size_band, l.employees_on_linkedin, l.company_type,
@@ -116,9 +146,10 @@ def _assemble(so):
                upper(trim(e.physical_address_state)) AS physical_address_state,
                e.physical_address_zip_postal_code, {hexpr} AS addr_hash
         FROM linked l JOIN epg e ON l.uei = e.uei)
-    SELECT a.*, x.latitude, x.longitude, x.match_type,
+    SELECT a.*, r.latest_award_action_date, x.latitude, x.longitude, x.match_type,
            'firmographics_company_map_serving (derived)' AS source_file, now()::VARCHAR AS ingested_at
-    FROM asm a LEFT JOIN xw x USING (addr_hash)
+    FROM asm a LEFT JOIN recency r ON a.uei = r.uei
+               LEFT JOIN xw x USING (addr_hash)
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
@@ -159,8 +190,10 @@ def build():
         rows = tbl.num_rows
         with_coords = tbl.filter(pc.is_valid(tbl.column("latitude"))).num_rows
         fed = tbl.filter(pc.equal(tbl.column("has_federal_awards"), True)).num_rows
+        with_recency = tbl.filter(pc.is_valid(tbl.column("latest_award_action_date"))).num_rows
         log(f"assembled {rows:,} companies · {with_coords:,} with coords "
-            f"({(with_coords / rows * 100 if rows else 0):.1f}%) · {fed:,} with federal awards")
+            f"({(with_coords / rows * 100 if rows else 0):.1f}%) · {fed:,} with federal awards "
+            f"· {with_recency:,} with latest_award_action_date")
         if rows == 0:
             raise RuntimeError("zero companies assembled")
         lance.write_dataset(tbl, SERVING_URI, mode="overwrite",
@@ -195,11 +228,15 @@ def verify():
     out = {"uri": SERVING_URI, "rows": ds.count_rows(),
            "with_coords": ds.count_rows(filter="latitude IS NOT NULL"),
            "has_federal_awards": ds.count_rows(filter="has_federal_awards IS true"),
+           "with_recency": ds.count_rows(filter="latest_award_action_date IS NOT NULL"),
            "columns": len(ds.schema.names), "indices": idx}
     out["demo_construction_with_coords"] = ds.count_rows(
         filter="naics2 = '23' AND latitude IS NOT NULL")
     out["demo_construction_fed_awards_with_coords"] = ds.count_rows(
         filter="naics2 = '23' AND has_federal_awards IS true AND latitude IS NOT NULL")
+    cutoff30 = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=30)).isoformat()
+    out["demo_won_last_30d_with_coords"] = ds.count_rows(
+        filter=f"latest_award_action_date >= DATE '{cutoff30}' AND latitude IS NOT NULL")
     print(json.dumps(out, indent=2, default=str))
 
 
