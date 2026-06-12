@@ -11,10 +11,26 @@ full scans:
   3. ``usaspending/award_search`` — BTREE on ``recipient_uei`` returns the prime
      award line items, for the optional recent-awards detail call (bounded).
 
-Datasets are opened PER CALL (never cached as long-lived handles) so the gateway
-always reflects the latest committed Lance version — the pipeline workers
-overwrite these in place and a stale handle would serve the prior snapshot. A
-dataset open is a single manifest GET; the indexed point-lookup stays fast.
+DATASET HANDLES ARE WARM-CACHED (the gtm_mcp ``database._cached_dataset`` precedent):
+pylance does NOT share a resident scalar index across handles, so re-opening per call
+re-paid the BTREE load from R2 on every request (~78% of a cold lookup — see
+``GTM_MCP_RECALL_ARCHITECTURE_DIAGNOSTIC.md``; measured here as the 3–4 s dossier
+open). ``_dataset`` keeps ONE handle per URI with stale-while-revalidate semantics:
+
+  • within ``CATALYST_DATASET_TTL_SECONDS`` (default 300 s) the cached handle is
+    returned as-is — indices stay resident, point-lookups stay tens-of-ms;
+  • past the TTL the STALE handle keeps serving (no request ever blocks on a
+    refresh) while a single-flight background thread opens a fresh handle, WARMS
+    its key BTREE (a no-match indexed probe), then swaps it in;
+  • staleness is therefore bounded by ~TTL + one refresh: the serving tables are
+    rebuilt by in-place ``mode="overwrite"`` (an ATOMIC manifest commit — unlike
+    the directory-swap publishes gtm_mcp's double-listing guards, so no
+    mid-swap-partial check is needed) at most daily, and a rebuild becomes
+    visible here within ~5 minutes.
+
+Memory bound: HANDLES are cached (a fixed set of ~9 config URIs), never scan
+results; the heaviest index (award_search, ~379 MB) loads lazily only if its
+opt-in detail surface is actually exercised.
 
 The caller's domain is normalized to the stored anchor and validated against a
 strict charset before it is ever interpolated into a Lance filter expression
@@ -23,13 +39,20 @@ strict charset before it is ever interpolated into a Lance filter expression
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as dt_date, timedelta
 from typing import Any
 
 import lance
 
 from . import config
+
+log = logging.getLogger("catalyst_api.lance_store")
 
 # A domain is not guaranteed unique in firmographics (multiple source runs may
 # carry the same domain); cap the fan-out and pick the best row deterministically.
@@ -77,9 +100,106 @@ def _sql_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _dataset(uri: str):
-    """Open a committed Lance dataset fresh, bound to R2."""
+# ── Warm dataset-handle cache (stale-while-revalidate) ───────────────────────
+# {uri: (expiry_monotonic, handle)}. The URI set is fixed by config (~9 entries),
+# so the cache is bounded by construction — no sweep needed.
+_HANDLE_TTL_S = float(os.environ.get("CATALYST_DATASET_TTL_SECONDS", "300"))
+_handle_lock = threading.Lock()
+_handle_cache: dict[str, tuple[float, Any]] = {}
+_refreshing: set[str] = set()
+_REFRESH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lance-refresh")
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _open_uri(uri: str):
+    """One fresh manifest open against R2 — the only place a handle is created."""
     return lance.dataset(uri, storage_options=config.r2_storage_options())
+
+
+def _warm_key_columns() -> dict[str, str]:
+    """URI → the BTREE column a no-match probe warms. Covers the dossier-critical
+    point-lookup surfaces; URIs absent here refresh manifest-only (their indices
+    load lazily on first real use — deliberate, see the memory bound note above)."""
+    return {
+        config.ENTITY_PROFILE_GOLD_URI: "uei",
+        config.CONTRACTOR_AWARD_SUMMARY_URI: "recipient_uei",
+        config.MAP_DATASET_URIS["awards"]: "winner_uei",
+    }
+
+
+def _warm_handle(uri: str, ds) -> None:
+    """Best-effort: page the handle's key BTREE into residency with a no-match
+    indexed probe, so the FIRST real lookup on this handle is already warm."""
+    col = _warm_key_columns().get(uri)
+    if col is None:
+        return
+    try:
+        ds.scanner(columns=[col], filter=f"{col} = '__warm__'").to_table()
+    except Exception as exc:  # noqa: BLE001 — warming must never break serving
+        log.warning("handle warm failed for %s: %s", uri, exc)
+
+
+def _refresh_handle(uri: str) -> None:
+    """Single-flight background refresh: open a fresh handle, warm its key index,
+    THEN swap it into the cache — readers keep the stale-but-warm handle until the
+    replacement is equally warm, so no request ever pays the cold-index cost."""
+    try:
+        ds = _open_uri(uri)
+        _warm_handle(uri, ds)
+        with _handle_lock:
+            _handle_cache[uri] = (_now() + _HANDLE_TTL_S, ds)
+        log.info("refreshed lance handle %s (version %s)", uri, getattr(ds, "version", "?"))
+    except Exception as exc:  # noqa: BLE001 — keep serving the stale handle on failure
+        log.warning("handle refresh failed for %s (stale handle keeps serving): %s", uri, exc)
+    finally:
+        with _handle_lock:
+            _refreshing.discard(uri)
+
+
+def _dataset(uri: str):
+    """Warm, TTL'd ``LanceDataset`` for ``uri`` (stale-while-revalidate — module
+    docstring has the full semantics). Concurrent FIRST-callers may each open once
+    (cost-only, converges); after that the cached handle serves every request.
+
+    The refresh is SUBMITTED OUTSIDE ``_handle_lock``: ``_refresh_handle`` takes the
+    (non-reentrant) lock itself, so submitting under it would deadlock any executor
+    that runs inline — and no lock should span an executor call anyway."""
+    now = _now()
+    schedule_refresh = False
+    cached = None
+    with _handle_lock:
+        hit = _handle_cache.get(uri)
+        if hit is not None:
+            expiry, cached = hit
+            if expiry <= now and uri not in _refreshing:
+                _refreshing.add(uri)
+                schedule_refresh = True
+    if cached is not None:
+        if schedule_refresh:
+            _REFRESH_POOL.submit(_refresh_handle, uri)
+        return cached                      # fresh OR stale-while-revalidating
+    ds = _open_uri(uri)                    # first-ever open for this URI
+    with _handle_lock:
+        _handle_cache[uri] = (now + _HANDLE_TTL_S, ds)
+    return ds
+
+
+def prewarm_dossier_surfaces() -> dict[str, float]:
+    """Boot-time prewarm: open + index-warm the dossier-critical handles so the
+    FIRST real request after a deploy is already sub-second. Returns per-URI warm
+    seconds for the boot log. Best-effort by contract — never raises."""
+    timings: dict[str, float] = {}
+    for uri in _warm_key_columns():
+        t0 = _now()
+        try:
+            _warm_handle(uri, _dataset(uri))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("prewarm failed for %s: %s", uri, exc)
+        timings[uri.rstrip("/").rsplit("/", 1)[-1]] = round(_now() - t0, 3)
+    return timings
 
 
 # ── Lookup 1: domain → company + UEI ─────────────────────────────────────────
