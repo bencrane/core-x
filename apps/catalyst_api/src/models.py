@@ -46,6 +46,15 @@ class MapQueryRequest(_Model):
     limit: int | None = None          # caller hint, clamped to MAP_HARD_ROW_CAP
 
 
+class DossierBatchRequest(_Model):
+    """POST body for /api/v1/entities/dossiers — the eager-prefetch batch read.
+    ``ueis`` is validated/deduped/bounded by ``dossier.prepare_batch`` (not here:
+    Pydantic checks JSON shape only); ``actions`` mirrors the single route's knob."""
+
+    ueis: list[str] = []
+    actions: int = 10
+
+
 class Company(_Model):
     name: str | None = None
     uei: str | None = None

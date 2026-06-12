@@ -31,7 +31,7 @@ from datetime import date
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 
-from .src import config, lance_store
+from .src import config, dossier, lance_store
 from .src.map_decoders import DECODERS
 from .src.models import (
     ActiveContract,
@@ -39,6 +39,7 @@ from .src.models import (
     AwardProfile,
     AwardProfileResponse,
     Company,
+    DossierBatchRequest,
     EntityDossierResponse,
     MapQueryRequest,
     OverviewResponse,
@@ -52,6 +53,11 @@ log = logging.getLogger("catalyst_api")
 # Fan-out executor for the dossier's three independent point-lookups. Sized for a
 # few concurrent drawer opens (3 lookups each); the lookups are R2-I/O-bound.
 _DOSSIER_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="dossier")
+
+# Batch executor: each worker composes ONE UEI end-to-end (serial 3-lookup unit in
+# dossier.compose_dossier — never nested submits into its own pool). 8 workers keeps
+# a full 100-UEI batch under ~1 s on warm handles without stampeding R2.
+_BATCH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dossier-batch")
 
 
 @asynccontextmanager
@@ -147,6 +153,7 @@ def _info() -> dict:
             "overview": "/api/v1/entities/{uei}/overview",
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
+            "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
         },
         "map_datasets": list(DECODERS),
@@ -335,6 +342,30 @@ def entity_dossier(
     if gold is None:
         raise HTTPException(status_code=404, detail=f"no entity profile for uei {uei!r}")
     return _envelope(EntityDossierResponse.from_parts(gold, cas, recent, date.today()))
+
+
+@app.post("/api/v1/entities/dossiers", response_model=None, dependencies=[Depends(require_operator)])
+def entity_dossiers(body: DossierBatchRequest = Body(...)) -> JSONResponse:
+    """BATCH dossier read — the cockpit's eager-prefetch path: up to 100 UEIs per
+    call, each composed exactly as the single route (dossier.compose_dossier) and
+    fanned out on the batch pool over the warm handle cache. PARTIAL SUCCESS by
+    contract: the response maps every requested UEI to its dossier or ``null``
+    (unknown / invalid-format) — never all-or-nothing. Same public-record posture
+    as the single route; 422 only for a malformed/over-bound request envelope."""
+    ueis, err = dossier.prepare_batch(body.ueis)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    actions = max(1, min(body.actions or dossier.ACTIONS_DEFAULT, dossier.ACTIONS_MAX))
+    today = date.today()
+    futures = {u: _BATCH_POOL.submit(dossier.compose_dossier, u, actions, today) for u in ueis}
+    data: dict = {}
+    found = 0
+    for u in ueis:
+        model = futures[u].result()
+        if model is not None:
+            found += 1
+        data[u] = model.model_dump(by_alias=True, exclude_none=False) if model else None
+    return JSONResponse({"data": data, "meta": {"requested": len(ueis), "found": found}})
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──
