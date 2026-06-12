@@ -159,6 +159,10 @@ INNER_OK_MIME = {"pdf", "docx", "doc", "txt", "xlsx", "xls"}   # §6: inner file
 
 # Terminal states (spec §3.2). `routed`/`extracted_spreadsheet`/`requires_ocr` are intermediate (int).
 _INTERMEDIATE = {"routed", "extracted_spreadsheet", "requires_ocr"}
+# Audit-provenance states (e.g. the Phase-0 full-body marking pre-pass, sam_marking_fullbody_90day):
+# they ANNOTATE a resource without superseding its extraction terminal, so they are NEVER resolution
+# candidates (D2) — otherwise a newer audit event masks `extracted_*` and breaks the §12 reconcile.
+_AUDIT_STATES = {"marking_fullbody"}
 # Re-attemptable on resume (D2): not skipped even though some are "terminal-shaped".
 _REATTEMPT = {"requires_ocr", "extract_failed", "ocr_failed"}
 
@@ -220,6 +224,122 @@ def _split_s3(uri: str) -> tuple[str, str]:
     if key and not key.endswith("/"):
         key += "/"
     return bucket, key
+
+
+# ════════════════════════════════════════════════════════════════════════ single-committer lease (D3)
+LEASE_PREFIX = os.environ.get("SAM90_LEASE_PREFIX", "s3://data-sink/active/_sink_leases/")
+LEASE_TTL_S = int(os.environ.get("SAM90_LEASE_TTL_S", str(2 * 60 * 60)))
+
+
+class SinkCommitLease:
+    """Per-sink single-committer lease over an R2 conditional PUT (D3: one committing process per
+    dataset). Binds every Lance COMMITTER to a sink — the extractor bulk writer, the embed writer
+    (`sam_attachment_embed_90day.py`, which imports this class), and `phase_finalize` — so no two of
+    them can ever commit to the same sink concurrently (the pipeline commits directly to R2 with no
+    `commit_lock`, so concurrent committers race the manifest).
+
+    Mechanics & semantics:
+      * One lease object per sink: `{LEASE_PREFIX}{sink-uri-slug}.lease.json`. The slug is the full
+        URI path, so smoke `_smoke_*` sink overrides lease distinct keys and never contend with prod.
+      * ACQUIRE = `put_object(..., IfNoneMatch="*")` — atomic create-if-absent (R2 enforces the
+        conditional write; probed live: duplicate create → HTTP 412 PreconditionFailed). Exactly one
+        concurrent caller can win; losers raise RuntimeError naming the current holder. No spin or
+        queueing — these writers are long batch jobs; a blocked acquire is an operator decision.
+      * EXPIRY TAKEOVER: the lease body carries `expires_at` (= acquire time + ttl_s; default
+        SAM90_LEASE_TTL_S = 2h). A crashed holder leaves its object behind; an acquirer that finds an
+        EXPIRED (or unparseable) lease deletes it and re-runs the conditional create exactly once.
+        That takeover race is still single-winner because the create stays conditional. Holders must
+        size ttl_s to their worst-case wall clock (the extract phase passes 24h explicitly).
+      * RELEASE deletes the object only if the body still carries this holder's random token, so a
+        successor that legitimately took over after expiry is never clobbered. The GET+DELETE pair is
+        not atomic; the residual window is benign — worst case a FREE lease object lingers and the
+        next acquirer reclaims it via the expiry path.
+      * ADVISORY: the protocol binds this repo's writers; it cannot stop an out-of-band process that
+        bypasses it. Readers are never blocked. Manual unblock: delete the lease object.
+    """
+
+    def __init__(self, sink_uri: str, *, holder: str, ttl_s: int = LEASE_TTL_S) -> None:
+        import uuid
+        self.sink_uri = sink_uri
+        slug = (sink_uri[len("s3://"):] if sink_uri.startswith("s3://") else sink_uri)
+        slug = slug.strip("/").replace("/", "__")
+        self.bucket, _pfx = _split_s3(LEASE_PREFIX)
+        self.key = f"{_pfx}{slug}.lease.json"
+        self.holder = holder
+        self.ttl_s = ttl_s
+        self.token = uuid.uuid4().hex
+        self._s3 = None
+        self._held = False
+
+    def _client(self):
+        if self._s3 is None:
+            self._s3 = _make_s3_client(2)
+        return self._s3
+
+    def _try_create(self) -> bool:
+        from botocore.exceptions import ClientError
+        now = dt.datetime.now(dt.timezone.utc)
+        body = json.dumps({
+            "sink_uri": self.sink_uri, "holder": self.holder, "token": self.token,
+            "acquired_at": now.isoformat(),
+            "expires_at": (now + dt.timedelta(seconds=self.ttl_s)).isoformat(),
+        }).encode()
+        try:
+            self._client().put_object(Bucket=self.bucket, Key=self.key, Body=body, IfNoneMatch="*")
+            return True
+        except ClientError as exc:
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status in (409, 412):       # 412 = held; 409 = concurrent conditional create in flight
+                return False
+            raise
+
+    def _read(self) -> dict | None:
+        from botocore.exceptions import ClientError
+        try:
+            obj = self._client().get_object(Bucket=self.bucket, Key=self.key)
+            return json.loads(obj["Body"].read())
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in ("NoSuchKey", "404") or status == 404:
+                return None
+            raise
+
+    def acquire(self) -> "SinkCommitLease":
+        if self._try_create():
+            self._held = True
+            return self
+        cur = self._read()
+        if cur is not None:
+            try:
+                expired = dt.datetime.fromisoformat(cur["expires_at"]) <= dt.datetime.now(dt.timezone.utc)
+            except (KeyError, TypeError, ValueError):
+                expired = True                              # malformed lease == abandoned
+            if expired:
+                self._client().delete_object(Bucket=self.bucket, Key=self.key)
+        if self._try_create():                              # single takeover retry (still conditional)
+            self._held = True
+            return self
+        cur = self._read() or {}
+        raise RuntimeError(
+            f"sink commit lease for {self.sink_uri} is HELD by {cur.get('holder', '<unknown>')} "
+            f"(acquired_at={cur.get('acquired_at')}, expires_at={cur.get('expires_at')}); refusing a "
+            f"concurrent commit (D3). Wait for release/expiry, or delete "
+            f"s3://{self.bucket}/{self.key} if the holder is known dead.")
+
+    def release(self) -> None:
+        if not self._held:
+            return
+        cur = self._read()
+        if cur is not None and cur.get("token") == self.token:
+            self._client().delete_object(Bucket=self.bucket, Key=self.key)
+        self._held = False
+
+    def __enter__(self) -> "SinkCommitLease":
+        return self.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self.release()
 
 
 def _norm_mime(m: str | None) -> str:
@@ -382,13 +502,14 @@ def _read_resolution(so: dict):
     con = duckdb.connect()
     con.register("led", led)
     inter = ",".join(f"'{s}'" for s in _INTERMEDIATE)
+    audit = ",".join(f"'{s}'" for s in _AUDIT_STATES)
     return con.execute(f"""
         SELECT resource_id, parent_resource_id, lane, state, is_terminal FROM (
           SELECT resource_id, parent_resource_id, lane, state,
                  (state NOT IN ({inter})) AS is_terminal,
                  row_number() OVER (PARTITION BY resource_id
                    ORDER BY (state NOT IN ({inter})) DESC, attempt DESC, completed_at DESC) AS rn
-          FROM led
+          FROM led WHERE state NOT IN ({audit})
         ) WHERE rn = 1
     """).to_arrow_table()
 
@@ -1364,6 +1485,18 @@ def phase2_extract(*, so: dict, run_id: str, lanes: set[str], resume: bool, max_
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     _assert_soffice()                                  # fail fast (§15/C2)
+    # D3 single-committer: hold every chunk-sink lease for the run — content-truth triage means ANY
+    # lane can emit to ANY sink, so all three are bound. 24h ttl covers overnight daemonized bulk
+    # passes; a crashed run's lease is reclaimed via expiry takeover (or manual delete).
+    leases: list[SinkCommitLease] = []
+    try:
+        for _lease_uri in (SCOPE_URI, PRICING_URI, UNKNOWN_URI):
+            leases.append(SinkCommitLease(_lease_uri, holder=f"extract:{run_id}",
+                                          ttl_s=24 * 3600).acquire())
+    except Exception:
+        for lease in leases:
+            lease.release()
+        raise
     started = dt.datetime.now(dt.timezone.utc)
     tasks = _build_tasks(so, lanes, run_id)
     done = _load_checkpoint(ckpt_path) if resume else set()
@@ -1433,6 +1566,11 @@ def phase2_extract(*, so: dict, run_id: str, lanes: set[str], resume: bool, max_
         print(f"FATAL: {exc}", flush=True)
     finally:
         writer.finalize()
+        for lease in leases:
+            try:
+                lease.release()
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: lease release failed for {lease.sink_uri}: {exc}", flush=True)
         elapsed = max(1e-9, time.monotonic() - t0)
         fps = writer.n_results / elapsed
         mbps = (writer.bytes_read / 1e6) / elapsed
@@ -1593,12 +1731,68 @@ def _soffice_xls(body: bytes, task: dict) -> str | None:
 
 
 # ════════════════════════════════════════════════════════════════════════ Phase finalize (§11.6/§12)
+DEDUP_DELETE_BATCH = int(os.environ.get("DEDUP_DELETE_BATCH", "10000"))
+
+
+def _duplicate_rowids(chunk_ids, rowids) -> list[int]:
+    """Pure-python core of the row-address dedup: walk parallel (chunk_id, _rowid) sequences in scan
+    order and return the _rowids of every DUPLICATE occurrence — the first occurrence of each
+    chunk_id, in scan order, is kept. Separated from all I/O so the keep-first contract is
+    unit-testable (tests/test_sam_attachment_finalize_dedup.py)."""
+    seen: set = set()
+    dups: list[int] = []
+    for cid, rid in zip(chunk_ids, rowids):
+        if cid in seen:
+            dups.append(rid)
+        else:
+            seen.add(cid)
+    return dups
+
+
+def _vector_index_names(ds) -> list[str]:
+    """Names of vector (ANN) indices on a dataset — [] when none. Scalar BTREE/BITMAP indices do NOT
+    count: row-address deletes coexist with them; the hazard class is overwrite/compaction under an
+    IVF*/HNSW index (drops/invalidates it and re-arms the rebuild cost)."""
+    out: list[str] = []
+    for ix in ds.list_indices():
+        typ = str(ix.get("type", "")).upper()
+        if "IVF" in typ or "HNSW" in typ or "VECTOR" in typ:
+            out.append(str(ix.get("name", "?")))
+    return out
+
+
+def _assert_no_vector_index(ds, uri: str, action: str) -> None:
+    """HARD GATE (build-plan anti-pattern #2): every overwrite/compaction code path against a chunk
+    sink MUST call this first and MUST NOT catch the error. A `mode="overwrite"` rewrite (or
+    `compact_files`) on a vector-indexed sink materializes the full table (~10 GB once embeddings
+    exist) and drops every index — the silent demo-killing failure. Raises RuntimeError; never
+    returns on a vector-indexed sink."""
+    vec = _vector_index_names(ds)
+    if vec:
+        raise RuntimeError(
+            f"REFUSED: {action} on {uri} — sink carries vector index(es) {vec}. An overwrite/"
+            f"compaction would drop/invalidate them; use row-address delete() for dedup and the "
+            f"embed module's optimize_indices() for maintenance (Phase 0 item 2 / anti-pattern #2).")
+
+
 def phase_finalize(*, so: dict, run_id: str) -> dict:
-    """Post-Phase-2 finalize (spec §11.6/§12): collapse any crash-window duplicate `chunk_id`s left by
-    the append write path (restoring the uniqueness Phase 4's merge_insert relies on), then compact each
-    sink (compact_files + cleanup_old_versions) to clear the append-fragment debt. Scalar/IVF_PQ index
-    builds are intentionally deferred to the post-OCR §11.6 step. Idempotent; cheap when there are no
-    duplicates (a clean single-pass run)."""
+    """Post-Phase-2 finalize (spec §11.6/§12) — per sink, under that sink's SinkCommitLease:
+
+      1. ROW-ADDRESS DEDUP: collapse crash-window duplicate `chunk_id`s left by the append write path
+         (restoring the uniqueness Phase-4/5 merge_insert relies on). Only the duplicate rows are
+         touched: scan (chunk_id, _rowid), compute keep-first duplicates (`_duplicate_rowids`), then
+         `delete("_rowid IN (...)")` in DEDUP_DELETE_BATCH-sized commits. NEVER take()+
+         mode="overwrite" — that materializes the whole sink into one Arrow table (~10 GB once
+         embeddings exist) and drops every index (anti-pattern #2).
+      2. COMPACTION (un-indexed sinks only): compact_files + cleanup_old_versions clear the
+         append-fragment debt. `_assert_no_vector_index` hard-refuses the path on any sink carrying
+         a vector index — post-Phase-5 sinks get delete-based dedup ONLY here; fragment/index
+         maintenance then belongs to the embed module's optimize_indices step.
+      3. LEASE (D3): the per-sink SinkCommitLease guarantees finalize never commits concurrently
+         with the extractor bulk writer or the embed writer; see the class docstring for semantics.
+
+    Scalar/IVF_PQ index builds remain deferred to the post-OCR §11.6 step. Idempotent; cheap when
+    there are no duplicates (a clean single-pass run)."""
     import lance
     started = dt.datetime.now(dt.timezone.utc)
     report = {}
@@ -1607,30 +1801,37 @@ def phase_finalize(*, so: dict, run_id: str) -> dict:
         if not _dataset_exists(uri, so):
             print(f"finalize {name}: absent, skipped", flush=True)
             continue
-        ds = lance.dataset(uri, storage_options=so)
-        before = ds.count_rows()
-        # dedup chunk_id keeping first occurrence — type-safe via take() (no embedding round-trip).
-        ids = ds.to_table(columns=["chunk_id"]).column("chunk_id").to_pylist()
-        seen, keep = set(), []
-        for idx, cid in enumerate(ids):
-            if cid not in seen:
-                seen.add(cid)
-                keep.append(idx)
-        dupes = before - len(keep)
-        if dupes > 0:
-            deduped = ds.take(keep)                  # arrow table with the dataset's exact schema
-            lance.write_dataset(deduped, uri, mode="overwrite",
-                                data_storage_version="2.1", storage_options=so)
+        with SinkCommitLease(uri, holder=f"finalize:{run_id}"):
             ds = lance.dataset(uri, storage_options=so)
-        try:
-            ds.optimize.compact_files(target_rows_per_fragment=COMPACT_TARGET_ROWS)
-            ds.cleanup_old_versions()
-        except Exception as exc:  # noqa: BLE001
-            print(f"finalize {name}: compaction skipped: {exc}", flush=True)
-        after = lance.dataset(uri, storage_options=so).count_rows()
+            before = ds.count_rows()
+            # 1. row-address dedup — scans only (chunk_id, _rowid); no full-row materialization.
+            t = ds.to_table(columns=["chunk_id"], with_row_id=True)
+            dup_ids = _duplicate_rowids(t.column("chunk_id").to_pylist(),
+                                        t.column("_rowid").to_pylist())
+            for i in range(0, len(dup_ids), DEDUP_DELETE_BATCH):
+                batch = dup_ids[i:i + DEDUP_DELETE_BATCH]
+                ds.delete(f"_rowid IN ({','.join(map(str, batch))})")
+            if dup_ids:
+                ds = lance.dataset(uri, storage_options=so)
+            # 2. compaction — hard-refused on vector-indexed sinks (delete-based dedup only there).
+            vec = _vector_index_names(ds)
+            if vec:
+                print(f"finalize {name}: vector index(es) {vec} present — compaction REFUSED; "
+                      f"delete-based dedup only (run the embed module's optimize_indices instead)",
+                      flush=True)
+            else:
+                _assert_no_vector_index(ds, uri, action="compact_files/cleanup_old_versions")
+                try:
+                    ds.optimize.compact_files(target_rows_per_fragment=COMPACT_TARGET_ROWS)
+                    ds.cleanup_old_versions()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"finalize {name}: compaction skipped: {exc}", flush=True)
+            after = lance.dataset(uri, storage_options=so).count_rows()
         total_after += after
-        report[name] = {"before": before, "dupes_removed": dupes, "after": after}
-        print(f"finalize {name}: rows {before:,} -> {after:,} (chunk_id dupes removed {dupes:,}); compacted",
+        report[name] = {"before": before, "dupes_removed": len(dup_ids), "after": after,
+                        "vector_indexed": bool(vec)}
+        print(f"finalize {name}: rows {before:,} -> {after:,} (chunk_id dupes removed "
+              f"{len(dup_ids):,}); {'compaction refused (vector index)' if vec else 'compacted'}",
               flush=True)
     return {"phase": "finalize", "lane": "all", "files_in": 0, "counts": {}, "by_extractor": {},
             "total_chars": 0, "total_chunks": total_after, "sustained_files_per_s": None,
