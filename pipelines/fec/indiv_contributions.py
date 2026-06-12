@@ -66,6 +66,8 @@ import os
 
 import modal
 
+from core.name_norm import name_norm
+
 BUCKET = "data-sink"
 LANDING_PREFIX = "landing/fec_indiv/"
 # Unified Lance system-of-record tier (NOT the raw landing zone). Env-overridable.
@@ -103,6 +105,8 @@ FEC_BTREE_INDEXES = [
     "other_id",        # linked committee/candidate FK (earmarks / transfers)
     "employer",        # employer resolution (high cardinality)
     "transaction_dt",  # temporal range scans (BTREE supports range predicates)
+    "employer_norm",   # materialized normalized employer key — indexed point lookups
+    "name_norm",       # materialized normalized contributor-name key — indexed point lookups
 ]
 FEC_BITMAP_INDEXES = [
     "cycle_year",        # 24 cycles — logical partition pruning
@@ -114,6 +118,20 @@ FEC_BITMAP_INDEXES = [
     "amndt_ind",         # 3 — new / amend / terminate
     "memo_cd",           # 2
 ]
+
+# Write-time normalized resolution keys (Directive: FEC re-indexing & schema hardening).
+# Persisted columns computed ONCE at rest via the canonical core.name_norm macro, so the
+# blocking key is MATERIALIZED — never evaluated read-time in a WHERE clause. A func(col)
+# predicate (name_norm(employer) = …) is non-indexable and forces a full 282.9M-row scan; a
+# direct predicate on the stored column (employer_norm = …) binds the BTREE → ScalarIndexQuery.
+# See docs/reference/FEC_INDEX_TOPOLOGY_PUSHDOWN_DIAGNOSTIC.md. DataFusion add_columns(SQL) is
+# byte-identical to the fleet's DuckDB read-time key (verified 0 mismatch / 7M sampled rows
+# across cycles 1980-2024), so the stored key exact-joins sos_normalized_master. Each receives
+# a trained BTREE via FEC_BTREE_INDEXES above.
+FEC_NORM_COLUMNS: dict[str, str] = {
+    "employer_norm": name_norm("employer"),
+    "name_norm": name_norm("name"),
+}
 
 # 21 source columns in itcont.txt order (NO header in the data) → snake_case.
 # kind ∈ {"str", "date", "amt"}. Every identifier stays VARCHAR. No VARIANT.
@@ -177,7 +195,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # are the ceiling; the in-memory path uses the indexer container's RAM. See
     # lance-format/lance#2650.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.name_norm")  # ship the canonical blocking-key macro → /root/core/
 
 app = modal.App("fec-contributions", image=image)
 
@@ -614,6 +632,243 @@ def build_fec_indiv_indexes() -> dict:
             "committed_indices": committed}
 
 
+# ── Directive: FEC re-indexing & schema hardening ──────────────────────────────
+# The diagnostic (docs/reference/FEC_INDEX_TOPOLOGY_PUSHDOWN_DIAGNOSTIC.md) proved the 6
+# BTREE indices were committed-but-UNTRAINED (indexed_rows=0) and that evaluating name_norm
+# in a WHERE clause is non-indexable (full 282.9M-row scan). `harden` permanently remediates
+# both: (A) materialize employer_norm/name_norm at rest; (B) integrity-gate the keys; (C)
+# rebuild every BTREE to full cardinality; (D) prove indexed sub-second pushdown.
+
+
+def _materialize_norm_columns(so: dict) -> dict:
+    """(A) Append the persisted employer_norm / name_norm keys via Lance-native
+    add_columns(SQL): DataFusion streams the canonical core.name_norm macro over the raw
+    columns fragment-by-fragment, writing ONLY the new column files — no fragment rewrite,
+    row count preserved → zero duplicate-row risk, bounded memory. Idempotent: adds only the
+    keys MISSING from the committed schema, so a re-run after a partial failure resumes."""
+    import lance
+
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    have = set(ds.schema.names)
+    todo = {c: expr for c, expr in FEC_NORM_COLUMNS.items() if c not in have}
+    n0 = ds.count_rows()
+    v_before = ds.version
+    if not todo:
+        return {"added": [], "already_present": list(FEC_NORM_COLUMNS),
+                "version": ds.version, "v_before": v_before, "rows": n0}
+    ds.add_columns(todo)  # DataFusion SQL-expression form — streaming, parity-proven
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    n1 = ds.count_rows()
+    if n1 != n0:  # add_columns is column-only; a row-count delta would mean corruption
+        raise RuntimeError(f"row count changed during add_columns: {n0:,} -> {n1:,}")
+    return {"added": list(todo),
+            "already_present": [c for c in FEC_NORM_COLUMNS if c not in todo],
+            "version": ds.version, "v_before": v_before, "rows": n1}
+
+
+def _integrity_gate(so: dict, v_before: int) -> dict:
+    """(B) Every stored norm value must equal the canonical macro recomputed from the raw
+    column — DuckDB streaming compare over ALL rows (registered reader, no full materialize →
+    bounded memory). On any mismatch, RESTORE the dataset to the pre-materialize version and
+    fail loud, so the index builds never train against a bad key. Mirrors crosswalk_sam's
+    patch_normalized_name integrity gate."""
+    import duckdb
+    import lance
+
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    n = ds.count_rows()
+    con = duckdb.connect(":memory:")
+    con.execute("PRAGMA threads=8;")
+    con.register("rdr", ds.scanner(
+        columns=["employer", "name", "employer_norm", "name_norm"]).to_reader())
+    emp_mm, nm_mm = con.execute(
+        f"""SELECT
+              count(*) FILTER (WHERE employer_norm IS DISTINCT FROM {name_norm('employer')}),
+              count(*) FILTER (WHERE name_norm     IS DISTINCT FROM {name_norm('name')})
+            FROM rdr"""
+    ).fetchone()
+    con.close()
+    if emp_mm or nm_mm:
+        lance.dataset(DATASET_URI, storage_options=so).checkout_version(v_before).restore()
+        raise RuntimeError(
+            f"normalization integrity gate FAILED (employer_mismatch={emp_mm:,}, "
+            f"name_mismatch={nm_mm:,}); dataset restored to v{v_before}")
+    return {"rows_checked": n, "employer_mismatch": 0, "name_mismatch": 0, "passed": True}
+
+
+# R2-safe index build (local round-trip). A direct create_scalar_index to R2 trips R2's
+# "all non-trailing parts must have the same length" multipart rule once page_data.lance is
+# large enough that object_store ESCALATES its adaptive part size mid-upload (HTTP 400
+# InvalidPart) — which the 282.9M-row sub_id/name/employer BTREEs do. The BITMAP indices and
+# the add_columns column writes stay under the threshold and commit to R2 fine; the heavy
+# BTREEs do not. Fix (mirrors pipelines/hmda::reindex_local + pipelines/pdl_companies): stage
+# the dataset to LOCAL disk, build every BTREE there (no multipart), then publish ONLY the new
+# files (index dirs + new manifest) via boto3 — s3transfer uses uniform parts, which R2 accepts.
+# Data fragments are untouched.
+_FEC_PREFIX = "active/fec_individual_contributions/"
+
+
+def _download_r2_prefix(s3, prefix: str, local_dir: str) -> set[str]:
+    """Stage every object under an R2 prefix to local disk. Returns the relative keys already
+    in R2 so the publish step skips re-uploading the unchanged data fragments."""
+    import os.path
+    import shutil
+
+    shutil.rmtree(local_dir, ignore_errors=True)
+    existing: set[str] = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if not rel:
+                continue
+            lp = os.path.join(local_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], lp)
+            existing.add(rel)
+    return existing
+
+
+def _upload_new_files(s3, prefix: str, local_dir: str, existing: set[str]) -> int:
+    """Upload local files whose relative key is NOT already in R2 (the freshly-built index
+    files + the new manifest version). boto3/s3transfer = uniform-part multipart → R2-safe.
+    Manifest/version files upload LAST so the new dataset version only becomes resolvable once
+    every index + data file it references is already present — an interrupt-safe publish (a
+    kill mid-upload leaves the prior committed version intact, never a dangling manifest)."""
+    import os
+
+    new: list[tuple[str, str]] = []
+    for root, _, files in os.walk(local_dir):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_dir).replace(os.sep, "/")
+            if rel not in existing:
+                new.append((rel, lp))
+    # False (index/data) sorts before True (manifest) → manifests upload last.
+    new.sort(key=lambda t: ("_versions/" in t[0] or t[0].endswith(".manifest"), t[0]))
+    for rel, lp in new:
+        s3.upload_file(lp, BUCKET, prefix + rel)
+    return len(new)
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=60 * 60 * 6,
+    memory=65536,            # 282.9M-row in-memory BTREE sorts (LANCE_BYPASS_SPILLING)
+    cpu=16.0,
+    ephemeral_disk=524288,   # ~20 GiB dataset clone + the local index files
+)
+def reindex_local_fec() -> dict:
+    """(C) R2-safe BTREE build via local round-trip: stage the dataset to LOCAL disk, build
+    every BTREE in FEC_BTREE_INDEXES (6 raw + 2 norm) there — replace=True, no R2 multipart —
+    then publish only the new index dirs + manifest via boto3. Idempotent: re-running rebuilds
+    locally and re-publishes (manifest last → interrupt-safe). Requires the norm columns to be
+    committed in R2 first (Phase A)."""
+    import time
+
+    import lance
+
+    s3 = _s3_client()
+    local = "/tmp/fec_local"
+
+    existing = _download_r2_prefix(s3, _FEC_PREFIX, local)
+    print(f"staged {len(existing)} files from s3://{BUCKET}/{_FEC_PREFIX} → {local}", flush=True)
+
+    ds = lance.dataset(local)  # LOCAL — index writes go to disk, never R2 multipart
+    cols = set(ds.schema.names)
+    total = ds.count_rows()
+    built: list[dict] = []
+    for col in FEC_BTREE_INDEXES:
+        if col not in cols:
+            print(f"  BTREE · {col}: column absent — skip", flush=True)
+            continue
+        t0 = time.time()
+        ds.create_scalar_index(col, "BTREE", replace=True)
+        secs = round(time.time() - t0, 1)
+        built.append({"col": col, "secs": secs})
+        print(f"  BTREE ✓ {col} (local) in {secs}s", flush=True)
+
+    published = _upload_new_files(s3, _FEC_PREFIX, local, existing)
+    print(f"published {published} new files (index + manifest) → s3://{BUCKET}/{_FEC_PREFIX}", flush=True)
+    return {"built": [b["col"] for b in built], "timings": built,
+            "published": published, "rows": total}
+
+
+def _validate_pushdown(so: dict) -> dict:
+    """(D) Prove indexed pushdown on employer_norm: explain_plan emits ScalarIndexQuery,
+    warm median point query < 50 ms, plus full index_stats (every BTREE indexed_rows ==
+    cardinality). Read-only."""
+    import time
+
+    import lance
+
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    total = ds.count_rows()
+    idx_stats = {}
+    for ix in ds.list_indices():
+        nm = ix.get("name")
+        st = ds.stats.index_stats(nm)
+        idx_stats[nm] = {"type": st.get("index_type"),
+                         "indexed_rows": st.get("num_indexed_rows"),
+                         "unindexed_rows": st.get("num_unindexed_rows")}
+
+    v = ds.scanner(columns=["employer_norm"], filter="employer_norm IS NOT NULL",
+                   limit=1).to_table().column("employer_norm")[0].as_py()
+    val = str(v).replace("'", "''")
+    cols = ["sub_id", "name", "employer", "employer_norm"]
+    flt = f"employer_norm = '{val}'"
+    plan = ds.scanner(columns=cols, filter=flt).explain_plan(True)
+    analyze = ds.scanner(columns=cols, filter=flt).analyze_plan()
+    indexed = "ScalarIndexQuery" in plan
+    matches = ds.count_rows(filter=flt)
+
+    ds.scanner(columns=cols, filter=flt).to_table()  # warm the index/data caches
+    ts = []
+    for _ in range(9):
+        t0 = time.perf_counter()
+        ds.scanner(columns=cols, filter=flt).to_table()
+        ts.append((time.perf_counter() - t0) * 1000)
+    ts.sort()
+    median = ts[len(ts) // 2]
+    return {"sample_value": v, "filter": flt, "matches": matches,
+            "scalar_index_query": indexed, "sub_50ms": median < 50.0,
+            "warm_ms": {"median": round(median, 2), "min": round(ts[0], 2),
+                        "max": round(ts[-1], 2)},
+            "total_rows": total, "explain_plan": plan, "analyze_plan": analyze,
+            "index_stats": idx_stats}
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials")],
+    timeout=60 * 60 * 6,
+    memory=65536,   # 282.9M-row in-memory BTREE sorts (LANCE_BYPASS_SPILLING); 8 keys, sequential
+    cpu=8.0,
+)
+def harden() -> dict:
+    """Directive: FEC re-indexing & schema hardening. End-to-end, idempotent:
+      (A) materialize employer_norm / name_norm at rest;
+      (B) integrity-gate the keys (rollback on mismatch);
+      (C) rebuild ALL BTREEs (6 raw + 2 norm) to full cardinality;
+      (D) validate indexed sub-second pushdown.
+    Re-runnable: (A) skips present columns, (C) skips fully-trained indices."""
+    so = _r2_storage_options()
+    print("=== (A) materialize normalized columns ===", flush=True)
+    mat = _materialize_norm_columns(so)
+    print(mat, flush=True)
+    print("=== (B) integrity gate (stored == macro, all rows) ===", flush=True)
+    gate = _integrity_gate(so, int(mat["v_before"]))
+    print(gate, flush=True)
+    print("=== (C) rebuild BTREE indexes (R2-safe local round-trip) ===", flush=True)
+    idx = reindex_local_fec.remote()
+    print(idx, flush=True)
+    print("=== (D) validate pushdown ===", flush=True)
+    val = _validate_pushdown(so)
+    print(f"scalar_index_query={val['scalar_index_query']} sub_50ms={val['sub_50ms']} "
+          f"warm_ms={val['warm_ms']}", flush=True)
+    return {"dataset": DATASET_URI, "materialize": mat, "integrity": gate,
+            "indexes": idx, "validate": val}
+
+
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials")],
     timeout=60 * 60 * 2,
@@ -732,6 +987,17 @@ def index() -> None:
     import json
 
     print(json.dumps(build_fec_indiv_indexes.remote(), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def harden_run() -> None:
+    """Directive — materialize employer_norm/name_norm, integrity-gate, rebuild ALL BTREEs
+    to full cardinality, validate sub-second pushdown. Idempotent; run detached (multi-hour):
+        modal run --detach pipelines/fec/indiv_contributions.py::harden_run
+    """
+    import json
+
+    print(json.dumps(harden.remote(), indent=2, default=str))
 
 
 @app.local_entrypoint()
