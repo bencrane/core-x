@@ -14,6 +14,13 @@ Field types are verified against the live serving-table Arrow schemas: every str
 column is ``string``; ``total_obligation``/``total_active_obligations`` are ``double``;
 ``award_count`` is ``int64``; ``founded_year`` is ``int32``; ``has_federal_awards`` and
 ``is_active`` are ``bool``.
+
+The ``days_ago`` field type is the RELATIVE-TIME axis: the caller supplies a whole-day
+count and EXECUTE resolves it against ``date.today()`` at request time, compiling to a
+``DATE 'YYYY-MM-DD'`` literal over the underlying action-date column (date32 on company,
+ISO string on winners — DataFusion coerces both, verified live). Resolving the date at
+EXECUTE time — not at TRANSLATE time — keeps edge_api's translation memo safe: a cached
+"this week" sentence re-resolves to the current week on every execution.
 """
 from __future__ import annotations
 
@@ -45,7 +52,7 @@ class Decoder:
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v1",
+    version="winners.v2",
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date"),
@@ -57,22 +64,26 @@ WINNERS = Decoder(
         "naics_code":       FieldSpec("naics_code", "string", ("=", "in")),
         "total_obligation": FieldSpec("total_obligation", "float", (">=", "<=", "between")),
         "award_count":      FieldSpec("award_count", "int", (">=", "<=", "between")),
+        # ISO-string action date; days_ago resolves to a DATE literal at request time.
+        "days_since_last_award": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between")),
     },
     synonyms={
         "construction": {"field": "naics2", "op": "=", "value": "23"},
         "subawards":    {"field": "winner_type", "op": "=", "value": "subawardee"},
         "prime awards": {"field": "winner_type", "op": "=", "value": "prime_recipient"},
+        "this week":    {"field": "days_since_last_award", "op": "<=", "value": 7},
+        "won recently": {"field": "days_since_last_award", "op": "<=", "value": 30},
     },
 )
 
 
 COMPANY = Decoder(
     dataset_key="company",
-    version="company.v2",
+    version="company.v3",
     geometry=("longitude", "latitude"),
     properties=("uei", "company_name", "industry", "employee_size_band", "company_type",
                 "naics2", "primary_naics", "hq_city", "hq_state", "has_federal_awards",
-                "total_active_obligations", "award_count"),
+                "total_active_obligations", "award_count", "latest_award_action_date"),
     fields={
         "naics2":             FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "industry":           FieldSpec("industry", "string", ("=", "in"), index="BITMAP"),
@@ -91,11 +102,17 @@ COMPANY = Decoder(
         "founded_year":       FieldSpec("founded_year", "int", (">=", "<=", "between")),
         "active_obligations": FieldSpec("total_active_obligations", "float", (">=", "<=", "between")),
         "award_count":        FieldSpec("award_count", "int", (">=", "<=", "between")),
+        # date32 most-recent prime/subaward action date (materialize_company_map.py recency
+        # join); days_ago resolves to a DATE literal at request time. BTREE serves the ranges.
+        "days_since_last_award": FieldSpec("latest_award_action_date", "days_ago",
+                                           ("<=", ">=", "between"), index="BTREE"),
     },
     synonyms={
         "construction":        {"field": "naics2", "op": "=", "value": "23"},
         "federal contractors": {"field": "has_federal_awards", "op": "=", "value": True},
         "active":              {"field": "is_active", "op": "=", "value": True},
+        "this week":           {"field": "days_since_last_award", "op": "<=", "value": 7},
+        "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
     },
 )
 

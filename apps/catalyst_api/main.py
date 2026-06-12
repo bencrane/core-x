@@ -310,8 +310,10 @@ def map_query(
     ``{filters:[{field,op,value}]}`` object (never NL, never SQL). Filters are
     AND-combined and the scan is restricted to plottable rows. An off-allowlist
     field/op or a mistyped value is a 422; an unknown dataset is a 404. The response
-    is ``{"data": <FeatureCollection>, "meta": {...}}``; ``meta.capped`` flags a
-    result truncated at the hard row cap (narrow the filter)."""
+    is ``{"data": <FeatureCollection>, "meta": {...}}``; ``meta.total`` is the EXACT
+    match count (``count_rows`` pushdown) and ``meta.capped`` flags a result truncated
+    at the row bound — derived from ``total``, never from a sentinel row (the prior
+    ``limit+1`` probe under-reported with the pylance limited-scan planner)."""
     decoder = DECODERS.get(dataset)
     if decoder is None:
         raise HTTPException(status_code=404, detail=f"unknown map dataset {dataset!r}")
@@ -323,16 +325,17 @@ def map_query(
         raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
     cap = lance_store.MAP_HARD_ROW_CAP
     limit = min(body.limit or cap, cap)
-    rows = lance_store.map_query(decoder, predicate, limit + 1)   # +1 detects over-cap
-    capped = len(rows) > cap
-    fc = lance_store.to_geojson(decoder, rows[:cap])
+    total = lance_store.map_count(decoder, predicate)
+    rows = lance_store.map_query(decoder, predicate, limit)
+    fc = lance_store.to_geojson(decoder, rows)
     return JSONResponse({
         "data": fc,
         "meta": {
             "dataset": dataset,
             "decoderVersion": decoder.version,
             "returned": len(fc["features"]),
-            "capped": capped,
+            "total": total,
+            "capped": total > limit,
         },
     })
 

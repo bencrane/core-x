@@ -24,6 +24,7 @@ strict charset before it is ever interpolated into a Lance filter expression
 from __future__ import annotations
 
 import re
+from datetime import date as dt_date, timedelta
 from typing import Any
 
 import lance
@@ -356,9 +357,40 @@ def _map_enum_check(spec, values) -> None:
                 raise MapCompileError(f"value {v!r} not allowed for this field")
 
 
-def _map_clause_sql(spec, op: str, value: Any) -> str:
+def _days_ago_literal(value: Any, today: "dt_date") -> str:
+    """A ``DATE 'YYYY-MM-DD'`` literal for an integer days-ago count, resolved against
+    ``today`` at REQUEST time (never at translate time — a memoized relative-time filter
+    must re-resolve on every execution). DataFusion accepts the DATE literal against both
+    date32 columns (company) and ISO-string date columns (winners) — verified live."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MapCompileError("expected a non-negative whole-day count")
+    return f"DATE '{(today - timedelta(days=value)).isoformat()}'"
+
+
+def _map_days_ago_sql(spec, op: str, value: Any, today: "dt_date") -> str:
+    """Compile a ``days_ago`` clause. The comparison INVERTS onto the date column:
+    "within the last N days" (days_since <= N) means the action date is ON/AFTER
+    today−N; days_since >= N means ON/BEFORE today−N. ``between [lo, hi]`` is a
+    days-ago window (lo..hi days ago → dates today−hi .. today−lo). Rows with a NULL
+    action date (never won) never match — correct for a recency predicate."""
+    if op == "<=":
+        return f"{spec.column} >= {_days_ago_literal(value, today)}"
+    if op == ">=":
+        return f"{spec.column} <= {_days_ago_literal(value, today)}"
+    if op == "between":
+        if not (isinstance(value, list) and len(value) == 2):
+            raise MapCompileError("'between' needs a [lo, hi] array value")
+        lo, hi = value
+        return (f"{spec.column} >= {_days_ago_literal(hi, today)} AND "
+                f"{spec.column} <= {_days_ago_literal(lo, today)}")
+    raise MapCompileError(f"op {op!r} not allowed for a days_ago field")
+
+
+def _map_clause_sql(spec, op: str, value: Any, today: "dt_date") -> str:
     if op not in spec.ops:
         raise MapCompileError(f"op {op!r} not allowed for this field")
+    if spec.type == "days_ago":
+        return _map_days_ago_sql(spec, op, value, today)
     if op in ("=", ">=", "<="):
         _map_enum_check(spec, [value])
         return f"{spec.column} {op} {_map_coerce(value, spec.type)}"
@@ -376,21 +408,23 @@ def _map_clause_sql(spec, op: str, value: Any) -> str:
     raise MapCompileError(f"unsupported op {op!r}")
 
 
-def compile_map_filter(decoder, filters: list[dict[str, Any]]) -> str:
+def compile_map_filter(decoder, filters: list[dict[str, Any]], today: "dt_date | None" = None) -> str:
     """Compile an AND-combined list of ``{field, op, value}`` clauses into a Lance
     scanner predicate. Column names come ONLY from ``FieldSpec.column`` (a dict-key
     lookup on the decoder, never interpolated); values are type-validated + escaped.
     A trailing ``<lat_col> IS NOT NULL`` is ALWAYS appended so the scan — and the row
     cap — cover only PLOTTABLE rows (the map never wants a row it cannot draw, and
-    this makes ``meta.returned`` equal the feature count exactly). Raises
-    ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
+    this makes ``meta.returned`` equal the feature count exactly). ``today`` anchors
+    the ``days_ago`` clauses (injectable for tests; defaults to the request date).
+    Raises ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
+    today = today or dt_date.today()
     parts: list[str] = []
     for clause in filters:
         field = clause.get("field")
         spec = decoder.fields.get(field)
         if spec is None:
             raise MapCompileError(f"field {field!r} not in allowlist")
-        parts.append(_map_clause_sql(spec, clause.get("op"), clause.get("value")))
+        parts.append(_map_clause_sql(spec, clause.get("op"), clause.get("value"), today))
     parts.append(f"{decoder.geometry[1]} IS NOT NULL")     # plottable-only
     return " AND ".join(parts)
 
@@ -398,10 +432,29 @@ def compile_map_filter(decoder, filters: list[dict[str, Any]]) -> str:
 def map_query(decoder, predicate: str, limit: int) -> list[dict[str, Any]]:
     """Scan the decoder's serving table with a compiled predicate, projecting only
     the GeoJSON property + geometry columns. A genuinely missing dataset RAISES
-    (loud 5xx) per ``_scan``; a zero-row match returns ``[]``."""
+    (loud 5xx) per ``_scan``; a zero-row match returns ``[]``.
+
+    The row bound is enforced by STREAMING BATCHES, never by ``scanner(limit=)``:
+    pylance 7.0.0 plans a filtered+limited scan with the limit applied against the
+    PHYSICAL row stream, so a selective predicate silently returns a fraction of its
+    matches (observed live: 3,011 of 21,026 matching rows, with the cap reported
+    un-hit). Streaming the filtered scan and cutting at ``limit`` rows keeps the
+    result exact without materializing the full match set."""
     uri = config.MAP_DATASET_URIS[decoder.dataset_key]
     cols = list(decoder.properties) + [decoder.geometry[0], decoder.geometry[1]]
-    return _scan(uri, columns=cols, filter=predicate, limit=limit)
+    scanner = _dataset(uri).scanner(columns=cols, filter=predicate)
+    rows: list[dict[str, Any]] = []
+    for batch in scanner.to_batches():
+        rows.extend(batch.to_pylist())
+        if len(rows) >= limit:
+            break
+    return rows[:limit]
+
+
+def map_count(decoder, predicate: str) -> int:
+    """Exact match count for a compiled predicate (``count_rows`` pushdown — no row
+    materialization). Drives ``meta.total`` + the honest ``capped`` flag."""
+    return _dataset(config.MAP_DATASET_URIS[decoder.dataset_key]).count_rows(filter=predicate)
 
 
 def _map_jsonable(v: Any) -> Any:

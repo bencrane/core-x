@@ -18,7 +18,7 @@ OPS = ("=", ">=", "<=", "in", "between")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v1",
+        "version": "winners.v2",
         "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -27,15 +27,19 @@ DECODERS: dict[str, dict] = {
             "naics_code":       {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
             "total_obligation": {"type": "float",  "ops": (">=", "<=", "between"), "desc": "summed federal obligation, USD"},
             "award_count":      {"type": "int",    "ops": (">=", "<=", "between")},
+            "days_since_last_award": {"type": "days_ago", "ops": ("<=", ">=", "between"),
+                                      "desc": "whole days since the entity's most recent award action (integer; 0 = today). Time windows map here: 'won in the last N days' / 'past week' / 'this month' → days_since_last_award <= N"},
         },
         "synonyms": {
             "construction":  {"field": "naics2", "op": "=", "value": "23"},
             "subawardees":   {"field": "winner_type", "op": "=", "value": "subawardee"},
             "prime winners": {"field": "winner_type", "op": "=", "value": "prime_recipient"},
+            "this week":     {"field": "days_since_last_award", "op": "<=", "value": 7},
+            "won recently":  {"field": "days_since_last_award", "op": "<=", "value": 30},
         },
     },
     "company": {
-        "version": "company.v2",
+        "version": "company.v3",
         "description": "Companies in the firmographics target universe that are SAM-registered — one row per company.",
         "fields": {
             "naics2":             {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -49,11 +53,15 @@ DECODERS: dict[str, dict] = {
             "founded_year":       {"type": "int",    "ops": (">=", "<=", "between")},
             "active_obligations": {"type": "float",  "ops": (">=", "<=", "between"), "desc": "total active federal obligations, USD"},
             "award_count":        {"type": "int",    "ops": (">=", "<=", "between")},
+            "days_since_last_award": {"type": "days_ago", "ops": ("<=", ">=", "between"),
+                                      "desc": "whole days since the company's most recent federal award action (integer; 0 = today). Time windows map here: 'won in the last N days' / 'past week' / 'this month' → days_since_last_award <= N"},
         },
         "synonyms": {
             "construction":        {"field": "naics2", "op": "=", "value": "23"},
             "federal contractors": {"field": "has_federal_awards", "op": "=", "value": True},
             "active":              {"field": "is_active", "op": "=", "value": True},
+            "this week":           {"field": "days_since_last_award", "op": "<=", "value": 7},
+            "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
         },
     },
 }
@@ -84,8 +92,13 @@ def render_decoder_prompt(dataset: str) -> str:
         "- Emit ONLY via the emit_filter tool. Never prose.",
         "- Use ONLY the listed fields and their listed ops. For an enum field use only its allowed values.",
         "- Numeric value for >= and <=; [lo, hi] for between; an array for in; bare true/false for bool.",
+        "- A days_ago field takes a whole-day INTEGER count, never a calendar date.",
         "- Combine multiple conditions as separate filter clauses (they are AND-combined).",
-        "- If the query implies no usable filter, return an empty filters array.",
+        "- NEVER silently drop part of the query. Any constraint you cannot express with the"
+        " listed fields goes into the unmapped array as a short verbatim phrase from the query.",
+        "- If the query implies no usable filter, return an empty filters array (and record"
+        " whatever you could not map in unmapped).",
+        "- If everything mapped, return an empty unmapped array.",
     ]
     return "\n".join(lines)
 
@@ -109,12 +122,19 @@ def build_emit_filter_tool(dataset: str) -> dict:
                         "properties": {
                             "field": {"type": "string", "enum": list(d["fields"])},
                             "op": {"type": "string", "enum": list(OPS)},
-                            "value": {"description": "scalar for =,>=,<=; array for in/between; true/false for bool"},
+                            "value": {"description": "scalar for =,>=,<=; array for in/between; true/false for bool; whole-day integer for days_ago"},
                         },
                         "required": ["field", "op", "value"],
                     },
                 },
+                # The honesty contract: a constraint the allowlist cannot express is SURFACED,
+                # never silently dropped — the UI renders these as "not applied".
+                "unmapped": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "verbatim phrases from the query that could NOT be mapped to any allowed field (empty when everything mapped)",
+                },
             },
-            "required": ["title", "filters"],
+            "required": ["title", "filters", "unmapped"],
         },
     }

@@ -9,14 +9,19 @@ route), never reach Lance.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from apps.catalyst_api.src import lance_store
 from apps.catalyst_api.src.map_decoders import COMPANY, DECODERS, WINNERS, OPS
 
+# Frozen anchor for days_ago clauses — injected so the expected DATE literals are stable.
+TODAY = date(2026, 6, 12)
+
 
 def _compile(decoder, filters):
-    return lance_store.compile_map_filter(decoder, filters)
+    return lance_store.compile_map_filter(decoder, filters, today=TODAY)
 
 
 # ── compile correctness ──────────────────────────────────────────────────────
@@ -133,6 +138,55 @@ def test_injection_value_is_escaped_not_executed():
     assert "''" in pred
 
 
+# ── days_ago: relative-time clauses resolve to DATE literals at request time ──
+def test_company_won_within_days_inverts_onto_date_column():
+    # "won in the last 7 days" → days_since <= 7 → action date ON/AFTER today-7
+    pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": 7}])
+    assert pred == "latest_award_action_date >= DATE '2026-06-05' AND latitude IS NOT NULL"
+
+
+def test_winners_won_within_one_day():
+    pred = _compile(WINNERS, [{"field": "days_since_last_award", "op": "<=", "value": 1}])
+    assert pred == "last_action_date >= DATE '2026-06-11' AND latitude IS NOT NULL"
+
+
+def test_days_ago_gte_means_on_or_before_cutoff():
+    # "no award in over a year" → days_since >= 365 → action date ON/BEFORE today-365
+    pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": ">=", "value": 365}])
+    assert pred == "latest_award_action_date <= DATE '2025-06-12' AND latitude IS NOT NULL"
+
+
+def test_days_ago_between_is_a_days_window():
+    # 7..30 days ago → dates today-30 .. today-7
+    pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "between", "value": [7, 30]}])
+    assert pred == ("latest_award_action_date >= DATE '2026-05-13' AND "
+                    "latest_award_action_date <= DATE '2026-06-05' AND latitude IS NOT NULL")
+
+
+def test_days_ago_zero_is_today():
+    pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": 0}])
+    assert pred == "latest_award_action_date >= DATE '2026-06-12' AND latitude IS NOT NULL"
+
+
+def test_days_ago_rejects_negative_float_bool_and_string():
+    for bad in (-1, 1.5, True, "7"):
+        with pytest.raises(lance_store.MapCompileError):
+            _compile(COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": bad}])
+
+
+def test_days_ago_rejects_equality_op():
+    # '=' is not in the field's ops — a point-in-time day count is not a supported axis.
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(COMPANY, [{"field": "days_since_last_award", "op": "=", "value": 7}])
+
+
+def test_days_ago_default_today_is_request_date():
+    # No injected anchor → resolves against date.today() (the memo-staleness guarantee).
+    pred = lance_store.compile_map_filter(
+        COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": 0}])
+    assert f"latest_award_action_date >= DATE '{date.today().isoformat()}'" in pred
+
+
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
 def test_to_geojson_shape_and_axis_order():
     rows = [
@@ -162,7 +216,7 @@ def test_decoders_are_internally_consistent():
     for decoder in DECODERS.values():
         for name, spec in decoder.fields.items():
             assert set(spec.ops) <= set(OPS), f"{name}: ops outside global OPS"
-            assert spec.type in ("string", "int", "float", "bool")
+            assert spec.type in ("string", "int", "float", "bool", "days_ago")
         for term, clause in decoder.synonyms.items():
             assert clause["field"] in decoder.fields, f"synonym {term!r} → unknown field"
             assert clause["op"] in decoder.fields[clause["field"]].ops

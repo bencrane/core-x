@@ -75,9 +75,23 @@ def test_emit_filter_tool_schema_is_enum_bounded():
         assert set(item["op"]["enum"]) == set(edge.OPS)
 
 
+def test_emit_filter_tool_requires_unmapped():
+    # The honesty contract: the forced tool MUST always emit `unmapped` (possibly empty),
+    # so a constraint the allowlist cannot express is surfaced, never silently dropped.
+    for ds in edge.DECODERS:
+        tool = edge.build_emit_filter_tool(ds)
+        schema = tool["input_schema"]
+        assert "unmapped" in schema["properties"]
+        assert schema["properties"]["unmapped"]["items"] == {"type": "string"}
+        assert set(schema["required"]) == {"title", "filters", "unmapped"}
+
+
 def test_render_prompt_mentions_fields_and_synonyms_but_no_columns():
     p = edge.render_decoder_prompt("company")
     assert "naics2" in p and "has_federal_awards" in p
     assert "construction" in p and "emit_filter" in p
+    # The relative-time axis and the never-silently-drop rule are prompt-load-bearing.
+    assert "days_since_last_award" in p and "unmapped" in p
     # Lance column names must NEVER reach the model — only EXECUTE knows them.
     assert "physical_address_state" not in p
+    assert "latest_award_action_date" not in p
