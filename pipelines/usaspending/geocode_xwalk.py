@@ -4,11 +4,13 @@ read it from every surface (awards, SAM entities, SoS) forever.
 
 GRAIN  1 row per addr_hash = md5(normalized street|city|state|zip5).
 SoR    s3://data-sink/active/geocode_xwalk/   (Lance v2.1, BTREE addr_hash)
-SOURCE two worklist builders, both feeding the SAME accretive crosswalk:
+SOURCE three worklist builders, all feeding the SAME accretive crosswalk:
        • awards (default) — distinct recipient + subawardee addresses from the rolling
          90d prime + subaward feeds (env GEOCODE_WINDOW_DAYS); address text is verbatim.
        • blitz_sam — firmographics_blitz domain ↦ sam_master_domains (domain-only, the
          blitz uei is ignored) ↦ UEIs ↦ entity_profile_gold physical_address_*.
+       • epg_federal — entity_profile_gold WHERE has_federal_awards ↦ physical_address_*
+         (the all-time federal-contractor universe — every UEI that has ever won an award).
 GEOCODE Census Bulk Geocoder (geocoding.geo.census.gov, no key, ≤10k/batch), rooftop only.
        No-match rows are skipped (no centroid fallback) — a later run can fill them.
 WRITE  ACCRETIVE. merge_insert(addr_hash).when_not_matched_insert_all — a known address
@@ -19,7 +21,7 @@ LEDGER ops.geocode_xwalk_runs (HQX_DB_URL_POOLED) on every terminal state.
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' \
       --with 'requests>=2.32' --with 'psycopg[binary]>=3.2' \
-      python3 pipelines/usaspending/geocode_xwalk.py <init_ops|build|build_blitz|verify> [window_days]
+      python3 pipelines/usaspending/geocode_xwalk.py <init_ops|build|build_blitz|build_epg_federal|verify> [window_days]
 """
 from __future__ import annotations
 
@@ -169,6 +171,37 @@ def _worklist_blitz_sam(so) -> list[tuple]:
     return rows
 
 
+def _worklist_epg_federal(so) -> list[tuple]:
+    """Distinct (addr_hash, street, city, state, zip5) for every entity_profile_gold UEI that
+    holds federal awards (has_federal_awards) — the all-time federal-contractor address universe
+    (the addressable govcon market, beyond the firmographics-matched slice). One row per addr_hash."""
+    import lance
+    epg = lance.dataset(EPG_URI, storage_options=so)
+    con = _duck()
+    con.register("epg", epg.scanner(columns=[
+        "has_federal_awards", "physical_address_line_1", "physical_address_city",
+        "physical_address_state", "physical_address_zip_postal_code"]).to_reader())
+    hexpr = addr_hash_sql("street", "city", "state", "zip")
+    sql = f"""
+    WITH a AS (
+        SELECT physical_address_line_1 AS street, physical_address_city AS city,
+               physical_address_state AS state, physical_address_zip_postal_code AS zip
+        FROM epg WHERE has_federal_awards IS true),
+    h AS (
+        SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
+               upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
+        FROM a
+        WHERE street IS NOT NULL AND length(trim(street)) > 0
+          AND state IS NOT NULL AND length(trim(state)) > 0)
+    SELECT addr_hash, any_value(street) AS street, any_value(city) AS city,
+           any_value(state) AS state, any_value(zip5) AS zip5
+    FROM h GROUP BY addr_hash
+    """
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return rows
+
+
 def _existing_hashes(so) -> set[str]:
     import lance
     try:
@@ -264,10 +297,18 @@ def build(window_days: int = WINDOW_DAYS, source: str = "awards"):
     worklist_n = already_n = geocoded_n = matched_n = table_after = skipped_n = 0
     write_mode = "none"
     try:
-        worklist = _worklist(so) if source == "awards" else _worklist_blitz_sam(so)
+        if source == "awards":
+            worklist = _worklist(so)
+            src = f"{window_days}d awards window"
+        elif source == "blitz_sam":
+            worklist = _worklist_blitz_sam(so)
+            src = "blitz↦sam_master_domains↦entity_profile_gold"
+        elif source == "epg_federal":
+            worklist = _worklist_epg_federal(so)
+            src = "entity_profile_gold has_federal_awards (all-time federal contractors)"
+        else:
+            raise ValueError(f"unknown source {source!r} (awards|blitz_sam|epg_federal)")
         worklist_n = len(worklist)
-        src = (f"{window_days}d awards window" if source == "awards"
-               else "blitz↦sam_master_domains↦entity_profile_gold")
         log(f"worklist: {worklist_n:,} distinct addresses ({src})")
         existing = _existing_hashes(so)
         already_n = len(existing)
@@ -379,12 +420,15 @@ def main():
         print(json.dumps(build(window_days=arg), indent=2, default=str))
     elif cmd == "build_blitz":
         print(json.dumps(build(source="blitz_sam"), indent=2, default=str))
+    elif cmd == "build_epg_federal":
+        print(json.dumps(build(source="epg_federal"), indent=2, default=str))
     elif cmd == "verify":
         verify()
     elif cmd == "init_ops":
         init_ops()
     else:
-        print(f"unknown command: {cmd} (init_ops|build|build_blitz|verify)"); sys.exit(2)
+        print(f"unknown command: {cmd} (init_ops|build|build_blitz|build_epg_federal|verify)")
+        sys.exit(2)
 
 
 if __name__ == "__main__":
