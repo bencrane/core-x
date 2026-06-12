@@ -33,3 +33,4 @@ env/
 # Node / Trigger.dev
 node_modules/
 .trigger/
+.gstack/
