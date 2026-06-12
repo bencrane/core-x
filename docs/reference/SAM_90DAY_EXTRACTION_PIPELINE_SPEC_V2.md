@@ -40,7 +40,7 @@ sha256 dedup: 120,887 distinct of 126,901 → **5,627 byte-identical duplicate f
 | C7 | `unknown` header class → separate **`govcon_unknown_90day`** sink + labor-lexicon admission gate; mandatory `where header_class='scope'` retrieval prefilter + `BITMAP(header_class)`. | #1 |
 | C8 | New **Phase 5 structured field extraction** → `govcon_labor_demand_90day` (labor_category/headcount/clearance/PoP/place/wage), per-document, bridged to award. | #3 |
 | C9 | **Content-canonical dedup pre-pass** (raw sha256) + `sha256_text` chunk dedup + fan-out map `sam_attachment_content_dedup_90day`. | #9 |
-| C10 | **CUI/sensitivity classifier** in triage → `quarantined_sensitive`, excluded from any external path; `sensitivity` column on chunks. | #10 |
+| C10 | **Control-marking detector** in triage → captures matched caveats into the `content_marking list<string>` column on chunks (gate for any external/egress path; `[]`=none detected). | #10 |
 | C11 | Phase 2 chunk write = **`merge_insert` on `chunk_id`**; checkpoint-after-chunk-durability ordering; §12 per-`resource_id` `n_chunks==COUNT(*)` assertion. | #19,#20 |
 | C12 | **Compaction** (`compact_files` + `cleanup_old_versions`) before index build; corrected Lance rationale in D1/D3/§13. | #22,#23,#11 |
 | C13 | pdfium opened **from spilled file path** (not re-read bytes) + >50 MB semaphore; sniff-aware dispatch override; charset-normalizer txt decode; pdfium stream-order caveat + optional reading-order flag. | #12,#14,#15,#25 |
@@ -71,7 +71,7 @@ sha256 dedup: 120,887 distinct of 126,901 → **5,627 byte-identical duplicate f
 
 ### 3.2 `sam_attachment_extraction_90day` — append-only state event ledger (Lance v2.1)
 One row per processing event. Columns: `resource_id, parent_resource_id (null unless inner-of-zip), lane,
-stage, state, extractor, n_pages, text_chars, text_yield_ratio, header_class, sensitivity, n_chunks,
+stage, state, extractor, n_pages, text_chars, text_yield_ratio, header_class, content_marking, n_chunks,
 sha256_raw, sha256_text, codec, attempt, worker_id, run_id, error, started_at, completed_at`.
 
 **`state` enum** — terminal unless noted:
@@ -81,7 +81,7 @@ sha256_raw, sha256_text, codec, attempt, worker_id, run_id, error, started_at, c
 `ocr_extracted_scope` · `ocr_extracted_pricing` · `ocr_extracted_unknown` · `ocr_dropped_noise` ·
 `extract_failed` · `ocr_failed`.
 
-`header_class ∈ {scope, pricing, boilerplate, unknown}`. `sensitivity ∈ {public, cui}` is a TAG (column), NOT a state — a CUI file keeps its normal terminal state and is embedded locally (§7.4/§9). `extractor ∈ {pdfium, python_docx, openpyxl, libreoffice+pdfium, libreoffice+xlsx, striprtf, txt, pdfium+tesseract}` (closed set; keys `ops.by_extractor`).
+`header_class ∈ {scope, pricing, boilerplate, unknown}`. `content_marking` is a `list<string>` TAG (column) of the control-marking caveats literally detected in the head (`cui`/`fouo`/`itar`/`ear`/`export_controlled`/`dist_stmt_b..f`); `[]` = none detected (NOT proof of public), null = not scanned. It is NOT a state — a marked file keeps its normal terminal state and is embedded locally (§7.4/§9). `extractor ∈ {pdfium, python_docx, openpyxl, libreoffice+pdfium, libreoffice+xlsx, striprtf, txt, pdfium+tesseract}` (closed set; keys `ops.by_extractor`).
 Indices (built ONCE at run end): `BTREE(resource_id)`, `BTREE(sha256_raw)`, `BTREE(sha256_text)`,
 `BITMAP(lane, stage, state)`.
 **Resolution view:** `row_number() OVER (PARTITION BY resource_id ORDER BY is_terminal DESC, attempt DESC,
@@ -89,11 +89,11 @@ completed_at DESC) = 1`.
 
 ### 3.3 `govcon_scope_vectors_90day` — chunk grain (Lance v2.1)
 `chunk_id` (string, deterministic `<resource_id>:<chunk_ix:04d>`) · `resource_id` · `chunk_ix` · `text` ·
-`char_len` · `header_class` · `sensitivity` · `notice_id` · `solicitation_number` · `naics_code` ·
+`char_len` · `header_class` · `content_marking` (list<string>) · `notice_id` · `solicitation_number` · `naics_code` ·
 **`contract_award_unique_key`** (C14, joined from winners manifest) · `source_extractor` ·
 `reading_order_conf` (C13) · `embedding fixed_size_list<float32>[1024]` (**nullable**; populated Phase 4) ·
 `run_id` · `created_at`.
-Indices: `BTREE(resource_id)`, `BTREE(contract_award_unique_key)`, `BITMAP(header_class, sensitivity)`.
+Indices: `BTREE(resource_id)`, `BTREE(contract_award_unique_key)`, `BITMAP(header_class)`. (`content_marking` is a `list<string>`, not bitmap-indexable directly — gate egress via `len(content_marking)` or a derived `has_content_marking` boolean if a bitmap is needed.)
 **`chunk_id` MUST remain UNINDEXED until Phase 4 `merge_insert`s complete (#21).** Vector `IVF_PQ` built in Phase 4.
 
 ### 3.4 `govcon_pricing_90day` — same shape minus `embedding`, plus `cells` (string, cell-delimited table rows
@@ -115,7 +115,7 @@ Lets duplicate-solicitation labels survive without duplicate extraction/vectors.
 
 ### 3.8 `ops.sam_extraction_90day_runs` (Postgres) — per-run roll-up
 `run_id, phase, lane, files_in, extracted_scope, extracted_pricing, extracted_spreadsheet, extracted_unknown,
-dropped_boilerplate, dropped_duplicate, dropped_content_noise, cui_tagged, expanded_container,
+dropped_boilerplate, dropped_duplicate, dropped_content_noise, content_marked, expanded_container,
 requires_ocr, extract_failed, by_extractor jsonb, total_chars, total_chunks, sustained_files_per_s,
 sustained_mbps, cpu_wait_ratio, status, error, started_at, completed_at`. (`by_extractor` = per-engine
 success/fail roll-up, #27.)
@@ -198,14 +198,19 @@ pdf→pdfium, txt→decode). Then:
 (=text_chars/max(1,n_pages)) < OCR_RATIO_THRESHOLD=80` AND `text_chars < OCR_ABS_FLOOR (=max(200, n_pages×80))`;
 OR `fraction_of_pages(<40 chars) > 0.5`. docx/txt/spreadsheet never OCR.
 
-**7.4 Content triage on EXTRACTED text (#1 gate, C10 sensitivity).** Run on normalized first ~2,000 chars
+**7.4 Content triage on EXTRACTED text (#1 gate, C10 control markings).** Run on normalized first ~2,000 chars
 (docx surrogate = first 2,000 chars of in-order concat incl. leading table):
-- **CUI scan FIRST (C10, #10):** if text matches `CONTROLLED UNCLASSIFIED INFORMATION|\bCUI\b|FOR OFFICIAL USE
-  ONLY|\bFOUO\b|EXPORT CONTROLLED|\bITAR\b|\bEAR\b|DISTRIBUTION STATEMENT [B-F]` → set the **`sensitivity='cui'` TAG**
-  (a column, NOT a diverting state). Else `sensitivity='public'`. CUI files continue through normal
-  classification/chunking and are **embedded locally** (§9); the tag — not a pipeline diversion — gates outbound/GTM
-  consumption (`WHERE sensitivity='public'`). This suffices because v2 has no external embedding path (§9 is
-  self-hosted); a physical quarantine sink would add no security and would break the §9/§12 `embedding IS NULL == 0` gate.
+- **Control-marking scan FIRST (C10, #10):** detect each caveat present in the head and **capture the actual
+  matched tokens** into the `content_marking list<string>` TAG (a column, NOT a diverting state). Per-caveat
+  patterns: `cui`=`CONTROLLED UNCLASSIFIED INFORMATION|\bCUI\b`, `fouo`=`FOR OFFICIAL USE ONLY|\bFOUO\b`,
+  `export_controlled`=`EXPORT CONTROLLED`, `itar`=`\bITAR\b`, `ear`=`\bEAR\b`, `dist_stmt_<b..f>`=`DISTRIBUTION
+  STATEMENT ([B-F])`. `content_marking=[]` when none match (absence of evidence within the window, NOT proof of
+  public). Marked files continue through normal classification/chunking and are **embedded locally** (§9); the tag
+  — not a pipeline diversion — gates outbound/GTM consumption (`WHERE len(content_marking)=0`). This suffices because
+  v2 has no external embedding path (§9 is self-hosted); a physical quarantine sink would add no security and would
+  break the §9/§12 `embedding IS NULL == 0` gate. (Caveat: head-only + literal-text detection has false negatives —
+  scans/OCR-deferred and >2,000-char-body markings are not seen; the pattern set is an engineering choice, not the
+  authoritative NARA/32 CFR 2002/DoDI 5200.48 standard.)
 - **scope** headers (`PERFORMANCE WORK STATEMENT|STATEMENT OF WORK|STATEMENT OF OBJECTIVES|SCOPE OF WORK|\bPWS\b|
   \bSOW\b|SPECIFICATIONS?|TECHNICAL REQUIREMENTS|SALIENT CHARACTERISTICS`) → `extracted_scope`.
 - **pricing** (`WAGE DETERMINATION|SERVICE CONTRACT ACT|DAVIS[- ]BACON|\bSCA\b|\bWD\b|PRICE SCHEDULE|SCHEDULE OF
@@ -249,9 +254,10 @@ external API** (CUI posture, C10). Batch-read each vector sink where `embedding 
 write** → `merge_insert` on `chunk_id`. Then build Lance `IVF_PQ` with **`metric='cosine'`**, `num_sub_vectors=64`
 (`D/16`), `num_partitions≈sqrt(n_vectors)`. `chunk_id` was kept unindexed precisely so the merge_insert path avoids
 lancedb #3177 (#21). Assert `COUNT(*) WHERE embedding IS NULL == 0` before indexing. (`nprobes`/`refine_factor` are
-query-time, documented in a retrieval-config note, not the build.) ALL chunks including `sensitivity='cui'` are
-embedded by the **local** model — there is no external API in this pipeline, so nothing is sent off-host and the §12
-`embedding IS NULL == 0` gate applies uniformly. The `sensitivity` tag gates outbound consumption, not embedding.
+query-time, documented in a retrieval-config note, not the build.) ALL chunks including control-marked ones
+(`len(content_marking)>0`) are embedded by the **local** model — there is no external API in this pipeline, so nothing
+is sent off-host and the §12 `embedding IS NULL == 0` gate applies uniformly. The `content_marking` tag gates outbound
+consumption, not embedding.
 
 ## 10. Phase 5 — Structured field extraction (THE PRODUCT, D9, C8, #3)
 Over the Stage-4 substrate, run a **deterministic per-document pass grouped by `resource_id`** across its classified
@@ -300,7 +306,7 @@ Daemonization + JSONL checkpoint + resume are mandatory for steps 4–5/7–8.
 Per-file try/except → `extract_failed` (pool isolation). Single committer (D3) — no concurrent R2 commits. OCR
 isolated (D7). Append-only ledger (D1) — no in-place updates. Resume = resolution-view ∪ checkpoint; deterministic
 `chunk_id` + `merge_insert`. In-memory blob spill + pdfium-from-spill (#12) + >50 MB semaphore. `.doc` serialized
-(#7). Zip-bomb ceiling + recursion cap (§6). CUI `sensitivity` tag + local-only embedding — no external path exists (#10). Token-boundary routing +
+(#7). Zip-bomb ceiling + recursion cap (§6). `content_marking` tag (captured caveats) + local-only embedding — no external path exists (#10). Token-boundary routing +
 content-truth triage (#1).
 
 ## 14. Tunables (defaults)
