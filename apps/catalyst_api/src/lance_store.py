@@ -408,15 +408,18 @@ def _map_clause_sql(spec, op: str, value: Any, today: "dt_date") -> str:
     raise MapCompileError(f"unsupported op {op!r}")
 
 
-def compile_map_filter(decoder, filters: list[dict[str, Any]], today: "dt_date | None" = None) -> str:
+def compile_map_filter(decoder, filters: list[dict[str, Any]], today: "dt_date | None" = None) -> str | None:
     """Compile an AND-combined list of ``{field, op, value}`` clauses into a Lance
     scanner predicate. Column names come ONLY from ``FieldSpec.column`` (a dict-key
     lookup on the decoder, never interpolated); values are type-validated + escaped.
-    A trailing ``<lat_col> IS NOT NULL`` is ALWAYS appended so the scan — and the row
-    cap — cover only PLOTTABLE rows (the map never wants a row it cannot draw, and
-    this makes ``meta.returned`` equal the feature count exactly). ``today`` anchors
-    the ``days_ago`` clauses (injectable for tests; defaults to the request date).
-    Raises ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
+    ``today`` anchors the ``days_ago`` clauses (injectable for tests; defaults to the
+    request date). Returns ``None`` for an empty filter list (unfiltered scan).
+
+    The scan is deliberately NOT restricted to plottable rows: a qualifying winner
+    whose address did not geocode must still reach the TABLE view (the operator's
+    Texas prospect wants every qualifying row, dot or no dot). ``to_geojson`` emits
+    null-geometry features for those rows — the dot layer skips them, the table keeps
+    them. Raises ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
     today = today or dt_date.today()
     parts: list[str] = []
     for clause in filters:
@@ -425,14 +428,13 @@ def compile_map_filter(decoder, filters: list[dict[str, Any]], today: "dt_date |
         if spec is None:
             raise MapCompileError(f"field {field!r} not in allowlist")
         parts.append(_map_clause_sql(spec, clause.get("op"), clause.get("value"), today))
-    parts.append(f"{decoder.geometry[1]} IS NOT NULL")     # plottable-only
-    return " AND ".join(parts)
+    return " AND ".join(parts) if parts else None
 
 
-def map_query(decoder, predicate: str, limit: int) -> list[dict[str, Any]]:
-    """Scan the decoder's serving table with a compiled predicate, projecting only
-    the GeoJSON property + geometry columns. A genuinely missing dataset RAISES
-    (loud 5xx) per ``_scan``; a zero-row match returns ``[]``.
+def map_query(decoder, predicate: str | None, limit: int) -> list[dict[str, Any]]:
+    """Scan the decoder's serving table with a compiled predicate (``None`` = whole
+    table), projecting only the GeoJSON property + geometry columns. A genuinely
+    missing dataset RAISES (loud 5xx) per ``_scan``; a zero-row match returns ``[]``.
 
     The row bound is enforced by STREAMING BATCHES, never by ``scanner(limit=)``:
     pylance 7.0.0 plans a filtered+limited scan with the limit applied against the
@@ -451,7 +453,7 @@ def map_query(decoder, predicate: str, limit: int) -> list[dict[str, Any]]:
     return rows[:limit]
 
 
-def map_count(decoder, predicate: str) -> int:
+def map_count(decoder, predicate: str | None) -> int:
     """Exact match count for a compiled predicate (``count_rows`` pushdown — no row
     materialization). Drives ``meta.total`` + the honest ``capped`` flag."""
     return _dataset(config.MAP_DATASET_URIS[decoder.dataset_key]).count_rows(filter=predicate)
@@ -466,17 +468,22 @@ def _map_jsonable(v: Any) -> Any:
 
 def to_geojson(decoder, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Rows → GeoJSON ``FeatureCollection``. ``Point`` geometry as ``[lon, lat]``
-    (GeoJSON axis order). A row missing either coordinate is dropped (defensive — the
-    predicate already requires ``lat IS NOT NULL``, but ``lon`` could still be null)."""
+    (GeoJSON axis order). A row missing either coordinate is emitted with ``geometry:
+    null`` (valid per RFC 7946 §3.2) instead of being dropped: the qualifying-but-
+    ungeocoded winner reaches the TABLE view while the dot layer skips it. The row
+    count served therefore equals ``len(features)``; the plottable subset is the
+    features whose geometry is non-null."""
     lon_c, lat_c = decoder.geometry
     feats: list[dict[str, Any]] = []
     for r in rows:
         lon, lat = r.get(lon_c), r.get(lat_c)
-        if lon is None or lat is None:
-            continue
+        geometry = (
+            {"type": "Point", "coordinates": [lon, lat]}
+            if lon is not None and lat is not None else None
+        )
         feats.append({
             "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "geometry": geometry,
             "properties": {k: _map_jsonable(r.get(k)) for k in decoder.properties},
         })
     return {"type": "FeatureCollection", "features": feats}
@@ -504,6 +511,7 @@ _SURFACE_DATASETS = {
     "contractor_award_summary": lambda: config.CONTRACTOR_AWARD_SUMMARY_URI,
     "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
     "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],
+    "awards_map_serving": lambda: config.MAP_DATASET_URIS["awards"],
 }
 
 

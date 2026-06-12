@@ -7,7 +7,7 @@ violations abort boot under strict mode + flip /healthz to 503; soft notes are a
 """
 
 from apps.catalyst_api.src.lance_store import _live_stat_findings, verify_decoder_contract
-from apps.catalyst_api.src.map_decoders import COMPANY, WINNERS
+from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, WINNERS
 
 # Live index inventory in the real list_indices() shape: dict per entry, 'fields' is the
 # physical-column list, 'type' is mixed-case. Includes the resolution-key indexes the
@@ -44,11 +44,45 @@ COMPANY_IDX = [
 ]
 
 
+AWARDS_COLS = [
+    "award_id", "winner_uei", "winner_name", "winner_type", "award_amount", "action_date",
+    "naics2", "naics_code", "state", "city", "county", "pop_state", "pop_city",
+    "awarding_agency", "awarding_sub_agency", "set_aside", "longitude", "latitude",
+]
+AWARDS_IDX = [
+    {"name": "action_date_idx", "type": "BTree", "fields": ["action_date"]},
+    {"name": "award_amount_idx", "type": "BTree", "fields": ["award_amount"]},
+    {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},
+    {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},  # extra
+    {"name": "city_idx", "type": "BTree", "fields": ["city"]},
+    {"name": "county_idx", "type": "BTree", "fields": ["county"]},
+    {"name": "pop_city_idx", "type": "BTree", "fields": ["pop_city"]},
+    {"name": "awarding_sub_agency_idx", "type": "BTree", "fields": ["awarding_sub_agency"]},
+    {"name": "naics2_idx", "type": "Bitmap", "fields": ["naics2"]},
+    {"name": "state_idx", "type": "Bitmap", "fields": ["state"]},
+    {"name": "winner_type_idx", "type": "Bitmap", "fields": ["winner_type"]},
+    {"name": "pop_state_idx", "type": "Bitmap", "fields": ["pop_state"]},
+    {"name": "awarding_agency_idx", "type": "Bitmap", "fields": ["awarding_agency"]},
+    {"name": "set_aside_idx", "type": "Bitmap", "fields": ["set_aside"]},
+]
+
+
 # ── pure schema/index checker ────────────────────────────────────────────────
 
 def test_winners_complete_contract_clean():
     r = verify_decoder_contract(WINNERS_COLS, WINNERS_IDX, WINNERS)
     assert r["violations"] == [] and r["notes"] == []
+
+
+def test_awards_complete_contract_clean():
+    r = verify_decoder_contract(AWARDS_COLS, AWARDS_IDX, AWARDS)
+    assert r["violations"] == [] and r["notes"] == []
+
+
+def test_awards_missing_recency_index_is_violation():
+    idx = [e for e in AWARDS_IDX if e["fields"] != ["action_date"]]
+    v = verify_decoder_contract(AWARDS_COLS, idx, AWARDS)["violations"]
+    assert any("NO live index covers" in x and "'action_date'" in x for x in v)
 
 
 def test_company_complete_contract_clean():

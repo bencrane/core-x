@@ -11,10 +11,20 @@ still gets rejected by EXECUTE, but the prompt should not invite it). The repo t
 This carries ONLY the prompt-facing data (field names, types, ops, enums, synonyms) —
 never the Lance column names. Column resolution + the security allowlist live in
 catalyst_api; this side only shapes the model's output space.
+
+ROUTING: ``render_router_prompt`` / ``build_router_tool`` are the dataset-AUTO surface —
+one forced-tool call that picks the dataset (awards | company | winners) AND compiles the
+filters for it. ``ROUTER_VERSION`` + every per-dataset version key the auto memo, so any
+axis change busts cached routings.
 """
 from __future__ import annotations
 
 OPS = ("=", ">=", "<=", "in", "between")
+
+# Set-aside codes verified live against the awards serving table (18 distinct).
+_SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WOSB",
+                    "WOSBSS", "EDWOSB", "EDWOSBSS", "HZC", "HZS", "ISBEE", "BI", "IEE",
+                    "VSA", "VSS")
 
 DECODERS: dict[str, dict] = {
     "winners": {
@@ -64,7 +74,82 @@ DECODERS: dict[str, dict] = {
             "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
         },
     },
+    "awards": {
+        "version": "awards.v1",
+        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action from roughly the last 90 days. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
+        "fields": {
+            "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
+            "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
+                                  "desc": "whole days since the award action (integer; 0 = today). 'won in the last N days' / 'this week' → days_since_action <= N. Data covers roughly the last 90 days"},
+            "naics2":            {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
+            "naics_code":        {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
+            "state":             {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ/registration state, 2-letter — use for 'companies in <state>'"},
+            "city":              {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ city, UPPERCASE (e.g. 'DALLAS') — use for 'companies in <city>'"},
+            "county":            {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ county name, UPPERCASE without the word 'County' (e.g. 'TARRANT'); prime awards only"},
+            "pop_state":         {"type": "string", "ops": ("=", "in"), "desc": "2-letter state where the WORK IS PERFORMED — use for 'performing work in / projects in <state>'"},
+            "pop_city":          {"type": "string", "ops": ("=", "in"), "desc": "UPPERCASE city where the WORK IS PERFORMED — use for 'projects in <city>'"},
+            "awarding_agency":   {"type": "string", "ops": ("=", "in"), "desc": "EXACT top-tier awarding department name, e.g. 'Department of Defense', 'Department of Veterans Affairs', 'General Services Administration', 'Department of Homeland Security'"},
+            "awarding_sub_agency": {"type": "string", "ops": ("=", "in"), "desc": "EXACT sub-tier awarding agency name, e.g. 'Federal Acquisition Service', 'Federal Aviation Administration', 'U.S. Coast Guard', 'National Institutes of Health'"},
+            "set_aside":         {"type": "string", "ops": ("=", "in"), "enum": _SET_ASIDE_CODES,
+                                  "desc": "set-aside code: 8A/8AN = 8(a); SDVOSBC/SDVOSBS = service-disabled-veteran-owned; WOSB/WOSBSS/EDWOSB/EDWOSBSS = woman-owned; HZC/HZS = HUBZone; SBA/SBP = small-business; 'NONE' = explicitly no set-aside. Partial coverage: many actions carry no signal"},
+            "winner_type":       {"type": "string", "ops": ("=", "in"), "enum": ("prime_recipient", "subawardee")},
+        },
+        "synonyms": {
+            "construction":   {"field": "naics2", "op": "=", "value": "23"},
+            "this week":      {"field": "days_since_action", "op": "<=", "value": 7},
+            "this month":     {"field": "days_since_action", "op": "<=", "value": 30},
+            "won recently":   {"field": "days_since_action", "op": "<=", "value": 30},
+            "subawards":      {"field": "winner_type", "op": "=", "value": "subawardee"},
+            "dod":            {"field": "awarding_agency", "op": "in",
+                               "value": ["Department of Defense", "Department of Defense (DOD)"]},
+            "gsa":            {"field": "awarding_agency", "op": "=", "value": "General Services Administration"},
+            "the va":         {"field": "awarding_agency", "op": "=", "value": "Department of Veterans Affairs"},
+            "8(a)":           {"field": "set_aside", "op": "in", "value": ["8A", "8AN"]},
+            "sdvosb":         {"field": "set_aside", "op": "in", "value": ["SDVOSBC", "SDVOSBS"]},
+            "hubzone":        {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
+            "woman-owned":    {"field": "set_aside", "op": "in",
+                               "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+        },
+        # Dataset-specific prompt rules (rendered under Rules).
+        "notes": (
+            "Geo disambiguation: 'companies/winners in <place>' → state/city/county (the"
+            " winner's HQ). 'performing work in / projects in / work located in <place>' →"
+            " pop_state/pop_city.",
+            "The data window is roughly the last 90 days. For a longer asked window, still"
+            " emit the days_since_action filter but ALSO add a phrase like 'window limited"
+            " to last 90 days' to unmapped.",
+        ),
+    },
 }
+
+
+def _render_fields(d: dict) -> list[str]:
+    lines = []
+    for name, spec in d["fields"].items():
+        bits = [f"- {name} ({spec['type']}) ops={list(spec['ops'])}"]
+        if spec.get("enum"):
+            bits.append(f"allowed values={list(spec['enum'])}")
+        if spec.get("desc"):
+            bits.append(f"— {spec['desc']}")
+        lines.append(" ".join(bits))
+    return lines
+
+
+def _render_synonyms(d: dict) -> list[str]:
+    return [f'- "{term}" → {clause}' for term, clause in d["synonyms"].items()]
+
+
+_OUTPUT_RULES = (
+    "- Use ONLY the listed fields and their listed ops. For an enum field use only its allowed values.",
+    "- Numeric value for >= and <=; [lo, hi] for between; an array for in; bare true/false for bool.",
+    "- A days_ago field takes a whole-day INTEGER count, never a calendar date.",
+    "- Combine multiple conditions as separate filter clauses (they are AND-combined).",
+    "- NEVER silently drop part of the query. Any constraint you cannot express with the"
+    " listed fields goes into the unmapped array as a short verbatim phrase from the query.",
+    "- If the query implies no usable filter, return an empty filters array (and record"
+    " whatever you could not map in unmapped).",
+    "- If everything mapped, return an empty unmapped array.",
+)
 
 
 def render_decoder_prompt(dataset: str) -> str:
@@ -75,32 +160,42 @@ def render_decoder_prompt(dataset: str) -> str:
         f"You translate a natural-language map query into a constrained filter for: {d['description']}",
         "",
         "Allowed fields (use ONLY these; choose the field whose meaning matches the query):",
-    ]
-    for name, spec in d["fields"].items():
-        bits = [f"- {name} ({spec['type']}) ops={list(spec['ops'])}"]
-        if spec.get("enum"):
-            bits.append(f"allowed values={list(spec['enum'])}")
-        if spec.get("desc"):
-            bits.append(f"— {spec['desc']}")
-        lines.append(" ".join(bits))
-    lines += ["", "Known phrase → filter mappings (apply when the phrase appears):"]
-    for term, clause in d["synonyms"].items():
-        lines.append(f'- "{term}" → {clause}')
-    lines += [
+        *_render_fields(d),
+        "",
+        "Known phrase → filter mappings (apply when the phrase appears):",
+        *_render_synonyms(d),
         "",
         "Rules:",
         "- Emit ONLY via the emit_filter tool. Never prose.",
-        "- Use ONLY the listed fields and their listed ops. For an enum field use only its allowed values.",
-        "- Numeric value for >= and <=; [lo, hi] for between; an array for in; bare true/false for bool.",
-        "- A days_ago field takes a whole-day INTEGER count, never a calendar date.",
-        "- Combine multiple conditions as separate filter clauses (they are AND-combined).",
-        "- NEVER silently drop part of the query. Any constraint you cannot express with the"
-        " listed fields goes into the unmapped array as a short verbatim phrase from the query.",
-        "- If the query implies no usable filter, return an empty filters array (and record"
-        " whatever you could not map in unmapped).",
-        "- If everything mapped, return an empty unmapped array.",
+        *_OUTPUT_RULES,
     ]
+    lines += [f"- {note}" for note in d.get("notes", ())]
     return "\n".join(lines)
+
+
+def _filters_schema(field_names: list[str]) -> dict:
+    return {
+        "type": "array",
+        "description": "AND-combined filter clauses",
+        "items": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string", "enum": field_names},
+                "op": {"type": "string", "enum": list(OPS)},
+                "value": {"description": "scalar for =,>=,<=; array for in/between; true/false for bool; whole-day integer for days_ago"},
+            },
+            "required": ["field", "op", "value"],
+        },
+    }
+
+
+# The honesty contract: a constraint the allowlist cannot express is SURFACED,
+# never silently dropped — the UI renders these as "not applied".
+_UNMAPPED_SCHEMA = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "verbatim phrases from the query that could NOT be mapped to any allowed field (empty when everything mapped)",
+}
 
 
 def build_emit_filter_tool(dataset: str) -> dict:
@@ -114,27 +209,118 @@ def build_emit_filter_tool(dataset: str) -> dict:
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "a short human label for the query"},
-                "filters": {
-                    "type": "array",
-                    "description": "AND-combined filter clauses",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "field": {"type": "string", "enum": list(d["fields"])},
-                            "op": {"type": "string", "enum": list(OPS)},
-                            "value": {"description": "scalar for =,>=,<=; array for in/between; true/false for bool; whole-day integer for days_ago"},
-                        },
-                        "required": ["field", "op", "value"],
-                    },
-                },
-                # The honesty contract: a constraint the allowlist cannot express is SURFACED,
-                # never silently dropped — the UI renders these as "not applied".
-                "unmapped": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "verbatim phrases from the query that could NOT be mapped to any allowed field (empty when everything mapped)",
-                },
+                "filters": _filters_schema(list(d["fields"])),
+                "unmapped": _UNMAPPED_SCHEMA,
             },
             "required": ["title", "filters", "unmapped"],
+        },
+    }
+
+
+# ── Dataset routing (the AUTO surface) ────────────────────────────────────────
+# One forced-tool call picks the dataset AND compiles its filters. Bump on any
+# change to the routing rules below; combined with every per-dataset version in
+# the auto memo key so any axis change busts cached routings.
+ROUTER_VERSION = "router.v1"
+
+# Routing cues rendered into the router system block, per dataset.
+_ROUTING_CUES = {
+    "awards": "AWARD-EVENT questions: 'won an award/contract over $X', 'awards in the last"
+              " N days', 'who won <agency> contracts this week', set-asides, place of"
+              " performance. DEFAULT for win/award phrasing.",
+    "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
+               " firmographics (employee size, founded year, industry label, company type),"
+               " SAM registration, 'federal contractors with $X total obligations'.",
+    "winners": "PER-WINNER ROLLUPS of the last 90 days: 'entities whose total won in the"
+               " window exceeds $X', aggregate award_count over the window.",
+}
+
+
+def router_memo_version() -> str:
+    """The auto-translate memo version: the router prompt + every dataset axis."""
+    return ROUTER_VERSION + "|" + "|".join(d["version"] for d in DECODERS.values())
+
+
+def render_router_prompt() -> str:
+    """The cached system block for dataset-AUTO translate: every dataset's description,
+    routing cues, field axis and synonyms — the model picks ONE dataset and compiles
+    the filters for THAT dataset only."""
+    lines = [
+        "You route a natural-language market query to ONE dataset and translate it into a"
+        " constrained filter for that dataset.",
+        "",
+        "Datasets:",
+    ]
+    for key, d in DECODERS.items():
+        lines += [
+            "",
+            f"### dataset = {key!r} — {d['description']}",
+            f"Route here for: {_ROUTING_CUES[key]}",
+            "Fields:",
+            *_render_fields(d),
+            "Phrase → filter mappings:",
+            *_render_synonyms(d),
+        ]
+        lines += [f"Note: {note}" for note in d.get("notes", ())]
+    lines += [
+        "",
+        "Rules:",
+        "- Emit ONLY via the emit_filter tool. Never prose.",
+        "- Pick exactly ONE dataset; every filter clause must use FIELDS OF THAT DATASET.",
+        *_OUTPUT_RULES,
+    ]
+    return "\n".join(lines)
+
+
+def reconcile_routed_filters(filt: dict) -> dict:
+    """Post-route honesty pass: the router tool's ``field`` enum is the UNION of every
+    dataset's fields, so a clause can name a field the ROUTED dataset does not carry.
+    Such a clause must not 422 the whole query NOR run silently mutated — it moves to
+    ``unmapped`` (rendered as "not applied"). EXECUTE's typed allowlist stays the
+    authoritative gate for everything kept. Pure (no I/O) — unit-tested directly."""
+    dataset = filt.get("dataset")
+    if dataset not in DECODERS:
+        filt["dataset"] = dataset = "awards"   # forced enum makes this unreachable; belt+braces
+    fields = DECODERS[dataset]["fields"]
+    kept: list = []
+    moved: list[str] = []
+    for clause in filt.get("filters") or []:
+        field = clause.get("field") if isinstance(clause, dict) else None
+        if field in fields and clause.get("op") in fields[field]["ops"]:
+            kept.append(clause)
+        else:
+            moved.append(
+                f"{field} {clause.get('op')} {clause.get('value')}"
+                if isinstance(clause, dict) else str(clause)
+            )
+    filt["filters"] = kept
+    if moved:
+        filt["unmapped"] = list(filt.get("unmapped") or []) + moved
+    return filt
+
+
+def build_router_tool() -> dict:
+    """The forced routing tool: ``dataset`` is enum-bounded; ``field`` is the UNION of
+    every dataset's fields (the per-dataset check happens after routing — edge moves
+    any clause off the routed dataset's axis into ``unmapped``, and EXECUTE's typed
+    allowlist remains the authoritative gate)."""
+    union: list[str] = []
+    for d in DECODERS.values():
+        for name in d["fields"]:
+            if name not in union:
+                union.append(name)
+    return {
+        "name": "emit_filter",
+        "description": "Route the user's market query to one dataset and translate it into a constrained filter object.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dataset": {"type": "string", "enum": list(DECODERS),
+                            "description": "the ONE dataset this query runs against"},
+                "title": {"type": "string", "description": "a short human label for the query"},
+                "filters": _filters_schema(union),
+                "unmapped": _UNMAPPED_SCHEMA,
+            },
+            "required": ["dataset", "title", "filters", "unmapped"],
         },
     }
