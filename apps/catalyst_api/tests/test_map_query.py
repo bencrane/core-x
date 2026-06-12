@@ -106,6 +106,26 @@ def test_enum_violation_rejected():
         _compile(WINNERS, [{"field": "winner_type", "op": "=", "value": "not_a_type"}])
 
 
+def test_company_employee_size_band_enum_violation_rejected():
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(COMPANY, [{"field": "employee_size_band", "op": "=", "value": "50-100"}])
+
+
+def test_company_type_enum_violation_rejected():
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(COMPANY, [{"field": "company_type", "op": "=", "value": "LLC"}])
+
+
+def test_company_employee_size_band_valid_enum_compiles():
+    pred = _compile(COMPANY, [{"field": "employee_size_band", "op": "=", "value": "51-200"}])
+    assert pred == "employee_size_band = '51-200' AND latitude IS NOT NULL"
+
+
+def test_company_type_valid_enum_compiles():
+    pred = _compile(COMPANY, [{"field": "company_type", "op": "=", "value": "Nonprofit"}])
+    assert pred == "company_type = 'Nonprofit' AND latitude IS NOT NULL"
+
+
 def test_injection_value_is_escaped_not_executed():
     pred = _compile(COMPANY, [{"field": "state", "op": "=", "value": "TX' OR '1'='1"}])
     # the quote is doubled → a harmless string literal; no predicate breakout

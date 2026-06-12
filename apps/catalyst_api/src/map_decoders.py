@@ -68,7 +68,7 @@ WINNERS = Decoder(
 
 COMPANY = Decoder(
     dataset_key="company",
-    version="company.v1",
+    version="company.v2",
     geometry=("longitude", "latitude"),
     properties=("uei", "company_name", "industry", "employee_size_band", "company_type",
                 "naics2", "primary_naics", "hq_city", "hq_state", "has_federal_awards",
@@ -76,8 +76,13 @@ COMPANY = Decoder(
     fields={
         "naics2":             FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "industry":           FieldSpec("industry", "string", ("=", "in"), index="BITMAP"),
-        "employee_size_band": FieldSpec("employee_size_band", "string", ("=", "in"), index="BITMAP"),
-        "company_type":       FieldSpec("company_type", "string", ("=", "in"), index="BITMAP"),
+        "employee_size_band": FieldSpec("employee_size_band", "string", ("=", "in"),
+                                        enum=("1-10", "11-50", "51-200", "201-500", "501-1000",
+                                              "1001-5000", "5001-10000", "10001+"), index="BITMAP"),
+        "company_type":       FieldSpec("company_type", "string", ("=", "in"),
+                                        enum=("Educational", "Educational Institution", "Government Agency",
+                                              "Nonprofit", "Partnership", "Privately Held", "Public Company",
+                                              "Self-Employed", "Self-Owned", "Sole Proprietorship"), index="BITMAP"),
         # query-name `state` maps to the indexed column `physical_address_state`
         "state":              FieldSpec("physical_address_state", "string", ("=", "in"), index="BITMAP"),
         "has_federal_awards": FieldSpec("has_federal_awards", "bool", ("=",), index="BITMAP"),
