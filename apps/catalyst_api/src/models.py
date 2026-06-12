@@ -348,3 +348,133 @@ class PastPerformanceResponse(_Model):
     exclusions_status: str | None = None         # GAP — no SAM exclusions dataset
     exclusions_last_checked: str | None = None   # GAP
     recompetes_in_12mo: int | None = None        # GAP — no option/recompete metadata
+
+
+# ── Entity dossier (the cockpit side-panel read) ──────────────────────────────
+class DossierIdentity(_Model):
+    uei: str | None = None
+    cage_code: str | None = None
+    legal_business_name: str | None = None
+    dba_name: str | None = None
+    is_active: bool | None = None
+    primary_naics: str | None = None
+    address: Address | None = None
+
+
+class DossierPosture(_Model):
+    total_lifetime_obligations: float | None = None
+    total_active_obligations: float | None = None
+    award_count: int | None = None
+    active_award_count: int | None = None
+    has_federal_awards: bool | None = None
+    latest_action_date: str | None = None        # greatest of CAS + the 90d action feed
+    days_since_last_action: int | None = None
+    top_agencies: list[TopAgency] = []           # contractor_award_summary slots 1–3
+    profile_as_of_date: str | None = None
+
+
+class RecentAwardAction(_Model):
+    award_id: str | None = None
+    action_date: str | None = None
+    amount: float | None = None
+    awarding_agency: str | None = None
+    awarding_sub_agency: str | None = None
+    winner_type: str | None = None
+    pop_state: str | None = None
+    pop_city: str | None = None
+    set_aside: str | None = None
+    naics_code: str | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "RecentAwardAction":
+        return cls(
+            award_id=r.get("award_id"),
+            action_date=_iso(r.get("action_date")),
+            amount=r.get("award_amount"),
+            awarding_agency=r.get("awarding_agency"),
+            awarding_sub_agency=r.get("awarding_sub_agency"),
+            winner_type=r.get("winner_type"),
+            pop_state=r.get("pop_state"),
+            pop_city=r.get("pop_city"),
+            set_aside=r.get("set_aside"),
+            naics_code=r.get("naics_code"),
+        )
+
+
+class RecentActivity(_Model):
+    """The honest recent-award feed: ``window_days`` states the rolling coverage so
+    the UI can label it; an empty ``actions`` list is a truthful no-recent-activity
+    state, never an error."""
+
+    window_days: int = 90
+    actions: list[RecentAwardAction] = []
+
+
+# 6 SAM POC slots × (primary + alternate) — same bound sam_pocs_by_uei uses.
+_DOSSIER_POC_CAP = 12
+
+
+class EntityDossierResponse(_Model):
+    """The composed side-panel dossier — entity_profile_gold (identity + rollups +
+    POC slots) ⊕ contractor_award_summary (recency + top agencies) ⊕ the 90d award
+    feed. POCs carry name/title/geo ONLY: the SAM source has no email/phone columns
+    (verified — SamPoc.email/phone are declared GAPs), so no contact channel can leak."""
+
+    identity: DossierIdentity
+    posture: DossierPosture
+    recent_activity: RecentActivity
+    pocs: list[SamPoc] = []
+
+    @classmethod
+    def from_parts(cls, gold: dict[str, Any], cas: dict[str, Any] | None,
+                   actions: list[dict[str, Any]], today: date) -> "EntityDossierResponse":
+        identity = DossierIdentity(
+            uei=gold.get("uei"),
+            cage_code=gold.get("cage_code"),
+            legal_business_name=gold.get("legal_business_name"),
+            dba_name=gold.get("dba_name"),
+            is_active=gold.get("is_active"),
+            primary_naics=gold.get("primary_naics"),
+            address=Address(
+                street=gold.get("physical_address_line_1"),
+                city=gold.get("physical_address_city"),
+                state=gold.get("physical_address_state"),
+                zip=gold.get("physical_address_zip_postal_code"),
+            ),
+        )
+        # Latest action = greatest of the all-time prime summary date and the freshest
+        # 90d action (covers subawards + any summary lag). Dates may arrive as date or str.
+        candidates = [cas.get("prime_most_recent_action_date") if cas else None]
+        candidates += [a.get("action_date") for a in actions]
+        iso_dates = [d for d in (_iso(c) for c in candidates) if d]
+        latest = max(iso_dates) if iso_dates else None
+        # NOTE: _days_between is the expiry countdown (target − today); recency wants
+        # the inverse, computed directly so a past date reads as positive days-ago.
+        days_since = (today - date.fromisoformat(latest)).days if latest else None
+        agencies: list[TopAgency] = []
+        for name_key, dollar_key in (
+            ("top_agency_1_name", "top_agency_1_dollars"),
+            ("top_agency_2_name", "top_agency_2_dollars"),
+            ("top_agency_3_name", "top_agency_3_dollars"),
+        ):
+            name = (cas or {}).get(name_key)
+            if name:
+                agencies.append(TopAgency(name=name, dollars=float((cas or {}).get(dollar_key) or 0.0)))
+        posture = DossierPosture(
+            total_lifetime_obligations=gold.get("total_lifetime_obligations"),
+            total_active_obligations=gold.get("total_active_obligations"),
+            award_count=gold.get("award_count"),
+            active_award_count=gold.get("active_award_count"),
+            has_federal_awards=gold.get("has_federal_awards"),
+            latest_action_date=latest,
+            days_since_last_action=days_since,
+            top_agencies=agencies,
+            profile_as_of_date=_iso(gold.get("profile_as_of_date")),
+        )
+        pocs = sorted(list(gold.get("pocs") or []), key=lambda r: (r.get("poc_slot_no") or 0))
+        return cls(
+            identity=identity,
+            posture=posture,
+            recent_activity=RecentActivity(actions=[RecentAwardAction.from_row(a) for a in actions]),
+            pocs=[SamPoc.from_row(p) for p in pocs[:_DOSSIER_POC_CAP]],
+        )
