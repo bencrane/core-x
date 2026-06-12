@@ -63,6 +63,11 @@ from typing import Any
 from apps.gtm_mcp.src import database
 from apps.gtm_mcp.src.tools import federal
 
+# The canonical addr_hash join key — the ONLY definition; imported, never copied. It is the
+# LEFT JOIN key between entity_profile_gold (physical_address_*) and geocode_xwalk
+# (addr_hash → lat/lon). A byte-different normalization silently yields all-NULL coords.
+from pipelines._shared.addr_hash import addr_hash_sql
+
 # ── Durable serving location (active sink, SoR-consistent) ───────────────────
 # The Gen-3 system of record is LanceDB under s3://data-sink/active/. These serving
 # artifacts are derived projections of that SoR, co-located under the same active
@@ -74,6 +79,11 @@ SERVING_PREFIX = "active/federal_serving"
 SERVING_URI = f"s3://{BUCKET}/{SERVING_PREFIX}"
 
 GOLD = "entity_profile_gold"
+
+# Address→(lat,lon) crosswalk (address-keyed: 1 row per addr_hash). The map slice LEFT JOINs
+# it so every entity whose physical address geocoded carries a real dot. ~85% of the federal
+# universe resolves today; the rest carry NULL coords and the dot layer skips them.
+XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", "s3://data-sink/active/geocode_xwalk/")
 
 # Chart top-N. Industry + agency are top-N leaderboards — generous so the chart never
 # feels truncated.
@@ -103,6 +113,11 @@ ENTITY_MIN_LIFETIME = float(os.environ.get("FEDERAL_ENTITY_MIN_LIFETIME", "10000
 
 # The 9 list columns the map/filter path serves (the federal module's _LIST_COLUMNS).
 LIST_COLUMNS = list(federal._LIST_COLUMNS)
+# Address columns pulled ONLY to derive the addr_hash join key (street + zip, on top of the
+# city/state already in LIST_COLUMNS); dropped from the served output.
+_ADDR_JOIN_COLUMNS = ["physical_address_line_1", "physical_address_zip_postal_code"]
+# The served entity columns: the 9 list columns + the two derived geo columns the dot layer plots.
+ENTITY_COLUMNS = LIST_COLUMNS + ["latitude", "longitude"]
 
 
 # ── R2 client (same three-credential convention as the gateway / every worker) ──
@@ -189,31 +204,64 @@ def _build_charts() -> dict[str, Any]:
 
 # ── Entity slice artifact (the P1 list/filter path) ──────────────────────────
 def _build_entity_slice(min_lifetime: float) -> tuple["Any", int, int]:
-    """Project the bounded map-entity slice to a pyarrow Table.
+    """Project the bounded map-entity slice to a pyarrow Table, with geo coordinates.
 
     Returns ``(table, slice_rows, full_universe_rows)``. The slice is
-    ``total_lifetime_obligations >= min_lifetime`` over the 9 list columns, ordered by
-    lifetime desc (so the BFF can page/slice without re-sorting). ``full_universe_rows``
-    is the unbounded ``has_federal_awards = TRUE`` count — recorded so the bound is
-    auditable. The Lance scanner does the predicate + projection (BTREE pushdown); no
-    DuckDB needed for the slice."""
-    import pyarrow.compute as pc
+    ``total_lifetime_obligations >= min_lifetime`` over the 9 list columns PLUS
+    ``latitude``/``longitude`` from the geocode crosswalk, ordered by lifetime desc (so the
+    BFF can page/slice without re-sorting). ``full_universe_rows`` is the unbounded
+    ``has_federal_awards = TRUE`` count — recorded so the bound is auditable.
 
-    ds = database.open_dataset(GOLD)
-    full_universe_rows = ds.scanner(
+    Coordinates come from a LEFT JOIN to ``geocode_xwalk`` on the canonical ``addr_hash``
+    (md5 of the entity's normalized physical address) — the SAME key
+    ``materialize_company_map.py`` uses, imported from the single ``addr_hash_sql``
+    definition so the join cannot drift. Entities whose address did not geocode carry NULL
+    lat/lon (the dot layer skips them); ~85% of the universe resolves today. The Lance
+    scanner does the gold predicate + projection (BTREE pushdown); DuckDB does the join."""
+    import duckdb
+
+    gold = database.open_dataset(GOLD)
+    full_universe_rows = gold.scanner(
         filter="has_federal_awards = TRUE", columns=["uei"]
     ).to_table().num_rows
 
-    table = ds.scanner(
+    # Gold slice (predicate pushdown) + the street/zip needed to derive the addr_hash key.
+    gold_slice = gold.scanner(
         filter=f"total_lifetime_obligations >= {float(min_lifetime)}",
-        columns=LIST_COLUMNS,
+        columns=LIST_COLUMNS + _ADDR_JOIN_COLUMNS,
     ).to_table()
-    # Stable order: lifetime obligations desc, nulls last — the list's natural ranking.
-    order = pc.sort_indices(
-        table, sort_keys=[("total_lifetime_obligations", "descending")],
-        null_placement="at_end",
+
+    # Geocode crosswalk — 1 row per addr_hash; only the coordinate-bearing rows are useful.
+    xwalk = database.open_dataset_uri(XWALK_URI).scanner(
+        columns=["addr_hash", "latitude", "longitude"]
+    ).to_table()
+
+    con = duckdb.connect(":memory:")
+    con.execute("PRAGMA threads=4")
+    con.register("g", gold_slice)
+    con.register("xw", xwalk)
+    h = addr_hash_sql(
+        "g.physical_address_line_1", "g.physical_address_city",
+        "g.physical_address_state", "g.physical_address_zip_postal_code",
     )
-    table = table.take(order)
+    served = ", ".join(f"g.{c}" for c in LIST_COLUMNS)
+    table = con.execute(f"""
+        WITH x AS (
+            -- Crosswalk is 1/addr_hash by construction; the GROUP BY is defensive insurance
+            -- against any accidental dup so the LEFT JOIN can never fan out the slice.
+            SELECT addr_hash,
+                   any_value(latitude)  AS latitude,
+                   any_value(longitude) AS longitude
+            FROM xw WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            GROUP BY addr_hash
+        )
+        SELECT {served}, x.latitude, x.longitude
+        FROM g LEFT JOIN x ON ({h}) = x.addr_hash
+        ORDER BY g.total_lifetime_obligations DESC NULLS LAST
+    """).to_arrow_table()
+    con.close()
+    # Reorder to the canonical served column order (LIST_COLUMNS + latitude, longitude).
+    table = table.select(ENTITY_COLUMNS)
     return table, table.num_rows, full_universe_rows
 
 
@@ -225,16 +273,78 @@ def _table_to_parquet_bytes(table) -> bytes:
     return buf.getvalue()
 
 
+# ── BFF committed bundle (charts.json + entities.json.gz) ─────────────────────
+def _write_bundle(out_dir: str, *, materialized_at: str, profile_as_of: str | None,
+                  charts: dict[str, Any], entity_table, min_lifetime: float,
+                  slice_rows: int, full_universe_rows: int) -> dict[str, int]:
+    """Write the BFF's git-committed warm bundle into ``out_dir`` in the EXACT shape
+    ``apps/platform-api/src/lib/federal-store.ts`` reads: ``charts.json`` (combined chart
+    bars) and ``entities.json.gz`` (columnar entity slice, gzipped). Built from the same
+    in-memory ``charts`` dict + ``entity_table`` as the R2 publish, so the two never drift."""
+    import gzip
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # charts.json — combined, projected to the keys the BFF reads (RawCharts).
+    charts_doc = {
+        "materialized_at": materialized_at,
+        "profile_as_of_date": profile_as_of,
+        "spend_by_industry": {
+            "group_count": charts["industry"]["group_count"],
+            "returned": charts["industry"]["returned"],
+            "rows": charts["industry"]["rows"],
+        },
+        "spend_by_state": {
+            "group_count": charts["state"]["group_count"],
+            "rows": charts["state"]["rows"],
+        },
+        "spend_by_agency": {
+            "group_count": charts["agency"]["group_count"],
+            "returned": charts["agency"]["returned"],
+            "rows": charts["agency"]["rows"],
+        },
+    }
+    charts_body = json.dumps(charts_doc, separators=(",", ":"), default=str).encode("utf-8")
+    charts_path = os.path.join(out_dir, "charts.json")
+    with open(charts_path, "wb") as f:
+        f.write(charts_body)
+
+    # entities.json.gz — columnar (one array per column), gzipped (RawEntities).
+    columns = {name: entity_table.column(name).to_pylist() for name in ENTITY_COLUMNS}
+    entities_doc = {
+        "materialized_at": materialized_at,
+        "profile_as_of_date": profile_as_of,
+        "min_lifetime_obligation": min_lifetime,
+        "full_has_awards_universe": full_universe_rows,
+        "row_count": slice_rows,
+        "columns": columns,
+    }
+    entities_body = json.dumps(entities_doc, separators=(",", ":"), default=str).encode("utf-8")
+    gz = gzip.compress(entities_body, compresslevel=9)
+    entities_path = os.path.join(out_dir, "entities.json.gz")
+    with open(entities_path, "wb") as f:
+        f.write(gz)
+
+    return {"charts_json_bytes": len(charts_body), "entities_json_gz_bytes": len(gz)}
+
+
 # ── Orchestration ────────────────────────────────────────────────────────────
-def materialize(*, min_lifetime: float, dry_run: bool) -> dict[str, Any]:
+def materialize(*, min_lifetime: float, dry_run: bool, bundle_out: str | None = None) -> dict[str, Any]:
     """Build every artifact and (unless dry-run) write them + the manifest to R2.
     Idempotent: each object is overwritten in place at a stable key, so re-running with
-    ``--refresh`` republishes a fresh snapshot with no residue."""
+    ``--refresh`` republishes a fresh snapshot with no residue.
+
+    ``bundle_out`` (a local dir) additionally writes the BFF's committed warm bundle
+    (``charts.json`` + ``entities.json.gz``) from the SAME in-memory tables — so the
+    git-committed bundle the BFF loads at boot and the R2 artifacts never drift. The bundle
+    is written even under ``--dry-run`` (it touches local disk, not R2), so a bundle refresh
+    need not republish to R2."""
     materialized_at = dt.datetime.now(dt.timezone.utc).isoformat()
     profile_as_of = _profile_as_of_date()
 
     charts = _build_charts()
     entity_table, slice_rows, full_universe_rows = _build_entity_slice(min_lifetime)
+    coord_rows = slice_rows - entity_table.column("latitude").null_count
 
     metrics = {
         "materialized_at": materialized_at,
@@ -249,10 +359,20 @@ def materialize(*, min_lifetime: float, dry_run: bool) -> dict[str, Any]:
         "entities": {
             "min_lifetime_obligation": min_lifetime,
             "slice_rows": slice_rows,
+            "with_coords": coord_rows,
+            "coord_rate": round(coord_rows / slice_rows, 4) if slice_rows else None,
             "full_has_awards_universe": full_universe_rows,
-            "columns": LIST_COLUMNS,
+            "columns": ENTITY_COLUMNS,
         },
     }
+
+    if bundle_out:
+        _write_bundle(
+            bundle_out, materialized_at=materialized_at, profile_as_of=profile_as_of,
+            charts=charts, entity_table=entity_table, min_lifetime=min_lifetime,
+            slice_rows=slice_rows, full_universe_rows=full_universe_rows,
+        )
+        metrics["bundle_out"] = bundle_out
 
     if dry_run:
         metrics["dry_run"] = True
@@ -338,13 +458,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="read the published artifacts back and print the spend-by-industry top-10.")
     p.add_argument("--entity-min-lifetime", type=float, default=ENTITY_MIN_LIFETIME,
                    help=f"lifetime-obligation floor for the entity slice (default ${ENTITY_MIN_LIFETIME:,.0f}).")
+    p.add_argument("--bundle-out", type=str, default=None, metavar="DIR",
+                   help="also write the BFF committed bundle (charts.json + entities.json.gz) "
+                        "into DIR. Writes local disk only — safe to combine with --dry-run to "
+                        "refresh the committed bundle without republishing to R2.")
     args = p.parse_args(argv)
 
-    if args.verify and not (args.refresh or args.dry_run):
+    if args.verify and not (args.refresh or args.dry_run or args.bundle_out):
         print(json.dumps(verify(), indent=2, default=str))
         return 0
 
-    metrics = materialize(min_lifetime=args.entity_min_lifetime, dry_run=args.dry_run)
+    metrics = materialize(
+        min_lifetime=args.entity_min_lifetime, dry_run=args.dry_run, bundle_out=args.bundle_out,
+    )
     print(json.dumps(metrics, indent=2, default=str))
 
     if args.verify:
