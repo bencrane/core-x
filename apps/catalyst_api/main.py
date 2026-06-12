@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from datetime import date
@@ -47,6 +48,10 @@ from .src.models import (
 )
 
 log = logging.getLogger("catalyst_api")
+
+# Fan-out executor for the dossier's three independent point-lookups. Sized for a
+# few concurrent drawer opens (3 lookups each); the lookups are R2-I/O-bound.
+_DOSSIER_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="dossier")
 
 
 @asynccontextmanager
@@ -102,6 +107,14 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — checker bug must never brick boot (non-strict)
         log.warning("catalyst_api: contract check failed to run at boot: %s", exc)
     _app.state.contract_report = contract_report
+    # Prewarm the dossier-critical handles + their key BTREEs so the FIRST request
+    # after a deploy is already warm (the probes above seeded the handle cache; this
+    # pages the indices). Best-effort — a warm failure never delays or blocks boot.
+    try:
+        warm = lance_store.prewarm_dossier_surfaces()
+        log.info("catalyst_api: dossier prewarm seconds=%s", warm)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("catalyst_api: dossier prewarm failed: %s", exc)
     yield
 
 
@@ -312,11 +325,15 @@ def entity_dossier(
     404 when the UEI is absent from the gold spine. POCs carry name/title/geo only
     — the SAM source has no email/phone columns, so none can be exposed."""
     uei = _require_uei(uei)
-    gold = lance_store.entity_dossier_gold(uei)
+    # The three lookups are independent — run them concurrently (the Lance scanner
+    # API is sync; the shared executor fans them out). 404 still keys off gold.
+    f_gold = _DOSSIER_POOL.submit(lance_store.entity_dossier_gold, uei)
+    f_cas = _DOSSIER_POOL.submit(lance_store.award_summary_by_uei, uei)
+    f_recent = _DOSSIER_POOL.submit(lance_store.recent_award_actions_by_uei, uei, actions)
+    gold = f_gold.result()
+    cas, recent = f_cas.result(), f_recent.result()
     if gold is None:
         raise HTTPException(status_code=404, detail=f"no entity profile for uei {uei!r}")
-    cas = lance_store.award_summary_by_uei(uei)
-    recent = lance_store.recent_award_actions_by_uei(uei, actions)
     return _envelope(EntityDossierResponse.from_parts(gold, cas, recent, date.today()))
 
 
