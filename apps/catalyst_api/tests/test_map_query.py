@@ -14,7 +14,7 @@ from datetime import date
 import pytest
 
 from apps.catalyst_api.src import lance_store
-from apps.catalyst_api.src.map_decoders import COMPANY, DECODERS, WINNERS, OPS
+from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, DECODERS, WINNERS, OPS
 
 # Frozen anchor for days_ago clauses — injected so the expected DATE literals are stable.
 TODAY = date(2026, 6, 12)
@@ -30,32 +30,34 @@ def test_winners_construction_over_150k():
         {"field": "naics2", "op": "=", "value": "23"},
         {"field": "total_obligation", "op": ">=", "value": 150000},
     ])
-    assert pred == "naics2 = '23' AND total_obligation >= 150000.0 AND latitude IS NOT NULL"
+    assert pred == "naics2 = '23' AND total_obligation >= 150000.0"
 
 
 def test_company_bool_literal_is_unquoted():
     pred = _compile(COMPANY, [{"field": "has_federal_awards", "op": "=", "value": True}])
     # Arrow boolean literal, NOT the string 'true'
-    assert pred == "has_federal_awards = true AND latitude IS NOT NULL"
+    assert pred == "has_federal_awards = true"
 
 
 def test_in_clause():
     pred = _compile(WINNERS, [{"field": "naics2", "op": "in", "value": ["23", "11"]}])
-    assert pred == "naics2 IN ('23', '11') AND latitude IS NOT NULL"
+    assert pred == "naics2 IN ('23', '11')"
 
 
 def test_between_desugars_to_inclusive_range():
     pred = _compile(COMPANY, [{"field": "founded_year", "op": "between", "value": [2010, 2020]}])
-    assert pred == "founded_year >= 2010 AND founded_year <= 2020 AND latitude IS NOT NULL"
+    assert pred == "founded_year >= 2010 AND founded_year <= 2020"
 
 
 def test_query_name_state_maps_to_physical_address_state():
     pred = _compile(COMPANY, [{"field": "state", "op": "=", "value": "TX"}])
-    assert pred == "physical_address_state = 'TX' AND latitude IS NOT NULL"
+    assert pred == "physical_address_state = 'TX'"
 
 
-def test_empty_filters_returns_plottable_only():
-    assert _compile(COMPANY, []) == "latitude IS NOT NULL"
+def test_empty_filters_compile_to_none():
+    # No clauses -> None (unfiltered scan). The scan is no longer restricted to
+    # plottable rows: ungeocoded qualifying rows must reach the TABLE view.
+    assert _compile(COMPANY, []) is None
 
 
 def test_multi_clause_and():
@@ -65,7 +67,7 @@ def test_multi_clause_and():
         {"field": "state", "op": "in", "value": ["TX", "CA"]},
     ])
     assert pred == ("naics2 = '23' AND has_federal_awards = true "
-                    "AND physical_address_state IN ('TX', 'CA') AND latitude IS NOT NULL")
+                    "AND physical_address_state IN ('TX', 'CA')")
 
 
 # ── safety: every bad clause raises (→ 422), never reaches Lance ──────────────
@@ -123,18 +125,18 @@ def test_company_type_enum_violation_rejected():
 
 def test_company_employee_size_band_valid_enum_compiles():
     pred = _compile(COMPANY, [{"field": "employee_size_band", "op": "=", "value": "51-200"}])
-    assert pred == "employee_size_band = '51-200' AND latitude IS NOT NULL"
+    assert pred == "employee_size_band = '51-200'"
 
 
 def test_company_type_valid_enum_compiles():
     pred = _compile(COMPANY, [{"field": "company_type", "op": "=", "value": "Nonprofit"}])
-    assert pred == "company_type = 'Nonprofit' AND latitude IS NOT NULL"
+    assert pred == "company_type = 'Nonprofit'"
 
 
 def test_injection_value_is_escaped_not_executed():
     pred = _compile(COMPANY, [{"field": "state", "op": "=", "value": "TX' OR '1'='1"}])
     # the quote is doubled → a harmless string literal; no predicate breakout
-    assert pred == "physical_address_state = 'TX'' OR ''1''=''1' AND latitude IS NOT NULL"
+    assert pred == "physical_address_state = 'TX'' OR ''1''=''1'"
     assert "''" in pred
 
 
@@ -142,30 +144,30 @@ def test_injection_value_is_escaped_not_executed():
 def test_company_won_within_days_inverts_onto_date_column():
     # "won in the last 7 days" → days_since <= 7 → action date ON/AFTER today-7
     pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": 7}])
-    assert pred == "latest_award_action_date >= DATE '2026-06-05' AND latitude IS NOT NULL"
+    assert pred == "latest_award_action_date >= DATE '2026-06-05'"
 
 
 def test_winners_won_within_one_day():
     pred = _compile(WINNERS, [{"field": "days_since_last_award", "op": "<=", "value": 1}])
-    assert pred == "last_action_date >= DATE '2026-06-11' AND latitude IS NOT NULL"
+    assert pred == "last_action_date >= DATE '2026-06-11'"
 
 
 def test_days_ago_gte_means_on_or_before_cutoff():
     # "no award in over a year" → days_since >= 365 → action date ON/BEFORE today-365
     pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": ">=", "value": 365}])
-    assert pred == "latest_award_action_date <= DATE '2025-06-12' AND latitude IS NOT NULL"
+    assert pred == "latest_award_action_date <= DATE '2025-06-12'"
 
 
 def test_days_ago_between_is_a_days_window():
     # 7..30 days ago → dates today-30 .. today-7
     pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "between", "value": [7, 30]}])
     assert pred == ("latest_award_action_date >= DATE '2026-05-13' AND "
-                    "latest_award_action_date <= DATE '2026-06-05' AND latitude IS NOT NULL")
+                    "latest_award_action_date <= DATE '2026-06-05'")
 
 
 def test_days_ago_zero_is_today():
     pred = _compile(COMPANY, [{"field": "days_since_last_award", "op": "<=", "value": 0}])
-    assert pred == "latest_award_action_date >= DATE '2026-06-12' AND latitude IS NOT NULL"
+    assert pred == "latest_award_action_date >= DATE '2026-06-12'"
 
 
 def test_days_ago_rejects_negative_float_bool_and_string():
@@ -187,6 +189,47 @@ def test_days_ago_default_today_is_request_date():
     assert f"latest_award_action_date >= DATE '{date.today().isoformat()}'" in pred
 
 
+# ── awards.v1: the award-EVENT axis ──────────────────────────────────────────
+def test_awards_acceptance_sentence_compiles():
+    # "construction companies in Texas that won an award over $1M in the last 30 days"
+    pred = _compile(AWARDS, [
+        {"field": "naics2", "op": "=", "value": "23"},
+        {"field": "state", "op": "=", "value": "TX"},
+        {"field": "award_amount", "op": ">=", "value": 1000000},
+        {"field": "days_since_action", "op": "<=", "value": 30},
+    ])
+    assert pred == ("naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
+                    "AND action_date >= DATE '2026-05-13'")
+
+
+def test_awards_pop_state_is_distinct_from_recipient_state():
+    pred = _compile(AWARDS, [{"field": "pop_state", "op": "=", "value": "TX"}])
+    assert pred == "pop_state = 'TX'"
+    pred2 = _compile(AWARDS, [{"field": "state", "op": "=", "value": "TX"}])
+    assert pred2 == "state = 'TX'"
+
+
+def test_awards_city_and_agency_compile():
+    pred = _compile(AWARDS, [
+        {"field": "city", "op": "=", "value": "DALLAS"},
+        {"field": "awarding_agency", "op": "=", "value": "Department of Veterans Affairs"},
+    ])
+    assert pred == "city = 'DALLAS' AND awarding_agency = 'Department of Veterans Affairs'"
+
+
+def test_awards_set_aside_enum_enforced():
+    pred = _compile(AWARDS, [{"field": "set_aside", "op": "in", "value": ["8A", "8AN"]}])
+    assert pred == "set_aside IN ('8A', '8AN')"
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(AWARDS, [{"field": "set_aside", "op": "=", "value": "8(a)"}])
+
+
+def test_awards_amount_equality_rejected():
+    # '=' on a dollar amount is not a supported axis (range ops only).
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(AWARDS, [{"field": "award_amount", "op": "=", "value": 1000000}])
+
+
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
 def test_to_geojson_shape_and_axis_order():
     rows = [
@@ -201,14 +244,19 @@ def test_to_geojson_shape_and_axis_order():
     assert f["properties"]["company_name"] == "Acme"
 
 
-def test_to_geojson_drops_null_coordinate_rows():
+def test_to_geojson_emits_null_geometry_for_ungeocoded_rows():
+    # A qualifying row without coords reaches the table as a geometry:null feature
+    # (valid GeoJSON per RFC 7946 §3.2); the dot layer skips it.
     rows = [
         {"uei": "A", "longitude": -97.0, "latitude": 31.0},
         {"uei": "B", "longitude": None, "latitude": 31.0},
         {"uei": "C", "longitude": -97.0, "latitude": None},
     ]
     fc = lance_store.to_geojson(COMPANY, rows)
-    assert len(fc["features"]) == 1
+    assert len(fc["features"]) == 3
+    geoms = [f["geometry"] for f in fc["features"]]
+    assert geoms[0] == {"type": "Point", "coordinates": [-97.0, 31.0]}
+    assert geoms[1] is None and geoms[2] is None
 
 
 # ── decoder integrity (the load-bearing allowlist) ───────────────────────────

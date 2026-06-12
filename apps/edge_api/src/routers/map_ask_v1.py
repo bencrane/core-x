@@ -84,6 +84,29 @@ async def _translate(dataset: str, q: str) -> dict:
     tool = map_decoders.build_emit_filter_tool(dataset)
     filt = await anthropic_messages.emit_filter(
         model=model, system_blocks=system_blocks, tool=tool, user_text=q)
+    filt["dataset"] = dataset
+    filt["unmapped"] = _sanitize_unmapped(filt.get("unmapped"))
+    _MEMO[key] = filt
+    return filt
+
+
+async def _translate_auto(q: str) -> dict:
+    """Dataset-AUTO translate: one forced-tool call picks the dataset AND compiles its
+    filters. Memoized on the router version (every dataset axis folded in). Clauses
+    off the routed dataset's axis move to ``unmapped`` (reconcile_routed_filters)."""
+    model = config.map_compiler_model()
+    key = (_normalize(q), map_decoders.router_memo_version(), model)
+    if key in _MEMO:
+        return _MEMO[key]
+    system_blocks = [{
+        "type": "text",
+        "text": map_decoders.render_router_prompt(),
+        "cache_control": {"type": "ephemeral"},
+    }]
+    tool = map_decoders.build_router_tool()
+    filt = await anthropic_messages.emit_filter(
+        model=model, system_blocks=system_blocks, tool=tool, user_text=q)
+    filt = map_decoders.reconcile_routed_filters(filt)
     filt["unmapped"] = _sanitize_unmapped(filt.get("unmapped"))
     _MEMO[key] = filt
     return filt
@@ -99,7 +122,8 @@ async def _write_query_run(*, dataset: str, q: str, filt: dict | None, meta: dic
     """One INSERT into ops.map_query_runs. Best-effort by contract: any failure is a
     log line, never an exception that reaches the caller (the response already left)."""
     try:
-        decoder_version = map_decoders.DECODERS[dataset]["version"]
+        # `dataset` can be the pre-routing literal 'auto' on a translate failure.
+        decoder_version = map_decoders.DECODERS.get(dataset, {}).get("version")
         async with get_db_connection() as conn:
             await conn.execute(
                 "INSERT INTO ops.map_query_runs (dataset, raw_query, title, compiled_filters, "
@@ -138,9 +162,14 @@ def _record_query_run(**kwargs) -> None:
 @router.post("/{dataset}/ask", dependencies=[Depends(require_service_token)])
 async def ask(dataset: str, body: AskRequest) -> JSONResponse:
     """Translate the NL query → filter, execute it on catalyst_api, return the GeoJSON
-    envelope plus the interpreted ``query`` (title + filters + unmapped) for the UI to
-    echo — ``unmapped`` is the honest "not applied" signal."""
-    if dataset not in map_decoders.DECODERS:
+    envelope plus the interpreted ``query`` (dataset + title + filters + unmapped) for
+    the UI to echo — ``unmapped`` is the honest "not applied" signal.
+
+    ``dataset`` may be a concrete dataset (backward-compatible explicit pin) or
+    ``auto``: one forced-tool call routes the sentence to the right dataset AND
+    compiles its filters ("won an award over $X" → awards; lifetime-obligation /
+    firmographic phrasing → company)."""
+    if dataset != "auto" and dataset not in map_decoders.DECODERS:
         raise HTTPException(status_code=404, detail=f"unknown map dataset {dataset!r}")
     q = (body.q or "").strip()
     if not q:
@@ -155,19 +184,20 @@ async def ask(dataset: str, body: AskRequest) -> JSONResponse:
         return int((time.monotonic() - started) * 1000)
 
     try:
-        filt = await _translate(dataset, q)
+        filt = await (_translate_auto(q) if dataset == "auto" else _translate(dataset, q))
     except anthropic_messages.AnthropicMessagesError as exc:
         log.warning("map /ask translate failed: %s", exc.message)
         _record_query_run(dataset=dataset, q=q, filt=None, meta=None,
                           status="translate_error", error=(exc.message or "")[:500], latency_ms=_ms())
         raise HTTPException(status_code=502, detail="translation failed")
+    routed = filt["dataset"]                      # == dataset unless the router picked one
     try:
-        envelope = await catalyst_client.execute(dataset, filt)
+        envelope = await catalyst_client.execute(routed, filt)
     except catalyst_client.CatalystError as exc:
         log.warning("map /ask execute failed: %s", exc.message)
-        _record_query_run(dataset=dataset, q=q, filt=filt, meta=None,
+        _record_query_run(dataset=routed, q=q, filt=filt, meta=None,
                           status="execute_error", error=(exc.message or "")[:500], latency_ms=_ms())
         raise HTTPException(status_code=502, detail="map execute failed")
-    _record_query_run(dataset=dataset, q=q, filt=filt, meta=envelope.get("meta"),
+    _record_query_run(dataset=routed, q=q, filt=filt, meta=envelope.get("meta"),
                       status="success", error=None, latency_ms=_ms())
     return JSONResponse({**envelope, "query": filt})

@@ -301,19 +301,22 @@ def past_performance(
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──
 @app.post("/api/v1/map/{dataset}/query", response_model=None, dependencies=[Depends(require_operator)])
 def map_query(
-    dataset: str = Path(..., description="Map serving table: 'winners' | 'company'"),
+    dataset: str = Path(..., description="Map serving table: 'winners' | 'company' | 'awards'"),
     body: MapQueryRequest = Body(default=MapQueryRequest()),
 ) -> JSONResponse:
     """Compiled filter object → Lance scanner predicate → GeoJSON FeatureCollection.
 
     The deterministic EXECUTE side of the portal map: the body is a constrained
     ``{filters:[{field,op,value}]}`` object (never NL, never SQL). Filters are
-    AND-combined and the scan is restricted to plottable rows. An off-allowlist
-    field/op or a mistyped value is a 422; an unknown dataset is a 404. The response
-    is ``{"data": <FeatureCollection>, "meta": {...}}``; ``meta.total`` is the EXACT
-    match count (``count_rows`` pushdown) and ``meta.capped`` flags a result truncated
-    at the row bound — derived from ``total``, never from a sentinel row (the prior
-    ``limit+1`` probe under-reported with the pylance limited-scan planner)."""
+    AND-combined. The scan is NOT restricted to plottable rows — a qualifying row
+    whose address did not geocode is served as a ``geometry: null`` feature so the
+    TABLE view stays complete; the dot layer skips it. An off-allowlist field/op or
+    a mistyped value is a 422; an unknown dataset is a 404. The response is
+    ``{"data": <FeatureCollection>, "meta": {...}}``; ``meta.total`` is the EXACT
+    match count (``count_rows`` pushdown), ``meta.plottable`` the served features
+    that carry geometry, and ``meta.capped`` flags a result truncated at the row
+    bound — derived from ``total``, never from a sentinel row (the prior ``limit+1``
+    probe under-reported with the pylance limited-scan planner)."""
     decoder = DECODERS.get(dataset)
     if decoder is None:
         raise HTTPException(status_code=404, detail=f"unknown map dataset {dataset!r}")
@@ -334,6 +337,7 @@ def map_query(
             "dataset": dataset,
             "decoderVersion": decoder.version,
             "returned": len(fc["features"]),
+            "plottable": sum(1 for f in fc["features"] if f["geometry"] is not None),
             "total": total,
             "capped": total > limit,
         },

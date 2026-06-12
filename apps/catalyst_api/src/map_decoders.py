@@ -117,4 +117,58 @@ COMPANY = Decoder(
 )
 
 
-DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY}
+# Set-aside codes verified live against the built serving table (18 distinct; 'NONE'
+# means the action was explicitly competed without a set-aside — distinct from NULL,
+# which means the source row carried no set-aside signal at all).
+_SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WOSB",
+                    "WOSBSS", "EDWOSB", "EDWOSBSS", "HZC", "HZS", "ISBEE", "BI", "IEE",
+                    "VSA", "VSS")
+
+AWARDS = Decoder(
+    dataset_key="awards",
+    version="awards.v1",
+    geometry=("longitude", "latitude"),
+    properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
+                "action_date", "naics2", "naics_code", "state", "city", "county",
+                "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
+                "set_aside"),
+    fields={
+        # The single action's obligation — NEVER a lifetime or window rollup. The build
+        # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
+        "award_amount":      FieldSpec("award_amount", "float", (">=", "<=", "between"), index="BTREE"),
+        "days_since_action": FieldSpec("action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
+        "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
+        "naics_code":        FieldSpec("naics_code", "string", ("=", "in")),
+        # Recipient (HQ) geo vs PLACE OF PERFORMANCE geo — two distinct axes by design.
+        "state":             FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
+        "city":              FieldSpec("city", "string", ("=", "in"), index="BTREE"),
+        "county":            FieldSpec("county", "string", ("=", "in"), index="BTREE"),
+        "pop_state":         FieldSpec("pop_state", "string", ("=", "in"), index="BITMAP"),
+        "pop_city":          FieldSpec("pop_city", "string", ("=", "in"), index="BTREE"),
+        "awarding_agency":   FieldSpec("awarding_agency", "string", ("=", "in"), index="BITMAP"),
+        "awarding_sub_agency": FieldSpec("awarding_sub_agency", "string", ("=", "in"), index="BTREE"),
+        "set_aside":         FieldSpec("set_aside", "string", ("=", "in"),
+                                       enum=_SET_ASIDE_CODES, index="BITMAP"),
+        "winner_type":       FieldSpec("winner_type", "string", ("=", "in"),
+                                       enum=("prime_recipient", "subawardee"), index="BITMAP"),
+    },
+    synonyms={
+        "construction":   {"field": "naics2", "op": "=", "value": "23"},
+        "this week":      {"field": "days_since_action", "op": "<=", "value": 7},
+        "this month":     {"field": "days_since_action", "op": "<=", "value": 30},
+        "won recently":   {"field": "days_since_action", "op": "<=", "value": 30},
+        "subawards":      {"field": "winner_type", "op": "=", "value": "subawardee"},
+        "dod":            {"field": "awarding_agency", "op": "in",
+                           "value": ["Department of Defense", "Department of Defense (DOD)"]},
+        "gsa":            {"field": "awarding_agency", "op": "=", "value": "General Services Administration"},
+        "the va":         {"field": "awarding_agency", "op": "=", "value": "Department of Veterans Affairs"},
+        "8(a)":           {"field": "set_aside", "op": "in", "value": ["8A", "8AN"]},
+        "sdvosb":         {"field": "set_aside", "op": "in", "value": ["SDVOSBC", "SDVOSBS"]},
+        "hubzone":        {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
+        "woman-owned":    {"field": "set_aside", "op": "in",
+                           "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+    },
+)
+
+
+DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY, "awards": AWARDS}

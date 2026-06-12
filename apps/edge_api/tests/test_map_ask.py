@@ -95,3 +95,49 @@ def test_render_prompt_mentions_fields_and_synonyms_but_no_columns():
     # Lance column names must NEVER reach the model — only EXECUTE knows them.
     assert "physical_address_state" not in p
     assert "latest_award_action_date" not in p
+
+
+def test_awards_prompt_carries_geo_disambiguation_and_window_note():
+    p = edge.render_decoder_prompt("awards")
+    assert "award_amount" in p and "days_since_action" in p
+    assert "pop_state" in p and "WORK IS PERFORMED" in p
+    # The per-dataset notes (geo disambiguation + 90d window honesty) must render.
+    assert "Geo disambiguation" in p and "last 90 days" in p
+
+
+# ── dataset routing (the AUTO surface) ────────────────────────────────────────
+def test_router_tool_dataset_enum_and_union_fields():
+    tool = edge.build_router_tool()
+    schema = tool["input_schema"]
+    assert set(schema["properties"]["dataset"]["enum"]) == set(edge.DECODERS)
+    union = set()
+    for d in edge.DECODERS.values():
+        union |= set(d["fields"])
+    item = schema["properties"]["filters"]["items"]["properties"]
+    assert set(item["field"]["enum"]) == union
+    assert set(schema["required"]) == {"dataset", "title", "filters", "unmapped"}
+
+
+def test_router_prompt_mentions_every_dataset_and_cues():
+    p = edge.render_router_prompt()
+    for key in edge.DECODERS:
+        assert f"dataset = '{key}'" in p
+    assert "won an award" in p and "lifetime" in p.lower()
+    assert "unmapped" in p
+
+
+def test_router_memo_version_folds_every_dataset_version():
+    v = edge.router_memo_version()
+    assert edge.ROUTER_VERSION in v
+    for d in edge.DECODERS.values():
+        assert d["version"] in v
+
+
+def test_routed_filter_reconciliation_moves_offaxis_clauses_to_unmapped():
+    filt = {"dataset": "company", "title": "t", "unmapped": [], "filters": [
+        {"field": "naics2", "op": "=", "value": "23"},          # on-axis: kept
+        {"field": "award_amount", "op": ">=", "value": 1000000},  # awards-only: moved
+    ]}
+    out = edge.reconcile_routed_filters(filt)
+    assert out["filters"] == [{"field": "naics2", "op": "=", "value": "23"}]
+    assert any("award_amount" in u for u in out["unmapped"])
