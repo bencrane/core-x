@@ -35,13 +35,13 @@ DECODERS: dict[str, dict] = {
         },
     },
     "company": {
-        "version": "company.v1",
+        "version": "company.v2",
         "description": "Companies in the firmographics target universe that are SAM-registered — one row per company.",
         "fields": {
             "naics2":             {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "industry":           {"type": "string", "ops": ("=", "in"), "desc": "LinkedIn-style industry label"},
-            "employee_size_band": {"type": "string", "ops": ("=", "in"), "desc": "headcount band, e.g. '11-50', '51-200'"},
-            "company_type":       {"type": "string", "ops": ("=", "in")},
+            "employee_size_band": {"type": "string", "ops": ("=", "in"), "enum": ("1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+"), "desc": "headcount band, e.g. '11-50', '51-200'"},
+            "company_type":       {"type": "string", "ops": ("=", "in"), "enum": ("Educational", "Educational Institution", "Government Agency", "Nonprofit", "Partnership", "Privately Held", "Public Company", "Self-Employed", "Self-Owned", "Sole Proprietorship")},
             "state":              {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state (physical address)"},
             "has_federal_awards": {"type": "bool",   "ops": ("=",), "desc": "true = the company holds federal awards"},
             "is_active":          {"type": "bool",   "ops": ("=",), "desc": "true = active SAM registration"},
