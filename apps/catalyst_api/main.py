@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -54,10 +55,16 @@ log = logging.getLogger("catalyst_api")
 # few concurrent drawer opens (3 lookups each); the lookups are R2-I/O-bound.
 _DOSSIER_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="dossier")
 
-# Batch executor: each worker composes ONE UEI end-to-end (serial 3-lookup unit in
-# dossier.compose_dossier — never nested submits into its own pool). 8 workers keeps
-# a full 100-UEI batch under ~1 s on warm handles without stampeding R2.
-_BATCH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dossier-batch")
+# Batch executor: the batch route FLATTENS every dossier into its three lookups and
+# submits all 3·N to this pool (submits happen in ROUTE code, never from inside a
+# pooled task — no nested-submit deadlock). Lookups are R2-I/O-bound waits on warm
+# BTREE handles (pylance releases the GIL), so a wide pool is parked threads, not CPU:
+# measured live, 8 serial-compose workers ran a 50-batch at ~4.9 s; flattened over 32
+# threads the same batch is sub-second. Override with CATALYST_BATCH_LOOKUP_THREADS.
+_BATCH_POOL = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("CATALYST_BATCH_LOOKUP_THREADS", "32")),
+    thread_name_prefix="dossier-batch",
+)
 
 
 @asynccontextmanager
@@ -357,14 +364,34 @@ def entity_dossiers(body: DossierBatchRequest = Body(...)) -> JSONResponse:
         raise HTTPException(status_code=422, detail=err)
     actions = max(1, min(body.actions or dossier.ACTIONS_DEFAULT, dossier.ACTIONS_MAX))
     today = date.today()
-    futures = {u: _BATCH_POOL.submit(dossier.compose_dossier, u, actions, today) for u in ueis}
+    # FLATTENED fan-out: all 3·N lookups go to the pool at once (gold ∥ CAS ∥ actions
+    # per UEI) — the serial-compose shape throttled a 50-batch to ~4.9 s live. The
+    # composition itself (from_parts) is the same one the single route and
+    # dossier.compose_dossier use, so payload parity holds.
+    futures = {
+        u: (
+            _BATCH_POOL.submit(lance_store.entity_dossier_gold, u),
+            _BATCH_POOL.submit(lance_store.award_summary_by_uei, u),
+            _BATCH_POOL.submit(lance_store.recent_award_actions_by_uei, u, actions),
+        )
+        for u in ueis
+        if lance_store.valid_uei(u)
+    }
     data: dict = {}
     found = 0
     for u in ueis:
-        model = futures[u].result()
-        if model is not None:
-            found += 1
-        data[u] = model.model_dump(by_alias=True, exclude_none=False) if model else None
+        trio = futures.get(u)
+        if trio is None:                  # invalid-format UEI → null (partial success)
+            data[u] = None
+            continue
+        gold = trio[0].result()
+        cas, recent = trio[1].result(), trio[2].result()
+        if gold is None:                  # unknown UEI → null (partial success)
+            data[u] = None
+            continue
+        model = EntityDossierResponse.from_parts(gold, cas, recent, today)
+        found += 1
+        data[u] = model.model_dump(by_alias=True, exclude_none=False)
     return JSONResponse({"data": data, "meta": {"requested": len(ueis), "found": found}})
 
 
