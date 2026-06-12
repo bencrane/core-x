@@ -24,6 +24,11 @@ import os
 import sys
 from pathlib import Path
 
+# Repo root on sys.path so the canonical join-key import resolves whether this file is
+# run as a script (python3 pipelines/serving/materialize_company_map.py) or imported.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pipelines._shared.addr_hash import addr_hash_sql  # noqa: E402
+
 ACTIVE = "s3://data-sink/active"
 SERVING_URI = os.environ.get("COMPANY_MAP_SERVING_URI", f"{ACTIVE}/firmographics_company_map_serving/")
 FIRMO_URI = f"{ACTIVE}/firmographics_blitz/"
@@ -53,15 +58,6 @@ def _r2_so() -> dict[str, str]:
     return {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
             "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
             "endpoint": endpoint, "region": "auto"}
-
-
-def addr_hash_sql(street: str, city: str, state: str, zip_: str) -> str:
-    """Canonical addr_hash — MUST stay byte-identical to pipelines/usaspending/geocode_xwalk.py."""
-    return ("md5("
-            f"upper(regexp_replace(trim(coalesce({street},'')),'\\s+',' ','g'))||'|'||"
-            f"upper(trim(coalesce({city},'')))||'|'||"
-            f"upper(trim(coalesce({state},'')))||'|'||"
-            f"substr(regexp_replace(coalesce({zip_},''),'[^0-9]','','g'),1,5))")
 
 
 def _duck():

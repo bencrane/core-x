@@ -32,6 +32,11 @@ import sys
 import time
 from pathlib import Path
 
+# Repo root on sys.path so the canonical join-key import resolves whether this file is
+# run as a script (python3 pipelines/usaspending/geocode_xwalk.py) or imported as a module.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pipelines._shared.addr_hash import addr_hash_sql, _zip5_sql  # noqa: E402
+
 ACTIVE = "s3://data-sink/active"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
@@ -68,20 +73,6 @@ def _r2_so() -> dict[str, str]:
     return {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
             "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
             "endpoint": endpoint, "region": "auto"}
-
-
-def addr_hash_sql(street: str, city: str, state: str, zip_: str) -> str:
-    """Canonical addr_hash expression. MUST stay byte-identical to the copy in
-    pipelines/serving/materialize_winners_map.py — it is the join key between them."""
-    return ("md5("
-            f"upper(regexp_replace(trim(coalesce({street},'')),'\\s+',' ','g'))||'|'||"
-            f"upper(trim(coalesce({city},'')))||'|'||"
-            f"upper(trim(coalesce({state},'')))||'|'||"
-            f"substr(regexp_replace(coalesce({zip_},''),'[^0-9]','','g'),1,5))")
-
-
-def _zip5_sql(zip_: str) -> str:
-    return f"substr(regexp_replace(coalesce({zip_},''),'[^0-9]','','g'),1,5)"
 
 
 def _duck():
