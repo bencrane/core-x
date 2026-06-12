@@ -1,0 +1,40 @@
+{
+  "$comment": "GovCon LLM-lane result-file contract v1. One result JSON file per resource, written to the exact result_path named in the task file. Validated DETERMINISTICALLY by sam_labor_demand_extract_90day.py --phase ingest (hand validator — no jsonschema dependency); rows failing validation are counted and never stored. This file is hashed into prompt_hash.",
+  "type": "object",
+  "required": ["resource_id", "engine", "scope_summary", "capability_tags", "requirements"],
+  "properties": {
+    "resource_id": {"type": "string", "description": "MUST equal the task file's resource_id."},
+    "engine": {"type": "string", "description": "Extraction engine identity, e.g. 'session-fable'."},
+    "scope_summary": {
+      "type": ["string", "null"],
+      "maxLength": 1200,
+      "description": "3-6 sentence factual summary of what the contractor must do/provide. No speculation; null if the selected chunks carry no scope content."
+    },
+    "capability_tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Tags from vocabulary.capability_tags ONLY (the controlled vocabulary in the task file). Out-of-vocabulary tags are rejected at ingest."
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["requirement_type", "requirement_value", "source_chunk_ids", "evidence_quote"],
+        "properties": {
+          "requirement_type": {"enum": ["certification", "clearance", "labor_category", "standard_compliance", "license", "equipment_capability", "past_performance", "deliverable", "insurance_bonding", "staffing_constraint", "vehicle_constraint"]},
+          "requirement_value": {"type": "string", "description": "Normalized value (lowercase snake/colon form; reuse vocabulary.value_norm_hints where they fit). For labor_category rows this MUST be a vocabulary.labor_categories member."},
+          "requirement_detail": {"type": ["string", "null"], "maxLength": 200},
+          "mandatory": {"type": "boolean", "description": "true for shall/must/required language; false for should/may."},
+          "headcount": {"type": ["integer", "null"], "minimum": 1, "maximum": 5000},
+          "clearance_level": {"enum": ["PUBLIC_TRUST", "CONFIDENTIAL", "SECRET", "TOP_SECRET", "TS_SCI", null]},
+          "pop_start": {"type": ["string", "null"], "format": "YYYY-MM-DD"},
+          "pop_end": {"type": ["string", "null"], "format": "YYYY-MM-DD"},
+          "place_of_performance_text": {"type": ["string", "null"], "maxLength": 120},
+          "wage_floor": {"type": ["number", "null"]},
+          "source_chunk_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "chunk_ids FROM THE TASK FILE that contain the evidence. Citing a chunk_id not in the task file rejects the row."},
+          "evidence_quote": {"type": "string", "maxLength": 300, "description": "VERBATIM quote copied from the cited chunk text. Must substring-match the cited chunks after whitespace normalization or the row is rejected."}
+        }
+      }
+    }
+  }
+}

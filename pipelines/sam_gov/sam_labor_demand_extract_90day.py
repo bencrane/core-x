@@ -61,6 +61,17 @@ Run (corpus pass is hours-scale: daemonize/background it; resumable):
     ... --phase index                                     # after Phase-1 merges settle (plan):
                                                           # BTREE/BITMAP campaign, NO requirement_id
                                                           # index until Phase-2 merges complete
+
+LLM LANE (build-plan PHASE 2 — engine-agnostic select/stage → extract → validate/land; operator
+decision A: marked resources bracketed out, recorded as llm_state='excluded_marked'):
+    ... --phase bracket                                   # record decision A in the ledger (live
+                                                          #   chunk content_marking; idempotent)
+    ... --phase select --pilot 4 --manifest-out /tmp/m.json   # stage task files (seeded sample)
+    ... --phase select                                    # stage the FULL pending worklist
+    ... --phase census                                    # token census, no staging (JSON report)
+    <opaque extraction step: agents read tasks/, write results/<rid>.result.json>
+    ... --phase ingest                                    # validate + land + ledger (run gate 98%)
+    ... --phase reset-llm --resource-ids RID1             # reverse an LLM landing (lane hygiene)
 """
 from __future__ import annotations
 
@@ -77,12 +88,13 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
-    CHUNK_OVERLAP, LABOR_LEXICON_RX, MAX_CHUNKS_PER_FILE, PRICING_URI, SCOPE_URI, UNKNOWN_URI,
-    SinkCommitLease, _daemonize, _dataset_exists, _r2_storage_options,
+    CHUNK_OVERLAP, LABOR_LEXICON_RX, MAX_CHUNKS_PER_FILE, PRICING_URI, SCOPE_HDR_RX, SCOPE_URI,
+    UNKNOWN_URI, SinkCommitLease, _daemonize, _dataset_exists, _r2_storage_options,
 )
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
-    EXTRACT_LEDGER_URI, LABOR_DEMAND_URI, REQUIREMENTS_URI,
-    assert_schema, extract_ledger_schema, labor_demand_schema, requirements_schema,
+    DOC_SCOPE_URI, EXTRACT_LEDGER_URI, LABOR_DEMAND_URI, REQUIREMENTS_URI,
+    assert_schema, doc_scope_schema, extract_ledger_schema, labor_demand_schema,
+    requirements_schema,
 )
 
 FEED = "sam_labor_demand_extract_90day"
@@ -1151,11 +1163,949 @@ def phase_index(args, so: dict) -> dict:
     return out
 
 
+<<<<<<< HEAD
+# ╔═══════════════════════════════════════════════════════════════════════════════════════════════
+# ║ LLM LANE — build-plan PHASE 2 (engine-agnostic: deterministic select/stage → opaque extraction
+# ║ step producing result JSON files → deterministic validate/land). OPERATOR DECISION A (binding):
+# ║ resources with ANY non-empty chunk content_marking are BRACKETED OUT of all LLM processing —
+# ║ recorded in the ledger as llm_state='excluded_marked' (reversible, derived live), and marked
+# ║ text NEVER enters any staged task file (hard-asserted at staging). ZERO marginal spend: the
+# ║ pilot engine is session agents reading staged task files; the harness never calls an API.
+# ╚═══════════════════════════════════════════════════════════════════════════════════════════════
+LLM_PROMPT_VERSION = "v1"
+LLM_ENGINE_DEFAULT = "session-fable"
+LLM_ARTIFACT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "reference", "govcon_llm_lane_v1")
+LLM_STAGING_DIR = os.environ.get("GOVCON_LLM_STAGING_DIR", "/tmp/govcon_llm_stage")
+LLM_BRACKET_REPORT = os.environ.get("GOVCON_LLM_BRACKET_REPORT", "/tmp/govcon_llm_bracket_report.json")
+LLM_CENSUS_REPORT = os.environ.get("GOVCON_LLM_CENSUS_REPORT", "/tmp/govcon_llm_census.json")
+LLM_INGEST_REPORT = os.environ.get("GOVCON_LLM_INGEST_REPORT", "/tmp/govcon_llm_ingest_report.json")
+
+# Selection policy (deterministic; stated in the build report):
+#   token estimate = ceil(chars / 4)  (the chars/4 convention; chunk text is ASCII-heavy English)
+#   per-doc HARD budget = 8,000 tokens (≈32,000 chars ≈ 26 full chunks). Rationale: a 10-doc agent
+#   batch carries ≤80K tokens of document text — inside a 200K context with instructions + output.
+#   Docs whose ELIGIBLE selection exceeds the budget are truncated by priority tier and flagged
+#   coverage_truncated=true (map-reduce over multiple windows is the future upgrade for that tail;
+#   census reports its exact size).
+CHARS_PER_TOKEN = 4
+DOC_TOKEN_BUDGET = int(os.environ.get("GOVCON_LLM_DOC_TOKEN_BUDGET", "8000"))
+N_OPENING_CHUNKS = int(os.environ.get("GOVCON_LLM_OPENING_CHUNKS", "6"))
+LLM_SLICE_FETCH_MAX = 500          # ≤ this many ids per sink → filtered reads; else full stream
+LLM_FETCH_SLICE = 200              # ids per filtered read
+LLM_INGEST_FLUSH = 200             # resources per ingest commit batch
+LLM_MIN_PASS_RATE = 0.98           # plan Phase-2 run gate (≥98% or nothing lands)
+
+# Validator-strength confidence (hard rule 1: LLM rows always < 1.0):
+LLM_CONF_RAW = 0.90                # evidence_quote matched cited text verbatim (raw substring)
+LLM_CONF_NORM = 0.80               # matched only after whitespace normalization
+LLM_DOC_CONFIDENCE = 0.80          # doc-grain outputs (summary/tags) — synthesis, not quote-checked
+
+EXCLUDED_MARKED = "excluded_marked"
+EXCLUDED_OUT_OF_SCOPE = "excluded_out_of_scope"
+# Bracket rewrites ONLY the three pre-flight states; every other llm_state is a lane event it must
+# never erase (done/quarantined = results; submitted/results_fetched = batch in flight; failed/
+# truncated/marked_local_only = explicit lane outcomes with their own resume semantics).
+LLM_BRACKET_MANAGED = {"pending", EXCLUDED_MARKED, EXCLUDED_OUT_OF_SCOPE}
+
+_LEDGER_PRESERVE_SENTINEL = object()
+
+
+def load_llm_artifacts() -> tuple[str, dict, dict, str]:
+    """(prompt_template_text, output_schema, vocabulary, prompt_hash). prompt_hash = sha256 over the
+    raw bytes of template + vocabulary + schema IN THAT ORDER (mandate E) — any artifact edit
+    changes the hash, and the hash rides every stored row's ledger entry."""
+    with open(os.path.join(LLM_ARTIFACT_DIR, "prompt_template.md"), "rb") as f:
+        t_bytes = f.read()
+    with open(os.path.join(LLM_ARTIFACT_DIR, "vocabulary.json"), "rb") as f:
+        v_bytes = f.read()
+    with open(os.path.join(LLM_ARTIFACT_DIR, "output_schema.json"), "rb") as f:
+        s_bytes = f.read()
+    phash = hashlib.sha256(t_bytes + v_bytes + s_bytes).hexdigest()
+    return (t_bytes.decode("utf-8"), json.loads(s_bytes), json.loads(v_bytes), phash)
+
+
+def llm_extractor_tag(engine: str) -> str:
+    return f"llm:{engine}@{LLM_PROMPT_VERSION}"
+
+
+def llm_delete_predicate(resource_ids: list[str]) -> str:
+    """Hard rule 2: LLM-lane idempotency = scoped delete-before-merge — the resource's prior
+    llm:% rows die, regex:% rows are NEVER touched (mirror of requirements_delete_predicate)."""
+    return f"{in_predicate('resource_id', resource_ids)} AND extractor LIKE 'llm:%'"
+
+
+def estimate_tokens(text: str) -> int:
+    """chars/4, rounded up — the stated census/budget convention. Deterministic."""
+    return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+
+
+def select_chunks(chunk_rows: list[dict], budget_tokens: int = DOC_TOKEN_BUDGET) -> dict:
+    """TARGETED READING selection, deterministic (mandate B). Priority tiers per chunk:
+      0 = opening chunks (chunk_ix < N_OPENING_CHUNKS — title page / section 1 / doc framing)
+      1 = scope-header-bearing chunks (SCOPE_HDR_RX on the chunk text)
+      2 = labor-lexicon-hit chunks (LABOR_LEXICON_RX on the chunk text)
+    Eligible = chunks with any tier. Fill order = (tier, chunk_ix); a chunk that does not fit the
+    remaining budget is SKIPPED (counted) and filling continues — hard budget, never exceeded.
+    Returns selected rows in chunk_ix order plus the census stats."""
+    rows = sorted(chunk_rows, key=lambda r: r["chunk_ix"])
+    eligible: list[tuple[int, int, dict]] = []
+    total_tokens = 0
+    for r in rows:
+        text = r.get("text") or ""
+        total_tokens += estimate_tokens(text)
+        if r["chunk_ix"] < N_OPENING_CHUNKS:
+            tier = 0
+        elif SCOPE_HDR_RX.search(text):
+            tier = 1
+        elif LABOR_LEXICON_RX.search(text):
+            tier = 2
+        else:
+            continue
+        eligible.append((tier, r["chunk_ix"], r))
+    eligible.sort(key=lambda t: (t[0], t[1]))
+    eligible_tokens = sum(estimate_tokens(r.get("text") or "") for _, _, r in eligible)
+    selected: list[dict] = []
+    sel_tokens = 0
+    for _tier, _ix, r in eligible:
+        tk = estimate_tokens(r.get("text") or "")
+        if sel_tokens + tk > budget_tokens:
+            continue
+        selected.append(r)
+        sel_tokens += tk
+    selected.sort(key=lambda r: r["chunk_ix"])
+    return {
+        "selected": selected,
+        "n_chunks_total": len(rows), "n_chunks_eligible": len(eligible),
+        "n_chunks_selected": len(selected),
+        "est_tokens_total": total_tokens, "est_tokens_eligible": eligible_tokens,
+        "est_tokens_selected": sel_tokens,
+        "coverage_truncated": len(selected) < len(eligible),
+        "over_budget": eligible_tokens > budget_tokens,
+    }
+
+
+def bracket_target(current_llm_state: str | None, in_input: bool, marked: bool) -> str | None:
+    """Pure bracket-state law (operator decision A; unit-tested). Returns the state the ledger row
+    must carry, or None when the row must not be touched (already correct, or carries a lane event
+    bracket must never erase)."""
+    if current_llm_state not in LLM_BRACKET_MANAGED and current_llm_state is not None:
+        return None
+    if not in_input:
+        want = EXCLUDED_OUT_OF_SCOPE
+    elif marked:
+        want = EXCLUDED_MARKED
+    else:
+        want = "pending"
+    return None if want == current_llm_state else want
+
+
+# ── sink maps / worklist resolution ───────────────────────────────────────────────────────────────
+def compute_sink_maps(so: dict, args) -> tuple[dict[str, dict[str, int]], set[str]]:
+    """Per sink: {resource_id: n_chunks} (one resource_id column scan), plus the LIVE marked set
+    (resources with ANY chunk whose content_marking is non-empty — array_length pushdown, the
+    single egress enforcement signal). Resources are document-disjoint across sinks (plan §1)."""
+    import lance
+    sink_counts: dict[str, dict[str, int]] = {}
+    marked: set[str] = set()
+    for name, uri in (("scope", args.scope_uri), ("pricing", args.pricing_uri),
+                      ("unknown", args.unknown_uri)):
+        ds = lance.dataset(uri, storage_options=so)
+        counts: dict[str, int] = {}
+        for b in ds.to_batches(columns=["resource_id"], batch_size=131072):
+            for rid in b.column("resource_id").to_pylist():
+                counts[rid] = counts.get(rid, 0) + 1
+        for b in ds.to_batches(columns=["resource_id"], batch_size=131072,
+                               filter="array_length(content_marking) > 0"):
+            marked.update(b.column("resource_id").to_pylist())
+        sink_counts[name] = counts
+    return sink_counts, marked
+
+
+def compute_input_set(sink_counts: dict[str, dict[str, int]], ledger_rows: list[dict]) -> set[str]:
+    """Operator decision A input set: scope-sink ALL ∪ pricing ALL ∪ (unknown ∩ (lexicon_hit_fullbody
+    ∪ regex-hit residue)). The residue term is n_requirements_regex > 0 over any sink — a no-op for
+    scope/pricing (already in unconditionally), the measured lexicon-miss regex-hit unknowns."""
+    lex_or_hit = {r["resource_id"] for r in ledger_rows
+                  if r.get("lexicon_hit_fullbody") or (r.get("n_requirements_regex") or 0) > 0}
+    return (set(sink_counts["scope"]) | set(sink_counts["pricing"])
+            | (set(sink_counts["unknown"]) & lex_or_hit))
+
+
+def _ledger_full(so: dict, uri: str) -> list[dict]:
+    import lance
+    assert_schema(uri, extract_ledger_schema(), so)
+    return lance.dataset(uri, storage_options=so).to_table().to_pylist()
+
+
+def merge_ledger_llm(so: dict, uri: str, updates: list[dict], run_id: str,
+                     now: dt.datetime) -> dict:
+    """LLM-lane ledger merge (mirror of merge_ledger, opposite lane): regex-lane columns
+    (regex_state, n_requirements_regex, marking_full_body, lexicon_hit_fullbody, extractor_version)
+    are ALWAYS preserved from the existing row; LLM-lane columns are taken from the update when the
+    key is present (explicit None = clear) and preserved otherwise. extractor_version stays the
+    regex lane's — LLM versioning rides model + prompt_hash (plan-gap resolution). A missing ledger
+    row is a hard error: P1 ledgered every resource."""
+    import lance
+    import pyarrow as pa
+    assert_schema(uri, extract_ledger_schema(), so)
+    ds = lance.dataset(uri, storage_options=so)
+    ids = sorted({u["resource_id"] for u in updates})
+    prev: dict[str, dict] = {}
+    for i in range(0, len(ids), LLM_FETCH_SLICE):
+        t = ds.to_table(filter=in_predicate("resource_id", ids[i:i + LLM_FETCH_SLICE]))
+        prev.update({r["resource_id"]: r for r in t.to_pylist()})
+    missing = [u["resource_id"] for u in updates if u["resource_id"] not in prev]
+    if missing:
+        raise RuntimeError(f"merge_ledger_llm: {len(missing)} resources have no ledger row "
+                           f"(e.g. {missing[:3]}) — the P1 ledger is the worklist substrate")
+    rows = []
+    for u in updates:
+        p = prev[u["resource_id"]]
+
+        def pick(key, _u=u, _p=p):
+            return _u[key] if key in _u else _p.get(key)
+        rows.append({
+            "resource_id": u["resource_id"],
+            "regex_state": p["regex_state"],
+            "llm_state": u["llm_state"],
+            "batch_id": pick("batch_id"),
+            "marking_full_body": p.get("marking_full_body"),
+            "lexicon_hit_fullbody": p.get("lexicon_hit_fullbody"),
+            "n_requirements_regex": p.get("n_requirements_regex"),
+            "n_requirements_llm": pick("n_requirements_llm"),
+            "validation_pass_rate": pick("validation_pass_rate"),
+            "model": pick("model"), "prompt_hash": pick("prompt_hash"),
+            "extractor_version": p.get("extractor_version"),
+            "run_id": run_id, "completed_at": now,
+        })
+    tbl = pa.Table.from_pylist(rows, schema=extract_ledger_schema())
+    res = (ds.merge_insert("resource_id").when_matched_update_all()
+           .when_not_matched_insert_all().execute(tbl))
+    return _merge_stats(res)
+
+
+# ════════════════════════════════════════════════════════════════ phase: bracket (decision A)
+def phase_llm_bracket(args, so: dict, run_id: str) -> dict:
+    """Record operator decision A in the ledger. Derives the marked set LIVE from chunk
+    content_marking; partitions every non-terminal ledger row into pending / excluded_marked /
+    excluded_out_of_scope (the three states tile the pre-flight ledger exactly — coverage
+    accounting stays honest and reversible). Idempotent: re-running merges only drifted rows."""
+    ledger_rows = _ledger_full(so, args.ledger_uri)
+    sink_counts, marked = compute_sink_maps(so, args)
+    input_set = compute_input_set(sink_counts, ledger_rows)
+    updates, state_counts = [], {}
+    for r in ledger_rows:
+        rid = r["resource_id"]
+        tgt = bracket_target(r.get("llm_state"), rid in input_set, rid in marked)
+        final = tgt or r.get("llm_state")
+        state_counts[final] = state_counts.get(final, 0) + 1
+        if tgt is not None:
+            updates.append({"resource_id": rid, "llm_state": tgt})
+    stats = {}
+    if updates:
+        lease = SinkCommitLease(args.ledger_uri, holder=f"llm_bracket:{run_id}",
+                                ttl_s=2 * 3600).acquire()
+        try:
+            stats = merge_ledger_llm(so, args.ledger_uri, updates, run_id,
+                                     dt.datetime.now(dt.timezone.utc))
+        finally:
+            lease.release()
+    out = {
+        "ledger_rows": len(ledger_rows),
+        "sink_resources": {k: len(v) for k, v in sink_counts.items()},
+        "marked_resources_live": len(marked),
+        "input_set": len(input_set),
+        "marked_in_input": len(input_set & marked),
+        "rows_changed": len(updates),
+        "llm_state_after": state_counts,
+        "merge": stats,
+    }
+    # the partition must tile the ledger — hard assert, not a hope
+    n_pre = sum(state_counts.get(s, 0) for s in LLM_BRACKET_MANAGED)
+    n_other = len(ledger_rows) - n_pre
+    out["non_bracket_states"] = n_other
+    print(f"bracket: {json.dumps(out, default=str)}", flush=True)
+    return out
+
+
+# ════════════════════════════════════════════════════════════════ phase: select / census (shared)
+def _fetch_resources_sliced(ds, ids: list[str], cols: list[str]):
+    """Small-worklist fetch: chunked filtered reads, yields (rid, rows) per complete resource."""
+    for i in range(0, len(ids), LLM_FETCH_SLICE):
+        t = ds.to_table(columns=cols, filter=in_predicate("resource_id", ids[i:i + LLM_FETCH_SLICE]))
+        by_rid: dict[str, list[dict]] = {}
+        for r in t.to_pylist():
+            by_rid.setdefault(r["resource_id"], []).append(r)
+        for rid in sorted(by_rid):
+            yield rid, by_rid[rid]
+
+
+def _stream_resources(ds, want: dict[str, int], cols: list[str]):
+    """Full-worklist fetch: single natural-order stream, buffer per resource, yield on completion
+    (the phase_extract pattern). `want` = {resource_id: expected_chunk_count} from compute_sink_maps."""
+    buf: dict[str, list[dict]] = {}
+    seen: dict[str, int] = {}
+    for b in ds.to_batches(columns=cols, batch_size=SCAN_BATCH_ROWS):
+        for r in b.to_pylist():
+            rid = r["resource_id"]
+            exp = want.get(rid)
+            if exp is None:
+                continue
+            seen[rid] = seen.get(rid, 0) + 1
+            buf.setdefault(rid, []).append(r)
+            if seen[rid] == exp:
+                yield rid, buf.pop(rid)
+    if buf:
+        raise RuntimeError(f"_stream_resources: {len(buf)} resources incomplete at stream end "
+                           f"(e.g. {list(buf)[:3]}) — counts/stream diverged")
+
+
+def _iter_worklist(so: dict, args, worklist_by_sink: dict[str, list[str]],
+                   sink_counts: dict[str, dict[str, int]]):
+    """Yields (sink, rid, chunk_rows) over the worklist, slice-fetch for small per-sink lists,
+    stream for large ones."""
+    import lance
+    for sink, uri in (("scope", args.scope_uri), ("pricing", args.pricing_uri),
+                      ("unknown", args.unknown_uri)):
+        ids = worklist_by_sink.get(sink) or []
+        if not ids:
+            continue
+        ds = lance.dataset(uri, storage_options=so)
+        if len(ids) <= LLM_SLICE_FETCH_MAX:
+            it = _fetch_resources_sliced(ds, sorted(ids), CHUNK_COLS)
+        else:
+            it = _stream_resources(ds, {r: sink_counts[sink][r] for r in ids}, CHUNK_COLS)
+        for rid, rows in it:
+            yield sink, rid, rows
+
+
+def _size_bucket(n_chunks: int) -> str:
+    return "small<=25" if n_chunks <= 25 else ("medium26-200" if n_chunks <= 200 else "large>200")
+
+
+def stratified_pilot(candidates: list[tuple[str, str, int]], n: int, seed: int) -> list[str]:
+    """SEEDED stratified sample across (sink × size-bucket) strata (mandate B). candidates =
+    [(resource_id, sink, n_chunks)]. Proportional allocation by largest remainder with ≥1 per
+    non-empty stratum (while n allows); within-stratum draw via a per-stratum seeded RNG over the
+    sorted id list. Fully deterministic for (candidates, n, seed)."""
+    import random
+    strata: dict[tuple[str, str], list[str]] = {}
+    for rid, sink, nch in candidates:
+        strata.setdefault((sink, _size_bucket(nch)), []).append(rid)
+    names = sorted(strata)
+    total = sum(len(strata[k]) for k in names)
+    n = min(n, total)
+    quotas = {k: (n * len(strata[k])) / total for k in names}
+    alloc = {k: int(quotas[k]) for k in names}
+    if n >= len(names):
+        for k in names:
+            alloc[k] = max(alloc[k], 1)
+    while sum(alloc.values()) > n:                    # min-1 overshoot: trim largest allocations
+        k = max(names, key=lambda k: (alloc[k], k))
+        alloc[k] -= 1
+    rema = sorted(names, key=lambda k: (-(quotas[k] - int(quotas[k])), k))
+    i = 0
+    while sum(alloc.values()) < n:
+        k = rema[i % len(rema)]
+        if alloc[k] < len(strata[k]):
+            alloc[k] += 1
+        i += 1
+    out: list[str] = []
+    for k in names:
+        pool = sorted(strata[k])
+        take = min(alloc[k], len(pool))
+        rng = random.Random(f"{seed}|{k[0]}|{k[1]}")
+        out.extend(rng.sample(pool, take))
+    return sorted(out)
+
+
+def build_task_payload(resource_id: str, sink: str, chunk_rows: list[dict], sel: dict,
+                       template: str, schema: dict, vocab: dict, phash: str,
+                       engine: str, result_path: str) -> dict:
+    """Self-contained task file (mandate B): doc metadata, selected chunk texts + ids, controlled
+    vocabulary v1, full output schema, extraction instructions, exact result path. HARD-ASSERTS
+    decision A on every chunk row of the resource — a marked chunk anywhere in the doc kills
+    staging outright (defense in depth behind the ledger bracket)."""
+    for r in chunk_rows:
+        if r.get("content_marking"):
+            raise RuntimeError(
+                f"DECISION-A VIOLATION: resource {resource_id} carries marked chunk "
+                f"{r.get('chunk_id')} ({r.get('content_marking')}) — must be excluded_marked, "
+                f"never staged. Re-run --phase bracket.")
+    meta = sorted(chunk_rows, key=lambda r: r["chunk_ix"])[0]
+    return {
+        "task_version": LLM_PROMPT_VERSION,
+        "resource_id": resource_id,
+        "sink": sink,
+        "engine": engine,
+        "prompt_version": LLM_PROMPT_VERSION,
+        "prompt_hash": phash,
+        "doc_meta": {
+            "notice_id": meta.get("notice_id"),
+            "solicitation_number": meta.get("solicitation_number"),
+            "naics_code": meta.get("naics_code"),
+            "contract_award_unique_key": meta.get("contract_award_unique_key"),
+            "n_chunks_total": sel["n_chunks_total"],
+            "n_chunks_selected": sel["n_chunks_selected"],
+            "est_tokens_selected": sel["est_tokens_selected"],
+            "coverage_truncated": sel["coverage_truncated"],
+        },
+        "instructions": template,
+        "vocabulary": vocab,
+        "output_schema": schema,
+        "result_path": result_path,
+        "chunks": [{"chunk_id": r["chunk_id"], "chunk_ix": r["chunk_ix"], "text": r["text"]}
+                   for r in sel["selected"]],
+    }
+
+
+def _pending_worklist(so: dict, args, sink_counts: dict[str, dict[str, int]],
+                      marked: set[str]) -> dict[str, list[str]]:
+    """Worklist = ledger llm_state='pending' AFTER bracket (mandate B), split by sink. HARD-ASSERTS
+    zero marked resources in the worklist — a marked pending row means the bracket is stale."""
+    ledger_rows = _ledger_full(so, args.ledger_uri)
+    pending = {r["resource_id"] for r in ledger_rows if r.get("llm_state") == "pending"}
+    stale = pending & marked
+    if stale:
+        raise RuntimeError(f"{len(stale)} marked resources still llm_state='pending' "
+                           f"(e.g. {sorted(stale)[:3]}) — run --phase bracket first (decision A).")
+    out: dict[str, list[str]] = {}
+    for sink, counts in sink_counts.items():
+        ids = sorted(pending & set(counts))
+        if ids:
+            out[sink] = ids
+    n_sunk = sum(len(v) for v in out.values())
+    if n_sunk != len(pending):
+        raise RuntimeError(f"worklist/sink mismatch: {len(pending)} pending vs {n_sunk} resolved "
+                           f"to sinks — ledger and chunk sinks diverged")
+    return out
+
+
+def phase_llm_select(args, so: dict, run_id: str) -> dict:
+    template, schema, vocab, phash = load_llm_artifacts()
+    sink_counts, marked = compute_sink_maps(so, args)
+    worklist = _pending_worklist(so, args, sink_counts, marked)
+    if args.pilot:
+        cands = [(rid, sink, sink_counts[sink][rid])
+                 for sink, ids in worklist.items() for rid in ids]
+        picked = set(stratified_pilot(cands, args.pilot, args.pilot_seed))
+        worklist = {s: [r for r in ids if r in picked] for s, ids in worklist.items()}
+        worklist = {s: ids for s, ids in worklist.items() if ids}
+    tasks_dir = os.path.join(args.staging_dir, "tasks")
+    results_dir = os.path.join(args.staging_dir, "results")
+    os.makedirs(tasks_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
+    staged: list[dict] = []
+    tot_tokens = n_trunc = 0
+    for sink, rid, rows in _iter_worklist(so, args, worklist, sink_counts):
+        if rid in marked:                              # belt over the ledger suspenders
+            raise RuntimeError(f"DECISION-A VIOLATION: marked resource {rid} reached select")
+        sel = select_chunks(rows, args.token_budget)
+        result_path = os.path.join(results_dir, f"{rid}.result.json")
+        task = build_task_payload(rid, sink, rows, sel, template, schema, vocab, phash,
+                                  args.engine, result_path)
+        task_path = os.path.join(tasks_dir, f"{rid}.task.json")
+        with open(task_path, "w") as f:
+            json.dump(task, f, ensure_ascii=False)
+        staged.append({"resource_id": rid, "sink": sink, "task_file": task_path,
+                       "result_file": result_path,
+                       "est_tokens_selected": sel["est_tokens_selected"],
+                       "n_chunks_selected": sel["n_chunks_selected"],
+                       "coverage_truncated": sel["coverage_truncated"]})
+        tot_tokens += sel["est_tokens_selected"]
+        n_trunc += int(sel["coverage_truncated"])
+        if len(staged) % 500 == 0:
+            print(f"select: staged {len(staged)} tasks ({tot_tokens:,} tokens)", flush=True)
+    staged.sort(key=lambda s: s["resource_id"])
+    manifest = None
+    if args.manifest_out:
+        batches = [{"batch_ix": i // args.batch_size,
+                    "resource_ids": [s["resource_id"] for s in staged[i:i + args.batch_size]],
+                    "task_files": [s["task_file"] for s in staged[i:i + args.batch_size]],
+                    "result_files": [s["result_file"] for s in staged[i:i + args.batch_size]]}
+                   for i in range(0, len(staged), args.batch_size)]
+        manifest = {"run_id": run_id, "engine": args.engine, "prompt_version": LLM_PROMPT_VERSION,
+                    "prompt_hash": phash, "token_budget": args.token_budget,
+                    "pilot": args.pilot or None, "pilot_seed": args.pilot_seed,
+                    "n_tasks": len(staged), "n_batches": len(batches),
+                    "batch_size": args.batch_size, "batches": batches}
+        with open(args.manifest_out, "w") as f:
+            json.dump(manifest, f, indent=2)
+    out = {"staged": len(staged), "est_tokens_total": tot_tokens,
+           "coverage_truncated_docs": n_trunc, "prompt_hash": phash,
+           "token_budget": args.token_budget, "staging_dir": args.staging_dir,
+           "manifest_out": args.manifest_out, "by_sink": {s: len(ids) for s, ids in worklist.items()}}
+    print(f"select: {json.dumps(out)}", flush=True)
+    return out
+
+
+def phase_llm_census(args, so: dict, run_id: str) -> dict:
+    """Deterministic token census over the FULL pending worklist under the exact select policy —
+    no staging, no writes (mandate C)."""
+    sink_counts, marked = compute_sink_maps(so, args)
+    worklist = _pending_worklist(so, args, sink_counts, marked)
+    per_doc: list[int] = []
+    by_sink: dict[str, dict] = {}
+    tot = {"docs": 0, "tokens_selected": 0, "tokens_eligible": 0, "tokens_total": 0,
+           "docs_over_budget": 0, "docs_truncated": 0}
+    t0 = time.time()
+    for sink, rid, rows in _iter_worklist(so, args, worklist, sink_counts):
+        if rid in marked:
+            raise RuntimeError(f"DECISION-A VIOLATION: marked resource {rid} reached census")
+        sel = select_chunks(rows, args.token_budget)
+        per_doc.append(sel["est_tokens_selected"])
+        s = by_sink.setdefault(sink, {"docs": 0, "tokens_selected": 0})
+        s["docs"] += 1
+        s["tokens_selected"] += sel["est_tokens_selected"]
+        tot["docs"] += 1
+        tot["tokens_selected"] += sel["est_tokens_selected"]
+        tot["tokens_eligible"] += sel["est_tokens_eligible"]
+        tot["tokens_total"] += sel["est_tokens_total"]
+        tot["docs_over_budget"] += int(sel["over_budget"])
+        tot["docs_truncated"] += int(sel["coverage_truncated"])
+        if tot["docs"] % 1000 == 0:
+            print(f"census: {tot['docs']:,} docs ({tot['tokens_selected']:,} tokens, "
+                  f"{time.time()-t0:.0f}s)", flush=True)
+    per_doc.sort()
+
+    def pct(p: float) -> int:
+        return per_doc[min(len(per_doc) - 1, int(p * len(per_doc)))] if per_doc else 0
+    n = tot["docs"]
+    agents_10, agents_20 = -(-n // 10), -(-n // 20)
+    report = {
+        "run_id": run_id, "token_budget": args.token_budget,
+        "token_estimate_method": f"ceil(chars/{CHARS_PER_TOKEN})",
+        "selection_policy": {"opening_chunks": N_OPENING_CHUNKS,
+                             "tiers": "opening -> scope-header (SCOPE_HDR_RX) -> labor-lexicon "
+                                      "(LABOR_LEXICON_RX); fill by (tier, chunk_ix); hard budget"},
+        "totals": tot, "by_sink": by_sink,
+        "per_doc_selected_tokens": {"p50": pct(0.50), "p90": pct(0.90), "p99": pct(0.99),
+                                    "max": per_doc[-1] if per_doc else 0},
+        "map_reduce_tail": {"docs_over_budget": tot["docs_over_budget"],
+                            "note": "eligible selection exceeds the per-doc budget; staged "
+                                    "truncated with coverage_truncated=true — a future engine "
+                                    "map-reduces these over multiple windows on the content-hash key"},
+        "projected_agents": {"at_10_docs_per_agent": agents_10, "at_20_docs_per_agent": agents_20,
+                             "workflows_at_1000_agent_cap":
+                                 {"10/agent": -(-agents_10 // 1000), "20/agent": -(-agents_20 // 1000)}},
+        "feasibility": (
+            f"Full-corpus session-agent run: {n:,} docs / {tot['tokens_selected']:,} selected tokens. "
+            f"At 10 docs/agent (≈{10 * args.token_budget // 1000}K doc-tokens per agent context) "
+            f"this is {agents_10:,} agent invocations = {-(-agents_10 // 1000)} workflow(s) under the "
+            f"1,000-agent-per-workflow cap; at 20 docs/agent, {agents_20:,} agents = "
+            f"{-(-agents_20 // 1000)} workflow(s) but ≈{20 * args.token_budget // 1000}K doc-tokens "
+            f"per context, which crowds instruction+output headroom. Wall-clock is engine-bound, not "
+            f"harness-bound: total = (agent latency per batch) × (batches / concurrency), and "
+            f"per-batch latency is unmeasured until the pilot runs — measure there before "
+            f"committing to a full-corpus schedule. The harness side (select/stage + validate/land) "
+            f"is deterministic streaming compute, resumable per resource via the ledger."),
+        "wall_seconds_census": round(time.time() - t0, 1),
+    }
+    with open(args.report_out, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"census: {json.dumps({k: report[k] for k in ('totals', 'per_doc_selected_tokens', 'projected_agents')})}",
+          flush=True)
+    return report
+
+
+# ════════════════════════════════════════════════════════════════ phase: ingest (validate + land)
+_WS_RX = re.compile(r"\s+")
+
+
+def _ws_collapse(s: str) -> str:
+    return _WS_RX.sub(" ", s).strip()
+
+
+def _cited_body(task_chunks: dict[str, dict], chunk_ids: list[str]) -> str:
+    """Reassemble the cited chunks in chunk_ix order with the SHARED overlap-aware reassembly
+    (boundary-straddling quotes must not be false-rejected — anti-pattern #8)."""
+    rows = sorted((task_chunks[c] for c in chunk_ids), key=lambda r: r["chunk_ix"])
+    body, _ = reassemble_with_offsets([(r["chunk_ix"], r["chunk_id"], r["text"]) for r in rows])
+    return body
+
+
+def validate_result(result: dict, task: dict, vocab: dict, engine_tag: str,
+                    run_id: str, now: dt.datetime) -> dict:
+    """PURE deterministic validator (hard rule 3; unit-tested). Returns
+    {status: pass|partial|quarantined, doc_row, req_rows, rejects:[{reason,...}], n_rows_passed,
+    n_rows_rejected, pass_rate}. ONLY validator-passing rows are ever stored; rejected output is
+    counted, never written. Confidence encodes validator strength (always < 1.0)."""
+    rid = task["resource_id"]
+    meta = task["doc_meta"]
+    chunks = {c["chunk_id"]: c for c in task["chunks"]}
+    rejects: list[dict] = []
+
+    def _quarantine(reason: str) -> dict:
+        return {"status": "quarantined", "doc_row": None, "req_rows": [],
+                "rejects": [{"reason": reason}], "n_rows_passed": 0, "n_rows_rejected": 0,
+                "pass_rate": 0.0}
+
+    if not isinstance(result, dict):
+        return _quarantine("result_not_object")
+    if result.get("resource_id") != rid:
+        return _quarantine(f"resource_id_mismatch:{result.get('resource_id')}")
+    raw_reqs = result.get("requirements")
+    if not isinstance(raw_reqs, list):
+        return _quarantine("requirements_not_list")
+
+    tag_set = set(vocab["capability_tags"])
+    labor_set = set(vocab["labor_categories"])
+    clr_set = set(vocab["clearance_levels"])
+    type_set = set(vocab["requirement_types"])
+
+    req_rows: list[dict] = []
+    seen_ids: set[str] = set()
+    for i, rr in enumerate(raw_reqs):
+        def reject(reason: str, _i=i, _rr=rr) -> None:
+            rejects.append({"reason": reason, "index": _i,
+                            "requirement_type": (_rr or {}).get("requirement_type")
+                            if isinstance(_rr, dict) else None})
+        if not isinstance(rr, dict):
+            reject("row_not_object")
+            continue
+        rtype = rr.get("requirement_type")
+        if rtype not in type_set:
+            reject(f"bad_requirement_type:{rtype}")
+            continue
+        rval = rr.get("requirement_value")
+        if not isinstance(rval, str) or not rval.strip():
+            reject("missing_requirement_value")
+            continue
+        value_norm = _ws_collapse(rval).lower()
+        if rtype == "labor_category" and value_norm not in labor_set:
+            reject(f"labor_category_out_of_vocab:{value_norm}")
+            continue
+        clr = rr.get("clearance_level")
+        if clr is not None and clr not in clr_set:
+            reject(f"bad_clearance_level:{clr}")
+            continue
+        cited = rr.get("source_chunk_ids")
+        if not isinstance(cited, list) or not cited or not all(isinstance(c, str) for c in cited):
+            reject("missing_citation")
+            continue
+        unknown = [c for c in cited if c not in chunks]
+        if unknown:
+            reject(f"citation_unknown_chunk:{unknown[:2]}")
+            continue
+        quote = rr.get("evidence_quote")
+        if not isinstance(quote, str) or not quote.strip():
+            reject("missing_evidence_quote")
+            continue
+        if len(quote) > EVIDENCE_MAX:
+            reject("evidence_quote_too_long")
+            continue
+        body = _cited_body(chunks, cited)
+        if quote in body:
+            confidence = LLM_CONF_RAW
+        elif _ws_collapse(quote) in _ws_collapse(body):
+            confidence = LLM_CONF_NORM
+        else:
+            reject("quote_mismatch")
+            continue
+        headcount = rr.get("headcount")
+        if headcount is not None and not isinstance(headcount, int):
+            reject("bad_headcount_type")
+            continue
+        if headcount is not None and not 1 <= headcount <= 5000:
+            headcount = None
+        pops: dict[str, dt.date | None] = {}
+        bad_date = False
+        for key in ("pop_start", "pop_end"):
+            v = rr.get(key)
+            if v is None:
+                pops[key] = None
+                continue
+            d = parse_date(v) if isinstance(v, str) else None
+            if d is None:
+                reject(f"bad_date:{key}")
+                bad_date = True
+                break
+            pops[key] = d
+        if bad_date:
+            continue
+        mand = rr.get("mandatory", False)
+        if not isinstance(mand, bool):
+            reject("bad_mandatory_type")
+            continue
+        wage = rr.get("wage_floor")
+        if wage is not None and not isinstance(wage, (int, float)):
+            reject("bad_wage_floor_type")
+            continue
+        detail = rr.get("requirement_detail")
+        if detail is not None and not isinstance(detail, str):
+            reject("bad_detail_type")
+            continue
+        place = rr.get("place_of_performance_text")
+        if place is not None and not isinstance(place, str):
+            reject("bad_place_type")
+            continue
+        rid_hash = requirement_id(rid, rtype, value_norm)
+        if rid_hash in seen_ids:
+            reject("duplicate_requirement")
+            continue
+        seen_ids.add(rid_hash)
+        req_rows.append({
+            "requirement_id": rid_hash,
+            "resource_id": rid,
+            "notice_id": meta.get("notice_id"),
+            "solicitation_number": meta.get("solicitation_number"),
+            "naics_code": meta.get("naics_code"),
+            "contract_award_unique_key": meta.get("contract_award_unique_key"),
+            "requirement_type": rtype,
+            "requirement_value": value_norm,
+            "requirement_detail": detail[:DETAIL_MAX] if detail else None,
+            "mandatory": mand,
+            "headcount": headcount,
+            "clearance_level": clr,
+            "pop_start": pops["pop_start"], "pop_end": pops["pop_end"],
+            "place_of_performance_text": place[:120] if place else None,
+            "wage_floor": float(wage) if wage is not None else None,
+            "source_chunk_ids": sorted(set(cited), key=lambda c: chunks[c]["chunk_ix"]),
+            "evidence_quote": quote,
+            "validated": True, "marked_resource": False,
+            "coverage_truncated": bool(meta.get("coverage_truncated")),
+            "extractor": engine_tag, "extractor_version": LLM_PROMPT_VERSION,
+            "confidence": confidence,
+            "run_id": run_id, "created_at": now,
+        })
+
+    summary = result.get("scope_summary")
+    if summary is not None and (not isinstance(summary, str) or len(summary) > 2000):
+        rejects.append({"reason": "bad_scope_summary"})
+        summary = None
+    raw_tags = result.get("capability_tags")
+    if not isinstance(raw_tags, list):
+        raw_tags = []
+        rejects.append({"reason": "capability_tags_not_list"})
+    tags, n_tag_rejected = [], 0
+    for t in raw_tags:
+        if isinstance(t, str) and t in tag_set:
+            if t not in tags:
+                tags.append(t)
+        else:
+            n_tag_rejected += 1
+            rejects.append({"reason": f"tag_out_of_vocab:{t}"})
+    doc_row = {
+        "resource_id": rid,
+        "notice_id": meta.get("notice_id"),
+        "solicitation_number": meta.get("solicitation_number"),
+        "naics_code": meta.get("naics_code"),
+        "contract_award_unique_key": meta.get("contract_award_unique_key"),
+        "scope_summary": summary,
+        "capability_tags": tags,
+        "n_capability_tags_rejected": n_tag_rejected,
+        "source_chunk_ids": [c["chunk_id"] for c in task["chunks"]],
+        "n_chunks_total": meta.get("n_chunks_total"),
+        "n_chunks_selected": meta.get("n_chunks_selected"),
+        "coverage_truncated": bool(meta.get("coverage_truncated")),
+        "marked_resource": False, "validated": True,
+        "extractor": engine_tag, "extractor_version": LLM_PROMPT_VERSION,
+        "prompt_hash": task["prompt_hash"],
+        "confidence": LLM_DOC_CONFIDENCE,
+        "run_id": run_id, "created_at": now,
+    }
+    n_pass, n_rej = len(req_rows), len(rejects)
+    denom = n_pass + n_rej
+    return {"status": "pass" if n_rej == 0 else "partial",
+            "doc_row": doc_row, "req_rows": req_rows, "rejects": rejects,
+            "n_rows_passed": n_pass, "n_rows_rejected": n_rej,
+            "pass_rate": (n_pass / denom) if denom else 1.0}
+
+
+def _land_llm_batch(so: dict, args, docs: list[dict], run_id: str, now: dt.datetime) -> dict:
+    """One commit batch under held leases: scoped delete-before-merge on BOTH sinks (hard rule 2),
+    then the ledger merge. docs = validated per-doc outcomes (pass/partial/quarantined)."""
+    import lance
+    import pyarrow as pa
+    stats: dict = {}
+    landable = [d for d in docs if d["status"] in ("pass", "partial")]
+    if landable:
+        ids = [d["resource_id"] for d in landable]
+        req_rows = [r for d in landable for r in d["req_rows"]]
+        assert_schema(args.requirements_uri, requirements_schema(), so)
+        ds = lance.dataset(args.requirements_uri, storage_options=so)
+        ds.delete(llm_delete_predicate(ids))
+        if req_rows:
+            tbl = pa.Table.from_pylist(req_rows, schema=requirements_schema())
+            res = (ds.merge_insert("requirement_id").when_matched_update_all()
+                   .when_not_matched_insert_all().execute(tbl))
+            stats["requirements"] = _merge_stats(res)
+        assert_schema(args.doc_scope_uri, doc_scope_schema(), so)
+        ds = lance.dataset(args.doc_scope_uri, storage_options=so)
+        ds.delete(in_predicate("resource_id", ids))
+        doc_rows = [d["doc_row"] for d in landable]
+        tbl = pa.Table.from_pylist(doc_rows, schema=doc_scope_schema())
+        res = (ds.merge_insert("resource_id").when_matched_update_all()
+               .when_not_matched_insert_all().execute(tbl))
+        stats["doc_scope"] = _merge_stats(res)
+    updates = []
+    for d in docs:
+        if d["status"] in ("pass", "partial"):
+            updates.append({"resource_id": d["resource_id"], "llm_state": "done",
+                            "model": d["model"], "prompt_hash": d["prompt_hash"],
+                            "n_requirements_llm": d["n_rows_passed"],
+                            "validation_pass_rate": d["pass_rate"]})
+        else:                                          # quarantined: prior rows untouched
+            updates.append({"resource_id": d["resource_id"], "llm_state": "quarantined",
+                            "model": d["model"], "prompt_hash": d["prompt_hash"],
+                            "validation_pass_rate": 0.0})
+    stats["ledger"] = merge_ledger_llm(so, args.ledger_uri, updates, run_id, now)
+    return stats
+
+
+def phase_llm_ingest(args, so: dict, run_id: str) -> dict:
+    """Validate every result JSON in --results-dir against its staged task file, enforce the
+    run-level pass-rate gate (plan Phase 2: <98% → nothing lands unless --force-land), then land
+    passing rows via scoped delete-before-merge under the sink leases and update the ledger."""
+    _template, _schema, vocab, phash = load_llm_artifacts()
+    engine_tag = llm_extractor_tag(args.engine)
+    now = dt.datetime.now(dt.timezone.utc)
+    tasks_dir = os.path.join(args.staging_dir, "tasks")
+    results_dir = args.results_dir or os.path.join(args.staging_dir, "results")
+    task_files = sorted(f for f in os.listdir(tasks_dir) if f.endswith(".task.json")) \
+        if os.path.isdir(tasks_dir) else []
+    if not task_files:
+        raise RuntimeError(f"no task files under {tasks_dir} — run --phase select first")
+
+    docs: list[dict] = []
+    missing: list[str] = []
+    per_doc_report: dict[str, dict] = {}
+    for tf in task_files:
+        with open(os.path.join(tasks_dir, tf)) as f:
+            task = json.load(f)
+        rid = task["resource_id"]
+        if task.get("prompt_hash") != phash:
+            raise RuntimeError(f"task {rid} staged under prompt_hash {task.get('prompt_hash')[:12]} "
+                               f"!= current {phash[:12]} — re-run select; never mix prompt versions")
+        rpath = os.path.join(results_dir, f"{rid}.result.json")
+        if not os.path.exists(rpath):
+            missing.append(rid)
+            per_doc_report[rid] = {"status": "missing"}
+            continue
+        try:
+            with open(rpath) as f:
+                result = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            v = {"status": "quarantined", "doc_row": None, "req_rows": [],
+                 "rejects": [{"reason": f"unreadable_result:{exc}"}],
+                 "n_rows_passed": 0, "n_rows_rejected": 0, "pass_rate": 0.0}
+        else:
+            v = validate_result(result, task, vocab, engine_tag, run_id, now)
+        v.update({"resource_id": rid, "model": args.engine, "prompt_hash": phash})
+        docs.append(v)
+        per_doc_report[rid] = {"status": v["status"], "n_rows_passed": v["n_rows_passed"],
+                               "n_rows_rejected": v["n_rows_rejected"],
+                               "pass_rate": round(v["pass_rate"], 4),
+                               "reject_reasons": [r["reason"] for r in v["rejects"]][:10]}
+
+    rows_passed = sum(d["n_rows_passed"] for d in docs)
+    rows_rejected = sum(d["n_rows_rejected"] for d in docs)
+    denom = rows_passed + rows_rejected
+    run_pass_rate = (rows_passed / denom) if denom else 1.0
+    gate_ok = run_pass_rate >= args.min_pass_rate or args.force_land
+    reasons: dict[str, int] = {}
+    for d in docs:
+        for r in d["rejects"]:
+            key = r["reason"].split(":", 1)[0]
+            reasons[key] = reasons.get(key, 0) + 1
+    report = {
+        "run_id": run_id, "engine_tag": engine_tag, "prompt_hash": phash,
+        "results_dir": results_dir,
+        "totals": {"tasks": len(task_files), "results": len(docs), "missing": len(missing),
+                   "pass": sum(d["status"] == "pass" for d in docs),
+                   "partial": sum(d["status"] == "partial" for d in docs),
+                   "quarantined": sum(d["status"] == "quarantined" for d in docs),
+                   "rows_passed": rows_passed, "rows_rejected": rows_rejected,
+                   "run_pass_rate": round(run_pass_rate, 4),
+                   "min_pass_rate": args.min_pass_rate, "gate_ok": gate_ok, "landed": False},
+        "reject_reasons": reasons,
+        "per_doc": per_doc_report,
+        "missing_resource_ids": missing[:50],
+        "sample_extractions": [
+            {k: r[k] for k in ("resource_id", "requirement_type", "requirement_value",
+                               "evidence_quote", "source_chunk_ids", "confidence")}
+            for d in docs for r in d["req_rows"][:2]][:5],
+    }
+    if not docs:
+        with open(args.report_out, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"ingest: no result files found under {results_dir} "
+              f"({len(missing)} staged tasks awaiting results)", flush=True)
+        return report
+    if not gate_ok:
+        with open(args.report_out, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"ingest: RUN GATE FAILED pass_rate={run_pass_rate:.4f} < {args.min_pass_rate} — "
+              f"NOTHING landed (resources stay pending; fix the engine output or --force-land). "
+              f"Report: {args.report_out}", flush=True)
+        return report
+
+    leases: list[SinkCommitLease] = []
+    write_stats: list[dict] = []
+    try:
+        for uri in (args.requirements_uri, args.doc_scope_uri, args.ledger_uri):
+            leases.append(SinkCommitLease(uri, holder=f"llm_ingest:{run_id}",
+                                          ttl_s=12 * 3600).acquire())
+        for i in range(0, len(docs), LLM_INGEST_FLUSH):
+            stats = _land_llm_batch(so, args, docs[i:i + LLM_INGEST_FLUSH], run_id, now)
+            write_stats.append(stats)
+            print(f"ingest: landed batch {i // LLM_INGEST_FLUSH} {stats}", flush=True)
+    finally:
+        for lease in leases:
+            lease.release()
+    report["totals"]["landed"] = True
+    report["write_stats"] = write_stats
+    with open(args.report_out, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    print(f"ingest: {json.dumps(report['totals'])}", flush=True)
+    return report
+
+
+def phase_llm_reset(args, so: dict, run_id: str) -> dict:
+    """Reverse an LLM landing for explicit resources (decision-A reversibility + smoke hygiene):
+    scoped delete of llm:% requirement rows + doc-scope rows, ledger lane back to pending with the
+    LLM metric columns cleared. Regex-lane rows and columns are never touched."""
+    import lance
+    if not args.resource_ids:
+        raise RuntimeError("--phase reset-llm requires --resource-ids")
+    ids = sorted(set(args.resource_ids))
+    leases: list[SinkCommitLease] = []
+    out: dict = {"resources": len(ids)}
+    try:
+        for uri in (args.requirements_uri, args.doc_scope_uri, args.ledger_uri):
+            leases.append(SinkCommitLease(uri, holder=f"llm_reset:{run_id}",
+                                          ttl_s=3600).acquire())
+        assert_schema(args.requirements_uri, requirements_schema(), so)
+        lance.dataset(args.requirements_uri, storage_options=so).delete(llm_delete_predicate(ids))
+        assert_schema(args.doc_scope_uri, doc_scope_schema(), so)
+        lance.dataset(args.doc_scope_uri, storage_options=so).delete(
+            in_predicate("resource_id", ids))
+        updates = [{"resource_id": rid, "llm_state": "pending", "model": None,
+                    "prompt_hash": None, "n_requirements_llm": None,
+                    "validation_pass_rate": None, "batch_id": None} for rid in ids]
+        out["ledger"] = merge_ledger_llm(so, args.ledger_uri, updates, run_id,
+                                         dt.datetime.now(dt.timezone.utc))
+    finally:
+        for lease in leases:
+            lease.release()
+    print(f"reset-llm: {json.dumps(out)}", flush=True)
+    return out
+
+
+=======
+>>>>>>> origin/main
 # ════════════════════════════════════════════════════════════════ main
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description="GovCon Phase-1 regex requirement extraction (build plan PHASE 1; spec §17).")
+<<<<<<< HEAD
+    p.add_argument("--phase", default="extract",
+                   choices=["extract", "index", "bracket", "select", "census", "ingest",
+                            "reset-llm"])
+=======
     p.add_argument("--phase", default="extract", choices=["extract", "index"])
+>>>>>>> origin/main
     p.add_argument("--sinks", default="scope,pricing,unknown",
                    help="comma list of chunk sinks to read (read-only)")
     p.add_argument("--resource-ids", default=None,
@@ -1175,6 +2125,29 @@ def main(argv=None) -> int:
     p.add_argument("--requirements-uri", default=REQUIREMENTS_URI)
     p.add_argument("--labor-uri", default=LABOR_DEMAND_URI)
     p.add_argument("--ledger-uri", default=EXTRACT_LEDGER_URI)
+<<<<<<< HEAD
+    # ── LLM lane (build-plan PHASE 2) ──────────────────────────────────────────────────────────
+    p.add_argument("--doc-scope-uri", default=DOC_SCOPE_URI)
+    p.add_argument("--staging-dir", default=LLM_STAGING_DIR,
+                   help="select: writes tasks/ + results/ here; ingest: reads tasks/ from here")
+    p.add_argument("--results-dir", default=None,
+                   help="ingest: result-JSON dir (default <staging-dir>/results)")
+    p.add_argument("--pilot", type=int, default=0,
+                   help="select: SEEDED stratified sample of N docs (sink × size-bucket strata)")
+    p.add_argument("--pilot-seed", type=int, default=20260612)
+    p.add_argument("--manifest-out", default=None,
+                   help="select: write a batch manifest JSON (batches of --batch-size docs)")
+    p.add_argument("--batch-size", type=int, default=10)
+    p.add_argument("--engine", default=LLM_ENGINE_DEFAULT,
+                   help="extractor tag becomes llm:<engine>@<prompt_version>")
+    p.add_argument("--token-budget", type=int, default=DOC_TOKEN_BUDGET,
+                   help="hard per-doc selected-token budget (chars/4 estimate)")
+    p.add_argument("--min-pass-rate", type=float, default=LLM_MIN_PASS_RATE,
+                   help="ingest run gate: below this nothing lands (plan Phase 2: 0.98)")
+    p.add_argument("--force-land", action="store_true",
+                   help="ingest: land despite a failed run gate (operator override, logged)")
+=======
+>>>>>>> origin/main
     args = p.parse_args(argv)
     args.sinks = {s.strip() for s in args.sinks.split(",") if s.strip()}
     args.resource_ids = ([s.strip() for s in args.resource_ids.split(",") if s.strip()]
@@ -1190,6 +2163,39 @@ def main(argv=None) -> int:
                     "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if args.phase == "extract":
         report["extract"] = phase_extract(args, so, run_id)
+<<<<<<< HEAD
+    elif args.phase == "index":
+        report["index"] = phase_index(args, so)
+    elif args.phase == "bracket":
+        if args.report_out == REPORT_PATH:
+            args.report_out = LLM_BRACKET_REPORT
+        report["bracket"] = phase_llm_bracket(args, so, run_id)
+    elif args.phase == "select":
+        report["select"] = phase_llm_select(args, so, run_id)
+    elif args.phase == "census":
+        if args.report_out == REPORT_PATH:
+            args.report_out = LLM_CENSUS_REPORT
+        report["census"] = phase_llm_census(args, so, run_id)
+        report = report["census"]                     # census writes its own full report file
+    elif args.phase == "ingest":
+        if args.report_out == REPORT_PATH:
+            args.report_out = LLM_INGEST_REPORT
+        report["ingest"] = phase_llm_ingest(args, so, run_id)
+        report = report["ingest"]                     # ingest writes its own full report file
+    elif args.phase == "reset-llm":
+        report["reset_llm"] = phase_llm_reset(args, so, run_id)
+    report["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    if args.phase not in ("census", "ingest"):        # those phases own their report files
+        with open(args.report_out, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+    summary = {k: v for k, v in report.get("extract", {}).items() if k != "write_stats"}
+    if not summary:
+        for key in ("index", "bracket", "select", "reset_llm", "totals"):
+            if key in report:
+                summary = report[key]
+                break
+    print("RESULT: " + json.dumps(summary or {}, default=str), flush=True)
+=======
     else:
         report["index"] = phase_index(args, so)
     report["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -1197,6 +2203,7 @@ def main(argv=None) -> int:
         json.dump(report, f, indent=2, default=str)
     summary = {k: v for k, v in report.get("extract", {}).items() if k != "write_stats"}
     print("RESULT: " + json.dumps(summary or report.get("index", {}), default=str), flush=True)
+>>>>>>> origin/main
     return 0
 
 
