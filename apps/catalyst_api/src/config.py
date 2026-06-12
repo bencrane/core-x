@@ -121,6 +121,18 @@ def auth_required() -> bool:
     return bool(os.environ.get("RAILWAY_ENVIRONMENT"))
 
 
+def contract_check_strict() -> bool:
+    """Hard-fail switch for the boot decoder schema/index contract check (R-09).
+    UNLIKE ``auth_required`` this is gated ONLY on an explicit operator flag and is
+    NOT auto-enabled by ``RAILWAY_ENVIRONMENT``: a contract violation may be a checker
+    false-positive (e.g. a Lance metadata-format change), and auto-bricking every
+    Railway deploy on one introspection edge case would re-create the exact EXECUTE
+    outage R-09 prevents. Default (flag unset) is observe-only: log loud + /healthz 503,
+    boot proceeds. Set ``CATALYST_CONTRACT_STRICT`` truthy to promote a violation to a
+    fatal boot abort — only after the check has proven stable in observe mode."""
+    return os.environ.get("CATALYST_CONTRACT_STRICT", "").strip().lower() in ("1", "true", "yes")
+
+
 def port() -> int:
     """Railway injects ``$PORT`` (the service pins it to 8080); default for a bare
     local run."""
