@@ -1,19 +1,35 @@
-"""Engagement mandate drafts — the direct-to-documenso Originate Mandate stamp.
+"""Engagement mandate drafts — the direct-to-documenso Originate Mandate flow.
 
-  POST /api/v1/engagement-mandate-drafts   service-token — stamp (opportunity_id, documenso_template_id)
+  POST /api/v1/engagement-mandate-drafts                 service-token — stamp (opportunity_id, template)
+  POST /api/v1/engagement-mandate-drafts/{id}/confirm    service-token — instantiate the Documenso doc
+  GET  /api/v1/engagement-mandate-drafts/document/{eid}  PUBLIC        — prospect reads the signer token
 
 When the operator is in ``direct-to-documenso`` mode, "Originate Mandate" inserts one row into
-``business.engagement_mandate_draft_content`` (the gated replacement for the createProposal path).
-Service-token gated — the platform-api BFF brokers it with the operator session.
+``business.engagement_mandate_draft_content`` (the gated replacement for the createProposal path);
+"Confirm & originate" then instantiates a signable Documenso document FROM the draft's template (no
+DocRaptor render) and returns the envelope id + signer token. The confirm/create writes are
+service-token gated (the platform-api BFF brokers them with the operator session); the prospect's
+document read is PUBLIC — the envelope id is the capability, exactly like the proposal ``ref``.
+
+STATELESS by design: no envelope/token columns are added to the draft. The envelope id carried in
+the prospect link is the only handle back to the document (re-confirm mints a fresh one) — durable
+persistence is a clean follow-up, not a prerequisite for the flow.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from .. import config
 from ..db import get_db_connection
 from ..engagement_mandate_drafts import queries
-from ..engagement_mandate_drafts.models import MandateDraftCreate, MandateDraftCreated
+from ..engagement_mandate_drafts.models import (
+    MandateDraftConfirmed,
+    MandateDraftCreate,
+    MandateDraftCreated,
+    MandateDraftDocument,
+)
 from ..service_token import require_service_token
+from ..services import documenso_client
 
 router = APIRouter(prefix="/api/v1/engagement-mandate-drafts", tags=["engagement-mandate-drafts"])
 
@@ -29,3 +45,41 @@ async def create_mandate_draft(body: MandateDraftCreate) -> MandateDraftCreated:
     if not draft_id:
         raise HTTPException(status_code=404, detail="documenso template not found")
     return MandateDraftCreated(id=draft_id)
+
+
+@router.post("/{draft_id}/confirm", dependencies=[Depends(require_service_token)])
+async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
+    """Direct-to-documenso originate: instantiate a signable Documenso document from the draft's
+    template and hand back the envelope id + signer token. No PDF render — the template carries the
+    document, recipients, and fields; we only instantiate, distribute (no email), and read the token.
+    """
+    async with get_db_connection() as conn:
+        draft = await queries.get_draft(conn, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="mandate draft not found")
+    try:
+        result = await documenso_client.create_document_from_template(
+            draft["documenso_template_id"], external_id=draft_id,
+        )
+    except documenso_client.DocumensoError as e:
+        raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
+    return MandateDraftConfirmed(
+        envelope_id=result.envelope_id,
+        signing_token=result.client_token,
+        documenso_host=config.documenso_api_url(),
+    )
+
+
+@router.get("/document/{envelope_id}")
+async def read_mandate_draft_document(envelope_id: str) -> MandateDraftDocument:
+    """PUBLIC prospect read — the envelope id is the capability (no service token). Re-reads the live
+    Documenso envelope for the signer token + status that drive the embedded signer."""
+    try:
+        token, status = await documenso_client.read_template_document(envelope_id)
+    except documenso_client.DocumensoError as e:
+        raise HTTPException(status_code=404, detail="document not found") from e
+    return MandateDraftDocument(
+        signing_token=token,
+        documenso_host=config.documenso_api_url(),
+        status=status,
+    )
