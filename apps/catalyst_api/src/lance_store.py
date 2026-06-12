@@ -283,6 +283,60 @@ def entity_profile_by_uei(uei: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+# ── Dossier surface: UEI → identity + posture + recent actions + POCs ─────────
+# The entity side-panel read path: THREE BTREE point-lookups composed by the route —
+# entity_profile_gold (full identity projection incl. the pre-nested POC slots),
+# contractor_award_summary (lifetime rollup + most-recent action date + top agencies,
+# reused via award_summary_by_uei), and the 90d awards map serving table (per-action
+# recent-activity feed). No DuckDB, no scans beyond the indexed point-lookups.
+_DOSSIER_GOLD_COLS = [
+    "uei", "cage_code", "is_active", "has_federal_awards", "legal_business_name",
+    "dba_name", "primary_naics", "physical_address_line_1", "physical_address_city",
+    "physical_address_state", "physical_address_zip_postal_code",
+    "physical_address_country_code", "total_active_obligations",
+    "total_lifetime_obligations", "award_count", "active_award_count", "pocs",
+    "profile_as_of_date",
+]
+
+
+def entity_dossier_gold(uei: str) -> dict[str, Any] | None:
+    """BTREE point-lookup on ``entity_profile_gold.uei`` with the FULL dossier
+    projection (identity + address + DBA + rollups + nested POC slots). ``None``
+    when the UEI is absent from the gold spine (the route 404s)."""
+    uei = (uei or "").strip()
+    if not uei:
+        return None
+    rows = _scan(config.ENTITY_PROFILE_GOLD_URI, columns=_DOSSIER_GOLD_COLS,
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
+    return rows[0] if rows else None
+
+
+_RECENT_ACTION_COLS = [
+    "award_id", "action_date", "award_amount", "awarding_agency", "awarding_sub_agency",
+    "winner_type", "pop_state", "pop_city", "set_aside", "naics_code",
+]
+# Drawer fan-out ceiling — the rolling-90d table naturally bounds a UEI's actions.
+_RECENT_ACTIONS_HARD_CAP = 25
+
+
+def recent_award_actions_by_uei(uei: str, limit: int = 10) -> list[dict[str, Any]]:
+    """BTREE point-lookup on ``usaspending_awards_map_serving.winner_uei`` → the
+    entity's award actions in the rolling ~90d window, newest first, capped.
+
+    ``scanner(limit=)`` is deliberately NOT used (the pylance limit-before-filter
+    planner returns a fraction of matches); the per-UEI fan-out is naturally small,
+    so the filtered rows are fetched whole and sorted/capped in process."""
+    uei = (uei or "").strip()
+    if not uei:
+        return []
+    cap = max(1, min(limit, _RECENT_ACTIONS_HARD_CAP))
+    rows = _scan(config.MAP_DATASET_URIS["awards"], columns=_RECENT_ACTION_COLS,
+                 filter=f"winner_uei = {_sql_str(uei)}")
+    rows.sort(key=lambda r: (r.get("action_date") or dt_date.min,
+                             r.get("award_amount") or 0.0), reverse=True)
+    return rows[:cap]
+
+
 # ── Surface 3: UEI → active / past prime award line items (Gold-Mirror point-lookup) ──
 # Pre-materialized per-UEI by pipelines/resolution/award_lines_gold.py into
 # entity_award_lines_gold (1 row/uei, BTREE uei). active_contracts / past_performance are

@@ -38,6 +38,7 @@ from .src.models import (
     AwardProfile,
     AwardProfileResponse,
     Company,
+    EntityDossierResponse,
     MapQueryRequest,
     OverviewResponse,
     PastPerformanceResponse,
@@ -132,6 +133,7 @@ def _info() -> dict:
             "active_contracts": "/api/v1/entities/{uei}/active-contracts?limit=N",
             "overview": "/api/v1/entities/{uei}/overview",
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
+            "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
         },
         "map_datasets": list(DECODERS),
@@ -296,6 +298,26 @@ def past_performance(
         contracts=items,
     )
     return _envelope(resp)
+
+
+@app.get("/api/v1/entities/{uei}/dossier", response_model=None, dependencies=[Depends(require_operator)])
+def entity_dossier(
+    uei: str = Path(..., description="12-char SAM.gov UEI"),
+    actions: int = Query(10, ge=1, le=25, description="Max recent award actions to return."),
+) -> JSONResponse:
+    """The cockpit side-panel dossier — THREE BTREE point-lookups composed:
+    entity_profile_gold (identity + address + rollups + POC slots),
+    contractor_award_summary (most-recent action date + top agencies), and the
+    rolling-90d awards serving table (per-action recent activity, newest first).
+    404 when the UEI is absent from the gold spine. POCs carry name/title/geo only
+    — the SAM source has no email/phone columns, so none can be exposed."""
+    uei = _require_uei(uei)
+    gold = lance_store.entity_dossier_gold(uei)
+    if gold is None:
+        raise HTTPException(status_code=404, detail=f"no entity profile for uei {uei!r}")
+    cas = lance_store.award_summary_by_uei(uei)
+    recent = lance_store.recent_award_actions_by_uei(uei, actions)
+    return _envelope(EntityDossierResponse.from_parts(gold, cas, recent, date.today()))
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──
