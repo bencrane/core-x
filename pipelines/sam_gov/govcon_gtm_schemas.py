@@ -12,6 +12,10 @@ Frozen set (plan §2 artifact map):
   * govcon_award_requirements_90day        — Phase-1 requirement grain (merge_insert sink)
   * govcon_labor_demand_90day              — spec §3.6 exact (same Phase-1 pass)
   * govcon_requirements_extract_ledger_90day — plan §5 resource-grain ledger (merge on resource_id)
+  * govcon_doc_scope_90day                 — Phase-2 DOC-grain LLM outputs (scope_summary +
+        capability_tags at resource grain; plan gap resolved per hard rule 4 — the plan routes
+        doc-level outputs only to the award-grain profiles overwrite build, which needs a durable
+        resource-grain source to roll up from)
   * govcon_award_capability_profiles_90day — Phase-2 award grain (overwrite build); prime/txn-sourced
         columns typed per the RAW `usaspending_api_fresh/contract_prime_txn` schema (all string —
         probed live 2026-06-12); `pop_start`/`pop_end` carry the txn period_of_performance_*_date
@@ -43,6 +47,8 @@ LABOR_DEMAND_URI = os.environ.get(
     "GOVCON_LABOR_DEMAND_URI", "s3://data-sink/active/govcon_labor_demand_90day/")
 EXTRACT_LEDGER_URI = os.environ.get(
     "GOVCON_EXTRACT_LEDGER_URI", "s3://data-sink/active/govcon_requirements_extract_ledger_90day/")
+DOC_SCOPE_URI = os.environ.get(
+    "GOVCON_DOC_SCOPE_URI", "s3://data-sink/active/govcon_doc_scope_90day/")
 CAPABILITY_PROFILES_URI = os.environ.get(
     "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_capability_profiles_90day/")
 TEAMING_EDGES_URI = os.environ.get(
@@ -103,10 +109,17 @@ def labor_demand_schema():
 def extract_ledger_schema():
     """govcon_requirements_extract_ledger_90day — plan §5, resource grain, merge on resource_id.
     Per-lane states: regex_state ∈ {pending, done, quarantined, failed}; llm_state ∈ {pending,
-    submitted, results_fetched, done, quarantined, failed, truncated, marked_local_only}. `batch_id`
-    is the Batch-API resume key (crash between submit and fetch re-polls stored ids, never
-    resubmits). `marking_full_body` is AUDIT PROVENANCE of the Phase-0 full-body marking pre-pass —
-    the chunk-level `content_marking` stays the single egress enforcement point."""
+    submitted, results_fetched, done, quarantined, failed, truncated, marked_local_only,
+    excluded_marked, excluded_out_of_scope}. The two excluded_* values are the Phase-2 BRACKET
+    record (operator decision A): `excluded_marked` = resource is in the P2 input set but carries a
+    non-empty chunk `content_marking` (derived LIVE from the chunk sinks at bracket time — never
+    enters any LLM/agent context); `excluded_out_of_scope` = resource is outside the P2 input set
+    (unknown-sink lexicon-miss with zero regex hits). Both are reversible by re-running
+    `--phase bracket`; together with `pending` they tile the non-terminal ledger exactly, so
+    coverage accounting stays honest. `batch_id` is the Batch-API resume key (crash between submit
+    and fetch re-polls stored ids, never resubmits). `marking_full_body` is AUDIT PROVENANCE of the
+    Phase-0 full-body marking pre-pass — the chunk-level `content_marking` stays the single egress
+    enforcement point."""
     import pyarrow as pa
     return pa.schema([
         ("resource_id", pa.string()),
@@ -118,6 +131,34 @@ def extract_ledger_schema():
         ("validation_pass_rate", pa.float64()),
         ("model", pa.string()), ("prompt_hash", pa.string()), ("extractor_version", pa.string()),
         ("run_id", pa.string()), ("completed_at", pa.timestamp("us", tz="UTC")),
+    ])
+
+
+def doc_scope_schema():
+    """govcon_doc_scope_90day — DOC (resource) grain, merge_insert on resource_id (plan Phase 2;
+    plan-gap resolution per hard rule 4: the plan's only doc-level destination is the award-grain
+    profiles OVERWRITE build, which needs a durable resource-grain source — this sink is it).
+    Written ONLY by the LLM lane (validator-passing results); idempotency = delete-by-resource_id
+    then merge. `capability_tags` are controlled-vocabulary v1 ONLY (out-of-vocab tags are dropped
+    and counted in `n_capability_tags_rejected`, never written). Bracketed (marked) resources never
+    reach this sink in Phase 2, so `marked_resource` is False by construction — the column exists
+    for future lanes (frozen day one). `confidence` < 1.0 always (LLM lane law)."""
+    import pyarrow as pa
+    return pa.schema([
+        ("resource_id", pa.string()),                 # grain
+        ("notice_id", pa.string()), ("solicitation_number", pa.string()),
+        ("naics_code", pa.string()), ("contract_award_unique_key", pa.string()),
+        ("scope_summary", pa.string()),
+        ("capability_tags", pa.list_(pa.string())),   # controlled vocabulary v1 only
+        ("n_capability_tags_rejected", pa.int32()),
+        ("source_chunk_ids", pa.list_(pa.string())),  # the staged selection the outputs derive from
+        ("n_chunks_total", pa.int32()), ("n_chunks_selected", pa.int32()),
+        ("coverage_truncated", pa.bool_()),
+        ("marked_resource", pa.bool_()), ("validated", pa.bool_()),
+        ("extractor", pa.string()),                   # llm:<engine>@<prompt_version>
+        ("extractor_version", pa.string()), ("prompt_hash", pa.string()),
+        ("confidence", pa.float32()),
+        ("run_id", pa.string()), ("created_at", pa.timestamp("us", tz="UTC")),
     ])
 
 
@@ -217,6 +258,7 @@ FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_award_requirements_90day": (REQUIREMENTS_URI, requirements_schema),
     "govcon_labor_demand_90day": (LABOR_DEMAND_URI, labor_demand_schema),
     "govcon_requirements_extract_ledger_90day": (EXTRACT_LEDGER_URI, extract_ledger_schema),
+    "govcon_doc_scope_90day": (DOC_SCOPE_URI, doc_scope_schema),
     "govcon_award_capability_profiles_90day": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
     "govcon_teaming_edges_90day": (TEAMING_EDGES_URI, teaming_edges_schema),
     "govcon_sub_targeting_90day": (SUB_TARGETING_URI, sub_targeting_schema),
