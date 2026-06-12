@@ -468,26 +468,26 @@ def probe_surfaces() -> dict[str, bool]:
     return out
 
 
-def verify_decoder_contract(schema_field_names, indices, decoder) -> list[str]:
+def verify_decoder_contract(schema_field_names, indices, decoder) -> dict[str, list[str]]:
     """PURE decoder schema/index contract checker (no R2 — unit-testable with synthetic
-    inputs). For one decoder against one live dataset's schema + index inventory, assert:
-      1. every geometry column exists in the schema,
-      2. every property column exists in the schema,
-      3. every ``FieldSpec.column`` exists in the schema,
-      4. every FieldSpec that DECLARES an index (``spec.index`` in BTREE/BITMAP) has a live
-         index whose ``fields`` list contains that column — declared-⊆-actual (NEVER the
-         reverse; live legitimately carries more indexes than the decoder declares).
+    inputs). Returns ``{"violations": [...], "notes": [...]}``.
 
-    Returns a list of human-readable violation strings (empty == contract holds).
+    HARD ``violations`` (EXECUTE is broken — 5xx or silent full-scan; strict mode aborts boot):
+      - a geometry / property / ``FieldSpec.column`` missing from the live schema,
+      - a FieldSpec that DECLARES an index (``spec.index`` in BTREE/BITMAP) with NO live index
+        whose ``fields`` list contains that column (declared-⊆-actual; live legitimately carries
+        more indexes than the decoder declares — never assert the reverse).
 
-    Matching is grounded in the real ``ds.list_indices()`` shape: entries are dicts with
-    key ``fields`` (list of physical columns) and key ``type`` (mixed-case 'BTree'/'Bitmap').
-    We match on column membership in ``fields`` and normalize ``type`` via ``.upper()``. A
-    column that IS indexed but with a different scalar kind is a soft, non-fatal note (never
-    a brick); a column with NO index at all is the real violation. Column lookups use
-    ``spec.column`` (the physical column), never the decoder dict key (the query-name).
+    SOFT ``notes`` (degraded but still serving — advisory only, NEVER abort boot):
+      - a column that IS indexed but with a different-but-valid scalar kind than declared.
+
+    Matching is grounded in the real ``ds.list_indices()`` shape: entries are dicts with key
+    ``fields`` (list of physical columns) and key ``type`` (mixed-case 'BTree'/'Bitmap'); we
+    match on column membership in ``fields`` and normalize ``type`` via ``.upper()``. Column
+    lookups use ``spec.column`` (the physical column), never the decoder dict key (query-name).
     """
     violations: list[str] = []
+    notes: list[str] = []
     schema_cols = set(schema_field_names)
     dk = decoder.dataset_key
 
@@ -523,30 +523,65 @@ def verify_decoder_contract(schema_field_names, indices, decoder) -> list[str]:
                 f"{spec.column!r} but NO live index covers that column"
             )
         elif declared_u not in live_types:
-            violations.append(
+            notes.append(
                 f"{dk}: field {qname!r} column {spec.column!r} is indexed as "
                 f"{sorted(live_types)} but decoder declares {declared_u} "
                 f"(type-mismatch note, non-fatal)"
             )
-    return violations
+    return {"violations": violations, "notes": notes}
 
 
-def check_decoder_contracts() -> dict[str, list[str]]:
-    """LIVE caller: open each map decoder's dataset against R2 (via ``_dataset``) and run
-    the pure checker. Returns ``{dataset_key: [violations...]}`` — an empty list per decoder
-    means the contract holds. A dataset that cannot be opened/introspected is itself reported
-    as a violation (a contract that cannot read the schema is a failed contract, surfaced not
-    swallowed). Never raises: the caller (lifespan) owns the fail policy."""
+def _live_stat_findings(dk: str, row_count: int, unindexed_by_index: dict[str, int]) -> dict[str, list[str]]:
+    """PURE classification of a dataset's live stats (unit-testable). A 0-row dataset is a HARD
+    violation — schema + indexes can be perfect while a half-built / failed materialization
+    leaves EXECUTE serving empty maps (the gap #431 left open). Unindexed rows on a live index
+    are SOFT notes — rows appended since the index was built scan unindexed (degraded, not broken)."""
+    violations: list[str] = []
+    notes: list[str] = []
+    if row_count == 0:
+        violations.append(f"{dk}: dataset has 0 rows — EXECUTE will serve empty results")
+    for iname, n in unindexed_by_index.items():
+        if n > 0:
+            notes.append(f"{dk}: index {iname!r} has {n} unindexed rows (degraded scan, non-fatal)")
+    return {"violations": violations, "notes": notes}
+
+
+def check_decoder_contracts() -> dict[str, dict[str, list[str]]]:
+    """LIVE caller: open each map decoder's dataset against R2 (via ``_dataset``), run the pure
+    schema/index checker, then add the live-only checks (row count + per-index unindexed rows).
+    Returns ``{dataset_key: {"violations": [...], "notes": [...]}}`` — empty ``violations`` means
+    the contract holds. A dataset that cannot be opened/introspected is itself a HARD violation.
+    Never raises: the caller (lifespan) owns the fail policy."""
     from .map_decoders import DECODERS  # local import: avoid import-time coupling
 
-    report: dict[str, list[str]] = {}
+    report: dict[str, dict[str, list[str]]] = {}
     for name, decoder in DECODERS.items():
+        dk = decoder.dataset_key
         try:
-            ds = _dataset(config.MAP_DATASET_URIS[decoder.dataset_key])
+            ds = _dataset(config.MAP_DATASET_URIS[dk])
             schema_names = ds.schema.names
             indices = ds.list_indices()
         except Exception as exc:  # noqa: BLE001 — open/introspect failure IS a contract failure
-            report[name] = [f"{decoder.dataset_key}: could not open/introspect dataset: {exc}"]
+            report[name] = {"violations": [f"{dk}: could not open/introspect dataset: {exc}"], "notes": []}
             continue
-        report[name] = verify_decoder_contract(schema_names, indices, decoder)
+        findings = verify_decoder_contract(schema_names, indices, decoder)
+        try:
+            row_count = ds.count_rows()
+        except Exception as exc:  # noqa: BLE001 — row count is a hard contract signal
+            findings["violations"].append(f"{dk}: count_rows() failed: {exc}")
+            row_count = -1
+        unindexed: dict[str, int] = {}
+        for entry in indices:
+            iname = entry.get("name")
+            if not iname:
+                continue
+            try:  # per-index stats are best-effort: a Lance API change must never break the check
+                unindexed[iname] = int(ds.stats.index_stats(iname).get("num_unindexed_rows", 0) or 0)
+            except Exception:  # noqa: BLE001
+                pass
+        if row_count >= 0:
+            live = _live_stat_findings(dk, row_count, unindexed)
+            findings["violations"].extend(live["violations"])
+            findings["notes"].extend(live["notes"])
+        report[name] = findings
     return report

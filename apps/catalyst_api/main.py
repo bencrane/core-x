@@ -83,14 +83,17 @@ async def lifespan(_app: FastAPI):
     # proceeds) so a false-positive can never brick EXECUTE; CATALYST_CONTRACT_STRICT promotes
     # a real violation to a fatal boot abort. The whole block is best-effort so a checker bug
     # cannot brick boot in non-strict mode.
-    contract_report: dict[str, list[str]] = {}
+    contract_report: dict[str, dict[str, list[str]]] = {}
     try:
         contract_report = lance_store.check_decoder_contracts()
-        drift = {k: v for k, v in contract_report.items() if v}
-        if drift:
-            log.error("catalyst_api: DECODER CONTRACT DRIFT (R-09): %s", drift)
+        hard = {k: f["violations"] for k, f in contract_report.items() if f.get("violations")}
+        notes = {k: f["notes"] for k, f in contract_report.items() if f.get("notes")}
+        if notes:  # degraded-not-broken — surfaced but never aborts boot
+            log.warning("catalyst_api: decoder contract NOTES (non-fatal): %s", notes)
+        if hard:
+            log.error("catalyst_api: DECODER CONTRACT DRIFT (R-09): %s", hard)
             if config.contract_check_strict():
-                raise RuntimeError(f"decoder schema/index contract violated at boot: {drift}")
+                raise RuntimeError(f"decoder schema/index contract violated at boot: {hard}")
         else:
             log.info("catalyst_api: decoder contracts OK for %s", list(contract_report))
     except RuntimeError:
@@ -157,16 +160,25 @@ def root() -> dict:
 @app.get("/healthz")
 def healthz(request: Request) -> JSONResponse:
     """Liveness + R2 reachability + decoder contract status. Open (no token) for platform
-    probes. A 503 reflects EITHER an unreachable R2 anchor OR decoder schema/index contract
-    drift detected at boot (R-09)."""
+    probes. A 503 reflects EITHER an unreachable R2 anchor OR a HARD decoder contract
+    violation at boot (R-09: a missing column/index OR a 0-row serving table). Soft contract
+    NOTES (e.g. a type-mismatch or unindexed rows) are surfaced but do NOT flip the gate —
+    they are degraded-not-broken."""
     ok = lance_store.reachable()
     report = getattr(request.app.state, "contract_report", {}) or {}
-    contract_ok = all(not v for v in report.values())
+    contract_ok = all(not f.get("violations") for f in report.values())
     body = {
         **_info(),
         "r2_reachable": ok,
         "contract_ok": contract_ok,
-        "contracts": {k: ("ok" if not v else v) for k, v in report.items()},
+        "contracts": {
+            k: (
+                "ok"
+                if not (f.get("violations") or f.get("notes"))
+                else {"violations": f.get("violations", []), "notes": f.get("notes", [])}
+            )
+            for k, f in report.items()
+        },
     }
     return JSONResponse(body, status_code=200 if (ok and contract_ok) else 503)
 
