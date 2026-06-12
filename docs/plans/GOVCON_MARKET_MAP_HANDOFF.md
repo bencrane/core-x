@@ -5,6 +5,8 @@
 
 > **Verification posture.** Every quantitative claim below was re-checked against the live R2 Lance sink, the deployed endpoints, and the source files on disk on 2026-06-11. Confirmed numbers are marked **[V]**. Where the original briefing was wrong, the correction is marked **[CORRECTED]**. Assumptions and unverifiable items are marked **[ASSUMED]**. Do not trust prose — trust the dataset and the file.
 
+> **Reconciliation (2026-06-11 · adversarial re-verify).** An independent adversarial pass re-probed every `[V]` claim against live disk, deployed services, R2, and git. All quantitative and live-state claims held exactly (incl. live `/ask` → 7126 features, zero drift). **Two risks below were already CLOSED by PRs that landed immediately after this handoff (#423): R-01 by [#425](https://github.com/bencrane/core-x/pull/425) (`22f1510` — `addr_hash_sql` single-sourced) and R-02 by [#424](https://github.com/bencrane/core-x/pull/424) (`850c17f` — edge↔catalyst enum+type parity tests).** Those are updated inline below: §7-8 is retired, §7-2's "fix R-02 first" precondition is satisfied, and the edge test count is corrected 6→8. Newly-closed items are tagged **[RESOLVED]**.
+
 ---
 
 ## 1. TL;DR / Status
@@ -60,7 +62,7 @@ A **natural-language market map**: a public cockpit search box compiles a plain-
 - **No DuckDB in the read path.** DuckDB is a *build-time* compute engine (it materializes the serving tables). At read time, catalyst_api uses **only the Lance scanner** with native BITMAP/BTREE index pushdown. `apps/catalyst_api/requirements.txt` has **no duckdb dependency** [V] — `fastapi`, `pylance`, `pyarrow` only. This keeps the read path sub-second and dependency-light.
 - **catalyst = EXECUTE, edge = TRANSLATE (split).** The LLM (untrusted, can hallucinate) is isolated in edge_api and can only emit a constrained `{title, filters}` object. catalyst_api is the **security boundary**: its decoder allowlist (`map_decoders.py`) is the authoritative gate — column names come ONLY from `FieldSpec.column`, never the caller; values are type-validated and SQL-escaped. Even a hallucinated field is rejected at EXECUTE. This separation means the public LLM surface can never reach Lance with an arbitrary predicate.
 - **`gtm_mcp` / gtm-agent are OUT of scope.** They are the operator console (a different, authenticated surface). The map `/ask` path never touches them — confirmed in `map_ask_v1.py`, `catalyst_client.py` (explicit "never touches gtm_mcp" comments) [V]. Do not wire the map through the agent loop.
-- **Address-keyed, accretive crosswalk.** `geocode_xwalk` is keyed by `addr_hash = md5(normalized street|city|state|zip5)`, not by entity/vintage. Geocode each distinct address **once**, read it from any surface forever. Writes are `merge_insert(addr_hash).when_not_matched_insert_all()` — a known address is never re-geocoded [V, geocode_xwalk.py:315]. Rationale: addresses are stable and shared across awards/SAM/SoS; entity-keyed geocoding would re-pay the Census cost on every vintage.
+- **Address-keyed, accretive crosswalk.** `geocode_xwalk` is keyed by `addr_hash = md5(normalized street|city|state|zip5)`, not by entity/vintage. Geocode each distinct address **once**, read it from any surface forever. Writes are `merge_insert(addr_hash).when_not_matched_insert_all()` — a known address is never re-geocoded [V, geocode_xwalk.py:306-307]. Rationale: addresses are stable and shared across awards/SAM/SoS; entity-keyed geocoding would re-pay the Census cost on every vintage.
 
 ---
 
@@ -96,9 +98,9 @@ All datasets live under `s3://data-sink/active/` (Lance, written directly to R2 
 
 > The prime/sub feed row counts and the firmographics/SAM counts above were **not** re-probed this pass (heavy); they are carried from the briefing as **[ASSUMED]**. The three *serving* tables they produce WERE re-probed and match exactly.
 
-### The `addr_hash` 3-file parity (CRITICAL — see R-01)
+### The `addr_hash` single-source join key ([RESOLVED] — was R-01)
 
-`addr_hash_sql()` is **duplicated verbatim** in `geocode_xwalk.py`, `materialize_winners_map.py`, `materialize_company_map.py`. **Verified byte-identical via AST extraction on 2026-06-11 [V]** — currently consistent. The canonical expression:
+`addr_hash_sql()` is **single-sourced** in `pipelines/_shared/addr_hash.py` and imported by all three builders (`geocode_xwalk.py`, `materialize_winners_map.py`, `materialize_company_map.py`). The prior 3-file verbatim duplication was extracted by **PR [#425](https://github.com/bencrane/core-x/pull/425) (`22f1510`)**, which also added a parity unit test (`pipelines/_shared/tests/test_addr_hash_parity.py`) pinning byte-identical output across import sites. The canonical expression:
 
 ```
 md5(
@@ -109,7 +111,7 @@ md5(
 )
 ```
 
-If any copy drifts by one byte, the coord LEFT JOIN silently produces all-null coords for the affected serving table — no error, just an empty map. The docstrings cross-reference inconsistently (geocode↔winners reference each other; company references only geocode), so a maintainer editing one may not find the others. **Fix: extract to a shared helper (§7-8).**
+Drift is now structurally impossible: one definition, guarded by a test. (Historically the hazard was real — a one-byte drift between the three copies would have made the coord LEFT JOIN silently produce all-null coords for the affected serving table: no error, just an empty map. That failure mode, formerly the doc's #1 HIGH risk R-01, is closed by #425.)
 
 ---
 
@@ -134,11 +136,11 @@ If any copy drifts by one byte, the coord LEFT JOIN silently produces all-null c
 
 - **Route:** `POST /api/v1/map/{dataset}/ask` (`src/routers/map_ask_v1.py`). Body `{q}`. Service-token gated (`require_service_token`).
 - **LLM call** (`src/services/anthropic_messages.py`): one forced-tool `/v1/messages` call, `tool_choice` pins `emit_filter`, `max_tokens=512`, `timeout=15s`, `retries=1` (only on 5xx/transport). Uses `ANTHROPIC_API_KEY` (distinct from the managed-agents key). System block sent with `cache_control: ephemeral` (prompt-cached).
-- **Decoder mirror** (`src/map_decoders.py`): hand-mirrored prompt-facing subset (field names, types, ops, enums, synonyms — **never** Lance column names). `render_decoder_prompt()` builds the cached system block; `build_emit_filter_tool()` builds the enum-bounded tool schema.
+- **Decoder mirror** (`src/map_decoders.py`): hand-mirrored prompt-facing subset (field names, types, ops, enums, synonyms). Distinct internal Lance columns are **not** exposed (`latitude`, `total_active_obligations`, `physical_address_state`, …); the prompt only ever sees public field names — which happen to coincide with the column string for the handful of fields the operator named identically (`naics2`, `primary_naics`, `total_obligation`, `award_count`). The security boundary does **not** rest on prompt opacity regardless: EXECUTE sources columns solely from `FieldSpec.column` (§4.1), so even a leaked column name buys an attacker nothing. `render_decoder_prompt()` builds the cached system block; `build_emit_filter_tool()` builds the enum-bounded tool schema.
 - **Memo** (`map_ask_v1.py:34`): `_MEMO[(normalized_q, decoder_version, model)] = filter_object`. **Stores the filter, never GeoJSON** — every hit re-executes against live Lance. Process-local, cleared on deploy. A decoder version bump busts the key.
 - **Model:** `MAP_COMPILER_MODEL`, default **`claude-opus-4-7`** [V — env not set in `core-x/prd`, so default is live]. Operator chose Opus over Haiku for translation quality (low-volume box).
 - **Forwarder** (`src/services/catalyst_client.py`): POSTs the filter to `CATALYST_API_BASE_URL/api/v1/map/{dataset}/query` with `Bearer CATALYST_API_TOKEN`, returns the envelope verbatim plus `query: <filter>`.
-- **Tests:** `tests/test_map_ask.py` — **6 tests [V]**: version parity, field-set parity, ops-subset, synonym validity, enum-bounded tool schema, no-columns-in-prompt. **Gap: the parity test does NOT assert enum *values* match** (e.g. `winner_type` enum) — structural parity only (see R-02).
+- **Tests:** `tests/test_map_ask.py` — **8 tests [V]**: version parity, field-set parity, ops-subset, synonym validity, enum-bounded tool schema, no-columns-in-prompt, **plus per-field type parity (`test_edge_field_types_match_catalyst`) and enum-value parity (`test_edge_field_enums_match_catalyst`)** added by PR [#424](https://github.com/bencrane/core-x/pull/424) (`850c17f`). The former R-02 gap (enum/type *values* not asserted) is **[RESOLVED]** — `set(edge_enum) == set(cat_enum)` and per-field type now fail the test on any drift.
 - **Deployed:** `https://api.edgeapi.run` [V — root 200]. **Live end-to-end [V]:** `/ask` "construction companies that have won federal awards" → model emitted `{naics2='23', has_federal_awards=true}` → **7126 features, capped=false** (exact match to construction+federal plottable count probed directly). Latency ~4.6s cold (first translation); memo makes repeats fast.
 
 ### 4.3 Deployment + required secrets
@@ -179,7 +181,7 @@ These are **separate data sources** — the warm snapshot and the live serving t
   - `askRowToCompany` (data.ts:1233): maps a row → `Company`. **CRITICAL GAP [V]: it reads name/uei/naics/city/state/obligations but does NOT read `r.lat`/`r.lon` and does NOT set `x`/`y`.** The real coordinates reach the cockpit but are **discarded at this boundary** — so the geo-dot layer has nothing to plot even though the data is present one function-call away.
   - `dedupeByName` (data.ts:1269): groups by normalized name, keeps the largest-obligation entity's identity, **sums `totalAwarded` across the group**, records `relatedEntities = group.length`. Headline `total` = distinct-company count post-collapse; raw UEI match count rides in `fullUniverse`.
 - `components/CommandPalette.tsx` ("Ask the market" row), `ResultsTable.tsx` (full-surface table — the default view), `MapView.tsx` (Map/Table toggle), `DemoApp.tsx` (`resultView`, default **Table**), `TerminalChrome.tsx` `ViewToggle`.
-- **Geo-dots do NOT render [V]:** `MapView.tsx:90` plots only `c.x != null && c.y != null`; live entities have neither. The us-geo viewBox (`us-geo.ts`) is an **offline-projected Albers-USA composite (lower-48 + AK/HI insets), 1000×590**, plain SVG path strings — **no runtime projection**. The 6 historical catalyst points were lon/lat-projected offline.
+- **Geo-dots do NOT render [V]:** `MapView.tsx:91` plots only `c.x != null && c.y != null`; live entities have neither. The us-geo viewBox (`us-geo.ts`) is an **offline-projected Albers-USA composite (lower-48 + AK/HI insets), 1000×590**, plain SVG path strings — **no runtime projection**. The 6 historical catalyst points were lon/lat-projected offline.
 
 ---
 
@@ -193,9 +195,9 @@ These are **separate data sources** — the warm snapshot and the live serving t
 | coords: winners 35,306 / company 213,949 / company federal 139,918 | **VERIFIED [V]** |
 | construction+federal plottable = 7126; live `/ask` returns 7126 | **VERIFIED [V]** (live end-to-end) |
 | catalyst deployed, 401 without token; edge deployed | **VERIFIED [V]** |
-| `addr_hash_sql` byte-identical across 3 files | **VERIFIED [V]** (AST) |
-| 19 catalyst + 6 edge map tests | **VERIFIED [V]** |
-| All 7 PRs (#413,#414,#416,#419,#421 core-x; #98,#99 hq) MERGED | **VERIFIED [V]** |
+| `addr_hash_sql` single-sourced (`pipelines/_shared/addr_hash.py`); 3 builders import it | **VERIFIED [V]** — was 3-file dup, extracted by #425 |
+| 19 catalyst + 8 edge map tests | **VERIFIED [V]** — edge was 6; #424 added type+enum parity |
+| All PRs MERGED (#413,#414,#416,#417,#419,#421,#423,#424,#425 core-x; #98,#99 hq) | **VERIFIED [V]** |
 | Secrets in `core-x/prd` | **VERIFIED [V]** (4 present; 2 intentionally unset) |
 | model `claude-opus-4-7` | **VERIFIED [V]** (default; env unset) |
 | Census batch 1000–2500 | **CORRECTED → 10000 [V]** |
@@ -206,8 +208,8 @@ These are **separate data sources** — the warm snapshot and the live serving t
 
 | ID | Risk | Sev | Failure mode | Mitigation / measure |
 |---|---|---|---|---|
-| **R-01** | `addr_hash` 3-file parity | **HIGH** | A one-byte drift in any copy → coord LEFT JOIN all-null → blank map, **no error**. | Extract shared helper (§7-8). Measure: import from one module in all three; a parity unit-test asserting identical output on a fixture address. |
-| **R-02** | edge↔catalyst decoder drift | **MED** | Parity test checks field-set/version/ops-subset but **NOT enum values or types**. An enum added to catalyst but not edge → model never offered it (silent capability loss); enum on edge not catalyst → EXECUTE 422s a "valid" suggestion. | Extend `test_map_ask.py` to assert enum + type equality per field. Measure: test fails on any enum/type mismatch. |
+| **R-01** | ~~`addr_hash` 3-file parity~~ **[RESOLVED]** | ~~HIGH~~ | Was: a one-byte drift in any copy → coord LEFT JOIN all-null → blank map, no error. | **Closed by PR [#425](https://github.com/bencrane/core-x/pull/425) (`22f1510`):** `addr_hash_sql` single-sourced in `pipelines/_shared/addr_hash.py`, imported by all three builders; parity unit-test (`test_addr_hash_parity.py`) pins byte-identical output on a fixture address. |
+| **R-02** | ~~edge↔catalyst decoder drift~~ **[RESOLVED]** | ~~MED~~ | Was: parity test checked field-set/version/ops-subset but not enum values or types → silent capability loss, or EXECUTE 422s a "valid" suggestion. | **Closed by PR [#424](https://github.com/bencrane/core-x/pull/424) (`850c17f`):** `test_edge_field_types_match_catalyst` + `test_edge_field_enums_match_catalyst` now assert per-field type and `set(edge_enum) == set(cat_enum)`; any enum/type mismatch fails the test. |
 | **R-03** | dedup award-summing semantics | **MED** | `dedupeByName` sums `total_active_obligations` across same-name UEIs. Two genuinely distinct companies sharing a name get merged + summed (overstated headline); if the serving value were ever a pre-rolled-up figure, double-count. Grouping by name (not UEI parent) is a heuristic. | Group by a real corporate-parent key if/when available; otherwise label the row "(N entities)" and show the sum is a group total. Measure: spot-check 10 collapsed groups against SAM parent relationships. |
 | **R-04** | public unauthenticated `/ask` LLM cost/abuse | **HIGH** | BFF `/ask` and edge `/ask` are both public; **every** call is one Opus round-trip. No rate-limit (only a code comment). A scraper or accidental loop runs up Anthropic spend; memo only helps *repeated identical* queries. | Add per-IP rate-limit at the BFF `/ask` (Hono middleware) + a global token-bucket. Measure: load-test confirms >N req/min/IP → 429; Anthropic dashboard cost flat under flood. |
 | **R-05** | Census geocoder reliability | **MED** | Batch geocode is skip-on-fail; a sustained Census outage silently defers addresses (coords stay null → fewer dots). No alerting on match-rate regression. | Record per-run match-rate in `ops.geocode_xwalk_runs`; alert if a run's match-rate drops below a threshold. Measure: ledger row carries `geocoded/worklist` ratio; an alert fires on regression. |
@@ -234,7 +236,7 @@ These are **separate data sources** — the warm snapshot and the live serving t
 ### 7-2 · Decoder vocabulary enum hints (`industry`, `employee_size_band`, `company_type`) — **MED**
 **Goal:** the model emits valid `industry`/size/type values instead of guessing freeform strings.
 **Live cardinality [V]:** `employee_size_band` = **8** distinct (`1-10`, `11-50`, `51-200`, `201-500`, `501-1000`, `1001-5000`, …) → **clean enum**. `company_type` = **10** distinct (`Self-Owned`, `Privately Held`, `Partnership`, `Nonprofit`, `Public Company`, …) → **clean enum**. `industry` = **463** distinct → too many to enum; instead add the top ~30 as `desc` hints or a curated synonym table, leave the field open-valued.
-**Mechanism:** pull distinct values (`SELECT DISTINCT` via a Lance scanner + `pyarrow.compute.unique`), add `enum=(...)` to the `FieldSpec` in **both** `apps/catalyst_api/src/map_decoders.py` and `apps/edge_api/src/map_decoders.py`, **bump `company.v1` → `company.v2`** (busts the memo). Fix R-02 first so the enum-parity test guards this.
+**Mechanism:** pull distinct values (`SELECT DISTINCT` via a Lance scanner + `pyarrow.compute.unique`), add `enum=(...)` to the `FieldSpec` in **both** `apps/catalyst_api/src/map_decoders.py` and `apps/edge_api/src/map_decoders.py`, **bump `company.v1` → `company.v2`** (busts the memo). The enum-parity guard this depends on is **already in place** ([RESOLVED] R-02, PR #424) — an enum added to one decoder but not the other now fails `test_edge_field_enums_match_catalyst`.
 **Measure of done:** a size/type query ("companies with 51-200 employees") compiles to the exact enum value and returns rows; an off-enum value 422s.
 
 ### 7-3 · Rate-limit / auth the public `/ask` — **HIGH**
@@ -262,10 +264,8 @@ These are **separate data sources** — the warm snapshot and the live serving t
 **Mechanism:** (a) add a dataset toggle in the cockpit (`MapQuery.dataset`, plumbed end-to-end already — `runAsk(nl, dataset)` accepts `winners`); (b) set `WINNERS_WINDOW_DAYS=365` and rebuild; (c) add a place-of-performance geocode layer (winners are recipient-address-keyed today; PoP is a distinct location dimension — would need a PoP address → addr_hash join).
 **Measure of done:** a winners query ("prime construction between 150k and 500k") returns from the box; window covers 365d; PoP layer toggles independently of recipient location.
 
-### 7-8 · `addr_hash` shared helper (kill R-01) — **MED**
-**Goal:** one source of truth for the join key.
-**Mechanism:** move `addr_hash_sql` (+ `_zip5_sql`) to a shared module (e.g. `pipelines/_shared/addr_hash.py`) and import in all three builders. Add a unit test asserting a fixture address hashes identically through all import sites.
-**Measure of done:** the function exists in exactly one file; the three builders import it; the parity test passes.
+### 7-8 · `addr_hash` shared helper (kill R-01) — **✅ DONE (PR [#425](https://github.com/bencrane/core-x/pull/425))**
+**Shipped:** `addr_hash_sql` (+ `_zip5_sql`) extracted to `pipelines/_shared/addr_hash.py`; all three builders import it; `pipelines/_shared/tests/test_addr_hash_parity.py` asserts a fixture address hashes identically through every import site. The function now exists in exactly one file. R-01 closed — no further action.
 
 ---
 
@@ -337,7 +337,8 @@ Expected live answers (2026-06-11): catalyst no-auth → **401**; edge `/ask` �
 ### Core-x — data plane
 | Path | Role |
 |---|---|
-| `pipelines/usaspending/geocode_xwalk.py` | address→coords crosswalk (accretive); `addr_hash_sql` source of truth |
+| `pipelines/_shared/addr_hash.py` | **`addr_hash_sql` single source of truth** (imported by all 3 builders); `tests/test_addr_hash_parity.py` pins byte-identity (#425) |
+| `pipelines/usaspending/geocode_xwalk.py` | address→coords crosswalk (accretive); imports `addr_hash_sql` from `_shared` |
 | `pipelines/serving/materialize_winners_map.py` | winners serving table |
 | `pipelines/serving/materialize_company_map.py` | company serving table |
 | `pipelines/serving/materialize_federal_charts.py` | warm federal snapshot (BFF in-memory source) |
@@ -357,7 +358,7 @@ Expected live answers (2026-06-11): catalyst no-auth → **401**; edge `/ask` �
 | `apps/edge_api/src/services/anthropic_messages.py` | forced-tool Messages call |
 | `apps/edge_api/src/services/catalyst_client.py` | edge → catalyst forwarder |
 | `apps/edge_api/src/config.py` | model, catalyst URL, keys |
-| `apps/edge_api/tests/test_map_ask.py` | 6 parity tests |
+| `apps/edge_api/tests/test_map_ask.py` | 8 parity tests (incl. per-field type + enum-value parity, #424) |
 
 ### rare-structure-hq — frontend
 | Path | Role |
@@ -377,5 +378,5 @@ Expected live answers (2026-06-11): catalyst no-auth → **401**; edge `/ask` �
 - `docs/plans/NL_QUERY_MAP_COMPILER_STRATEGY.md`
 
 ### PRs (all MERGED [V])
-core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · `d90b455` deploy-trigger.
+core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · **#423** this handoff · **#424** edge type+enum parity (closes R-02) · **#425** `addr_hash` single-source (closes R-01) · `d90b455` deploy-trigger.
 rare-structure-hq: **#98** NL wiring · **#99** table + Map/Table toggle.
