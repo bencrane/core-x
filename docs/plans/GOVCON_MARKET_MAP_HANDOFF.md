@@ -46,9 +46,9 @@ A **natural-language market map**: a public cockpit search box compiles a plain-
 | edge_api TRANSLATE | **DONE [V]** | deployed, live `/ask` returns correct filter+7126 features |
 | BFF `/ask` proxy | **DONE [V]** | `federal.ts` `/ask` → `askMarket` |
 | Cockpit free-text wiring + Table view | **DONE [V]** | `runAsk` reachable via `runQuery` |
-| **Geo-dot rendering (map view)** | **PENDING** | live entities have no `x`/`y`; lat/lon dropped before `Company` (§6 R-07) |
+| **Geo-dot rendering (map view)** | **SHIPPED — pending visual confirm [rsh #101]** | lat/lon projected via recovered Albers-USA (`demo/projection.ts`); 99.5% of live coords in-bounds vs the 7126-payload; on-screen render not yet eyeballed in portal (§7-1, R-07) |
 | Boot **schema/index** contract check | **PARTIAL** | reachability done; column/index assertion NOT done (§7-5) |
-| Public `/ask` rate-limit / auth | **PENDING** | unauthenticated, one LLM call per hit (§6 R-04) |
+| Public `/ask` rate-limit / auth | **N/A — R-04 closed** | public `/map` un-hosted 2026-06-11; no public surface (§7-3) |
 | `winners` dataset exposed in box | **PARTIAL** | plumbed end-to-end; UI defaults to `company`, no winners affordance (§7-7) |
 
 ---
@@ -233,13 +233,14 @@ These are **separate data sources** — the warm snapshot and the live serving t
 **Recommended:** runtime `geoAlbersUsa().fitSize([1000,590], <states FeatureCollection>)` reusing the *same* feature set `us-geo.ts` was fitted from, so AK/HI insets coincide.
 **Measure of done:** "construction companies that have won federal awards" in Map view renders ~7,126 dots, all inside US state polygons, AK/HI included; clicking a dot opens that company's profile.
 
-### 7-2 · Decoder vocabulary enum hints (`industry`, `employee_size_band`, `company_type`) — **MED**
-**Goal:** the model emits valid `industry`/size/type values instead of guessing freeform strings.
-**Live cardinality [V]:** `employee_size_band` = **8** distinct (`1-10`, `11-50`, `51-200`, `201-500`, `501-1000`, `1001-5000`, …) → **clean enum**. `company_type` = **10** distinct (`Self-Owned`, `Privately Held`, `Partnership`, `Nonprofit`, `Public Company`, …) → **clean enum**. `industry` = **463** distinct → too many to enum; instead add the top ~30 as `desc` hints or a curated synonym table, leave the field open-valued.
-**Mechanism:** pull distinct values (`SELECT DISTINCT` via a Lance scanner + `pyarrow.compute.unique`), add `enum=(...)` to the `FieldSpec` in **both** `apps/catalyst_api/src/map_decoders.py` and `apps/edge_api/src/map_decoders.py`, **bump `company.v1` → `company.v2`** (busts the memo). The enum-parity guard this depends on is **already in place** ([RESOLVED] R-02, PR #424) — an enum added to one decoder but not the other now fails `test_edge_field_enums_match_catalyst`.
-**Measure of done:** a size/type query ("companies with 51-200 employees") compiles to the exact enum value and returns rows; an off-enum value 422s.
+### 7-2 · Decoder vocabulary enum hints (`employee_size_band`, `company_type`) — **✅ DONE (PR #428)**
+**Shipped:** both fields are now `enum`-bound in **both** decoders (`apps/catalyst_api/src/map_decoders.py` authoritative + `apps/edge_api/src/map_decoders.py` mirror), `company.v1 → company.v2`. Exact value sets were live-probed from `firmographics_company_map_serving` with row counts — the two `company_type` singletons (`Sole Proprietorship`, `Educational Institution`, 1 row each) are **included** so they stay queryable. `industry` (464 distinct) left open-valued. `_map_enum_check` enforces at EXECUTE; `render_decoder_prompt` now lists allowed values to the model. 4 new catalyst tests (off-enum → 422, valid → exact predicate); 31 tests pass.
+**Verified live (both services redeployed to `company.v2`):** "companies with 51 to 200 employees" → model emits `employee_size_band='51-200'` → 17,438 rows; off-enum `'50-100'`/`'LLC'` → 422; the `Sole Proprietorship` singleton returns 1 row; canonical construction+federal regression still **7126**.
+**Exact enums shipped:** `employee_size_band` = `1-10`, `11-50`, `51-200`, `201-500`, `501-1000`, `1001-5000`, `5001-10000`, `10001+`. `company_type` = `Privately Held`, `Nonprofit`, `Public Company`, `Partnership`, `Government Agency`, `Self-Owned`, `Educational`, `Self-Employed`, `Sole Proprietorship`, `Educational Institution`. (Coupling: any change to these value sets in the serving table requires a re-probe + `company.v2 → v3` bump.)
 
-### 7-3 · Rate-limit / auth the public `/ask` — **HIGH**
+### 7-3 · Rate-limit / auth the public `/ask` — **DEPRIORITIZED (R-04 closed)**
+> **2026-06-11:** the public `/map` cockpit route was un-hosted, removing the unauthenticated public surface — R-04 (public `/ask` LLM cost/abuse) is no longer live. Re-raise to HIGH and ship the rate-limit *before* re-exposing `/map` publicly.
+
 **Goal:** cap LLM cost and abuse on the unauthenticated `/ask`.
 **Mechanism:** add a Hono rate-limit middleware on `federalRoutes.get("/ask")` in `apps/platform-api/src/routes/federal.ts` (per-IP token bucket) and a global ceiling; optionally a lightweight CAPTCHA/origin check. Consider a short-TTL response cache keyed on the normalized query to absorb bursts.
 **Measure of done:** load test → >N req/min/IP returns 429; Anthropic spend stays flat under a flood.
@@ -378,5 +379,5 @@ Expected live answers (2026-06-11): catalyst no-auth → **401**; edge `/ask` �
 - `docs/plans/NL_QUERY_MAP_COMPILER_STRATEGY.md`
 
 ### PRs (all MERGED [V])
-core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · **#423** this handoff · **#424** edge type+enum parity (closes R-02) · **#425** `addr_hash` single-source (closes R-01) · `d90b455` deploy-trigger.
-rare-structure-hq: **#98** NL wiring · **#99** table + Map/Table toggle.
+core-x: **#413** geocode_xwalk + winners serving · **#414** geocode blitz_sam source + hardening · **#416** company serving · **#419** catalyst EXECUTE · **#421** edge TRANSLATE · **#417** plan doc · **#423** this handoff · **#424** edge type+enum parity (closes R-02) · **#425** `addr_hash` single-source (closes R-01) · **#428** company decoder enums + `company.v2` (§7-2) · `d90b455` deploy-trigger.
+rare-structure-hq: **#98** NL wiring · **#99** table + Map/Table toggle · **#101** geo-dot Albers-USA projection (§7-1).
