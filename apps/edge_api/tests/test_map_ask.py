@@ -30,6 +30,35 @@ def test_edge_ops_subset_of_catalyst_ops():
             assert set(spec["ops"]) <= set(cat_fields[name].ops), f"{ds}.{name}: ops drift"
 
 
+def test_edge_field_types_match_catalyst():
+    # A type drift means the model is prompted to emit (and EXECUTE is told to type-check)
+    # the wrong scalar shape — e.g. a string where catalyst expects a float.
+    for ds, dec in edge.DECODERS.items():
+        cat_fields = cat.DECODERS[ds].fields
+        for name, spec in dec["fields"].items():
+            if name in cat_fields:
+                assert spec["type"] == cat_fields[name].type, f"{ds}.{name}: type drift edge vs catalyst"
+
+
+def test_edge_field_enums_match_catalyst():
+    # Enum parity is bidirectional: if catalyst constrains a field's values, edge MUST offer
+    # exactly that set (no invalid value → EXECUTE 422; no dropped value → silent capability
+    # loss), and edge must not invent an enum catalyst does not enforce.
+    for ds, dec in edge.DECODERS.items():
+        cat_fields = cat.DECODERS[ds].fields
+        for name, spec in dec["fields"].items():
+            if name not in cat_fields:
+                continue
+            cat_enum = cat_fields[name].enum
+            edge_enum = spec.get("enum")
+            if cat_enum is not None:
+                assert edge_enum is not None, f"{ds}.{name}: catalyst declares enum, edge does not"
+            if edge_enum is not None:
+                assert cat_enum is not None, f"{ds}.{name}: edge declares enum, catalyst does not"
+            if cat_enum is not None and edge_enum is not None:
+                assert set(edge_enum) == set(cat_enum), f"{ds}.{name}: enum value-set drift edge vs catalyst"
+
+
 def test_synonyms_reference_known_fields():
     for ds, dec in edge.DECODERS.items():
         for term, clause in dec["synonyms"].items():
