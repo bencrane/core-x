@@ -1163,7 +1163,6 @@ def phase_index(args, so: dict) -> dict:
     return out
 
 
-<<<<<<< HEAD
 # ╔═══════════════════════════════════════════════════════════════════════════════════════════════
 # ║ LLM LANE — build-plan PHASE 2 (engine-agnostic: deterministic select/stage → opaque extraction
 # ║ step producing result JSON files → deterministic validate/land). OPERATOR DECISION A (binding):
@@ -2093,19 +2092,13 @@ def phase_llm_reset(args, so: dict, run_id: str) -> dict:
     return out
 
 
-=======
->>>>>>> origin/main
 # ════════════════════════════════════════════════════════════════ main
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description="GovCon Phase-1 regex requirement extraction (build plan PHASE 1; spec §17).")
-<<<<<<< HEAD
     p.add_argument("--phase", default="extract",
                    choices=["extract", "index", "bracket", "select", "census", "ingest",
                             "reset-llm"])
-=======
-    p.add_argument("--phase", default="extract", choices=["extract", "index"])
->>>>>>> origin/main
     p.add_argument("--sinks", default="scope,pricing,unknown",
                    help="comma list of chunk sinks to read (read-only)")
     p.add_argument("--resource-ids", default=None,
@@ -2125,7 +2118,6 @@ def main(argv=None) -> int:
     p.add_argument("--requirements-uri", default=REQUIREMENTS_URI)
     p.add_argument("--labor-uri", default=LABOR_DEMAND_URI)
     p.add_argument("--ledger-uri", default=EXTRACT_LEDGER_URI)
-<<<<<<< HEAD
     # ── LLM lane (build-plan PHASE 2) ──────────────────────────────────────────────────────────
     p.add_argument("--doc-scope-uri", default=DOC_SCOPE_URI)
     p.add_argument("--staging-dir", default=LLM_STAGING_DIR,
@@ -2146,8 +2138,6 @@ def main(argv=None) -> int:
                    help="ingest run gate: below this nothing lands (plan Phase 2: 0.98)")
     p.add_argument("--force-land", action="store_true",
                    help="ingest: land despite a failed run gate (operator override, logged)")
-=======
->>>>>>> origin/main
     args = p.parse_args(argv)
     args.sinks = {s.strip() for s in args.sinks.split(",") if s.strip()}
     args.resource_ids = ([s.strip() for s in args.resource_ids.split(",") if s.strip()]
@@ -2163,7 +2153,6 @@ def main(argv=None) -> int:
                     "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if args.phase == "extract":
         report["extract"] = phase_extract(args, so, run_id)
-<<<<<<< HEAD
     elif args.phase == "index":
         report["index"] = phase_index(args, so)
     elif args.phase == "bracket":
@@ -2195,15 +2184,6 @@ def main(argv=None) -> int:
                 summary = report[key]
                 break
     print("RESULT: " + json.dumps(summary or {}, default=str), flush=True)
-=======
-    else:
-        report["index"] = phase_index(args, so)
-    report["completed_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-    with open(args.report_out, "w") as f:
-        json.dump(report, f, indent=2, default=str)
-    summary = {k: v for k, v in report.get("extract", {}).items() if k != "write_stats"}
-    print("RESULT: " + json.dumps(summary or report.get("index", {}), default=str), flush=True)
->>>>>>> origin/main
     return 0
 
 
