@@ -27,6 +27,8 @@ from ..engagement_mandate_drafts.models import (
     MandateDraftCreate,
     MandateDraftCreated,
     MandateDraftDocument,
+    MandateStagingDraft,
+    MandateStagingUpsert,
 )
 from ..service_token import require_service_token
 from ..services import documenso_client
@@ -41,6 +43,35 @@ async def create_mandate_draft(body: MandateDraftCreate) -> MandateDraftCreated:
             conn,
             opportunity_id=body.opportunity_id,
             documenso_template_id=body.documenso_template_id,
+        )
+    if not draft_id:
+        raise HTTPException(status_code=404, detail="documenso template not found")
+    return MandateDraftCreated(id=draft_id)
+
+
+@router.get("/by-opportunity/{opportunity_id}", dependencies=[Depends(require_service_token)])
+async def get_staging_by_opportunity(opportunity_id: str) -> MandateStagingDraft | None:
+    """The opportunity's staged mandate — selected template, archetype, and the per-deal values the
+    operator entered — for the per-opportunity prep page to resume editing. Null when nothing is
+    staged yet (or the opportunity ref is not a UUID)."""
+    async with get_db_connection() as conn:
+        draft = await queries.get_latest_by_opportunity(conn, opportunity_id)
+    return MandateStagingDraft(**draft) if draft else None
+
+
+@router.put("/by-opportunity/{opportunity_id}", dependencies=[Depends(require_service_token)])
+async def upsert_staging_by_opportunity(
+    opportunity_id: str, body: MandateStagingUpsert
+) -> MandateDraftCreated:
+    """Save the prep page: create-or-update the opportunity's staging draft with the selected template
+    and the entered per-deal values. The org + archetype are resolved server-side from the template;
+    re-saving edits the same draft in place. 404 when the template id is unknown."""
+    async with get_db_connection() as conn:
+        draft_id = await queries.upsert_staging(
+            conn,
+            opportunity_id=opportunity_id,
+            documenso_template_id=body.documenso_template_id,
+            prefill_values=body.prefill_values,
         )
     if not draft_id:
         raise HTTPException(status_code=404, detail="documenso template not found")

@@ -16,14 +16,20 @@ from psycopg.rows import dict_row
 from .models import EngagementMappingOption
 
 _SQL = """
-    SELECT dt.documenso_template_id AS id, m.name AS label
+    SELECT dt.documenso_template_id            AS id,
+           m.name                              AS label,
+           a.key                               AS archetype_key,
+           a.name                              AS archetype_name,
+           a.performance_fee_basis             AS performance_fee_basis,
+           COALESCE(dt.recipients->'text_fields', '[]'::jsonb) AS text_fields
       FROM business.engagement_documenso_template_mappings m
-      JOIN business.documenso_templates dt  ON dt.id = m.documenso_template_id
-      JOIN business.organizations o         ON o.id = m.organization_id
+      JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_id
+      JOIN business.organizations o              ON o.id = m.organization_id
+      LEFT JOIN business.engagement_archetypes a ON a.id = dt.archetype_id
      WHERE m.is_visible = true
        AND m.status = 'active'
        AND lower(o.metadata->>'domain') = lower(%s)
-     ORDER BY m.name
+     ORDER BY a.name NULLS LAST, m.name
 """
 
 

@@ -13,3 +13,11 @@ from pydantic import BaseModel
 class EngagementMappingOption(BaseModel):
     id: str       # the Documenso template id (documenso_templates.documenso_template_id) — the originate value
     label: str    # prospect-facing mapping name
+    # Archetype (the economic shape) the mapping's template belongs to — drives how the staging form
+    # groups options and which value fields it shows. Nullable: a template may predate archetype tagging.
+    archetype_key: str | None = None
+    archetype_name: str | None = None
+    performance_fee_basis: str | None = None
+    # The template's declared Documenso merge fields (recipients.text_fields) — the exact inputs the
+    # staging value form renders. Empty when the template declares none.
+    text_fields: list[str] = []
