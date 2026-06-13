@@ -26,7 +26,11 @@ Write ONE JSON file at exactly the path given in `result_path`, conforming to `o
    whose text contains the evidence. `evidence_quote` (≤ 300 chars) must be copied VERBATIM from
    the cited chunk text — the validator substring-matches it after whitespace normalization and
    rejects any row whose quote does not appear in the cited chunks. Never paraphrase inside
-   `evidence_quote`.
+   `evidence_quote`. `evidence_quote` MUST be a SINGLE sentence that by itself proves the claimed
+   requirement — quote only that one proving sentence, never the surrounding paragraph or multiple
+   sentences. It is a HARD maximum of 300 characters; if the proving sentence exceeds 300 characters,
+   quote the verbatim sub-span of that sentence that still proves the claim. A quote over 300
+   characters is rejected outright.
 2. **Normalize `requirement_value`** to lowercase snake/colon form; reuse the exact forms in
    `vocabulary.value_norm_hints` whenever the document states the same requirement (e.g. a Secret
    personnel clearance → `clearance:secret` with `clearance_level: "SECRET"`).
