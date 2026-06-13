@@ -2,10 +2,16 @@
 
 Append a draft stamping (opportunity_id, documenso_template_id). The org is resolved from the
 Documenso template; the INSERT...SELECT also validates the template exists (no row → no insert).
+
+The draft is OUR concept; it carries a POINTER (in ``metadata.documenso_envelope_id``) into the
+verbatim Documenso mirror (``business.documenso_envelopes``). The draft never duplicates Documenso's
+signed-document data — it only references which envelope it spawned and tracks its own lifecycle.
 """
 from __future__ import annotations
 
 from uuid import UUID
+
+from psycopg.types.json import Jsonb
 
 
 async def insert_draft(conn, *, opportunity_id: str, documenso_template_id: str) -> str | None:
@@ -56,3 +62,44 @@ async def get_draft(conn, draft_id: str) -> dict | None:
         "organization_id": row[1],
         "opportunity_id": row[2],
     }
+
+
+async def attach_envelope(conn, *, draft_id: str, envelope_id: str, signing_token: str | None) -> None:
+    """At confirm: point the draft at the Documenso envelope it just spawned and mark it sent. The
+    pointer (``metadata.documenso_envelope_id``) is how OUR draft resolves its row in the verbatim
+    Documenso mirror; the signed-document data itself lives only in the mirror."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE business.engagement_mandate_draft_content
+               SET status = 'sent',
+                   metadata = metadata || %s::jsonb,
+                   updated_at = now()
+             WHERE id = %s::uuid
+            """,
+            (Jsonb({"documenso_envelope_id": envelope_id, "documenso_signing_token": signing_token}), draft_id),
+        )
+    await conn.commit()
+
+
+async def advance_draft_status(conn, *, draft_id: str, status: str, envelope_id: str | None = None) -> bool:
+    """Webhook domain reaction: advance the draft's own lifecycle (our vocabulary —
+    sent/opened/signed/completed/rejected/voided, already mapped from the Documenso event) and keep the
+    envelope pointer current. The signed data is NOT copied here — it is read from the mirror by
+    ``documenso_envelope_id``. Returns True when a draft row matched."""
+    patch = {"documenso_envelope_id": envelope_id} if envelope_id else {}
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE business.engagement_mandate_draft_content
+               SET status = %s,
+                   metadata = metadata || %s::jsonb,
+                   updated_at = now()
+             WHERE id = %s::uuid
+            RETURNING id
+            """,
+            (status, Jsonb(patch), draft_id),
+        )
+        row = await cur.fetchone()
+    await conn.commit()
+    return row is not None

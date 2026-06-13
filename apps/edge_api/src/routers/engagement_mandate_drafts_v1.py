@@ -63,6 +63,12 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
+    # Point the draft at the envelope it spawned (our side carries the pointer into the Documenso
+    # mirror; the webhook advances the draft's lifecycle from here).
+    async with get_db_connection() as conn:
+        await queries.attach_envelope(
+            conn, draft_id=draft_id, envelope_id=result.envelope_id, signing_token=result.client_token,
+        )
     return MandateDraftConfirmed(
         envelope_id=result.envelope_id,
         signing_token=result.client_token,

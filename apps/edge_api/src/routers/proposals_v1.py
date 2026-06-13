@@ -23,6 +23,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from .. import config
 from ..db import get_db_connection
+from ..documenso_envelopes import queries as envelopes_queries
+from ..engagement_mandate_drafts import queries as draft_queries
 from ..payments import queries as pay_queries
 from ..proposals import queries, template_queries
 from ..proposals.agreement_template import render_agreement_html
@@ -338,7 +340,19 @@ async def get_signed_document(ref: str) -> Response:
 async def documenso_webhook(
     request: Request, x_documenso_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Documenso → status advance. Source of truth (never the client embed callback)."""
+    """The single Documenso webhook. Two distinct concerns, in order:
+
+      1. DOCUMENSO SoR (concept-agnostic): mirror the envelope VERBATIM into
+         ``business.documenso_envelopes`` (status / recipients / fields / raw) and append the verbatim
+         event. This is the unequivocal record of "what was signed" and runs for EVERY envelope —
+         proposal, mandate-draft, or anything — keyed only on Documenso's envelope id.
+      2. DOMAIN reaction (our layer): route by Documenso's ``externalId`` to whichever of OUR entities
+         recognises it — a proposal (advance its row) or a mandate draft (advance its lifecycle). The
+         mirror above never learns these concepts exist.
+
+    Source of truth for status is here, never the client embed callback. The path stays under
+    ``/proposals`` for the already-registered Documenso webhook URL, but the handler is general.
+    """
     if config.documenso_webhook_secret() is None:
         raise HTTPException(status_code=503, detail="webhook secret not configured")
     if not documenso_client.verify_webhook_secret(x_documenso_secret):
@@ -346,26 +360,60 @@ async def documenso_webhook(
 
     body = await request.json()
     evt = documenso_client.normalize_event(body)
+
+    # 1) Documenso SoR — verbatim mirror, for every envelope event, no domain awareness.
+    mirrored = False
+    if evt.envelope_id:
+        # Authoritative current state: re-fetch the envelope. Falls back to the verbatim webhook
+        # body (which carries the Documenso object) if the GET can't resolve, then to a minimal row —
+        # the mirror is never empty on a real delivery, and the verbatim event is always appended.
+        snapshot = None
+        try:
+            snapshot = documenso_client.envelope_snapshot(
+                await documenso_client.get_envelope(evt.envelope_id)
+            )
+        except documenso_client.DocumensoError:
+            snapshot = None
+        if not snapshot or not snapshot.get("envelope_id"):
+            body_obj = body.get("payload") or body.get("data") or body
+            if isinstance(body_obj, dict):
+                snapshot = documenso_client.envelope_snapshot(body_obj)
+        if not snapshot or not snapshot.get("envelope_id"):
+            snapshot = {"envelope_id": evt.envelope_id, "external_id": evt.external_id, "status": "UNKNOWN"}
+        async with get_db_connection() as conn:
+            await envelopes_queries.upsert_envelope(conn, snapshot=snapshot, event=body)
+        mirrored = True
+
+    # 2) Domain reaction — our layer, routed by Documenso's externalId. Status maps to our vocabulary.
     if evt.status is None:
-        return {"ok": True, "ignored": True, "event": evt.event}
+        return {"ok": True, "mirrored": mirrored, "ignored": True, "event": evt.event}
 
     async with get_db_connection() as conn:
-        # Resolve the proposal deterministically by externalId (the ref we stamped on the
-        # envelope), falling back to the envelope id. Advance via the row's stored envelope id.
+        # 2a) Proposal: externalId is the proposal ref (fallback: the envelope id).
         proposal = None
         if evt.external_id:
             proposal = await queries.get_by_ref(conn, evt.external_id)
         if proposal is None and evt.envelope_id:
             proposal = await queries.get_by_envelope(conn, evt.envelope_id)
-        if proposal is None or not proposal.documenso_envelope_id:
-            return {"ok": True, "ignored": True, "event": evt.event, "reason": "no matching proposal"}
-        signed_url = (
-            f"/api/v1/proposals/{proposal.ref}/document" if evt.status == "completed" else None
-        )
-        applied = await queries.advance_status(
-            conn,
-            envelope_id=proposal.documenso_envelope_id,
-            status=evt.status,
-            signed_pdf_url=signed_url,
-        )
-    return {"ok": True, "applied": applied, "event": evt.event, "status": evt.status}
+        if proposal is not None and proposal.documenso_envelope_id:
+            signed_url = (
+                f"/api/v1/proposals/{proposal.ref}/document" if evt.status == "completed" else None
+            )
+            applied = await queries.advance_status(
+                conn, envelope_id=proposal.documenso_envelope_id, status=evt.status,
+                signed_pdf_url=signed_url,
+            )
+            return {"ok": True, "mirrored": mirrored, "domain": "proposal", "applied": applied,
+                    "event": evt.event, "status": evt.status}
+
+        # 2b) Mandate draft: externalId is the draft uuid (get_draft guards non-uuid refs → None).
+        draft = await draft_queries.get_draft(conn, evt.external_id) if evt.external_id else None
+        if draft is not None:
+            applied = await draft_queries.advance_draft_status(
+                conn, draft_id=evt.external_id, status=evt.status, envelope_id=evt.envelope_id,
+            )
+            return {"ok": True, "mirrored": mirrored, "domain": "mandate_draft", "applied": applied,
+                    "event": evt.event, "status": evt.status}
+
+    return {"ok": True, "mirrored": mirrored, "ignored": True, "event": evt.event,
+            "reason": "no matching domain entity"}

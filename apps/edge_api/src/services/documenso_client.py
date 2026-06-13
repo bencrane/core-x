@@ -353,6 +353,34 @@ async def read_template_document(envelope_id: str) -> tuple[str | None, str | No
     return _extract_signer_token(env), _dig(env, "status")
 
 
+def envelope_snapshot(env: dict[str, Any]) -> dict[str, Any]:
+    """Project a Documenso envelope object into the ``business.documenso_envelopes`` columns —
+    VERBATIM, no renaming. The mirror speaks only Documenso's nomenclature; this is the faithful
+    projection of "what Documenso has". ``fields`` is taken top-level (Documenso returns it there);
+    if absent, it is gathered from the recipients, still verbatim.
+    """
+    recipients = _dig(env, "recipients") or []
+    fields = _dig(env, "fields")
+    if not fields:
+        gathered: list[Any] = []
+        if isinstance(recipients, list):
+            for r in recipients:
+                if isinstance(r, dict):
+                    gathered += r.get("fields") or []
+        fields = gathered
+    return {
+        "envelope_id": _dig(env, "id"),
+        "secondary_id": _dig(env, "secondaryId"),
+        "external_id": _dig(env, "externalId"),
+        "status": _dig(env, "status"),
+        "title": _dig(env, "title"),
+        "type": _dig(env, "type"),
+        "recipients": recipients if isinstance(recipients, list) else [],
+        "fields": fields if isinstance(fields, list) else [],
+        "raw": env if isinstance(env, dict) else {},
+    }
+
+
 async def download_signed_pdf(envelope_id: str) -> bytes:
     """Fetch the sealed, signed PDF after completion.
 
