@@ -35,3 +35,23 @@ class MandateDraftDocument(BaseModel):
     signing_token: str | None
     documenso_host: str
     status: str | None
+
+
+class MandateStagingDraft(BaseModel):
+    """The opportunity's staging draft as the prep page loads it — the selected template, its
+    archetype, and the operator-entered per-deal values. Returned by the by-opportunity read so the
+    operator can resume editing what they staged off-screen."""
+
+    id: str
+    documenso_template_id: str | None = None
+    archetype_id: str | None = None
+    prefill_values: dict[str, str] = {}
+    status: str | None = None
+
+
+class MandateStagingUpsert(BaseModel):
+    """The prep page's save payload — the selected template + the entered per-deal values. The org
+    and archetype are resolved server-side from the template, never trusted from the client."""
+
+    documenso_template_id: str
+    prefill_values: dict[str, str] = {}

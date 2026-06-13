@@ -5,6 +5,7 @@ Documenso template; the INSERT...SELECT also validates the template exists (no r
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 
@@ -56,3 +57,101 @@ async def get_draft(conn, draft_id: str) -> dict | None:
         "organization_id": row[1],
         "opportunity_id": row[2],
     }
+
+
+async def get_latest_by_opportunity(conn, opportunity_id: str) -> dict | None:
+    """The opportunity's latest staging draft — what the prep page loads to resume editing what was
+    staged off-screen. Returns None when the id is not a well-formed UUID or no draft exists yet (the
+    UUID guard mirrors get_draft: a garbage ref must 404 cleanly, not abort the pooled transaction)."""
+    try:
+        UUID(str(opportunity_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id::text, documenso_template_id, archetype_id::text, prefill_values, status
+              FROM business.engagement_mandate_draft_content
+             WHERE opportunity_id = %s::uuid
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "documenso_template_id": row[1],
+        "archetype_id": row[2],
+        "prefill_values": row[3] or {},
+        "status": row[4],
+    }
+
+
+async def upsert_staging(
+    conn, *, opportunity_id: str, documenso_template_id: str, prefill_values: dict
+) -> str | None:
+    """Create-or-update the opportunity's staging draft: stamp the selected template (plus the org +
+    archetype resolved FROM that template — never trusted from the client) and the operator-entered
+    per-deal values. Updates the opportunity's latest draft in place if one exists (edit-and-resave),
+    else inserts. Returns the draft id, or None when the documenso template id is unknown.
+
+    UUID-guarded like the reads: a non-UUID opportunity ref returns None (→ 404) rather than aborting
+    the pooled transaction on ``%s::uuid``."""
+    try:
+        UUID(str(opportunity_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    pv = json.dumps(prefill_values or {})
+    async with conn.cursor() as cur:
+        # Resolve org + archetype from the template (this also validates it exists).
+        await cur.execute(
+            """
+            SELECT organization_id, archetype_id
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        tpl = await cur.fetchone()
+        if not tpl:
+            return None
+        organization_id, archetype_id = tpl[0], tpl[1]
+        # Update the opportunity's latest draft in place; if none, insert.
+        await cur.execute(
+            """
+            WITH latest AS (
+                SELECT id
+                  FROM business.engagement_mandate_draft_content
+                 WHERE opportunity_id = %s::uuid
+                 ORDER BY created_at DESC
+                 LIMIT 1
+            )
+            UPDATE business.engagement_mandate_draft_content d
+               SET documenso_template_id = %s,
+                   organization_id        = %s,
+                   archetype_id           = %s,
+                   prefill_values         = %s::jsonb,
+                   updated_at             = now()
+              FROM latest
+             WHERE d.id = latest.id
+            RETURNING d.id::text
+            """,
+            (opportunity_id, documenso_template_id, organization_id, archetype_id, pv),
+        )
+        row = await cur.fetchone()
+        if not row:
+            await cur.execute(
+                """
+                INSERT INTO business.engagement_mandate_draft_content
+                     (opportunity_id, documenso_template_id, organization_id, archetype_id, prefill_values)
+                VALUES (%s::uuid, %s, %s, %s, %s::jsonb)
+                RETURNING id::text
+                """,
+                (opportunity_id, documenso_template_id, organization_id, archetype_id, pv),
+            )
+            row = await cur.fetchone()
+    await conn.commit()
+    return row[0] if row else None
