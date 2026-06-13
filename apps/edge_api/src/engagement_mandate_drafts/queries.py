@@ -5,6 +5,8 @@ Documenso template; the INSERT...SELECT also validates the template exists (no r
 """
 from __future__ import annotations
 
+from uuid import UUID
+
 
 async def insert_draft(conn, *, opportunity_id: str, documenso_template_id: str) -> str | None:
     """Insert a draft stamp; returns its id, or None when the documenso template id is unknown."""
@@ -27,7 +29,16 @@ async def insert_draft(conn, *, opportunity_id: str, documenso_template_id: str)
 
 async def get_draft(conn, draft_id: str) -> dict | None:
     """Resolve a draft to what confirm needs — its Documenso template id (+ org / opportunity for
-    context). Returns None when the id is unknown or malformed (the cast guards against junk ids)."""
+    context). Returns None when the id is unknown OR not a well-formed UUID.
+
+    The id is validated in Python BEFORE the query: ``business.engagement_mandate_draft_content.id``
+    is ``uuid``, so a truncated/garbage ref (e.g. a stale ``slice(0,8)`` link like ``ab76cee5``) would
+    otherwise make ``%s::uuid`` raise ``InvalidTextRepresentation`` — a raw 500 that also leaves the
+    pooled connection in an aborted transaction. Guarding here turns it into a clean 404."""
+    try:
+        UUID(str(draft_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
     async with conn.cursor() as cur:
         await cur.execute(
             """
