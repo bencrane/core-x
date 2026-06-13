@@ -1,10 +1,12 @@
-"""Strategic Origination Mandate — merge data → brand-matched dark legal HTML for DocRaptor.
+"""Strategic Origination Mandate — merge data → legal HTML for DocRaptor.
 
-This renders the LEGAL artifact in Rare Structure's dark visual identity (surface ``#0a0e1a``,
-steel-blue accent ``#7b9fd4`` on section labels) so it reads natively inside the dark proposal
-page + the Documenso signing embed. The merge tokens (``<<...>>`` in the source docx) are bound
-here from the Proposal row. NOTE: Documenso seals the same PDF it shows, so the sealed/downloaded
-copy is dark too — an intentional, on-brand choice for digital-first execution.
+The legal BODY is style-agnostic: the ``<style>`` block is INJECTED at render (the ``«STYLE»``
+slot in ``_TEMPLATE``), so the same document renders plain or branded without touching the body.
+Default is ``_PLAIN_STYLE`` — a NEUTRAL document (white page, black serif text, no brand visual
+identity), so DocRaptor emits a standard-looking PDF. To send a brand identity in, pass
+``_BRAND_STYLE`` (Rare Structure's dark identity, kept intact below) or any custom ``<style>``
+string to ``render_agreement_html(..., style=...)`` — the brand is preserved, never clobbered.
+The same PDF is what Documenso shows + seals. Merge tokens (``«...»``) bind from the Proposal row.
 
 Signature placement: Rare Structure's execution block is PRE-RENDERED (RS issues a pre-signed
 mandate). The CLIENT signature + date lines carry the ``[[CLIENT_SIGNATURE]]`` / ``[[CLIENT_DATE]]``
@@ -29,8 +31,13 @@ def _long_date(d: _dt.date) -> str:
     return f"{d:%B} {d.day}, {d:%Y}"
 
 
-def render_agreement_html(p: Proposal) -> str:
-    """Return the full agreement as a self-contained print-CSS HTML document."""
+def render_agreement_html(p: Proposal, *, style: str | None = None) -> str:
+    """Return the full agreement as a self-contained print-CSS HTML document.
+
+    ``style`` is the ``<style>`` block injected into the head — defaults to ``_PLAIN_STYLE`` (neutral
+    white page / black serif text). Pass ``_BRAND_STYLE`` for Rare Structure's dark identity, or any
+    custom ``<style>`` string, to send a brand identity in WITHOUT changing the legal body.
+    """
     sub = {
         "«EFFECTIVE_DATE»": html.escape(_long_date(p.effective_date)),
         "«CLIENT_NAME»": html.escape(p.client_name),
@@ -45,18 +52,74 @@ def render_agreement_html(p: Proposal) -> str:
         "«CLIENT_SIGNATURE_ANCHOR»": CLIENT_SIGNATURE_ANCHOR,
         "«CLIENT_DATE_ANCHOR»": CLIENT_DATE_ANCHOR,
     }
-    out = _TEMPLATE
+    out = _TEMPLATE.replace("«STYLE»", style if style is not None else _PLAIN_STYLE)
     for token, value in sub.items():
         out = out.replace(token, value)
     return out
 
 
-_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>Strategic Origination Mandate</title>
-<style>
+# ── Injectable stylesheets ───────────────────────────────────────────────────
+# The legal body lives in _TEMPLATE with a «STYLE» slot; render_agreement_html injects one of these.
+# Swapping the brand back in is just `render_agreement_html(p, style=_BRAND_STYLE)` — the body is
+# untouched, and _BRAND_STYLE is preserved verbatim so a brand identity is never clobbered.
+
+# DEFAULT — neutral document: white page, black serif text, no brand visual identity.
+_PLAIN_STYLE = r"""<style>
+  /* Plain print stylesheet — white page, black serif text. No brand visual identity; a standard
+     legal document, so DocRaptor emits a neutral PDF. Body is identical to the branded render. */
+  @page { size: Letter; margin: 1in 1in 1.1in 1in;
+    @bottom-center {
+      content: "RARE STRUCTURE LLC  \2022  STRATEGIC ORIGINATION MANDATE  \2022  Page " counter(page);
+      font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 7.5pt; letter-spacing: 0.12em;
+      color: #555555; text-transform: uppercase;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: #ffffff; }
+  body { font-family: 'Georgia', 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.55;
+    color: #111111; background: #ffffff; margin: 0; }
+  strong { color: #000000; }
+  .wordmark { font-family: 'Helvetica Neue', Arial, sans-serif; font-weight: 700;
+    letter-spacing: 0.34em; font-size: 12pt; color: #000000; }
+  h1 { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 15pt; letter-spacing: 0.06em;
+    font-weight: 600; margin: 6pt 0 2pt; color: #000000; }
+  .rule { border: 0; border-top: 1pt solid #000000; margin: 10pt 0 16pt; }
+  h2 { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; letter-spacing: 0.16em;
+    text-transform: uppercase; font-weight: 600; margin: 18pt 0 5pt; color: #000000; }
+  p { margin: 0 0 8pt; text-align: justify; }
+  .lead { color: #111111; }
+  table.fees { width: 100%; border-collapse: collapse; margin: 8pt 0 4pt; font-size: 10pt; }
+  table.fees th { text-align: left; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
+    letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; color: #333333;
+    border-bottom: 1pt solid #000000; padding: 5pt 6pt; }
+  table.fees td { padding: 6pt 6pt; border-bottom: 0.5pt solid #cccccc; color: #111111; }
+  table.fees td.rate { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+    color: #000000; }
+  /* Execution block on its own final page (COSMETIC, not load-bearing). Documenso places the
+     SIGNATURE + DATE fields by resolving the [[CLIENT_SIGNATURE]] / [[CLIENT_DATE]] anchor markers
+     via findText (see documenso_client). */
+  .sig-wrap { margin-top: 26pt; page-break-inside: avoid; page-break-before: always; }
+  .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
+  .sig-grid td { width: 50%; vertical-align: top; padding-right: 24pt; }
+  .sig-party { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; letter-spacing: 0.14em;
+    text-transform: uppercase; color: #333333; margin-bottom: 14pt; }
+  .sig-line { border-bottom: 1pt solid #000000; height: 30pt; margin-bottom: 3pt; }
+  /* Typed-name signature for the pre-signing party — italic serif (NOT a script font: DocRaptor/
+     Prince blocks filesystem font access; named script fonts 422). */
+  .sig-rs { font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 600;
+    font-size: 18pt; line-height: 30pt; padding-left: 4pt; color: #000000; }
+  .sig-field { font-size: 8pt; color: #333333; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .sig-val { font-size: 10pt; color: #111111; }
+  /* Anchor marker on the client sign/date lines: a subtle placeholder, but REAL selectable text in
+     a standard font — Documenso's findText resolves + whites it out. Never display:none / zero-size
+     / a script font, or the PDF text layer loses it. */
+  .sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
+    letter-spacing: 0.08em; color: #999999; line-height: 30pt; padding-left: 4pt; }
+</style>"""
+
+# Rare Structure's dark visual identity — preserved verbatim. Pass to render_agreement_html(style=…)
+# to send the brand back in. surface #0a0e1a · accent #7b9fd4 · light text.
+_BRAND_STYLE = r"""<style>
   /* Rare Structure visual identity (semantic design tokens):
      surface.base #0a0e1a · border.default #2d3548 / subtle #1c2333 / strong #3f4b63
      text.primary #fafafa · default #e4e4e7 · muted #a1a1aa · subtle #82828c · accent #7b9fd4 */
@@ -110,7 +173,14 @@ _TEMPLATE = r"""<!DOCTYPE html>
      / a script font, or the PDF text layer loses it. */
   .sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt;
     letter-spacing: 0.08em; color: #5b6373; line-height: 30pt; padding-left: 4pt; }
-</style>
+</style>"""
+
+_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Strategic Origination Mandate</title>
+«STYLE»
 </head>
 <body>
   <div class="wordmark">RARE STRUCTURE</div>
