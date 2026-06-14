@@ -19,17 +19,52 @@ axis change busts cached routings.
 """
 from __future__ import annotations
 
-OPS = ("=", ">=", "<=", "in", "between")
+OPS = ("=", ">=", "<=", "in", "between", "has", "has_any")
 
 # Set-aside codes verified live against the awards serving table (18 distinct).
 _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WOSB",
                     "WOSBSS", "EDWOSB", "EDWOSBSS", "HZC", "HZS", "ISBEE", "BI", "IEE",
                     "VSA", "VSS")
 
+# PHASE-3 capability controlled vocabularies — MUST match catalyst_api/src/map_decoders.py
+# (the parity test asserts enum value-sets are identical edge↔catalyst).
+_CLEARANCE_LEVELS = ("PUBLIC_TRUST", "CONFIDENTIAL", "SECRET", "TOP_SECRET", "TS_SCI")
+_CAPABILITY_TAGS = (
+    "administrative_office_support", "aircraft_maintenance", "alarm_surveillance_systems",
+    "architecture_services", "audio_visual_services", "behavioral_health_services",
+    "calibration_inspection_qa", "chaplain_religious_services", "childcare_youth_services",
+    "concrete_masonry", "construction_civil_heavy", "construction_general", "construction_vertical",
+    "custodial_janitorial", "cybersecurity_services", "data_management_analytics", "demolition",
+    "dental_services", "electrical_systems", "elevator_systems", "energy_renewables",
+    "engineering_design", "environmental_remediation", "equipment_maintenance",
+    "event_conference_support", "excavation_earthwork", "facilities_management", "fencing_barriers",
+    "financial_audit_services", "fire_protection_systems", "flooring", "food_services", "fuel_supply",
+    "grounds_maintenance_landscaping", "hvac_mechanical", "industrial_equipment_supply",
+    "it_services", "laboratory_testing_services", "language_interpretation_translation",
+    "laundry_linen_services", "legal_services", "lodging_billeting", "logistics_transportation",
+    "mailroom_courier_services", "maintenance_repair_operations", "marine_vessel_services",
+    "medical_clinical_services", "medical_equipment_supply", "moving_relocation", "nursing_services",
+    "painting_coating", "paving_roadwork", "personnel_security_vetting", "pest_control",
+    "physical_security_locksmith", "plumbing_pipefitting", "printing_publishing",
+    "program_management_support", "public_affairs_communications", "renovation_alteration",
+    "research_development", "roofing", "security_services_guard", "snow_ice_removal",
+    "software_development", "staffing_personnel_services", "steel_structural", "supply_commodities",
+    "surveying_mapping_gis", "telecom_networking", "training_instruction", "utilities_operation",
+    "vehicle_fleet_maintenance", "veterinary_services", "warehousing_distribution",
+    "waste_management", "water_wastewater")
+_LABOR_CATEGORIES = (
+    "carpenter", "crane_operator", "custodian", "dispatcher", "electrician", "equipment_operator",
+    "food_service_worker", "general_laborer", "glazier", "heavy_equipment_operator",
+    "hvac_technician", "instructor", "interpreter", "janitor", "licensed_practical_nurse",
+    "locksmith", "mason", "medical_assistant", "millwright", "painter", "pest_control_technician",
+    "pipefitter", "plumber", "program_manager", "project_manager", "quality_control_manager",
+    "registered_nurse", "roofer", "safety_officer", "security_guard", "sheet_metal_worker",
+    "site_superintendent", "surveyor", "translator", "truck_driver", "welder")
+
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v2",
-        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window.",
+        "version": "winners.v3",
+        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
@@ -39,6 +74,16 @@ DECODERS: dict[str, dict] = {
             "award_count":      {"type": "int",    "ops": (">=", "<=", "between")},
             "days_since_last_award": {"type": "days_ago", "ops": ("<=", ">=", "between"),
                                       "desc": "whole days since the entity's most recent award action (integer; 0 = today). Time windows map here: 'won in the last N days' / 'past week' / 'this month' → days_since_last_award <= N"},
+            # ── PHASE-3 capability axis (prime winners with extracted solicitation text) ──
+            "has_extracted_scope":     {"type": "bool", "ops": ("=",), "desc": "true = the winner has ≥1 award with extracted solicitation scope (the ~1% slice the capability axes describe)"},
+            "requires_clearance":      {"type": "bool", "ops": ("=",), "desc": "true = ≥1 covered award requires a personnel/facility security clearance"},
+            "req_clearance_level_max": {"type": "string", "ops": ("=", "in"), "enum": _CLEARANCE_LEVELS,
+                                        "desc": "highest clearance required across the winner's covered awards. 'secret clearance' → in [SECRET, TOP_SECRET, TS_SCI]"},
+            "requires_cmmc":           {"type": "bool", "ops": ("=",), "desc": "true = ≥1 covered award requires CMMC certification"},
+            "capability_tag":          {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the winner DOES (set membership). 'does electrical work' → capability_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
+            "labor_category":          {"type": "list", "ops": ("has", "has_any"), "enum": _LABOR_CATEGORIES,
+                                        "desc": "skilled labor/trade the winner's covered awards staff. 'electricians' → labor_category has 'electrician'; 'cleared trades' → requires_clearance=true AND labor_category has_any the trade list"},
         },
         "synonyms": {
             "construction":  {"field": "naics2", "op": "=", "value": "23"},
@@ -46,6 +91,12 @@ DECODERS: dict[str, dict] = {
             "prime winners": {"field": "winner_type", "op": "=", "value": "prime_recipient"},
             "this week":     {"field": "days_since_last_award", "op": "<=", "value": 7},
             "won recently":  {"field": "days_since_last_award", "op": "<=", "value": 30},
+            "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+            "secret clearance": {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+            "top secret":       {"field": "req_clearance_level_max", "op": "in", "value": ["TOP_SECRET", "TS_SCI"]},
+            "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+            "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
+            "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
         },
     },
     "company": {

@@ -4,10 +4,19 @@ crosswalk so every winner carries a lat/lon dot. The read model behind the sales
 
 GRAIN  1 row per (winner_uei, winner_type ∈ {prime_recipient, subawardee}).
 SoR    s3://data-sink/active/usaspending_winners_map_serving/  (Lance v2.1; derived, overwrite)
-INPUTS prime + subaward fresh feeds (rolling 90d by action_date) ⋈ geocode_xwalk (addr_hash).
+INPUTS prime + subaward fresh feeds (rolling 90d by action_date) ⋈ geocode_xwalk (addr_hash)
+       ⋈ govcon_award_capability_profiles (award grain) rolled to the prime winner (PHASE 3).
        The window lives HERE (a WHERE), not in the crosswalk — extend it freely.
 SIGNALS total_obligation (Σ federal_action_obligation / subaward_amount), award_count, naics,
-       state — the demo filters ("construction NAICS 23, > $150k").
+       state — the demo filters ("construction NAICS 23, > $150k") — PLUS the PHASE-3 capability
+       axis rolled from govcon_award_capability_profiles to the PRIME winner (recipient_uei =
+       winner_uei). Subawardee rows carry capability defaults (scope is extracted from the prime's
+       solicitation docs). Per prime winner: has_extracted_scope / requires_clearance / requires_cmmc
+       (bool_or over the winner's profiled awards), req_clearance_level_max (max over covered awards),
+       capability_tags / labor_categories (deduped controlled-vocab union — FILTERABLE via Lance
+       ``array_has``), covered_award_count + covered_award_keys (capped drill-down pointer). NO
+       chunk-derived verbatim text crosses into the serving table (CUI egress invariant — only
+       structured/controlled-vocab fields; evidence_quote/requirement_detail never selected).
 LEDGER ops.winners_map_serving_runs (HQX_DB_URL_POOLED) on every terminal state.
 
     doppler run -p core-x -c prd -- uv run --no-project \
@@ -33,10 +42,17 @@ SERVING_URI = os.environ.get("WINNERS_MAP_SERVING_URI", f"{ACTIVE}/usaspending_w
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
+# PHASE 3: award-grain capability profiles, rolled to the prime winner here.
+PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
+                              f"{ACTIVE}/govcon_award_capability_profiles/")
 WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
+COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
 BTREE_INDEXES = ["winner_uei", "addr_hash"]
-BITMAP_INDEXES = ["naics2", "state", "winner_type"]
+BITMAP_INDEXES = ["naics2", "state", "winner_type",
+                  # PHASE-3 capability filter axes (low-cardinality → BITMAP pushdown).
+                  "has_extracted_scope", "requires_clearance", "requires_cmmc",
+                  "req_clearance_level_max"]
 
 DUCK_MEM = os.environ.get("WINNERS_DUCKDB_MEMORY_LIMIT", "6GB")
 DUCK_TMP = os.environ.get("WINNERS_DUCKDB_TEMP_DIR", "/tmp/winners_map_duckdb")
@@ -88,6 +104,14 @@ def _assemble(so, window_days: int):
                  "subaward_number"],
         filter=f"subaward_action_date >= '{cutoff}'").to_reader())
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
+    # PHASE 3: award-grain capability profiles → re-scannable TABLE (referenced by several rollup
+    # CTEs). Project ONLY structured / controlled-vocab columns — evidence_quote / requirement_detail
+    # do not exist on the profiles schema by construction (CUI egress invariant), so none can leak.
+    prof = lance.dataset(PROFILES_URI, storage_options=so)
+    con.register("prof", prof.scanner(columns=[
+        "recipient_uei", "contract_award_unique_key", "has_extracted_scope",
+        "requires_clearance", "requires_cmmc", "req_clearance_level_max",
+        "capability_tags", "top_labor_categories"]).to_table())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -120,14 +144,70 @@ def _assemble(so, window_days: int):
         SELECT *, substr(naics_code, 1, 2) AS naics2,
                {hexpr} AS addr_hash
         FROM agg
+    ),
+    -- ── PHASE 3 capability rollup: award-grain profiles → per prime winner ──────────────────
+    cap_src AS (
+        SELECT recipient_uei AS winner_uei, contract_award_unique_key AS award_key,
+               coalesce(has_extracted_scope, false) AS hes,
+               coalesce(requires_clearance, false) AS rc,
+               coalesce(requires_cmmc, false) AS rcm,
+               req_clearance_level_max AS clr,
+               capability_tags, top_labor_categories
+        FROM prof
+        WHERE recipient_uei IS NOT NULL AND length(trim(recipient_uei)) > 0
+    ),
+    cap AS (
+        SELECT winner_uei,
+               bool_or(hes) AS has_extracted_scope,
+               bool_or(rc)  AS requires_clearance,
+               bool_or(rcm) AS requires_cmmc,
+               max(CASE clr WHEN 'TS_SCI' THEN 5 WHEN 'TOP_SECRET' THEN 4 WHEN 'SECRET' THEN 3
+                            WHEN 'CONFIDENTIAL' THEN 2 WHEN 'PUBLIC_TRUST' THEN 1 ELSE 0 END) AS clr_ord,
+               count(DISTINCT award_key) AS covered_award_count
+        FROM cap_src GROUP BY 1
+    ),
+    cap_tags AS (   -- controlled-vocab union of the winner's awards' capability tags (sorted, deduped)
+        SELECT winner_uei, list(t ORDER BY t) AS capability_tags
+        FROM (SELECT DISTINCT winner_uei, unnest(capability_tags) AS t FROM cap_src)
+        WHERE t IS NOT NULL GROUP BY 1
+    ),
+    cap_labor AS ( -- controlled-vocab union of the winner's awards' labor categories
+        SELECT winner_uei, list(t ORDER BY t) AS labor_categories
+        FROM (SELECT DISTINCT winner_uei, unnest(top_labor_categories) AS t FROM cap_src)
+        WHERE t IS NOT NULL GROUP BY 1
+    ),
+    cap_keys_ranked AS (
+        SELECT winner_uei, award_key,
+               row_number() OVER (PARTITION BY winner_uei ORDER BY award_key) AS rk
+        FROM (SELECT DISTINCT winner_uei, award_key FROM cap_src)
+    ),
+    cap_keys AS (  -- capped drill-down pointer (mega-IDIQ tail bound)
+        SELECT winner_uei, list(award_key ORDER BY rk) AS covered_award_keys
+        FROM cap_keys_ranked WHERE rk <= {COVERED_AWARD_KEYS_CAP} GROUP BY 1
     )
     SELECT k.winner_uei, k.winner_type, k.winner_name, k.street, k.city,
            upper(trim(k.state)) AS state, k.zip, k.naics_code, k.naics2,
            k.award_count, k.total_obligation, k.last_action_date, k.addr_hash,
            x.latitude, x.longitude, x.match_type,
+           -- capability (rolled to the PRIME winner; subawardee rows → defaults via the join cond)
+           coalesce(cap.has_extracted_scope, false) AS has_extracted_scope,
+           coalesce(cap.requires_clearance, false)  AS requires_clearance,
+           coalesce(cap.requires_cmmc, false)       AS requires_cmmc,
+           CASE coalesce(cap.clr_ord, 0) WHEN 5 THEN 'TS_SCI' WHEN 4 THEN 'TOP_SECRET'
+                WHEN 3 THEN 'SECRET' WHEN 2 THEN 'CONFIDENTIAL' WHEN 1 THEN 'PUBLIC_TRUST'
+                ELSE NULL END AS req_clearance_level_max,
+           CAST(coalesce(cap.covered_award_count, 0) AS BIGINT) AS covered_award_count,
+           cap_tags.capability_tags  AS capability_tags,
+           cap_labor.labor_categories AS labor_categories,
+           cap_keys.covered_award_keys AS covered_award_keys,
            'usaspending_winners_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
-    FROM keyed k LEFT JOIN x USING (addr_hash)
+    FROM keyed k
+    LEFT JOIN x USING (addr_hash)
+    LEFT JOIN cap       ON k.winner_uei = cap.winner_uei       AND k.winner_type = 'prime_recipient'
+    LEFT JOIN cap_tags  ON k.winner_uei = cap_tags.winner_uei  AND k.winner_type = 'prime_recipient'
+    LEFT JOIN cap_labor ON k.winner_uei = cap_labor.winner_uei AND k.winner_type = 'prime_recipient'
+    LEFT JOIN cap_keys  ON k.winner_uei = cap_keys.winner_uei  AND k.winner_type = 'prime_recipient'
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
@@ -207,6 +287,20 @@ def verify():
            "columns": len(ds.schema.names), "indices": idx}
     out["demo_construction_gt_150k"] = ds.count_rows(
         filter="naics2 = '23' AND total_obligation >= 150000 AND latitude IS NOT NULL")
+    # ── PHASE-3 capability coverage (the map∩scope denominator + the safety-gate sanity) ──
+    cap_cols = set(ds.schema.names)
+    if "has_extracted_scope" in cap_cols:
+        out["has_extracted_scope"] = ds.count_rows(filter="has_extracted_scope = true")
+        out["requires_clearance"] = ds.count_rows(filter="requires_clearance = true")
+        out["requires_cmmc"] = ds.count_rows(filter="requires_cmmc = true")
+        # north-star map predicate (with the has_extracted_scope gate the EXECUTE path injects)
+        out["northstar_electrical_secret_plottable"] = ds.count_rows(
+            filter="has_extracted_scope = true AND requires_clearance = true "
+                   "AND req_clearance_level_max IN ('SECRET','TOP_SECRET','TS_SCI') "
+                   "AND array_has(capability_tags, 'electrical_systems') AND latitude IS NOT NULL")
+        # window-mismatch sanity: how many cleared-capability winners actually plot
+        out["capability_winners_plottable"] = ds.count_rows(
+            filter="has_extracted_scope = true AND latitude IS NOT NULL")
     print(json.dumps(out, indent=2, default=str))
 
 
