@@ -353,6 +353,29 @@ async def read_template_document(envelope_id: str) -> tuple[str | None, str | No
     return _extract_signer_token(env), _dig(env, "status")
 
 
+async def get_template_text_field_labels(documenso_template_id: str) -> list[str]:
+    """The TEXT-field LABELS of a live Documenso template, in field order, de-duplicated.
+
+    Pulls the ACTUAL fields from Documenso (the source of truth) so the staging value form matches the
+    template exactly — no stored/denormalized list to drift. Resolves the numeric template id → its
+    envelope id → the envelope's fields, and returns each TEXT field's ``fieldMeta.label`` (SIGNATURE
+    and DATE fields are excluded; the label is what was set at field-create time).
+    """
+    async with _client() as client:
+        envelope_id = await _resolve_template_envelope_id(client, documenso_template_id)
+        env = (await client.get(f"/api/v2/envelope/{envelope_id}")).json()
+    labels: list[str] = []
+    seen: set[str] = set()
+    for f in env.get("fields") or []:
+        if not isinstance(f, dict) or f.get("type") != "TEXT":
+            continue
+        label = str((f.get("fieldMeta") or {}).get("label") or "").strip()
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return labels
+
+
 async def download_signed_pdf(envelope_id: str) -> bytes:
     """Fetch the sealed, signed PDF after completion.
 
