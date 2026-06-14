@@ -3,17 +3,24 @@
 
 Self-contained — NO database, NO running server:
 
-    markdown body  ->  plain HTML (white bg, black text, NO brand)  ->  DocRaptor  ->  PDF on disk
+    markdown body  ->  archetype select  ->  plain HTML (white/black, no brand)  ->  DocRaptor  ->  PDF
 
-Rendered DELIBERATELY UNBRANDED (plain white/black, no letterhead) so Documenso applies its OWN
-branding to the uploaded template. The body is the single source of truth:
-``apps/edge_api/content/active_operators_strategic_origination.md``.
+ONE body, two archetypes. The performance-fee sections (3.3 Success Fee, 5.2 Tail Protection) are
+wrapped in `<!-- @perf-fee:start -->` / `<!-- @perf-fee:end -->` markers in the body. The archetype
+is the flag applied at pipeline time:
+  * term_plus_greater_of — keep the perf-fee blocks (term + greater-of success fee).
+  * term_only            — strip them (term / retainer only, no performance fee).
+
+Rendered DELIBERATELY UNBRANDED (plain) so Documenso applies its own branding. The body is the
+single source of truth: ``apps/edge_api/content/active_operators_strategic_origination.md``.
 
 Run (Doppler injects DOCRAPTOR_API_KEY):
-    doppler run --project core-x --config prd -- python scripts/render_ao_preview.py
+    doppler run --project core-x --config prd -- python scripts/render_ao_preview.py                    # term_plus (default)
+    AO_ARCHETYPE=term_only doppler run --project core-x --config prd -- python scripts/render_ao_preview.py
 
 Env:
     DOCRAPTOR_API_KEY   required (injected by doppler)
+    AO_ARCHETYPE        term_plus_greater_of (default) | term_only
     DOCRAPTOR_TEST=1    optional — watermarked + FREE (default is LIVE / clean / billed)
     AO_OUT=<path>       override output path
 """
@@ -21,6 +28,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import sys
 
 import httpx
@@ -28,12 +36,10 @@ from markdown_it import MarkdownIt
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 BODY_MD = _ROOT / "apps/edge_api/content/active_operators_strategic_origination.md"
-OUT = pathlib.Path(
-    os.environ.get(
-        "AO_OUT",
-        str(pathlib.Path.home() / "Downloads" / "active-operators-strategic-origination.preview.pdf"),
-    )
-)
+
+ARCHETYPES = ("term_plus_greater_of", "term_only")
+_PERF_START = "<!-- @perf-fee:start -->"
+_PERF_END = "<!-- @perf-fee:end -->"
 
 # Provider signs as the legal entity. The d/b/a ("doing business as Active Operators") is established
 # in the body's party definition, so the signature line stays clean.
@@ -105,8 +111,23 @@ _SHELL = r"""<!DOCTYPE html>
 """
 
 
-def build_html() -> str:
-    body_html = _md.render(BODY_MD.read_text())
+def select_archetype(md: str, archetype: str) -> str:
+    """Apply the archetype flag to the shared body by including/excluding the perf-fee blocks.
+
+    term_only -> strip each `@perf-fee` block entirely; otherwise keep the content and drop only the
+    marker lines. Markers never reach markdown-it either way. Blank runs left behind are collapsed.
+    """
+    if archetype == "term_only":
+        md = re.sub(re.escape(_PERF_START) + r".*?" + re.escape(_PERF_END), "", md, flags=re.DOTALL)
+    else:
+        md = md.replace(_PERF_START, "").replace(_PERF_END, "")
+    md = re.sub(r"\n{3,}", "\n\n", md)
+    return md.strip() + "\n"
+
+
+def build_html(archetype: str) -> str:
+    body_md = select_archetype(BODY_MD.read_text(), archetype)
+    body_html = _md.render(body_md)
     shell = (
         _SHELL.replace("__STYLE__", _STYLE)
         .replace("__PROVIDER_ENTITY__", PROVIDER_ENTITY)
@@ -123,12 +144,21 @@ def main() -> None:
             "DOCRAPTOR_API_KEY not set. Run:\n"
             "  doppler run --project core-x --config prd -- python scripts/render_ao_preview.py"
         )
+    archetype = os.environ.get("AO_ARCHETYPE", "term_plus_greater_of")
+    if archetype not in ARCHETYPES:
+        sys.exit(f"AO_ARCHETYPE must be one of {ARCHETYPES}, got: {archetype!r}")
+    out = pathlib.Path(
+        os.environ.get(
+            "AO_OUT",
+            str(pathlib.Path.home() / "Downloads" / f"active-operators-strategic-origination.{archetype}.preview.pdf"),
+        )
+    )
     test_mode = os.environ.get("DOCRAPTOR_TEST", "0") != "0"  # default LIVE / clean
     payload = {
         "test": test_mode,
         "document_type": "pdf",
-        "name": OUT.name,
-        "document_content": build_html(),
+        "name": out.name,
+        "document_content": build_html(archetype),
         "prince_options": {"media": "print", "javascript": False},
     }
     resp = httpx.post(
@@ -136,10 +166,10 @@ def main() -> None:
     )
     if resp.status_code // 100 != 2:
         sys.exit(f"docraptor {resp.status_code}: {resp.text[:500]}")
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_bytes(resp.content)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(resp.content)
     mode = "TEST/watermarked (free)" if test_mode else "LIVE/clean (billed)"
-    print(f"wrote {OUT}  ({len(resp.content):,} bytes)  [{mode}, PLAIN]")
+    print(f"wrote {out}  ({len(resp.content):,} bytes)  [{archetype}, {mode}, PLAIN]")
 
 
 if __name__ == "__main__":
