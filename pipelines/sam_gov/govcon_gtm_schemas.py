@@ -16,10 +16,15 @@ Frozen set (plan §2 artifact map):
         capability_tags at resource grain; plan gap resolved per hard rule 4 — the plan routes
         doc-level outputs only to the award-grain profiles overwrite build, which needs a durable
         resource-grain source to roll up from)
-  * govcon_award_capability_profiles_90day — Phase-2 award grain (overwrite build); prime/txn-sourced
-        columns typed per the RAW `usaspending_api_fresh/contract_prime_txn` schema (all string —
-        probed live 2026-06-12); `pop_start`/`pop_end` carry the txn period_of_performance_*_date
-        strings; value fields = the four obligation/value columns named below
+  * govcon_award_capability_profiles    — Phase-2 award grain (overwrite build). **No window
+        suffix (operator naming decision 2026-06-14, overrides the plan's _90day):** the window is
+        carried as DATA — denormalized `award_last_modified_date` (the canonical window column) +
+        `award_action_date` + a `built_at` run stamp — so "last 90 days" is a column filter and
+        widening the window later is an append, not a new table. Supersedes the empty
+        `govcon_award_capability_profiles_90day` P0 shell (dropped from this registry). prime/txn-
+        sourced columns typed per the RAW `usaspending_api_fresh/contract_prime_txn` schema (all
+        string — probed live 2026-06-14); `pop_start`/`pop_end` carry the txn
+        period_of_performance_*_date strings; value fields = the four obligation/value columns below
   * govcon_teaming_edges_90day             — Phase-0 (prime_uei, sub_uei) grain (overwrite rebuild)
   * govcon_sub_targeting_90day             — Phase-4 (award, candidate_sub_uei) grain (snapshot-overwrite)
   * govcon_sub_capability_vectors_90day    — Phase-5 (subawardee_uei, description_chunk_ix) grain
@@ -50,7 +55,7 @@ EXTRACT_LEDGER_URI = os.environ.get(
 DOC_SCOPE_URI = os.environ.get(
     "GOVCON_DOC_SCOPE_URI", "s3://data-sink/active/govcon_doc_scope_90day/")
 CAPABILITY_PROFILES_URI = os.environ.get(
-    "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_capability_profiles_90day/")
+    "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_capability_profiles/")
 TEAMING_EDGES_URI = os.environ.get(
     "GOVCON_TEAMING_EDGES_URI", "s3://data-sink/active/govcon_teaming_edges_90day/")
 SUB_TARGETING_URI = os.environ.get(
@@ -163,10 +168,24 @@ def doc_scope_schema():
 
 
 def capability_profiles_schema():
-    """govcon_award_capability_profiles_90day — award grain, overwrite build (plan Phase 2). Grain
-    key populated by exploding manifest award_keys[] per resource, never the inline scalar. The
-    prime-attribute block is `contract_prime_txn` collapsed to award grain and typed per that raw
-    txn schema (all string — including pop/value fields; cast at query time, not at storage)."""
+    """govcon_award_capability_profiles — award grain, overwrite build (plan Phase 2). THE PRODUCT
+    (spec §10): one row per award at the EXPLODED `award_keys[]` grain (manifest explode per
+    resource, never the inline scalar — 4.1× coverage; anti-pattern #5). Joins three sources:
+    `govcon_doc_scope_90day` (scope_summary + capability_tags), `govcon_award_requirements_90day`
+    (clearance/cert/labor rollups over `validated` rows), and `contract_prime_txn` collapsed to
+    award grain (row_number() over last_modified_date DESC).
+
+    WINDOW-AS-DATA (operator naming decision 2026-06-14): no `_90day` suffix. `award_last_modified_
+    date` is the canonical denormalized window column (= txn `last_modified_date`), so "last 90 days"
+    is a column filter and a wider window is an append, not a new table; `award_action_date` carries
+    the obligation date for recency framing; `built_at` is the run stamp.
+
+    Prime-attribute block typed per the raw txn schema (all string — including pop/value/date
+    fields; cast at query time, not at storage). CUI egress invariant (anti-pattern #10): the
+    profile carries NO verbatim chunk text — `scope_summary` derives only from `govcon_doc_scope_
+    90day`, which is `marked_resource=false` by construction (marked docs bracketed from the LLM
+    lane); `req_cert_tags`/`top_labor_categories`/`capability_tags` are normalized/controlled-vocab
+    values, never raw quotes. `evidence_quote`/`requirement_detail` are deliberately absent."""
     import pyarrow as pa
     return pa.schema([
         ("contract_award_unique_key", pa.string()),
@@ -181,6 +200,8 @@ def capability_profiles_schema():
         ("primary_place_of_performance_country_code", pa.string()),
         ("pop_start", pa.string()),                   # = txn period_of_performance_start_date
         ("pop_end", pa.string()),                     # = txn period_of_performance_current_end_date
+        ("award_last_modified_date", pa.string()),    # = txn last_modified_date — THE window column
+        ("award_action_date", pa.string()),           # = txn action_date — obligation/recency
         ("federal_action_obligation", pa.string()),
         ("total_dollars_obligated", pa.string()),
         ("base_and_all_options_value", pa.string()),
@@ -259,7 +280,7 @@ FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_labor_demand_90day": (LABOR_DEMAND_URI, labor_demand_schema),
     "govcon_requirements_extract_ledger_90day": (EXTRACT_LEDGER_URI, extract_ledger_schema),
     "govcon_doc_scope_90day": (DOC_SCOPE_URI, doc_scope_schema),
-    "govcon_award_capability_profiles_90day": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
+    "govcon_award_capability_profiles": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
     "govcon_teaming_edges_90day": (TEAMING_EDGES_URI, teaming_edges_schema),
     "govcon_sub_targeting_90day": (SUB_TARGETING_URI, sub_targeting_schema),
     "govcon_sub_capability_vectors_90day": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
