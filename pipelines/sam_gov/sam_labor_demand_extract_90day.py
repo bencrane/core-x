@@ -1974,9 +1974,10 @@ def phase_llm_ingest(args, so: dict, run_id: str) -> dict:
         with open(os.path.join(tasks_dir, tf)) as f:
             task = json.load(f)
         rid = task["resource_id"]
-        if task.get("prompt_hash") != phash:
+        if task.get("prompt_hash") != phash and task.get("prompt_hash") != getattr(args, "allow_prompt_hash", None):
             raise RuntimeError(f"task {rid} staged under prompt_hash {task.get('prompt_hash')[:12]} "
-                               f"!= current {phash[:12]} — re-run select; never mix prompt versions")
+                               f"!= current {phash[:12]} — re-run select; never mix prompt versions "
+                               f"(or pass --allow-prompt-hash to land a superseded staging explicitly)")
         rpath = os.path.join(results_dir, f"{rid}.result.json")
         if not os.path.exists(rpath):
             missing.append(rid)
@@ -1991,7 +1992,9 @@ def phase_llm_ingest(args, so: dict, run_id: str) -> dict:
                  "n_rows_passed": 0, "n_rows_rejected": 0, "pass_rate": 0.0}
         else:
             v = validate_result(result, task, vocab, engine_tag, run_id, now)
-        v.update({"resource_id": rid, "model": args.engine, "prompt_hash": phash})
+        # provenance truth: rows record the STAGED task's hash (the prompt that actually produced the
+        # extraction) — equals the current artifact hash except under --allow-prompt-hash.
+        v.update({"resource_id": rid, "model": args.engine, "prompt_hash": task.get("prompt_hash") or phash})
         docs.append(v)
         per_doc_report[rid] = {"status": v["status"], "n_rows_passed": v["n_rows_passed"],
                                "n_rows_rejected": v["n_rows_rejected"],
@@ -2136,6 +2139,11 @@ def main(argv=None) -> int:
                    help="hard per-doc selected-token budget (chars/4 estimate)")
     p.add_argument("--min-pass-rate", type=float, default=LLM_MIN_PASS_RATE,
                    help="ingest run gate: below this nothing lands (plan Phase 2: 0.98)")
+    p.add_argument("--allow-prompt-hash", default=None,
+                   help="ingest: additionally accept task files staged under this exact superseded "
+                        "prompt_hash (rows still record the staged hash — true provenance). Use to land "
+                        "results from a staging that predates a prompt-artifact edit; never mixes "
+                        "versions silently.")
     p.add_argument("--force-land", action="store_true",
                    help="ingest: land despite a failed run gate (operator override, logged)")
     args = p.parse_args(argv)
