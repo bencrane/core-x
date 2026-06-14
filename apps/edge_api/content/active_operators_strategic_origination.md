@@ -1,6 +1,6 @@
 # Strategic Origination Agreement
 
-This Strategic Origination Agreement (the "Agreement") is entered into as of {{effective_date}} (the "Effective Date"), by and between Rare Structure LLC, doing business as Active Operators (the "Provider"), and {{client_name}} (the "Participant").
+This Strategic Origination Agreement (the "Agreement") is entered into as of {{effective_date}} (the "Effective Date"), by and between Rare Structure LLC, doing business as Active Operators (the "Provider"), and {{participant_name}} (the "Participant").
 
 ## 1. Purpose & Scope of Mandate
 
