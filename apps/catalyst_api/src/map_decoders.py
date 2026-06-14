@@ -27,17 +27,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Global op enum (matches NL_QUERY_MAP_COMPILER_STRATEGY.md). A field's own `ops`
-# tuple is a subset of this; the compiler rejects anything outside it.
-OPS = ("=", ">=", "<=", "in", "between")
+# tuple is a subset of this; the compiler rejects anything outside it. `has`/`has_any`
+# are the list-membership ops (PHASE 3) — valid only on `type="list"` fields, compiled
+# to Lance `array_has` / `array_has_any`.
+OPS = ("=", ">=", "<=", "in", "between", "has", "has_any")
 
 
 @dataclass(frozen=True)
 class FieldSpec:
     column: str                       # hardcoded Lance column (NEVER from the caller)
-    type: str                         # "string" | "int" | "float" | "bool"
+    type: str                         # "string" | "int" | "float" | "bool" | "days_ago" | "list"
     ops: tuple[str, ...]              # ops valid for THIS field (subset of OPS)
     enum: tuple | None = None         # allowed values; None = open-valued (still type-checked)
     index: str | None = None          # "BTREE" | "BITMAP" | None — observability only
+    gated: bool = False               # PHASE 3: capability axis — EXECUTE ANDs has_extracted_scope=true
 
 
 @dataclass(frozen=True)
@@ -50,12 +53,51 @@ class Decoder:
     synonyms: dict[str, dict]         # NL term -> {"field","op","value"} (canned + prompt rows)
 
 
+# ── PHASE-3 capability controlled vocabularies (frozen from govcon_award_capability_profiles,
+# probed live 2026-06-14). These bound the TRANSLATE output space and EXECUTE enum-checks.
+_CLEARANCE_LEVELS = ("PUBLIC_TRUST", "CONFIDENTIAL", "SECRET", "TOP_SECRET", "TS_SCI")
+_CAPABILITY_TAGS = (
+    "administrative_office_support", "aircraft_maintenance", "alarm_surveillance_systems",
+    "architecture_services", "audio_visual_services", "behavioral_health_services",
+    "calibration_inspection_qa", "chaplain_religious_services", "childcare_youth_services",
+    "concrete_masonry", "construction_civil_heavy", "construction_general", "construction_vertical",
+    "custodial_janitorial", "cybersecurity_services", "data_management_analytics", "demolition",
+    "dental_services", "electrical_systems", "elevator_systems", "energy_renewables",
+    "engineering_design", "environmental_remediation", "equipment_maintenance",
+    "event_conference_support", "excavation_earthwork", "facilities_management", "fencing_barriers",
+    "financial_audit_services", "fire_protection_systems", "flooring", "food_services", "fuel_supply",
+    "grounds_maintenance_landscaping", "hvac_mechanical", "industrial_equipment_supply",
+    "it_services", "laboratory_testing_services", "language_interpretation_translation",
+    "laundry_linen_services", "legal_services", "lodging_billeting", "logistics_transportation",
+    "mailroom_courier_services", "maintenance_repair_operations", "marine_vessel_services",
+    "medical_clinical_services", "medical_equipment_supply", "moving_relocation", "nursing_services",
+    "painting_coating", "paving_roadwork", "personnel_security_vetting", "pest_control",
+    "physical_security_locksmith", "plumbing_pipefitting", "printing_publishing",
+    "program_management_support", "public_affairs_communications", "renovation_alteration",
+    "research_development", "roofing", "security_services_guard", "snow_ice_removal",
+    "software_development", "staffing_personnel_services", "steel_structural", "supply_commodities",
+    "surveying_mapping_gis", "telecom_networking", "training_instruction", "utilities_operation",
+    "vehicle_fleet_maintenance", "veterinary_services", "warehousing_distribution",
+    "waste_management", "water_wastewater")
+_LABOR_CATEGORIES = (
+    "carpenter", "crane_operator", "custodian", "dispatcher", "electrician", "equipment_operator",
+    "food_service_worker", "general_laborer", "glazier", "heavy_equipment_operator",
+    "hvac_technician", "instructor", "interpreter", "janitor", "licensed_practical_nurse",
+    "locksmith", "mason", "medical_assistant", "millwright", "painter", "pest_control_technician",
+    "pipefitter", "plumber", "program_manager", "project_manager", "quality_control_manager",
+    "registered_nurse", "roofer", "safety_officer", "security_guard", "sheet_metal_worker",
+    "site_superintendent", "surveyor", "translator", "truck_driver", "welder")
+
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v2",
+    version="winners.v3",   # v2→v3: PHASE-3 capability axis (gated by has_extracted_scope)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
-                "state", "total_obligation", "award_count", "last_action_date"),
+                "state", "total_obligation", "award_count", "last_action_date",
+                # PHASE-3 capability surface (structured only — NO chunk-derived verbatim text)
+                "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
+                "requires_cmmc", "capability_tags", "labor_categories",
+                "covered_award_count", "covered_award_keys"),
     fields={
         "naics2":           FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "state":            FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
@@ -66,6 +108,19 @@ WINNERS = Decoder(
         "award_count":      FieldSpec("award_count", "int", (">=", "<=", "between")),
         # ISO-string action date; days_ago resolves to a DATE literal at request time.
         "days_since_last_award": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between")),
+        # ── PHASE-3 capability axis (gated: EXECUTE ANDs has_extracted_scope=true) ──
+        # has_extracted_scope is the gate itself — filterable but NOT gated (no self-AND).
+        "has_extracted_scope": FieldSpec("has_extracted_scope", "bool", ("=",), index="BITMAP"),
+        "requires_clearance":  FieldSpec("requires_clearance", "bool", ("=",), index="BITMAP",
+                                         gated=True),
+        "req_clearance_level_max": FieldSpec("req_clearance_level_max", "string", ("=", "in"),
+                                             enum=_CLEARANCE_LEVELS, index="BITMAP", gated=True),
+        "requires_cmmc":       FieldSpec("requires_cmmc", "bool", ("=",), index="BITMAP", gated=True),
+        # list<string> capability columns — set membership via Lance array_has / array_has_any.
+        "capability_tag":      FieldSpec("capability_tags", "list", ("has", "has_any"),
+                                         enum=_CAPABILITY_TAGS, gated=True),
+        "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
+                                         enum=_LABOR_CATEGORIES, gated=True),
     },
     synonyms={
         "construction": {"field": "naics2", "op": "=", "value": "23"},
@@ -73,6 +128,15 @@ WINNERS = Decoder(
         "prime awards": {"field": "winner_type", "op": "=", "value": "prime_recipient"},
         "this week":    {"field": "days_since_last_award", "op": "<=", "value": 7},
         "won recently": {"field": "days_since_last_award", "op": "<=", "value": 30},
+        # PHASE-3 capability phrasings
+        "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+        "secret clearance": {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+        "top secret":       {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["TOP_SECRET", "TS_SCI"]},
+        "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+        "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
+        "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
     },
 )
 

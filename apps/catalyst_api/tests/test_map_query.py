@@ -264,7 +264,112 @@ def test_decoders_are_internally_consistent():
     for decoder in DECODERS.values():
         for name, spec in decoder.fields.items():
             assert set(spec.ops) <= set(OPS), f"{name}: ops outside global OPS"
-            assert spec.type in ("string", "int", "float", "bool", "days_ago")
+            assert spec.type in ("string", "int", "float", "bool", "days_ago", "list")
+            # list ops are has/has_any only; non-list fields never use them.
+            if spec.type == "list":
+                assert set(spec.ops) <= {"has", "has_any"}, f"{name}: list field uses scalar ops"
+            else:
+                assert not ({"has", "has_any"} & set(spec.ops)), f"{name}: non-list field uses list ops"
         for term, clause in decoder.synonyms.items():
             assert clause["field"] in decoder.fields, f"synonym {term!r} → unknown field"
             assert clause["op"] in decoder.fields[clause["field"]].ops
+
+
+# ── PHASE 3: capability list axis (array_has) ────────────────────────────────
+def test_capability_tag_has_compiles_with_scope_gate():
+    # "winners that do electrical work" → array_has + the deterministic scope gate.
+    pred = _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "electrical_systems"}])
+    assert pred == ("array_has(capability_tags, 'electrical_systems') "
+                    "AND has_extracted_scope = true")
+
+
+def test_labor_category_has_any_compiles():
+    pred = _compile(WINNERS, [
+        {"field": "labor_category", "op": "has_any", "value": ["electrician", "welder"]},
+    ])
+    assert pred == ("array_has_any(labor_categories, ['electrician', 'welder']) "
+                    "AND has_extracted_scope = true")
+
+
+def test_capability_tag_enum_violation_rejected():
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "not_a_tag"}])
+
+
+def test_capability_list_has_requires_string_value():
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": ["electrical_systems"]}])
+
+
+def test_capability_list_rejects_scalar_op():
+    # '=' is not in a list field's ops (has/has_any only).
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(WINNERS, [{"field": "capability_tag", "op": "=", "value": "electrical_systems"}])
+
+
+def test_capability_value_is_escaped_not_executed():
+    # enum-bounded so a raw injection won't pass the enum check; but the escaping path
+    # still doubles quotes (defense in depth) — assert via an unbounded-style probe by
+    # confirming a valid value emits a single-quoted, array_has literal.
+    pred = _compile(WINNERS, [{"field": "labor_category", "op": "has", "value": "electrician"}])
+    assert pred.startswith("array_has(labor_categories, 'electrician')")
+
+
+# ── PHASE 3: the has_extracted_scope safety gate (anti-pattern #4) ────────────
+def test_clearance_filter_auto_ands_scope_gate():
+    pred = _compile(WINNERS, [{"field": "requires_clearance", "op": "=", "value": True}])
+    assert pred == "requires_clearance = true AND has_extracted_scope = true"
+
+
+def test_clearance_level_in_auto_ands_scope_gate():
+    pred = _compile(WINNERS, [
+        {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+    ])
+    assert pred == ("req_clearance_level_max IN ('SECRET', 'TOP_SECRET', 'TS_SCI') "
+                    "AND has_extracted_scope = true")
+
+
+def test_gate_not_double_added_when_caller_filters_scope():
+    pred = _compile(WINNERS, [
+        {"field": "has_extracted_scope", "op": "=", "value": True},
+        {"field": "requires_cmmc", "op": "=", "value": True},
+    ])
+    # exactly one has_extracted_scope clause (the caller's) — gate not re-appended.
+    assert pred == "has_extracted_scope = true AND requires_cmmc = true"
+    assert pred.count("has_extracted_scope") == 1
+
+
+def test_non_capability_query_has_no_scope_gate():
+    # A plain firmographic winners query must NOT acquire the scope gate (it would filter
+    # the full universe through the ~1% coverage ceiling).
+    pred = _compile(WINNERS, [{"field": "naics2", "op": "=", "value": "23"}])
+    assert pred == "naics2 = '23'"
+    assert "has_extracted_scope" not in pred
+
+
+def test_has_extracted_scope_alone_is_not_gated():
+    # has_extracted_scope is the gate target, not a gated field — no self-AND.
+    pred = _compile(WINNERS, [{"field": "has_extracted_scope", "op": "=", "value": True}])
+    assert pred == "has_extracted_scope = true"
+
+
+def test_northstar_construction_secret_electrical_compiles():
+    # "construction winners requiring SECRET clearance with cleared electrical trades"
+    pred = _compile(WINNERS, [
+        {"field": "naics2", "op": "=", "value": "23"},
+        {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+        {"field": "labor_category", "op": "has", "value": "electrician"},
+    ])
+    assert pred == ("naics2 = '23' "
+                    "AND req_clearance_level_max IN ('SECRET', 'TOP_SECRET', 'TS_SCI') "
+                    "AND array_has(labor_categories, 'electrician') "
+                    "AND has_extracted_scope = true")
+
+
+# ── PHASE 3: CUI egress invariant — chunk-derived text never in any decoder ───
+def test_no_chunk_derived_text_in_catalyst_decoders():
+    banned = {"evidence_quote", "requirement_detail", "scope_summary"}
+    for decoder in DECODERS.values():
+        for spec in decoder.fields.values():
+            assert spec.column not in banned, f"{spec.column} is chunk-derived text — never a filter column"
+        assert not (set(decoder.properties) & banned), f"{decoder.dataset_key}: chunk-derived text in properties"

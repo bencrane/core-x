@@ -141,3 +141,32 @@ def test_routed_filter_reconciliation_moves_offaxis_clauses_to_unmapped():
     out = edge.reconcile_routed_filters(filt)
     assert out["filters"] == [{"field": "naics2", "op": "=", "value": "23"}]
     assert any("award_amount" in u for u in out["unmapped"])
+
+
+# ── PHASE 3: CUI egress invariant (defense-in-depth alongside write-side NULLing) ──
+_BANNED_CHUNK_TEXT = {"evidence_quote", "requirement_detail", "scope_summary"}
+
+
+def test_no_chunk_derived_text_in_either_decoder():
+    # Verbatim chunk-derived text must never become a filter field, Lance column, prompt
+    # field, or emitted property in EITHER app — the portal egresses structured fields only.
+    for dec in cat.DECODERS.values():
+        for qname, spec in dec.fields.items():
+            assert qname not in _BANNED_CHUNK_TEXT, f"catalyst field {qname!r} is chunk-derived text"
+            assert spec.column not in _BANNED_CHUNK_TEXT, f"catalyst column {spec.column!r} is chunk-derived text"
+        assert not (set(dec.properties) & _BANNED_CHUNK_TEXT), \
+            f"catalyst {dec.dataset_key}: chunk-derived text in properties"
+    for ds, dec in edge.DECODERS.items():
+        assert not (set(dec["fields"]) & _BANNED_CHUNK_TEXT), f"edge {ds}: chunk-derived text in fields"
+
+
+def test_capability_axis_present_and_gated_winners_only():
+    # The winners capability axis exists on both sides, and EXECUTE marks the right fields gated.
+    cap = {"requires_clearance", "req_clearance_level_max", "requires_cmmc",
+           "capability_tag", "labor_category", "has_extracted_scope"}
+    assert cap <= set(cat.DECODERS["winners"].fields)
+    assert cap <= set(edge.DECODERS["winners"]["fields"])
+    gated = {n for n, s in cat.DECODERS["winners"].fields.items() if s.gated}
+    # has_extracted_scope is the gate target, NOT gated; the rest of the capability axis is.
+    assert gated == cap - {"has_extracted_scope"}
+    assert cat.DECODERS["winners"].fields["has_extracted_scope"].gated is False

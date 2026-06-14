@@ -560,11 +560,38 @@ def _map_days_ago_sql(spec, op: str, value: Any, today: "dt_date") -> str:
     raise MapCompileError(f"op {op!r} not allowed for a days_ago field")
 
 
+def _map_list_sql(spec, op: str, value: Any) -> str:
+    """Compile a ``list`` clause (set membership over a list<string> column — e.g. the
+    PHASE-3 capability_tags / labor_categories controlled-vocab columns). ``has`` →
+    ``array_has(col, 'v')`` (the row's list contains the value); ``has_any`` →
+    ``array_has_any(col, ['a','b'])`` (the list contains ANY value). Values are
+    enum-checked + ``_sql_str``-escaped (same quote-doubling as every other string
+    literal); a NULL list never matches (correct — a winner with no extracted scope is
+    excluded). Lance scanner grammar verified live (``array_has`` / ``array_has_any``)."""
+    if op == "has":
+        if not isinstance(value, str):
+            raise MapCompileError("'has' needs a single string value")
+        _map_enum_check(spec, [value])
+        return f"array_has({spec.column}, {_sql_str(value)})"
+    if op == "has_any":
+        if not isinstance(value, list) or not value:
+            raise MapCompileError("'has_any' needs a non-empty array value")
+        for v in value:
+            if not isinstance(v, str):
+                raise MapCompileError("'has_any' values must all be strings")
+        _map_enum_check(spec, value)
+        lits = ", ".join(_sql_str(v) for v in value)
+        return f"array_has_any({spec.column}, [{lits}])"
+    raise MapCompileError(f"op {op!r} not allowed for a list field")
+
+
 def _map_clause_sql(spec, op: str, value: Any, today: "dt_date") -> str:
     if op not in spec.ops:
         raise MapCompileError(f"op {op!r} not allowed for this field")
     if spec.type == "days_ago":
         return _map_days_ago_sql(spec, op, value, today)
+    if spec.type == "list":
+        return _map_list_sql(spec, op, value)
     if op in ("=", ">=", "<="):
         _map_enum_check(spec, [value])
         return f"{spec.column} {op} {_map_coerce(value, spec.type)}"
@@ -593,15 +620,30 @@ def compile_map_filter(decoder, filters: list[dict[str, Any]], today: "dt_date |
     whose address did not geocode must still reach the TABLE view (the operator's
     Texas prospect wants every qualifying row, dot or no dot). ``to_geojson`` emits
     null-geometry features for those rows — the dot layer skips them, the table keeps
-    them. Raises ``MapCompileError`` on any off-allowlist field/op or mistyped value."""
+    them. Raises ``MapCompileError`` on any off-allowlist field/op or mistyped value.
+
+    SCOPE-COVERAGE SAFETY GATE (PHASE 3, anti-pattern #4): the capability axes
+    (``FieldSpec.gated``) only have meaning over the ~0.96%-of-awards slice that has
+    extracted solicitation text. If any gated clause is present, ``has_extracted_scope
+    = true`` is ANDed in DETERMINISTICALLY here — never left to the TRANSLATE prompt —
+    so one LLM omission cannot filter ~1.25M winners through the coverage ceiling to an
+    empty live map. Skipped when the caller already constrains ``has_extracted_scope``."""
     today = today or dt_date.today()
     parts: list[str] = []
+    gated = False
+    has_scope_clause = False
     for clause in filters:
         field = clause.get("field")
         spec = decoder.fields.get(field)
         if spec is None:
             raise MapCompileError(f"field {field!r} not in allowlist")
         parts.append(_map_clause_sql(spec, clause.get("op"), clause.get("value"), today))
+        if getattr(spec, "gated", False):
+            gated = True
+        if spec.column == "has_extracted_scope":
+            has_scope_clause = True
+    if gated and not has_scope_clause:
+        parts.append("has_extracted_scope = true")
     return " AND ".join(parts) if parts else None
 
 

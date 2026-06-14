@@ -18,10 +18,18 @@ WINNERS_IDX = [
     {"name": "naics2_idx", "type": "Bitmap", "fields": ["naics2"]},
     {"name": "state_idx", "type": "Bitmap", "fields": ["state"]},
     {"name": "winner_type_idx", "type": "Bitmap", "fields": ["winner_type"]},
+    # PHASE-3 capability BITMAP indexes (the gated scalar axes).
+    {"name": "has_extracted_scope_idx", "type": "Bitmap", "fields": ["has_extracted_scope"]},
+    {"name": "requires_clearance_idx", "type": "Bitmap", "fields": ["requires_clearance"]},
+    {"name": "requires_cmmc_idx", "type": "Bitmap", "fields": ["requires_cmmc"]},
+    {"name": "req_clearance_level_max_idx", "type": "Bitmap", "fields": ["req_clearance_level_max"]},
 ]
 WINNERS_COLS = [
     "winner_uei", "winner_type", "winner_name", "naics_code", "naics2", "state",
     "total_obligation", "award_count", "last_action_date", "longitude", "latitude",
+    # PHASE-3 capability columns (rolled from govcon_award_capability_profiles).
+    "has_extracted_scope", "requires_clearance", "req_clearance_level_max", "requires_cmmc",
+    "capability_tags", "labor_categories", "covered_award_count", "covered_award_keys",
 ]
 
 COMPANY_COLS = [
