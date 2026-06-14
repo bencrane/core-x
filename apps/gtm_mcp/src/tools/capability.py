@@ -37,7 +37,7 @@ READ PATHS. ``govcon_award_requirements_90day`` (frozen schema —
 handle cache) + Lance scanner pushdown; the chunk sinks are never touched.
 
 PHASE SCHEDULE — activation points for the later legs (plan §2/§3; NOT built here):
-  * Phase 2 — grain-ladder leg over ``govcon_award_capability_profiles_90day``
+  * Phase 2 — grain-ladder leg over ``govcon_award_capability_profiles``
     (``capability_tags`` / ``scope_summary`` / clearance rollups; the degraded north-star
     gate query "companies tagged electrical_systems under awards requiring SECRET + CMMC L2").
   * Phase 4 — sub pivot: award set → prime UEIs → ``govcon_sub_targeting_90day`` →
