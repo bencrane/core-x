@@ -4,7 +4,7 @@ The Dossier engagement picker's data source. Lists the VISIBLE mappings scoped t
 operator-org (by email domain), resolving each to the underlying content-config slug so the
 selected value still drives origination unchanged.
 
-    mapping ──▶ documenso_templates ──▶ proposal_content_configs (slug)
+    mapping ──▶ documenso_templates ──▶ engagement_content (slug)
               (m.documenso_template_id)   (dt.source_config_id)
 
 The org filter is on the MAPPING's organization (its ``metadata->>'domain'``).
