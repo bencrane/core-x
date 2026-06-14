@@ -376,6 +376,93 @@ async def get_template_text_field_labels(documenso_template_id: str) -> list[str
     return labels
 
 
+# Field types that carry a fillable DEFAULT value (signatures/dates do not), each mapped to the
+# fieldMeta key that holds its default: TEXT→text, NUMBER→value, DROPDOWN→defaultValue.
+_DEFAULT_META_KEY = {"TEXT": "text", "NUMBER": "value", "DROPDOWN": "defaultValue"}
+
+
+def _field_default_value(field: dict[str, Any]) -> str | None:
+    """The default baked into a field today (per its type), or None when unset."""
+    key = _DEFAULT_META_KEY.get(str(field.get("type")))
+    if not key:
+        return None
+    v = (field.get("fieldMeta") or {}).get(key)
+    return str(v) if v not in (None, "") else None
+
+
+async def get_template_fields(documenso_template_id: str) -> list[dict[str, Any]]:
+    """The EDITABLE fields of a live Documenso template — ``id``, ``type``, ``label``, ``recipient_id``,
+    ``page``, and the field's current ``default``. SIGNATURE/DATE are excluded (no default to set).
+    The read side of the Settings "Documenso Templates" defaults editor; the live template is the
+    source of truth so the editor never drifts.
+    """
+    async with _client() as client:
+        envelope_id = await _resolve_template_envelope_id(client, documenso_template_id)
+        env = (await client.get(f"/api/v2/envelope/{envelope_id}")).json()
+    fields: list[dict[str, Any]] = []
+    for f in env.get("fields") or []:
+        if not isinstance(f, dict) or str(f.get("type")) not in _DEFAULT_META_KEY:
+            continue
+        fields.append(
+            {
+                "id": f.get("id"),
+                "type": f.get("type"),
+                "label": (f.get("fieldMeta") or {}).get("label"),
+                "recipient_id": f.get("recipientId"),
+                "page": f.get("page"),
+                "default": _field_default_value(f),
+            }
+        )
+    return fields
+
+
+async def set_template_field_defaults(documenso_template_id: str, defaults: dict[int, str]) -> int:
+    """Write DEFAULT values onto a template's fields — modifies the actual Documenso TEMPLATE.
+
+    ``defaults`` maps field id → value; each is written to the right fieldMeta key for the field's
+    type (TEXT→``text``, NUMBER→``value``, DROPDOWN→``defaultValue``), MERGED into the field's existing
+    meta so label/type survive. Future documents instantiated from the template (``/envelope/use``)
+    inherit these; already-created documents are untouched. Returns the number of fields written.
+
+    Sends the FULL field (id, type, recipient, position, merged fieldMeta) to
+    ``/api/v2/envelope/field/update-many`` so the update can't drop existing field properties.
+    """
+    async with _client() as client:
+        envelope_id = await _resolve_template_envelope_id(client, documenso_template_id)
+        env = (await client.get(f"/api/v2/envelope/{envelope_id}")).json()
+        by_id = {f.get("id"): f for f in (env.get("fields") or []) if isinstance(f, dict)}
+        data: list[dict[str, Any]] = []
+        for field_id, value in defaults.items():
+            f = by_id.get(field_id)
+            if not isinstance(f, dict):
+                continue
+            key = _DEFAULT_META_KEY.get(str(f.get("type")))
+            if not key:
+                continue
+            meta = dict(f.get("fieldMeta") or {})
+            meta[key] = value
+            data.append(
+                {
+                    "id": field_id,
+                    "type": f.get("type"),
+                    "recipientId": f.get("recipientId"),
+                    "page": f.get("page"),
+                    "positionX": float(f.get("positionX")),
+                    "positionY": float(f.get("positionY")),
+                    "width": float(f.get("width")),
+                    "height": float(f.get("height")),
+                    "fieldMeta": meta,
+                }
+            )
+        if not data:
+            return 0
+        resp = await client.post(
+            "/api/v2/envelope/field/update-many", json={"envelopeId": envelope_id, "data": data}
+        )
+        _raise_for_status(resp, "envelope/field/update-many")
+    return len(data)
+
+
 async def download_signed_pdf(envelope_id: str) -> bytes:
     """Fetch the sealed, signed PDF after completion.
 
