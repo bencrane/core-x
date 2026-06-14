@@ -45,6 +45,7 @@ from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
+from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
@@ -181,6 +182,10 @@ app.include_router(engagement_mappings_router)
 # engagement-mandate-drafts: the direct-to-documenso Originate Mandate stamp — inserts
 # (opportunity_id, documenso_template_id) into business.engagement_mandate_draft_content.
 app.include_router(engagement_mandate_drafts_router)
+
+# documenso-template-fields: the Settings "Documenso Templates" defaults editor — reads/writes the
+# live Documenso template's fields (set per-field default values via /envelope/field/update-many).
+app.include_router(documenso_template_fields_router)
 
 # company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
 # (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator
