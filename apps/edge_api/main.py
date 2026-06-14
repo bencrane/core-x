@@ -163,7 +163,7 @@ app.include_router(proposals_router)
 
 # proposal-templates: the authoring surface (markdown → branded HTML → DocRaptor preview → publish).
 # Service-token gated; the BFF brokers it with the operator session. Markdown source lives in
-# Postgres (business.proposal_content_configs); preview PDFs are stashed in R2.
+# Postgres (business.engagement_content); preview PDFs are stashed in R2.
 app.include_router(proposal_templates_router)
 
 # bookings: the operator Pipeline list — recent cal.com bookings from corex.bookings.
