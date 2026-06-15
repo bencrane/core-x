@@ -111,12 +111,25 @@ def build_index(name: str):
         raise RuntimeError(f"[{name}] {null_unmarked:,} UNMARKED still NULL — finish embed before index")
     print(f"[{name}] indexing {n:,} rows ({null_marked:,} marked rows remain NULL — bracketed, "
           f"excluded from ANN by construction)", flush=True)
-    ds.optimize.compact_files()
-    ds = lance.dataset(uri, storage_options=so)
+    # compact_files is a best-effort optimization: pylance 7.0.0 trips an internal encoding bug
+    # ("Repetition buffer too large") compacting the large_string text / list columns. The IVF_PQ
+    # index does not require compaction — skip on failure and index the un-compacted fragments.
+    try:
+        ds.optimize.compact_files()
+        ds = lance.dataset(uri, storage_options=so)
+        print(f"[{name}] compacted", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{name}] compact skipped (non-fatal): {str(e)[:140]}", flush=True)
+        ds = lance.dataset(uri, storage_options=so)
     parts = max(1, round(math.sqrt(n)))
     print(f"[{name}] IVF_PQ cosine partitions={parts} sub_vectors=64 …", flush=True)
-    ds.create_index("embedding", index_type="IVF_PQ", num_partitions=parts,
-                    num_sub_vectors=64, metric="cosine", replace=True)
+    try:
+        ds.create_index("embedding", index_type="IVF_PQ", num_partitions=parts,
+                        num_sub_vectors=64, metric="cosine", accelerator="cuda", replace=True)
+    except Exception as e:  # noqa: BLE001 — fall back to CPU kmeans if the GPU accelerator path errors
+        print(f"[{name}] cuda accelerator unavailable ({str(e)[:80]}); CPU kmeans", flush=True)
+        ds.create_index("embedding", index_type="IVF_PQ", num_partitions=parts,
+                        num_sub_vectors=64, metric="cosine", replace=True)
     cols = set(ds.schema.names)
     for c in ("resource_id", "contract_award_unique_key"):
         if c in cols:
