@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import pytest  # noqa: E402
 
 from pipelines.sam_gov.sam_labor_demand_extract_90day import (  # noqa: E402
-    _assert_h2_subset,
     _marking_gate_ok,
+    _scope_pending,
 )
 
 
@@ -59,29 +59,28 @@ def test_gate_pass_freshness_required_but_no_completed_at_raises():
         _marking_gate_ok({"reconcile_overall": "PASS"}, require_after="2026-06-15T20:00:00")
 
 
-# ── structural H2 scoping guard ──────────────────────────────────────────────
-def test_subset_none_allow_is_off():
-    _assert_h2_subset({"anything", "at::all"}, None)
+# ── structural H2 scoping (filter, parent-aware) ─────────────────────────────
+def test_scope_none_allow_keeps_all():
+    assert _scope_pending({"anything", "at::all"}, None) == {"anything", "at::all"}
 
 
-def test_subset_empty_allow_is_off():
-    _assert_h2_subset({"x"}, set())
+def test_scope_empty_allow_keeps_all():
+    assert _scope_pending({"x"}, set()) == {"x"}
 
 
-def test_subset_all_in_allow_ok():
-    _assert_h2_subset({"a", "b"}, {"a", "b", "c"})
+def test_scope_all_in_allow_kept():
+    assert _scope_pending({"a", "b"}, {"a", "b", "c"}) == {"a", "b"}
 
 
-def test_subset_inner_id_parent_in_allow_ok():
+def test_scope_inner_id_parent_in_allow_kept():
     # expanded-zip inner id qualifies via its parent rid
-    _assert_h2_subset({"a", "a::inner/doc.pdf"}, {"a"})
+    assert _scope_pending({"a", "a::inner/doc.pdf"}, {"a"}) == {"a", "a::inner/doc.pdf"}
 
 
-def test_subset_leak_raises():
-    with pytest.raises(RuntimeError):
-        _assert_h2_subset({"a", "z"}, {"a"})
+def test_scope_drops_out_of_allow():
+    # the real case: unrelated prod pending ids are dropped (left for prod), in-scope kept
+    assert _scope_pending({"a", "z", "prod1"}, {"a"}) == {"a"}
 
 
-def test_subset_inner_id_parent_not_in_allow_raises():
-    with pytest.raises(RuntimeError):
-        _assert_h2_subset({"q::inner"}, {"a"})
+def test_scope_inner_id_parent_not_in_allow_dropped():
+    assert _scope_pending({"q::inner", "a"}, {"a"}) == {"a"}
