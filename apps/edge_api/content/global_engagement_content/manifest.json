@@ -1,0 +1,26 @@
+{
+  "active_operators_term_only": {
+    "slug": "active_operators_term_only",
+    "name": "Active Operators — Strategic Origination Agreement (Term Only)",
+    "archetype": "term_only",
+    "document": "active_operators_term_only.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true,
+    "tokens": [
+      "participant_name",
+      "term_fee",
+      "duration_in_months",
+      "participant_signer_name",
+      "participant_title"
+    ],
+    "signing_anchors": [
+      "[[PROVIDER_SIGNATURE]]",
+      "[[PROVIDER_DATE]]",
+      "[[PARTICIPANT_SIGNATURE]]",
+      "[[PARTICIPANT_DATE]]"
+    ]
+  }
+}
