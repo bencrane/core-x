@@ -55,6 +55,21 @@ ENCODE_BATCH = int(os.environ.get("EMBED_ENCODE_BATCH", "128"))
 FLUSH_ROWS = int(os.environ.get("EMBED_FLUSH_ROWS", "50000"))
 IVF_SUB_VECTORS = int(os.environ.get("EMBED_IVF_SUB_VECTORS", "64"))
 
+# CUI bracket (mirrors the PHASE-2 marked-resource bracket): `content_marking ≠ []` chunks are
+# deferred and embedded SEPARATELY under their own posture decision; the public bulk embeds now.
+# `array_length(content_marking)` pushes down in Lance (verified live) — len() is DuckDB-only.
+_MARKING_CLAUSE = {
+    "unmarked": "array_length(content_marking) = 0",   # the non-CUI bulk
+    "marked": "array_length(content_marking) > 0",      # the bracketed CUI subset
+    "all": None,
+}
+
+
+def _worklist(marking: str) -> str:
+    clause = _MARKING_CLAUSE[marking]
+    return "embedding IS NULL" if clause is None else f"embedding IS NULL AND {clause}"
+
+
 _model = None
 
 
@@ -101,23 +116,23 @@ def _flush(ds_uri, buf, so):
     return buf.num_rows
 
 
-def embed_sink(name, *, limit=None, flush_rows=FLUSH_ROWS):
+def embed_sink(name, *, marking="all", limit=None, flush_rows=FLUSH_ROWS):
     import lance
     import pyarrow as pa
     so = _r2_storage_options()
     uri = SINKS[name]
+    worklist = _worklist(marking)
     run_id = dt.datetime.now(dt.timezone.utc).strftime("embed-%Y%m%dT%H%M%S")
     ds = lance.dataset(uri, storage_options=so)
-    total_null = ds.count_rows(filter="embedding IS NULL")
-    log(f"[{name}] embedding IS NULL = {total_null:,} (worklist){' limit=' + str(limit) if limit else ''}")
+    total_null = ds.count_rows(filter=worklist)
+    log(f"[{name}] worklist ({marking}) = {total_null:,}{' limit=' + str(limit) if limit else ''}")
     if total_null == 0:
-        log(f"[{name}] nothing to embed — already complete")
-        return {"sink": name, "embedded": 0, "remaining_null": 0}
-    # 24h lease ttl: a full local run is long (≈55h MPS for the whole corpus, but a single
-    # invocation is typically --limit-bounded; size the ttl to the invocation, not the corpus).
+        log(f"[{name}] nothing to embed for marking={marking} — already complete")
+        return {"sink": name, "marking": marking, "embedded": 0, "remaining_null": 0}
+    # 24h lease ttl: size to the invocation (typically --limit-bounded), not the whole corpus.
     embedded = 0
     with SinkCommitLease(uri, holder=f"embed:{run_id}", ttl_s=24 * 60 * 60):
-        scanner = ds.scanner(filter="embedding IS NULL", batch_size=8192)
+        scanner = ds.scanner(filter=worklist, batch_size=8192)
         buf_batches = []
         buf_rows = 0
         for batch in scanner.to_batches():
@@ -139,9 +154,9 @@ def embed_sink(name, *, limit=None, flush_rows=FLUSH_ROWS):
             if tbl.num_rows:
                 embedded += _flush(uri, tbl, so)
                 log(f"[{name}] embedded {embedded:,} (final flush)")
-    remaining = lance.dataset(uri, storage_options=so).count_rows(filter="embedding IS NULL")
-    log(f"[{name}] DONE embed pass: +{embedded:,} this run · {remaining:,} still NULL")
-    return {"sink": name, "embedded": embedded, "remaining_null": remaining}
+    remaining = lance.dataset(uri, storage_options=so).count_rows(filter=worklist)
+    log(f"[{name}] DONE embed pass ({marking}): +{embedded:,} this run · {remaining:,} still in worklist")
+    return {"sink": name, "marking": marking, "embedded": embedded, "remaining_null": remaining}
 
 
 def index_sink(name):
@@ -151,10 +166,15 @@ def index_sink(name):
     uri = SINKS[name]
     ds = lance.dataset(uri, storage_options=so)
     n = ds.count_rows()
-    nulls = ds.count_rows(filter="embedding IS NULL")
-    if nulls != 0:
-        raise RuntimeError(f"[{name}] {nulls:,} rows still NULL — embed must complete before indexing "
-                           f"(anti-pattern #6: the IS-NULL==0 gate is the completion contract)")
+    null_unmarked = ds.count_rows(filter=_worklist("unmarked"))
+    null_marked = ds.count_rows(filter=_worklist("marked"))
+    if null_unmarked != 0:
+        raise RuntimeError(f"[{name}] {null_unmarked:,} UNMARKED rows still NULL — the public bulk embed "
+                           f"must complete before indexing (anti-pattern #6: IS-NULL==0 is the completion "
+                           f"contract for the un-bracketed set)")
+    if null_marked:
+        log(f"[{name}] NOTE: {null_marked:,} MARKED rows remain NULL (CUI bracket, deferred) — they are "
+            f"excluded from the ANN index by construction (NULL vectors are not indexed); correct.")
     log(f"[{name}] compacting {n:,} rows …")
     ds.optimize.compact_files()
     ds = lance.dataset(uri, storage_options=so)
@@ -190,12 +210,15 @@ def status():
         ds = lance.dataset(uri, storage_options=so)
         n = ds.count_rows()
         nn = ds.count_rows(filter="embedding IS NULL")
+        null_unmarked = ds.count_rows(filter=_worklist("unmarked"))
+        null_marked = ds.count_rows(filter=_worklist("marked"))
         try:
             idx = sorted(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i))
                          for i in ds.list_indices())
         except Exception:  # noqa: BLE001
             idx = []
         out[name] = {"uri": uri, "rows": n, "embedding_null": nn,
+                     "null_unmarked_bulk": null_unmarked, "null_marked_bracketed": null_marked,
                      "embedded_pct": round(100 * (n - nn) / n, 2) if n else 0.0, "indices": idx}
     print(json.dumps({"model": EMBED_MODEL, "dim": EMBED_DIM, "device": EMBED_DEVICE,
                       "sinks": out}, indent=2))
@@ -223,6 +246,9 @@ def main():
     p = argparse.ArgumentParser(description="PHASE 5 embed writer (BGE, self-hosted).")
     p.add_argument("cmd", choices=["status", "embed", "index", "verify"])
     p.add_argument("--sink", choices=["scope", "unknown", "both"], default="both")
+    p.add_argument("--marking", choices=["unmarked", "marked", "all"], default="unmarked",
+                   help="CUI bracket: 'unmarked' (default) = the non-CUI public bulk; 'marked' = the "
+                        "deferred CUI subset (separate posture); 'all' = no bracket")
     p.add_argument("--limit", type=int, default=None, help="embed at most N rows this invocation")
     p.add_argument("--flush", type=int, default=FLUSH_ROWS, help="rows per merge_insert flush")
     a = p.parse_args()
@@ -233,7 +259,7 @@ def main():
         verify()
     elif a.cmd == "embed":
         import json
-        res = [embed_sink(s, limit=a.limit, flush_rows=a.flush) for s in sinks]
+        res = [embed_sink(s, marking=a.marking, limit=a.limit, flush_rows=a.flush) for s in sinks]
         print(json.dumps(res, indent=2))
     elif a.cmd == "index":
         import json
