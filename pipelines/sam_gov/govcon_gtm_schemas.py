@@ -62,6 +62,8 @@ SUB_TARGETING_URI = os.environ.get(
     "GOVCON_SUB_TARGETING_URI", "s3://data-sink/active/govcon_sub_targeting_90day/")
 SUB_CAPABILITY_VECTORS_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_VECTORS_URI", "s3://data-sink/active/govcon_sub_capability_vectors_90day/")
+SUB_CAPABILITY_PROFILES_URI = os.environ.get(
+    "GOVCON_SUB_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_subawardee_capability_profiles/")
 
 
 # ── Frozen schemas (plan column/type tables, verbatim) ───────────────────────────────────────────
@@ -274,6 +276,82 @@ def sub_capability_vectors_schema():
     ])
 
 
+def subawardee_capability_profiles_schema():
+    """govcon_subawardee_capability_profiles — SUBAWARDEE grain (one row per sub_uei), overwrite
+    build. The sub-side analog of capability_profiles: the GTM target list of subawardees connected
+    to tracked prime solicitations, describing what each sub DOES with cited evidence + an outreach
+    contact. Universe = distinct `subawardee_uei` in `subawardee_solicitations_bridge` (the subs
+    that teamed under the harvested prime solicitations).
+
+    Fuses three signals + a contact, deterministically:
+      LEAD   `usaspending_api_fresh/contract_subaward`  — the sub's actual reported work
+             (`subaward_description`), $ volume, NAICS, which primes, action dates. Sub-self-reported
+             text (the firm's own SAM subaward report), NOT solicitation CUI — safe to surface.
+      ENRICH `govcon_award_requirements_90day` + `govcon_doc_scope_90day` rolled up over the
+             solicitation resources the sub worked under (bridge `notice_id` → manifest `resource_id`):
+             the prime SCOPE they operated under (clearance/cert/labor/capability tags). Validated
+             rows only; controlled-vocab/normalized values only.
+      TEAM   `govcon_teaming_edges_90day` — $/count/NAICS/which primes (5y teaming corpus).
+      REACH  `sam_pocs` — best government-business POC for the sub_uei (name/title/city/state).
+
+    WINDOW-AS-DATA (same discipline as the prime table): no `_90day` suffix; `sub_action_date`
+    (= max subaward action date) is the canonical denormalized window column, `first_sub_action_date`
+    the floor, `built_at` the run stamp — so "last N days" is a column filter and a wider window is an
+    append, not a new table.
+
+    CUI EGRESS INVARIANT (anti-pattern #10): carries NO verbatim solicitation chunk text.
+    `scope_summary` derives only from `govcon_doc_scope_90day` (marked_resource=false by construction);
+    requirement rollups are normalized/controlled-vocab; `source_chunk_ids`/`source_resource_ids` are
+    IDs (drill-down pointers), populated from UNMARKED validated rows only. `marked_solicitation` is
+    audit provenance that a marked source existed (its verbatim text is redacted upstream).
+    `subaward_*` text is sub-self-reported and is the LEAD evidence (cited by `subaward_numbers`)."""
+    import pyarrow as pa
+    return pa.schema([
+        # grain + identity
+        ("sub_uei", pa.string()),
+        ("sub_name", pa.string()), ("sub_parent_uei", pa.string()),
+        # LEAD — subaward work (what the sub actually did); sub-self-reported, safe
+        ("n_subawards", pa.int32()), ("n_distinct_primes_subaward", pa.int32()),
+        ("total_subaward_amount", pa.float64()),
+        ("sub_action_date", pa.date32()),             # = max subaward action date — THE window column
+        ("first_sub_action_date", pa.date32()),
+        ("subaward_naics_codes", pa.list_(pa.string())),
+        ("top_subaward_description", pa.string()),    # representative; sub-self-reported
+        ("subaward_descriptions", pa.list_(pa.string())),
+        ("subaward_numbers", pa.list_(pa.string())),  # cited evidence for the lead work
+        ("subaward_prime_ueis", pa.list_(pa.string())),
+        ("subaward_prime_names", pa.list_(pa.string())),
+        # ENRICH — solicitation scope worked under (prime scope), validated/controlled-vocab only
+        ("has_extracted_scope", pa.bool_()),
+        ("n_scope_solicitations", pa.int32()),
+        ("scope_summary", pa.string()),               # from govcon_doc_scope_90day (marked-free)
+        ("capability_tags", pa.list_(pa.string())),   # controlled vocabulary
+        ("requires_clearance", pa.bool_()), ("req_clearance_level_max", pa.string()),
+        ("requires_cmmc", pa.bool_()),
+        ("req_cert_tags", pa.list_(pa.string())),
+        ("top_labor_categories", pa.list_(pa.string())),
+        ("n_requirements", pa.int32()), ("n_requirements_validated", pa.int32()),
+        ("source_resource_ids", pa.list_(pa.string())),  # cited drill-down (solicitation resources)
+        ("source_chunk_ids", pa.list_(pa.string())),     # cited evidence chunks (unmarked, validated)
+        ("source_notice_ids", pa.list_(pa.string())),
+        ("marked_solicitation", pa.bool_()),             # audit: a marked source existed (redacted)
+        # TEAM — 5y teaming edges
+        ("n_teaming_primes", pa.int32()),
+        ("teaming_dollars_5y", pa.float64()), ("teaming_edge_count_5y", pa.int32()),
+        ("teaming_top_naics", pa.string()),
+        ("teaming_prime_ueis", pa.list_(pa.string())),
+        ("teaming_prime_names", pa.list_(pa.string())),
+        ("teaming_last_action_date", pa.date32()),
+        # REACH — outreach POC (sam_pocs)
+        ("poc_available", pa.bool_()),
+        ("poc_full_name", pa.string()), ("poc_title", pa.string()), ("poc_type", pa.string()),
+        ("poc_city", pa.string()), ("poc_state", pa.string()),
+        # flags / provenance
+        ("coverage_truncated", pa.bool_()),
+        ("snapshot_run_id", pa.string()), ("built_at", pa.timestamp("us", tz="UTC")),
+    ])
+
+
 # name → (uri, schema factory). The single registry every ensure/assert path iterates.
 FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_award_requirements_90day": (REQUIREMENTS_URI, requirements_schema),
@@ -284,6 +362,8 @@ FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_teaming_edges_90day": (TEAMING_EDGES_URI, teaming_edges_schema),
     "govcon_sub_targeting_90day": (SUB_TARGETING_URI, sub_targeting_schema),
     "govcon_sub_capability_vectors_90day": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
+    "govcon_subawardee_capability_profiles": (SUB_CAPABILITY_PROFILES_URI,
+                                              subawardee_capability_profiles_schema),
 }
 
 
