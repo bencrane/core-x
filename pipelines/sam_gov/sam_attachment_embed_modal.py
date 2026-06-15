@@ -130,29 +130,48 @@ def build_index(name: str):
         print(f"[{name}] cuda accelerator unavailable ({str(e)[:80]}); CPU kmeans", flush=True)
         ds.create_index("embedding", index_type="IVF_PQ", num_partitions=parts,
                         num_sub_vectors=64, metric="cosine", replace=True)
-    cols = set(ds.schema.names)
-    for c in ("resource_id", "contract_award_unique_key"):
-        if c in cols:
-            ds.create_scalar_index(c, index_type="BTREE", replace=True); print(f"[{name}] BTREE {c}", flush=True)
-    for c in ("naics_code", "header_class"):
-        if c in cols:
-            ds.create_scalar_index(c, index_type="BITMAP", replace=True); print(f"[{name}] BITMAP {c}", flush=True)
-    if name == "unknown" and "lexicon_hit" in cols:
-        ds.create_scalar_index("lexicon_hit", index_type="BITMAP", replace=True)
-    print(f"[{name}] DONE index", flush=True)
+    print(f"[{name}] DONE IVF_PQ (scalars built separately under high memory)", flush=True)
     return {"sink": name, "rows": n, "partitions": parts}
 
 
+# Scalar indexes run in a SEPARATE high-memory CPU function: create_scalar_index's external sorter
+# auto-sizes its pool from available RAM, and after the IVF_PQ build (or on a small box) it OOMs
+# ("Resources exhausted … total pool"). 64 GB + a fresh process (no resident vectors) is the proven
+# pattern (matches pipelines/ingest_epa). No GPU needed for scalar indexes.
+@app.function(cpu=4.0, memory=65536, secrets=[modal.Secret.from_name("r2-credentials")], timeout=4 * 60 * 60)
+def build_scalars(name: str):
+    import lance
+    so = _so()
+    uri = SINKS[name]
+    ds = lance.dataset(uri, storage_options=so)
+    cols = set(ds.schema.names)
+    have = {(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
+            for i in ds.list_indices()}
+    plan = [("resource_id", "BTREE"), ("contract_award_unique_key", "BTREE"),
+            ("naics_code", "BITMAP"), ("header_class", "BITMAP")]
+    if name == "unknown" and "lexicon_hit" in cols:
+        plan.append(("lexicon_hit", "BITMAP"))
+    for col, kind in plan:
+        if col not in cols or f"{col}_idx" in have:
+            continue
+        lance.dataset(uri, storage_options=so).create_scalar_index(col, index_type=kind, replace=True)
+        print(f"[{name}] {kind} {col}", flush=True)
+    final = sorted(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i))
+                   for i in lance.dataset(uri, storage_options=so).list_indices())
+    print(f"[{name}] DONE scalars · indices={final}", flush=True)
+    return {"sink": name, "indices": final}
+
+
 @app.local_entrypoint()
-def main(sink: str = "both", do_index: bool = True, limit: int = 0):
+def main(sink: str = "both", do_index: bool = True, limit: int = 0, mode: str = "all"):
     names = ["scope", "unknown"] if sink == "both" else [sink]
     lim = limit or None
-    print(f"== embed (unmarked bulk) on Modal {GPU}: {names} ==", flush=True)
-    res = list(embed_unmarked.starmap([(n, 50000, lim) for n in names]))
-    print("embed results:", res, flush=True)
-    if do_index and not lim:
-        print(f"== build IVF_PQ + scalar indexes: {names} ==", flush=True)
-        idx = list(build_index.map(names))
-        print("index results:", idx, flush=True)
-    else:
-        print("(index skipped — limit smoke or --no-do-index)", flush=True)
+    if mode != "scalars":
+        print(f"== embed (unmarked bulk) on Modal {GPU}: {names} ==", flush=True)
+        print("embed results:", list(embed_unmarked.starmap([(n, 50000, lim) for n in names])), flush=True)
+        if do_index and not lim:
+            print(f"== IVF_PQ (GPU): {names} ==", flush=True)
+            print("ivf results:", list(build_index.map(names)), flush=True)
+    if mode in ("all", "scalars") and not lim:
+        print(f"== scalar indexes (high-mem CPU): {names} ==", flush=True)
+        print("scalar results:", list(build_scalars.map(names)), flush=True)
