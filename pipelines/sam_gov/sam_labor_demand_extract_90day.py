@@ -1416,17 +1416,16 @@ def _assert_marking_complete(args) -> None:
     _marking_gate_ok(report, require_after=getattr(args, "require_marking_after", None))
 
 
-def _assert_h2_subset(pending: "set[str]", allow: "set[str] | None") -> None:
-    """STRUCTURAL H2 SCOPING (pure). When an allow-list is supplied (--resource-ids/-file), every
-    pending LLM resource MUST belong to it — making H2 scope structural, not incidental on the rest of
-    the corpus being terminal. Parent-aware: expanded-zip inner ids `<rid>::<inner>` qualify when their
-    parent rid is in the allow-list (those synthetic ids are never in $IDS themselves). None => OFF."""
+def _scope_pending(pending: "set[str]", allow: "set[str] | None") -> "set[str]":
+    """STRUCTURAL H2 SCOPING (pure). When an allow-list is supplied (--resource-ids/-file), KEEP only
+    the pending resources that belong to it — making H2 scope structural, not incidental on the rest of
+    the corpus being terminal. The bracket pass is whole-corpus, so unrelated prod resources can be
+    `pending`; scoping leaves those for prod rather than account-burning them here. Parent-aware:
+    expanded-zip inner ids `<rid>::<inner>` qualify when their parent rid is in the allow-list (those
+    synthetic ids are never in $IDS themselves). None => no scoping (all pending)."""
     if not allow:
-        return
-    leak = {rid for rid in pending if rid.split("::", 1)[0] not in allow}
-    if leak:
-        raise RuntimeError(f"H2 SCOPE LEAK: {len(leak)} pending ids outside the --resource-ids allow-list "
-                           f"(e.g. {sorted(leak)[:3]}); refusing to stage out-of-scope LLM work.")
+        return set(pending)
+    return {rid for rid in pending if rid.split("::", 1)[0] in allow}
 
 
 def phase_llm_bracket(args, so: dict, run_id: str) -> dict:
@@ -1610,13 +1609,20 @@ def _pending_worklist(so: dict, args, sink_counts: dict[str, dict[str, int]],
     zero marked resources in the worklist — a marked pending row means the bracket is stale."""
     ledger_rows = _ledger_full(so, args.ledger_uri)
     pending = {r["resource_id"] for r in ledger_rows if r.get("llm_state") == "pending"}
+    # STRUCTURAL SCOPING: when an allow-list is supplied, grind ONLY in-scope pending; the whole-corpus
+    # bracket can leave unrelated prod resources `pending` — those stay for prod, never account-burned here.
+    allow = set(args.resource_ids) if getattr(args, "resource_ids", None) else None
+    if allow is not None:
+        kept = _scope_pending(pending, allow)
+        excluded = len(pending) - len(kept)
+        if excluded:
+            print(f"H2 scope: {excluded} pending ids outside the allow-list left for prod; "
+                  f"grinding {len(kept)} in-scope (of {len(pending)} total pending).", flush=True)
+        pending = kept
     stale = pending & marked
     if stale:
         raise RuntimeError(f"{len(stale)} marked resources still llm_state='pending' "
                            f"(e.g. {sorted(stale)[:3]}) — run --phase bracket first (decision A).")
-    # STRUCTURAL SCOPING: when an allow-list is supplied, no out-of-scope resource may enter the
-    # account-burning LLM lane (parent-aware for expanded-zip inner ids).
-    _assert_h2_subset(pending, set(args.resource_ids) if getattr(args, "resource_ids", None) else None)
     out: dict[str, list[str]] = {}
     for sink, counts in sink_counts.items():
         ids = sorted(pending & set(counts))
