@@ -129,16 +129,31 @@ def _assemble(so, window_days: int):
                try_cast(subaward_amount AS DOUBLE), subaward_number
         FROM s WHERE subawardee_uei IS NOT NULL AND length(trim(subawardee_uei)) > 0
     ),
-    agg AS (
+    -- "honest won" $: total_obligation / award_count sum ONLY positive in-window obligations
+    -- (mirrors the awards map's `amt > 0` semantics) so de-obligation correction mods (negative)
+    -- and $0 admin mods can't poison the dollar signal. Negative-poisoned winners read $0, never
+    -- < 0. Unlike the awards map we do NOT drop rows here: identity / recency below aggregate over
+    -- the FULL `u`, so every (winner_uei, winner_type) survives (≤$0 winners are valid CAPABILITY
+    -- matches whose positive obligations simply fall outside the window).
+    pos AS (SELECT * FROM u WHERE amt > 0 AND adt IS NOT NULL),
+    pos_agg AS (
         SELECT winner_uei, winner_type,
-               arg_max(winner_name, adt) AS winner_name,
-               arg_max(street, adt) AS street, arg_max(city, adt) AS city,
-               arg_max(state, adt) AS state, arg_max(zip, adt) AS zip,
-               arg_max(naics, adt) AS naics_code,
                count(DISTINCT award_key) AS award_count,
-               coalesce(sum(amt), 0) AS total_obligation,
-               max(adt) AS last_action_date
-        FROM u GROUP BY winner_uei, winner_type
+               sum(amt) AS total_obligation,
+               max(adt) AS last_positive_action_date
+        FROM pos GROUP BY winner_uei, winner_type
+    ),
+    agg AS (
+        SELECT u.winner_uei, u.winner_type,
+               arg_max(u.winner_name, u.adt) AS winner_name,
+               arg_max(u.street, u.adt) AS street, arg_max(u.city, u.adt) AS city,
+               arg_max(u.state, u.adt) AS state, arg_max(u.zip, u.adt) AS zip,
+               arg_max(u.naics, u.adt) AS naics_code,
+               coalesce(any_value(pa.award_count), 0) AS award_count,
+               coalesce(any_value(pa.total_obligation), 0) AS total_obligation,
+               coalesce(max(pa.last_positive_action_date), max(u.adt)) AS last_action_date
+        FROM u LEFT JOIN pos_agg pa USING (winner_uei, winner_type)
+        GROUP BY u.winner_uei, u.winner_type
     ),
     keyed AS (
         SELECT *, substr(naics_code, 1, 2) AS naics2,
@@ -284,6 +299,9 @@ def verify():
            "with_coords": ds.count_rows(filter="latitude IS NOT NULL"),
            "prime": ds.count_rows(filter="winner_type = 'prime_recipient'"),
            "subaward": ds.count_rows(filter="winner_type = 'subawardee'"),
+           # "honest won" $ invariants: no winner may read < 0; report the ≤$0 / <$0 tails.
+           "negative_obligation": ds.count_rows(filter="total_obligation < 0"),
+           "zero_or_negative_obligation": ds.count_rows(filter="total_obligation <= 0"),
            "columns": len(ds.schema.names), "indices": idx}
     out["demo_construction_gt_150k"] = ds.count_rows(
         filter="naics2 = '23' AND total_obligation >= 150000 AND latitude IS NOT NULL")
