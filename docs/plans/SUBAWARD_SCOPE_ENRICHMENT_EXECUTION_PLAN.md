@@ -33,15 +33,15 @@ These are the only places live ground truth sharpens the LIFT_PLAN. Everything e
 | D | Throwaway extract + finalize → `_sublift_*` | **local CPU (no cap)** | **multi-hour (dominant)** | none (throwaway only) | — (data run) |
 | E | Append `_sublift_*` chunks → SHARED sinks (`merge_insert chunk_id`) | local CPU | minutes | **YES — first shared write** | **PR #2 — append script `subaward_scope_append.py`** (code reviewed, then run) |
 | F | CUI marking full-body pass scoped effect (whole-sink scan, promotion-only) | local CPU | **multi-hour** | YES (`content_marking` subset-merge) | — (uses PR #1 patch) |
-| G | Embed-refresh + reindex touched sinks | **self-hosted GPU/MPS** | tens of min | YES (`embedding` + indices) | — (existing module) |
+| G | Embed-refresh + reindex touched sinks | **self-hosted GPU/MPS** | **multi-hour (~387K new vec; pin cuda)** | YES (`embedding` + indices) | — (existing module) |
 | H1 | Regex lane scoped to `$IDS` | local CPU | minutes–hour | YES (requirements/labor sinks) | — (existing module + PR #1 file-flag) |
-| H2 | **LLM grind scoped (~3,350 docs)** | **session-agent (account-burning)** | **1–2 grind sessions, resumable** | YES (requirements sink) | — (existing module + grind harness) |
+| H2 | **LLM grind scoped (measure at census)** | **session-agent (account-burning)** | **1–2 grind sessions, resumable** | YES (requirements sink) | — (existing module + grind harness) |
 | I | Rebuild sub capability profile (overwrite) | local CPU | minutes | YES (profile overwrite) | — (existing module) |
 | J | Throwaway cleanup (`_sublift_*` delete) | terminal op | seconds | none | — |
 
-**PR count: two.** PR #1 (the gate-bypass id-filter + marking relax + file-flag + tests) is its own reviewable artifact and **lands before any data touches anything**. PR #2 is the new append script. Every other phase is a *run* of already-merged code, not a code change.
+**PR count: four (two planned + two discovered-in-execution).** PR #1 (gate-bypass id-filter + marking relax + file-flag + tests, merged `5ab7366` / #478) lands before any data. PR #2 (append script, merged `29c502e` / #480) is the shared write. **PR #1b** (merged `a9a4435` / #479) was forced by a runbook gap: no `--inner-uri` isolation (expand wrote the SHARED inner worklist) + a latent reserved-word `JOIN inner` parser error — both reverted/fixed before any extract chunk landed. **PR #3** (F–J pre-execution hardening) adds the mechanical H2 CUI gate (`_assert_marking_complete`) + the parent-aware structural scoping guard + tests, and corrects the §9/§11 CLIs (positional verb, not `--phase`), the F→G/F→H2 orderings, the §9 embed cost, and the §12/§13 framing. Every other phase is a *run* of already-merged code.
 
-**Critical ordering invariants:** B → A → C → D → E → **F (marking) MUST precede H2 (LLM)** → G → H1 → H2 → I → J. F-before-H2 is the CUI egress gate (the in-session grind agent reading a marked chunk = egress). G (embed) may run any time after E and is independent of F/H except that reindex should follow the last sink write.
+**Critical ordering invariants:** B → A → C → D → E → **F (marking)** → G → H1 → **[F reconcile PASS gate, mechanical]** → H2 → I → J. Two hard orderings: **(1) F MUST precede H2** — the CUI egress gate (an in-session grind agent reading a marked chunk = egress), now enforced in code via `_assert_marking_complete` (PR #3), not convention. **(2) F MUST precede G** — `embed` buckets on LIVE `content_marking`; a chunk embedded before F marks it lands an indexed vector for a marked doc and corrupts the `null_unmarked==0` accounting. Gate G on F `reconcile_overall == PASS` (operational check). Reindex follows the last sink write within G.
 
 ---
 
@@ -397,20 +397,23 @@ $RUN pipelines/sam_gov/sam_marking_fullbody_90day.py --phase reconcile          
 
 ## 9. PHASE G — Embed-refresh + reindex the touched sinks (self-hosted; zero account spend)
 
-**Action:**
+**Precondition:** Phase F has reconciled PASS (embed buckets on LIVE `content_marking`; a chunk embedded before F marks it lands an indexed vector for a marked doc — see §1 ordering).
+
+**Action — CLI is a POSITIONAL verb + `--sink` + `--marking` (NO `--phase`; verified against `sam_attachment_embed_90day.py` `cmd` choices):**
 ```bash
-# Embed the NULL tail (the new appended chunks + any pre-existing NULLs) per sink, then reindex.
-$RUN pipelines/sam_gov/sam_attachment_embed_90day.py --sink scope   --phase embed
-$RUN pipelines/sam_gov/sam_attachment_embed_90day.py --sink unknown --phase embed
-$RUN pipelines/sam_gov/sam_attachment_embed_90day.py --sink scope   --phase index
-$RUN pipelines/sam_gov/sam_attachment_embed_90day.py --sink unknown --phase index
-# (pricing has no embedding column in the vector sense / no embedding_idx — D2; embed worklist is scope+unknown)
+# Embed the new unmarked NULL tail per sink, then reindex. Pin the device (multi-hour on MPS).
+EMBED_DEVICE=cuda $RUN pipelines/sam_gov/sam_attachment_embed_90day.py embed --sink scope   --marking unmarked
+EMBED_DEVICE=cuda $RUN pipelines/sam_gov/sam_attachment_embed_90day.py embed --sink unknown --marking unmarked
+$RUN pipelines/sam_gov/sam_attachment_embed_90day.py index --sink scope
+$RUN pipelines/sam_gov/sam_attachment_embed_90day.py index --sink unknown
+$RUN pipelines/sam_gov/sam_attachment_embed_90day.py verify    # null_unmarked==0 both sinks
+# (pricing has no embedding_idx / no embedding column — D2; embed worklist is scope+unknown)
 ```
-> Confirm the exact `--sink/--phase` CLI surface against `sam_attachment_embed_90day.py` at run time; `embed_sink` worklist is `embedding IS NULL` (embed:127), `index_sink` does compact-best-effort → `create_index IVF_PQ replace=True` → scalar campaign.
-**Inputs/outputs:** in = chunk rows with `embedding IS NULL`. out = filled `embedding` + rebuilt IVF_PQ + scalar indices on scope/unknown.
-**Cost class:** **self-hosted GPU/MPS** (BGE-large, 1024-dim per schema extract:412/439), tens of minutes for the new-chunk delta + reindex; **zero account/API spend** (model is self-hosted). Marked rows embed too (gate is consumption-side, not embedding) but stay out of external egress.
-**Idempotency:** `embedding IS NULL` worklist is free-resume; `merge_insert("chunk_id").when_matched_update_all()` full-row (embed:115); `create_index(replace=True)`.
-**DoD gate:** `embedding IS NULL == 0` for the UNMARKED set per sink (the completion contract); vector index present on scope + unknown.
+> `embed_sink` default `--marking unmarked` selects `embedding IS NULL AND array_length(content_marking)=0` (embed:70). `index_sink` does compact-best-effort → `create_index IVF_PQ replace=True` → scalar campaign and TOLERATES `null_marked>0` (marked rows excluded from the ANN index by construction). `sam_attachment_embed_90day.py` has NO `--daemon` — run under the persistent-venv + `setsid` pattern (this lift's proven durability path), not a bare ephemeral `uv run`.
+**Inputs/outputs:** in = chunk rows with `embedding IS NULL AND content_marking=[]`. out = filled `embedding` + rebuilt IVF_PQ + scalar indices on scope/unknown.
+**Cost class:** **self-hosted GPU/MPS** (BGE-large, 1024-dim, extract:412/439). The unmarked NULL set is THIS lift's own new delta — measured live ≈ **127,610 (scope) + 259,566 (unknown) ≈ 387K vectors** — so this is **multi-hour on MPS (~9h); pin `EMBED_DEVICE=cuda`**. Zero account/API spend (self-hosted). **Marked chunks are NOT embedded by this pass (by design)** — the ~4,574/~8,598 new marked chunks (plus the pre-existing ~245K/267K prod marked-NULLs) ship vector-invisible; retrieval safety is the consumption-side `array_length(content_marking)=0` filter, never an embed-side exclusion.
+**Idempotency:** `embedding IS NULL` worklist is free-resume; `merge_insert("chunk_id").when_matched_update_all()` full-row (embed:115) preserves `created_at`; `create_index(replace=True)`.
+**DoD gate:** `verify` → `null_unmarked == 0` per sink (the completion contract); record the residual `null_marked` (expected NONZERO — never embedded); vector index present on scope + unknown.
 **Blast radius:** shared scope/unknown `embedding` + indices. **Guardrail:** queries between Phase E append and Phase G reindex are correct-but-slower (brute-forced NULL tail) — acceptable, documented; the reindex gate requires `embedding IS NULL == 0` (unmarked) before declaring done.
 
 ---
@@ -428,53 +431,57 @@ $RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase index    # afte
 **DoD gate:** every target id terminal in the ledger regex lane; sampled `evidence_quote` substring-asserts green; no marked resource carries verbatim text.
 
 ### H2 — LLM grind (session-agent; account-burning; resumable across the 5h cap)
+**Hard precondition (MECHANICAL CUI egress gate — PR #3):** `--phase bracket` and `--phase select` call `_assert_marking_complete` and REFUSE unless the Phase-F report (`--marking-report`, default `/tmp/sam_marking_fullbody_report.json`) shows `reconcile_overall == PASS`. Pass `--require-marking-after <chunk-append ISO8601>` so a stale prior-run PASS cannot satisfy it. `--resource-ids-file $IDS` activates the parent-aware structural subset guard in `_pending_worklist` (no out-of-scope id may enter the account-burning lane — incidental scoping is no longer relied upon).
 ```bash
-# 1) BRACKET: derive the marked set LIVE from chunk content_marking; stamp excluded_marked (~620 est).
-$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase bracket
-# 2) SELECT: stage self-contained task files (marked chunks HARD-asserted out, labor:1529-1534).
-#    Pilot first to smoke the harness, then the full pending worklist.
-$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase select --pilot 4 --manifest-out /tmp/sublift_pilot.json
-$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase select        # full pending worklist
-# 3) GRIND: agents read tasks/, write results/. Edit DIR/NB/CONC at the top of the harness per cycle.
+GATE="--marking-report /tmp/sam_marking_fullbody_report.json --require-marking-after $APPEND_TS --resource-ids-file $IDS"
+# 1) BRACKET: derive the marked set LIVE from chunk content_marking; stamp excluded_marked (count MEASURED here).
+$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase bracket  $GATE
+# 2) CENSUS: token census over the pending worklist (no staging) — sizes the grind before spend.
+$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase census   $GATE
+# 3) SELECT: stage self-contained task files (marked chunks HARD-asserted out). Pilot first, then full.
+$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase select --pilot 4 --manifest-out /tmp/sublift_pilot.json $GATE
+$RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase select   $GATE      # full pending worklist
+# 4) GRIND: agents read tasks/, write results/. Edit DIR/NB/CONC at the top of the harness per cycle.
 node pipelines/sam_gov/reference/p2b_extract_grind_workflow.js   # (or its harness runner)
-# 4) INGEST: validate (>=98% run pass-rate gate, labor:2008) + scoped land + ledger.
+# 5) INGEST: validate (>=98% run pass-rate gate) + scoped land + ledger.
 $RUN pipelines/sam_gov/sam_labor_demand_extract_90day.py --phase ingest
 ```
 **Inputs/outputs:** in = staged task files (one per pending resource, marked excluded). out = validated requirement rows landed into `govcon_award_requirements_90day` under the sink lease + ledger `llm_state` transitions (`pending → … → done`/`quarantined`).
-**Cost class:** **account-burning** (session-agent token spend). Corpus = ≈ `N_TARGET` − (~620 marked) ≈ **~3,350 LLM docs**, mostly L3_triage/unknown — **a single grind session or two**, far under the full-corpus multi-batch regime.
+**Cost class:** **account-burning** (session-agent token spend). Corpus = pending after bracket = (covered targets − marked) — **MEASURE at `--phase census`; do NOT assume the ~620/~3,350 projection** (live pre-F inline-marked is far below the ~620 estimate, which is a *post-full-body* figure that F raises). Expected a single grind session or two.
 **Resumability across the 5h cap:** the grind harness (`p2b_extract_grind_workflow.js`) launches lanes in throttled groups of `CONC` (line 10) with an **all-failure circuit breaker** — 2 consecutive all-fail groups → it stops launches cleanly (line 28), which is exactly how it detects a 5h session-cap / outage. **Resume by re-running**: per the harness NOTE (line 11), a task whose result file already exists is **skipped**, so re-running re-launches only the unwritten tasks. The ledger `llm_state` advances per-resource, so a mid-grind stop **resumes per-resource and never re-pays** for a landed doc.
 **Multi-session lane option (disjoint slices):** raise `CONC`/`NB` per cycle (harness lines 9-10), and/or run **disjoint id slices in parallel sessions** by splitting `$IDS` into N files and staging each into a distinct `--staging-dir`; because `select` stages per-resource task files and `ingest` validates per-file, two sessions over disjoint id sets never collide (distinct task dirs, distinct ledger rows). Each cycle is independently resumable (existing-result-file skip).
 **DoD gate:** `--phase ingest` reports `run_pass_rate >= 0.98` (labor:2008) or quarantine-wholesale (`gate_ok=false` lands nothing unless `--force-land`); every target id terminal in the ledger LLM lane (`done`/`quarantined`/`excluded_marked`).
-**Blast radius:** `govcon_award_requirements_90day` (LLM rows). **Guardrail (three gates behind one signal):** `--phase bracket` stamps `excluded_marked` from LIVE `content_marking`; `build_task_payload` HARD-ASSERTS no marked chunk reaches a task file (labor:1529-1534); the `select`/`census` worklist re-asserts zero marked resources (labor:1564). It is structurally impossible for a marked-doc chunk to reach a staged task file — which is why **Phase F MUST precede H2**.
+**Blast radius:** `govcon_award_requirements_90day` (LLM rows). **Guardrail (now four gates, one mechanical precondition + three live-signal asserts):** (0) `_assert_marking_complete` — bracket/select REFUSE unless Phase-F `reconcile_overall == PASS` (PR #3; the mechanical F-before-H2 enforcement, no longer convention); (1) `--phase bracket` stamps `excluded_marked` from LIVE `content_marking`; (2) `_pending_worklist` HARD-ASSERTS zero marked resources pending; (3) `build_task_payload` HARD-ASSERTS no marked chunk reaches a task file. With the gate, a not-yet-promoted marked chunk cannot slip through (the live asserts alone read `content_marking`, which is empty until F promotes). **Phase F MUST precede H2 — and is now enforced in code.**
 
 ---
 
 ## 11. PHASE I — Rebuild the subawardee capability profile (idempotent overwrite)
 
-**Action:**
+**Precondition:** F (marking) + G (embed) + H (requirements) complete — the profile re-derives from their outputs; running early builds on partial state.
+**Action — CLI is a POSITIONAL verb (NO `--phase`; verified against `build_subawardee_capability_profiles.py` `cmd` choices). Run under persistent-venv + `setsid` (no `--daemon`):**
 ```bash
-$RUN pipelines/sam_gov/build_subawardee_capability_profiles.py --phase build
-$RUN pipelines/sam_gov/build_subawardee_capability_profiles.py --phase verify
+$RUN pipelines/sam_gov/build_subawardee_capability_profiles.py build
+$RUN pipelines/sam_gov/build_subawardee_capability_profiles.py verify --content-hash
 ```
 **Inputs/outputs:** in = bridge→manifest join + `govcon_award_requirements_90day` + `govcon_doc_scope_90day` over `sub_res_ids`. out = overwritten `govcon_subawardee_capability_profiles` (profile:511, `mode="overwrite"`). Re-derives `sub_res_ids` and re-rolls `has_extracted_scope` / `n_scope_solicitations` / requirements / `scope_summary` / `capability_tags` — **the new chunks/requirements are picked up automatically; no profile-code change.**
 **Cost class:** local CPU, minutes. **Idempotency:** overwrite-mode snapshot, `PRAGMA threads=1` deterministic aggregation, stamped with consumed run_ids.
-**DoD gate:** `--phase verify` shows `has_extracted_scope` risen from **3,302 toward ~4,700**; `row_eq_universe` / `row_eq_distinct_uei` true; **CUI checks `scope_summary_without_flag == 0`** (profile:553, `scope_summary IS NOT NULL AND has_extracted_scope = false` → 0) **and `clearance_level_without_flag == 0`** (profile:552); the `_assemble` CUI pre-flight (profile:148-159) did NOT raise (refuses the build if any `govcon_doc_scope_90day` marked row exists or any requirements row leaks verbatim text).
+**DoD gate:** `verify --content-hash` shows `has_extracted_scope` RISEN from the pre-lift 3,302 (record the MEASURED new value — do not assert a fixed target; delivered coverage = the ~3,107 covered targets minus the OCR/noise tail, mapped to sub-UEIs); `row_eq_universe` / `row_eq_distinct_uei` true; **CUI checks `scope_summary_without_flag == 0`** (profile:553, `scope_summary IS NOT NULL AND has_extracted_scope = false` → 0) **and `clearance_level_without_flag == 0`** (profile:552); the `_assemble` CUI pre-flight (profile:148-159) did NOT raise (refuses the build if any `govcon_doc_scope_90day` marked row exists or any requirements row leaks verbatim text).
 **Blast radius:** overwrites the profile dataset. **Guardrail:** the build itself REFUSES on a CUI-invariant violation (profile:150-159) — a hard backstop confirming the marking pass + redaction-at-write held.
 
 ---
 
 ## 12. PHASE J — Throwaway cleanup
 
-**Action (from a terminal — the session safety guard blocks `rm` of R2-adjacent absolute paths):** delete the five `_sublift_*` datasets and any stale `_sublift_*` leases. The shared sinks already carry the appended chunks; the throwaway namespace is pure scratch.
-**Cost class:** seconds. **Idempotency:** delete-if-exists. **DoD gate:** the §0/D3 namespace probe returns `Not found` for all five `_sublift_*` datasets. **Blast radius:** none (scratch). **Guardrail:** distinct lease slugs mean a leftover `_sublift_*` lease never contends with prod even if cleanup is skipped.
+**Action (the session safety guard blocks `rm` of R2-adjacent absolute paths — use scoped boto3, NOT `rm`):** delete the **SIX** `_sublift_*` datasets — `_sublift_extract_ledger`, `_sublift_scope`, `_sublift_pricing`, `_sublift_unknown`, `_sublift_dedup`, and **`_sublift_inner`** (the inner-worklist copy created by the §B `--inner-uri` isolation) — plus any `_sublift_*` keys under `active/_sink_leases/`. Procedure (the one this lift used): `list_objects_v2(Prefix="active/_sublift_")` → **assert every returned key startswith `active/_sublift_`** → `delete_objects` in 1000-key batches → re-list to confirm empty.
+**Cost class:** seconds. **Idempotency:** delete-if-exists. **DoD gate:** the prefix `active/_sublift_` lists zero objects (all six datasets gone). **Blast radius:** none (scratch). **Guardrail:** the per-key `startswith` assertion makes it structurally impossible to delete a non-`_sublift_` (prod) key; distinct lease slugs never contend with prod even if a lease lingers.
 
 ---
 
 ## 13. Final acceptance (the deliverable proof)
 
-1. **Coverage lift:** `build_subawardee_capability_profiles --phase verify` → `has_extracted_scope` count divided by `universe_bridge_sub_ueis` (profile:557) lands in the **mid-60s%–~71.4%** band (ceiling 4,704/6,586; delivered lower per R8 — OCR/content-noise tail). Record the exact delivered rate.
-2. **Requirement-filtered sub query returns the new subs with citations:** a query over `govcon_subawardee_capability_profiles` filtered to `has_extracted_scope = true` returns **~+1,274** subs not present pre-lift, each with a non-empty `scope_summary` / requirement set whose `source_chunk_ids` resolve to the newly-appended chunks. Diff the `sub_uei` set against the pre-lift snapshot to confirm the delta and that each new sub's evidence chunk_ids exist in the shared sinks.
-3. **No prime-state mutation:** `sam_attachment_extraction_90day` (the SHARED prime ledger) row count and per-resource resolution for the 11,067 prime cohort are **byte-identical** to the pre-lift snapshot (the throwaway ledger absorbed every event). Assert: no event in the shared ledger carries `run_id` from any `--phase route/expand/extract` run of this lift.
+1. **Coverage lift (MEASURED, not asserted):** `build_subawardee_capability_profiles verify` → `has_extracted_scope / universe_bridge_sub_ueis` (profile:557). Ceiling is ~71.4% (4,704/6,586); delivered is lower (R8 — OCR/content-noise tail; this lift covered ~3,107 of 3,969 target resources). **Record the exact delivered rate; do not gate on a fixed band.**
+2. **Requirement-filtered sub query returns the new subs with citations:** a query over `govcon_subawardee_capability_profiles` filtered to `has_extracted_scope = true` returns the **measured** set of subs not present pre-lift (the projection was ~+1,274; report the actual), each with a non-empty `scope_summary` / requirement set whose `source_chunk_ids` resolve to the newly-appended chunks. Diff the `sub_uei` set against the pre-lift snapshot to confirm the delta and that each new sub's evidence chunk_ids exist in the shared sinks.
+3. **No prime-state mutation (PROVEN at Phase E):** `sam_attachment_extraction_90day` is **byte-identical** to its pre-lift snapshot — Lance version unchanged (v264), row count unchanged (246,296), full-content fingerprint identical, and **0 events carry a `sublift%`/lift `run_id`**. The throwaway ledger absorbed every route/expand/extract event. Re-confirm at the end via the §4 baseline (`/tmp/sublift_baseline.json`).
 
 ---
 
@@ -507,10 +514,10 @@ $RUN pipelines/sam_gov/build_subawardee_capability_profiles.py --phase verify
 | D finalize | row-address dedup is idempotent | re-run `--phase finalize` | dedup removes only crash-window dupes (`_duplicate_rowids`, keep-first) |
 | **E append** | per-sink `count_rows` delta + `$APPEND_CKPT`; `merge_insert chunk_id` | re-run `subaward_scope_append.py` | matched rows rewrite identical values = zero net delta |
 | **F marking** | per-resource decisions JSONL (scan) + live-state writeback worklist | re-run `--phase scan`→`writeback`→`reconcile` | writeback re-derives from LIVE state; completed → selects zero rows |
-| G embed | `embedding IS NULL` worklist (embed:127) | re-run `--phase embed`/`index` | NULL worklist shrinks monotonically; `create_index replace=True` |
+| G embed | `embedding IS NULL` worklist (embed:70) | re-run `embed`/`index` (positional verb, NO `--phase`) | NULL worklist shrinks monotonically; `create_index replace=True` |
 | H1 regex | ledger regex-lane state + ckpt; scoped delete-before-merge | re-run `--phase extract --resume` | terminal ids skipped; delete-before-merge replaces |
 | **H2 LLM** | ledger `llm_state` (per-resource) + result-file existence (harness line 11) + circuit breaker (line 28) | re-run `--phase select`/grind/`--phase ingest` | existing result files skipped; landed resources stay terminal — never re-paid |
-| I profile | overwrite snapshot (atomic) | re-run `--phase build` | full re-derive from current sink state; deterministic |
+| I profile | overwrite snapshot (atomic) | re-run `build` (positional verb, NO `--phase`) | full re-derive from current sink state; deterministic |
 | J cleanup | delete-if-exists | re-run delete | idempotent |
 
 **Crash-anywhere rule:** every long phase (C/D/F/G/H1/H2) is daemonized and resumable; re-running the same command after any crash converges without double-pay and without touching shared prime state. The only manual checkpoint is `$APPEND_CKPT` (Phase E) — a human-readable per-sink high-water for confidence; the `merge_insert` idempotency makes even a lost `$APPEND_CKPT` safe.

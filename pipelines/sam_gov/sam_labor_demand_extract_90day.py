@@ -1385,11 +1385,56 @@ def merge_ledger_llm(so: dict, uri: str, updates: list[dict], run_id: str,
 
 
 # ════════════════════════════════════════════════════════════════ phase: bracket (decision A)
+def _marking_gate_ok(report: "dict | None", *, require_after: "str | None" = None) -> None:
+    """CUI EGRESS GATE (pure). The full-body marking pass (Phase F) MUST have reconciled before any
+    LLM phase stages a task file — an in-session agent reading a not-yet-promoted marked chunk is
+    egress. Raises unless the marking report is present, `reconcile_overall == PASS`, and (when a
+    freshness bound is supplied) the report `completed_at` is at/after it. None report => raise.
+    The live-`content_marking` asserts downstream (bracket/_pending_worklist/select/build_task_payload)
+    are the belt; this is the suspenders that make 'F ran' a precondition, not a hope."""
+    if report is None:
+        raise RuntimeError("CUI gate: marking report absent — run Phase F (sam_marking_fullbody_90day "
+                           "scan->writeback->reconcile) to reconcile_overall=PASS before any LLM phase.")
+    overall = report.get("reconcile_overall")
+    if overall != "PASS":
+        raise RuntimeError(f"CUI gate: marking reconcile_overall={overall!r} (need 'PASS') — refusing "
+                           f"to stage LLM work until the full-body marking pass reconciles.")
+    if require_after is not None:
+        ca = report.get("completed_at")
+        if ca is None or str(ca) < str(require_after):
+            raise RuntimeError(f"CUI gate: marking report stale — completed_at={ca!r} is older than "
+                               f"--require-marking-after={require_after!r}; re-run Phase F after the "
+                               f"latest chunk write.")
+
+
+def _assert_marking_complete(args) -> None:
+    """Read the marking report from --marking-report and apply the pure CUI gate."""
+    report = None
+    if args.marking_report and os.path.exists(args.marking_report):
+        with open(args.marking_report) as fh:
+            report = json.load(fh)
+    _marking_gate_ok(report, require_after=getattr(args, "require_marking_after", None))
+
+
+def _assert_h2_subset(pending: "set[str]", allow: "set[str] | None") -> None:
+    """STRUCTURAL H2 SCOPING (pure). When an allow-list is supplied (--resource-ids/-file), every
+    pending LLM resource MUST belong to it — making H2 scope structural, not incidental on the rest of
+    the corpus being terminal. Parent-aware: expanded-zip inner ids `<rid>::<inner>` qualify when their
+    parent rid is in the allow-list (those synthetic ids are never in $IDS themselves). None => OFF."""
+    if not allow:
+        return
+    leak = {rid for rid in pending if rid.split("::", 1)[0] not in allow}
+    if leak:
+        raise RuntimeError(f"H2 SCOPE LEAK: {len(leak)} pending ids outside the --resource-ids allow-list "
+                           f"(e.g. {sorted(leak)[:3]}); refusing to stage out-of-scope LLM work.")
+
+
 def phase_llm_bracket(args, so: dict, run_id: str) -> dict:
     """Record operator decision A in the ledger. Derives the marked set LIVE from chunk
     content_marking; partitions every non-terminal ledger row into pending / excluded_marked /
     excluded_out_of_scope (the three states tile the pre-flight ledger exactly — coverage
     accounting stays honest and reversible). Idempotent: re-running merges only drifted rows."""
+    _assert_marking_complete(args)                     # CUI egress gate: Phase F must have reconciled
     ledger_rows = _ledger_full(so, args.ledger_uri)
     sink_counts, marked = compute_sink_maps(so, args)
     input_set = compute_input_set(sink_counts, ledger_rows)
@@ -1569,6 +1614,9 @@ def _pending_worklist(so: dict, args, sink_counts: dict[str, dict[str, int]],
     if stale:
         raise RuntimeError(f"{len(stale)} marked resources still llm_state='pending' "
                            f"(e.g. {sorted(stale)[:3]}) — run --phase bracket first (decision A).")
+    # STRUCTURAL SCOPING: when an allow-list is supplied, no out-of-scope resource may enter the
+    # account-burning LLM lane (parent-aware for expanded-zip inner ids).
+    _assert_h2_subset(pending, set(args.resource_ids) if getattr(args, "resource_ids", None) else None)
     out: dict[str, list[str]] = {}
     for sink, counts in sink_counts.items():
         ids = sorted(pending & set(counts))
@@ -1582,6 +1630,7 @@ def _pending_worklist(so: dict, args, sink_counts: dict[str, dict[str, int]],
 
 
 def phase_llm_select(args, so: dict, run_id: str) -> dict:
+    _assert_marking_complete(args)                     # CUI egress gate: Phase F must have reconciled
     template, schema, vocab, phash = load_llm_artifacts()
     sink_counts, marked = compute_sink_maps(so, args)
     worklist = _pending_worklist(so, args, sink_counts, marked)
@@ -2148,6 +2197,12 @@ def main(argv=None) -> int:
                         "versions silently.")
     p.add_argument("--force-land", action="store_true",
                    help="ingest: land despite a failed run gate (operator override, logged)")
+    p.add_argument("--marking-report",
+                   default=os.environ.get("SAM90_MARKING_REPORT", "/tmp/sam_marking_fullbody_report.json"),
+                   help="CUI gate: Phase-F reconcile report; bracket/select refuse unless reconcile_overall=PASS")
+    p.add_argument("--require-marking-after", default=None,
+                   help="CUI gate freshness: require marking report completed_at >= this ISO8601 (e.g. the "
+                        "chunk-append time) so a stale prior-run PASS cannot satisfy the gate")
     args = p.parse_args(argv)
     args.sinks = {s.strip() for s in args.sinks.split(",") if s.strip()}
     if args.resource_ids_file:
