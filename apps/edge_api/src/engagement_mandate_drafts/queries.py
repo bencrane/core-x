@@ -62,6 +62,37 @@ async def get_draft(conn, draft_id: str) -> dict | None:
     }
 
 
+async def get_staged_prefill_values(conn, opportunity_id: str) -> dict:
+    """The opportunity's STAGED per-deal values — the latest draft for this opportunity that carries
+    NON-EMPTY ``prefill_values`` (the Stage-mandate save). This is the source Confirm & Originate
+    pulls from, so values flow from the staging row, NOT the fresh empty draft an "Originate Mandate"
+    click mints (``insert_draft`` sets no prefill_values). Returns ``{}`` when nothing is staged.
+
+    Both the staging save and the originate click write to the SAME table; they differ only in that
+    the staged row has values. ``ORDER BY updated_at DESC`` takes the most recent save, so the result
+    is order-independent (stage-then-originate or originate-then-stage both resolve to the row with
+    values). The UUID guard mirrors the other reads — a garbage ref returns ``{}``, not a 500."""
+    try:
+        UUID(str(opportunity_id))
+    except (ValueError, TypeError, AttributeError):
+        return {}
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT prefill_values
+              FROM business.engagement_mandate_draft_content
+             WHERE opportunity_id = %s::uuid
+               AND prefill_values IS NOT NULL
+               AND prefill_values <> '{}'::jsonb
+             ORDER BY updated_at DESC
+             LIMIT 1
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    return (row[0] if row else None) or {}
+
+
 async def get_latest_by_opportunity(conn, opportunity_id: str) -> dict | None:
     """The opportunity's latest staging draft — what the prep page loads to resume editing what was
     staged off-screen. Returns None when the id is not a well-formed UUID or no draft exists yet (the

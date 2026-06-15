@@ -86,12 +86,15 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
     """
     async with get_db_connection() as conn:
         draft = await queries.get_draft(conn, draft_id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="mandate draft not found")
+        if not draft:
+            raise HTTPException(status_code=404, detail="mandate draft not found")
+        # Pull the per-deal values from the opportunity's STAGED draft (the Stage-mandate save),
+        # NOT from this freshly-minted confirm draft (which carries no prefill_values of its own).
+        prefill_values = await queries.get_staged_prefill_values(conn, draft["opportunity_id"])
     try:
         result = await documenso_client.create_document_from_template(
             draft["documenso_template_id"], external_id=draft_id,
-            prefill_values=draft.get("prefill_values") or {},
+            prefill_values=prefill_values,
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
