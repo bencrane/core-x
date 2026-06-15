@@ -18,6 +18,14 @@ def service_token() -> str | None:
     return os.environ.get("EDGE_API_SERVICE_TOKEN")
 
 
+def trigger_shared_secret() -> str | None:
+    """The shared secret Trigger.dev tasks present as ``Authorization: Bearer`` on the
+    ``/internal/*`` surface (``callHqx`` → TRIGGER_SHARED_SECRET). When unset (local dev)
+    the gate allows; every deployed environment sets it, so enforcement is live. Distinct
+    from ``service_token`` (the BFF-facing ``/api/v1`` surface)."""
+    return os.environ.get("TRIGGER_SHARED_SECRET")
+
+
 def documenso_api_key() -> str | None:
     """Documenso Cloud API key (format ``api_...``), server-side only. From ``core-x/prd``."""
     return os.environ.get("DOCUMENSO_API_KEY")

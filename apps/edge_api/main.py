@@ -43,6 +43,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
+from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
@@ -174,6 +175,12 @@ app.include_router(bookings_router)
 # opportunities: the operator Pipeline list — CRM opportunities materialized on a booking
 # (business.opportunities). Service-token gated; the BFF brokers it with the operator session.
 app.include_router(opportunities_router)
+
+# opportunities (internal): the materialization PRODUCER. The opportunity-materialize Trigger.dev
+# task (fired by the cal webhook on a new booking) calls /internal/opportunities/materialize to
+# project the booking → account+contact+opportunity. Trigger-secret gated, same /internal contract
+# as the gtm pipeline run-step. This is the seam the DocRaptor render layers onto in phase 2.
+app.include_router(internal_opportunities_router, prefix="/internal")
 
 # engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
 # (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
