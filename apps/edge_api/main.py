@@ -44,6 +44,8 @@ from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
 from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
+from .src.routers.engagement_mandates_v1 import router as engagement_mandates_router
+from .src.routers.internal_engagement_docs_v1 import router as internal_engagement_docs_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
@@ -181,6 +183,13 @@ app.include_router(opportunities_router)
 # project the booking → account+contact+opportunity. Trigger-secret gated, same /internal contract
 # as the gtm pipeline run-step. This is the seam the DocRaptor render layers onto in phase 2.
 app.include_router(internal_opportunities_router, prefix="/internal")
+
+# engagement-mandates: the PARALLEL engagement-document pathway (static AO term-only HTML → DocRaptor).
+# Operator surface (service-token): packages dropdown, lock-a-package → enqueue render, mandate state.
+app.include_router(engagement_mandates_router)
+# engagement-doc (internal): the engagement-doc-render Trigger.dev task calls /internal/engagement-doc/
+# render to bind the opportunity + locked package into the static HTML and render the PDF. Trigger-secret.
+app.include_router(internal_engagement_docs_router, prefix="/internal")
 
 # engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
 # (business.engagement_documenso_template_mappings) scoped to the operator's org domain.

@@ -1,0 +1,48 @@
+/* PLAIN engagement-content stylesheet — white page, black serif text, no brand visual identity.
+   This is what we send TODAY (manifest.plain = true): DocRaptor emits a neutral PDF and Documenso
+   layers its own branding on top. Injected into the document's <style> slot.
+   Prince/DocRaptor caveat: no filesystem/script fonts — system serif/sans only (named script fonts 422). */
+
+@page {
+  size: Letter; margin: 1in;
+  @bottom-center {
+    content: "Page " counter(page);
+    font-family: Helvetica, Arial, sans-serif; font-size: 8pt; color: #777777;
+  }
+}
+* { box-sizing: border-box; }
+html, body { background: #ffffff; }
+body {
+  font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.5;
+  color: #111111; margin: 0;
+}
+.wordmark {
+  font-family: Helvetica, Arial, sans-serif; font-weight: 700; letter-spacing: 0.34em;
+  font-size: 12pt; color: #000000;
+}
+h1 { font-family: Georgia, serif; font-size: 18pt; font-weight: 700; margin: 6pt 0 2pt; color: #111111; }
+.rule { border: 0; border-top: 1pt solid #111111; margin: 10pt 0 16pt; }
+h2 {
+  font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 700; margin: 16pt 0 5pt; color: #111111;
+}
+strong { font-weight: 700; color: #000000; }
+p { margin: 0 0 8pt; text-align: justify; }
+.lead { color: #111111; }
+
+/* Execution block. page-break-inside: avoid keeps the signatures intact; placement is cosmetic —
+   Documenso resolves field positions from the [[...]] anchors via findText. */
+.sig-wrap { margin-top: 30pt; page-break-inside: avoid; }
+.sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
+.sig-grid td { width: 50%; vertical-align: top; padding-right: 28pt; }
+.sig-party {
+  font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; letter-spacing: 0.1em;
+  text-transform: uppercase; font-weight: 700; color: #111111; margin-bottom: 2pt;
+}
+.sig-entity { font-size: 10.5pt; font-weight: 700; color: #111111; margin-bottom: 18pt; }
+.sig-line { border-bottom: 1pt solid #111111; height: 30pt; margin-bottom: 4pt; }
+.sig-field { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #111111; margin: 0 0 2pt; }
+.sig-field .lab { display: inline-block; width: 44pt; color: #666666; }
+.sig-field .val { color: #111111; }
+/* Documenso findText anchor — real selectable text, whited out at sign-time. Never hide it. */
+.sig-anchor { font-family: Helvetica, Arial, sans-serif; font-size: 8pt; letter-spacing: 0.06em; color: #888888; }
