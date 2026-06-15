@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import config
-from ..cal import enrich, normalize, queries, research
+from ..cal import enrich, materialize, normalize, queries, research
 from ..cal.signature import verify_signature
 from ..db import get_db_connection
 
@@ -94,10 +94,12 @@ async def cal_webhook(
     # best-effort; neither affects the webhook outcome (booking + raw are already durable).
     research_result = None
     enrich_result = None
+    materialize_result = None
     if isinstance(normalized, dict) and normalized.get("action") == "created":
         ical_uid = normalized.get("ical_uid")
         research_result = await _kick_research(trigger_event, envelope, ical_uid)
         enrich_result = await _kick_enrich(trigger_event, envelope, ical_uid)
+        materialize_result = await _kick_materialize(ical_uid)
 
     return {
         "ok": True,
@@ -106,6 +108,7 @@ async def cal_webhook(
         "normalized": normalized,
         "research": research_result,
         "enrich": enrich_result,
+        "materialize": materialize_result,
     }
 
 
@@ -167,6 +170,18 @@ async def _kick_enrich(
             await conn.commit()
     except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
         logger.warning("enrich ref stamp failed for %s: %s", ical_uid, exc)
+    return {"triggered": True, "run_id": run_id}
+
+
+async def _kick_materialize(ical_uid: str | None) -> dict[str, Any]:
+    """Fire the booking → CRM opportunity materialization task for a new booking. Best-effort —
+    a trigger failure never affects the webhook (booking + raw are already durable). Sibling of
+    _kick_research / _kick_enrich; fires independently so one failing never blocks the others."""
+    if not ical_uid:
+        return {"triggered": False, "reason": "no ical_uid"}
+    run_id = await materialize.trigger_materialize(ical_uid=ical_uid)
+    if not run_id:
+        return {"triggered": False, "reason": "trigger returned no run id"}
     return {"triggered": True, "run_id": run_id}
 
 
