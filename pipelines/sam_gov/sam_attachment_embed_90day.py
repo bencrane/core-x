@@ -161,7 +161,12 @@ def embed_sink(name, *, marking="all", limit=None, flush_rows=FLUSH_ROWS):
 
 def index_sink(name):
     """Gate + build indexes AFTER embedding is complete for the sink (embedding IS NULL == 0)."""
+    import os
     import lance
+    # pylance 7.0.0 sizes the scalar-index external-sorter pool to ~0 (the spill degenerates and the
+    # merge OOMs even with ample RAM). Bypass spilling → in-memory sort against real RAM. Run scalar
+    # builds on a high-memory host (≥32 GB free) accordingly.
+    os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
     so = _r2_storage_options()
     uri = SINKS[name]
     ds = lance.dataset(uri, storage_options=so)

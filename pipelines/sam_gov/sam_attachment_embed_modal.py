@@ -140,6 +140,11 @@ def build_index(name: str):
 # pattern (matches pipelines/ingest_epa). No GPU needed for scalar indexes.
 @app.function(cpu=4.0, memory=65536, secrets=[modal.Secret.from_name("r2-credentials")], timeout=4 * 60 * 60)
 def build_scalars(name: str):
+    import os
+    # pylance 7.0.0 sizes the scalar-index external-sorter pool to ~0 (verified: "4.2 KB total pool"
+    # even in a 64 GB container), so the spill degenerates and the merge OOMs. Bypassing spilling
+    # does the sort in-memory against the real 64 GB — the actual fix (RAM, not pool, is the bound).
+    os.environ["LANCE_BYPASS_SPILLING"] = "true"
     import lance
     so = _so()
     uri = SINKS[name]
