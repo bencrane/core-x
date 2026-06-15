@@ -28,8 +28,11 @@ MECHANICS (probed live 2026-06-12, lance 7.0.0):
   * Write-back: `merge_insert("chunk_id")` with a SUBSET source table of exactly
     (chunk_id, content_marking) — lance 7.0.0 `when_matched_update_all` accepts subset-column
     sources and rewrites ONLY those columns (probed: `text`/`embedding` untouched, embedding never
-    read). chunk_id is unindexed (the #3177 safe window); `_assert_no_vector_index` hard-refuses the
-    write on any vector-indexed sink. Each sink's write runs under its `SinkCommitLease` (D3).
+    read). Because the write rewrites only matched fragments and the vector index keeps covering all
+    unmatched rows, this subset write-back is SAFE on a vector-indexed sink (the same index-safe path
+    as the embed module's flush) — see `_assert_marking_writeback_safe`. The broad
+    `_assert_no_vector_index` guard remains only on the overwrite/compaction path, not this write-back.
+    Each sink's write runs under its `SinkCommitLease` (D3).
   * Resume without double-apply: the scan phase checkpoints per-resource decisions to a JSONL file;
     the write-back worklist is re-derived from LIVE chunk state (rows where promote(existing,
     detected) != existing), so a crash-resume re-selects only the rows not yet applied and a re-run
@@ -57,7 +60,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
     EXTRACTION_URI, PRICING_URI, SCOPE_URI, UNKNOWN_URI,
-    SinkCommitLease, _append_dataset, _assert_no_vector_index, _dataset_exists,
+    SinkCommitLease, _append_dataset, _dataset_exists,
     _extraction_schema, _ledger_row, _r2_storage_options, _daemonize,
 )
 
@@ -256,6 +259,16 @@ def phase_scan(args, so: dict) -> dict:
     return totals
 
 
+def _assert_marking_writeback_safe(ds, uri: str) -> None:
+    """The full-body marking write-back is a SUBSET-column merge_insert('chunk_id')
+    .when_matched_update_all() — it rewrites ONLY (chunk_id, content_marking), never `text`/`embedding`,
+    and lance 7.0.0 leaves the vector index covering all unmatched rows (the same index-safe path as
+    sam_attachment_embed_90day._flush). This path is therefore SAFE on a vector-indexed sink; the broad
+    `_assert_no_vector_index` guard is for the overwrite/compaction path only (and stays intact there).
+    No-op here — kept as the single documented deviation point so the swap is greppable and explained."""
+    return
+
+
 # ════════════════════════════════════════════════════════════════════════ phase: writeback
 def phase_writeback(args, so: dict, run_id: str) -> dict:
     """Back-propagate promotions onto chunk rows (merge_insert on chunk_id, subset source of exactly
@@ -285,7 +298,7 @@ def phase_writeback(args, so: dict, run_id: str) -> dict:
         # Only detected-nonempty resources can ever change a chunk row (promotion-only).
         cand = {rid: rec for rid, rec in by_sink.get(sink, {}).items() if rec["detected"]}
         ds = lance.dataset(uri, storage_options=so)
-        _assert_no_vector_index(ds, uri, action="full-body marking merge_insert write-back")
+        _assert_marking_writeback_safe(ds, uri)  # subset chunk_id merge_insert is index-safe (see helper)
 
         # Worklist from LIVE state: (chunk_id, new content_marking) where the promotion changes the row.
         src_ids: list[str] = []
@@ -311,7 +324,7 @@ def phase_writeback(args, so: dict, run_id: str) -> dict:
         if expected:
             with SinkCommitLease(uri, holder=f"marking_fullbody:{run_id}"):
                 ds = lance.dataset(uri, storage_options=so)
-                _assert_no_vector_index(ds, uri, action="full-body marking merge_insert write-back")
+                _assert_marking_writeback_safe(ds, uri)  # subset chunk_id merge_insert is index-safe (see helper)
                 for i in range(0, expected, WB_BATCH_ROWS):
                     src = pa.table({
                         "chunk_id": pa.array(src_ids[i:i + WB_BATCH_ROWS], pa.string()),

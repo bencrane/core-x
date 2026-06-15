@@ -527,8 +527,35 @@ def _read_scope_gate(so: dict):
         columns=["resource_id", "gtm_scope", "scope_reason"])
 
 
+# ════════════════════════════════════════════════════ id allow-list (default-OFF route/extract filter)
+def _id_filter_sql(only_resource_ids: "set[str] | None", *, col: str) -> str:
+    """SQL AND-fragment restricting `col` to an explicit id allow-list. None → '' (default OFF: every
+    existing call path is byte-identical). Empty set → HARD RAISE (Guard #1): an empty filter would
+    otherwise fall through to the full corpus — the classic "matched nothing → selected everything"
+    footgun. Single quotes in ids are escaped, ids sorted for a deterministic fragment."""
+    if only_resource_ids is None:
+        return ""
+    if not only_resource_ids:
+        raise RuntimeError("id-filter resolved to an EMPTY set; refusing to run — an empty filter "
+                           "would select the full corpus.")
+    ids = ",".join("'" + i.replace("'", "''") + "'" for i in sorted(only_resource_ids))
+    return f"AND {col} IN ({ids})"
+
+
+def _assert_routed_subset(routed_ids, only_resource_ids: "set[str] | None") -> None:
+    """GUARD #2: after routing, every routed resource_id MUST be in the allow-list. Raises on any leak
+    — makes 'accidentally route the prime backlog into shared state' structurally impossible. No-op when
+    the filter is OFF (only_resource_ids is None)."""
+    if only_resource_ids is None:
+        return
+    leak = set(routed_ids) - only_resource_ids
+    if leak:
+        raise RuntimeError(f"ROUTE LEAK: {len(leak)} routed ids outside the allow-list "
+                           f"(e.g. {sorted(leak)[:5]}). Aborting before any extract.")
+
+
 # ════════════════════════════════════════════════════════════════════════ Phase 1 — dedup + route
-def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
+def phase1_route(*, so: dict, run_id: str, max_files: int = 0, only_resource_ids: "set[str] | None" = None) -> dict:
     """Spec §5: content-canonical dedup pre-pass (§5.1) + token-boundary routing (§5.2). Writes the
     dedup fan-out map, then appends `routed`/terminal events to the append-only ledger (LEFT-ANTI-JOIN
     the resolution view → idempotent)."""
@@ -543,12 +570,16 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
     con = duckdb.connect()
     con.register("files", files)
 
+    # id allow-list fragments (default OFF when only_resource_ids is None; empty set raises = Guard #1).
+    idf_f = _id_filter_sql(only_resource_ids, col="f.resource_id")
+    idf_d = _id_filter_sql(only_resource_ids, col="d.resource_id")
+
     # §5.1 dedup pre-pass: canonical = min(resource_id) per raw-sha cluster.
-    dedup = con.execute("""
+    dedup = con.execute(f"""
         SELECT f.resource_id, f.sha256 AS sha256_raw,
                min(f.resource_id) OVER (PARTITION BY f.sha256) AS canonical_resource_id,
                f.notice_id, f.solicitation_number
-        FROM files f WHERE f.status = 'downloaded' AND f.sha256 IS NOT NULL
+        FROM files f WHERE f.status = 'downloaded' AND f.sha256 IS NOT NULL {idf_f}
     """).to_arrow_table()
     con.register("dedup", dedup)
     dmap = con.execute("""
@@ -572,7 +603,10 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
     # capped smoke (max_files) to preserve raw-throughput calibration. Absent ⇒ no gate. Present ⇒ in-scope
     # (or unscored) canonical resources get a lane; out-of-scope ones are diverted to a terminal
     # `skipped_out_of_scope` below (which outranks any prior intermediate `routed` in the resolution view).
-    scope = None if max_files else _read_scope_gate(so)
+    # GATE BYPASS: an explicit id set IS the scope decision — the GTM "Strained Middle" gate must NOT
+    # re-skip them (all targets are out_of_scope in that prime-cohort gate, so without this the throwaway
+    # ledger would re-derive skipped_out_of_scope for the entire allow-list). Capped smoke disables it too.
+    scope = None if (max_files or only_resource_ids is not None) else _read_scope_gate(so)
     if scope is not None:
         con.register("scope", scope)
         scope_join = "LEFT JOIN scope s ON f.resource_id = s.resource_id"
@@ -587,7 +621,7 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
                  f.sha256, f.notice_id, f.solicitation_number, f.naics_code
           FROM files f JOIN dedup d ON f.resource_id = d.resource_id
           {scope_join}
-          WHERE f.status = 'downloaded' AND d.resource_id = d.canonical_resource_id {seen} {scope_keep}
+          WHERE f.status = 'downloaded' AND d.resource_id = d.canonical_resource_id {seen} {scope_keep} {idf_f}
         )
         SELECT resource_id, file_name, mime, sha256, notice_id, solicitation_number, naics_code,
           CASE
@@ -601,11 +635,14 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
         FROM (SELECT *, lower(coalesce(file_name,'')) AS file_name_l FROM canon)
     """, [SCOPE_RX, DROP_RX]).fetchall()
 
+    # GUARD #2: before ANY extract, prove the routed parent set ⊆ the allow-list (no-op when OFF).
+    _assert_routed_subset((r[0] for r in routed), only_resource_ids)
+
     # Non-canonical → dropped_duplicate (terminal); routed/terminal lanes per §5.2.
     noncanon = con.execute(f"""
         SELECT d.resource_id, d.notice_id, d.solicitation_number, NULL AS naics_code, d.sha256_raw
         FROM dedup d WHERE d.resource_id <> d.canonical_resource_id
-        {('AND d.resource_id NOT IN (SELECT resource_id FROM res)') if res is not None else ''}
+        {('AND d.resource_id NOT IN (SELECT resource_id FROM res)') if res is not None else ''} {idf_d}
     """).fetchall()
 
     # GTM out-of-scope (terminal `skipped_out_of_scope`): downloaded canonical resources the gate rejects
@@ -653,7 +690,8 @@ def phase1_route(*, so: dict, run_id: str, max_files: int = 0) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════ Phase 1.5 — zip expansion
-def phase15_expand(*, so: dict, run_id: str, max_files: int = 0) -> dict:
+def phase15_expand(*, so: dict, run_id: str, max_files: int = 0,
+                   only_resource_ids: "set[str] | None" = None) -> dict:
     """Spec §6/D10: stream-open each `container` (zip) from CAS in memory, content-address inner files
     by their own raw sha256, register synthetic ids `<rid>::<inner_path>` carrying parent lineage, and
     re-inject through §5.2 routing. Guards: depth ≤ ZIP_MAX_DEPTH, per-container uncompressed ceiling,
@@ -673,8 +711,10 @@ def phase15_expand(*, so: dict, run_id: str, max_files: int = 0) -> dict:
     import duckdb
     con = duckdb.connect()
     con.register("res", res)
+    # Only the in-set zip containers expand (authoritative regardless of ledger; default OFF = all).
+    idf_exp = _id_filter_sql(only_resource_ids, col="resource_id")
     containers = con.execute(
-        "SELECT resource_id FROM res WHERE lane='container' AND state='routed'").fetchall()
+        f"SELECT resource_id FROM res WHERE lane='container' AND state='routed' {idf_exp}").fetchall()
     if max_files:
         containers = containers[:max_files]
     print(f"phase1.5: containers to expand={len(containers):,}", flush=True)
@@ -1405,7 +1445,8 @@ def _assert_soffice() -> None:
                            f"serialized lane (§15/C2). Set SOFFICE_BIN or install LibreOffice.")
 
 
-def _build_tasks(so: dict, lanes: set[str], run_id: str) -> list[dict]:
+def _build_tasks(so: dict, lanes: set[str], run_id: str,
+                 only_resource_ids: "set[str] | None" = None) -> list[dict]:
     """Assemble Phase-2 work: resolution-view rows in state {routed, extract_failed} for the selected
     lane(s). Top-level files join the read-only download ledger (mime/size/lineage); inner files join
     the Phase-1.5 worklist; both carry contract_award_unique_key from the winners manifest (C14)."""
@@ -1417,9 +1458,13 @@ def _build_tasks(so: dict, lanes: set[str], run_id: str) -> list[dict]:
     con = duckdb.connect()
     con.register("res", res)
     lane_pred = ",".join(f"'{ln}'" for ln in lanes)
+    # Belt-and-suspenders id filter (authoritative regardless of ledger). NOTE: the extract phase passes
+    # None here — expanded-zip inner files carry synthetic ids `<rid>::<inner>` absent from the allow-list,
+    # so the throwaway ledger (already scoped to the targets + their own inner files) IS the scope.
+    extra = _id_filter_sql(only_resource_ids, col="resource_id")
     cand = con.execute(f"""
         SELECT resource_id, parent_resource_id, lane FROM res
-        WHERE state IN ('routed','extract_failed') AND lane IN ({lane_pred})
+        WHERE state IN ('routed','extract_failed') AND lane IN ({lane_pred}) {extra}
     """).to_arrow_table()
     con.register("cand", cand)
 
@@ -1479,7 +1524,7 @@ def _load_checkpoint(ckpt_path: str) -> set[str]:
 
 
 def phase2_extract(*, so: dict, run_id: str, lanes: set[str], resume: bool, max_files: int = 0,
-                   ckpt_path: str = CKPT_PATH) -> dict:
+                   ckpt_path: str = CKPT_PATH, only_resource_ids: "set[str] | None" = None) -> dict:
     """Spec §7: parallel text pass (pool) + serialized .doc/.xls lane (main proc), single writer."""
     import multiprocessing as mp
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -1498,7 +1543,11 @@ def phase2_extract(*, so: dict, run_id: str, lanes: set[str], resume: bool, max_
             lease.release()
         raise
     started = dt.datetime.now(dt.timezone.utc)
-    tasks = _build_tasks(so, lanes, run_id)
+    # §B.3 caveat: the extract phase passes None to _build_tasks — the (throwaway or shared) ledger IS the
+    # scope here. `only_resource_ids` is accepted for CLI symmetry but NOT forwarded: expanded-zip inner
+    # files carry synthetic ids `<rid>::<inner>` absent from the allow-list, and filtering on it would drop
+    # their extraction. The hard id-filter lives only at route/expand, where the files-SoR leak risk is real.
+    tasks = _build_tasks(so, lanes, run_id, only_resource_ids=None)
     done = _load_checkpoint(ckpt_path) if resume else set()
     tasks = [t for t in tasks if t["resource_id"] not in done]
     if max_files:
@@ -1950,7 +1999,19 @@ def _cli() -> None:
     p.add_argument("--pricing-uri", default=None)
     p.add_argument("--unknown-uri", default=None)
     p.add_argument("--dedup-uri", default=None)
+    # id allow-list (default OFF): route/expand ONLY these resource_ids, gate forced OFF.
+    p.add_argument("--resource-ids", default=None,
+                   help="comma-separated ids; route/expand ONLY these (gate forced OFF)")
+    p.add_argument("--resource-ids-file", default=None,
+                   help="newline-delimited id file (preferred for thousands of ids)")
     a = p.parse_args()
+
+    only_ids = None
+    if a.resource_ids_file:
+        with open(a.resource_ids_file) as fh:
+            only_ids = {ln.strip() for ln in fh if ln.strip()}
+    elif a.resource_ids:
+        only_ids = {s.strip() for s in a.resource_ids.split(",") if s.strip()}
 
     phase = _PHASE_ALIASES.get(a.phase)
     if phase is None:
@@ -1976,15 +2037,15 @@ def _cli() -> None:
         print("RESULT: phase0 datasets ensured.", flush=True)
         sys.exit(0)
     if phase == "route":
-        result = phase1_route(so=so, run_id=run_id, max_files=a.max_files)
+        result = phase1_route(so=so, run_id=run_id, max_files=a.max_files, only_resource_ids=only_ids)
     elif phase == "expand":
-        result = phase15_expand(so=so, run_id=run_id, max_files=a.max_files)
+        result = phase15_expand(so=so, run_id=run_id, max_files=a.max_files, only_resource_ids=only_ids)
     elif phase == "finalize":
         result = phase_finalize(so=so, run_id=run_id)
     else:
         lanes = set(_ALL_EXTRACT_LANES) if a.lane == "all" else {a.lane}
         result = phase2_extract(so=so, run_id=run_id, lanes=lanes, resume=a.resume,
-                                max_files=a.max_files, ckpt_path=a.ckpt)
+                                max_files=a.max_files, ckpt_path=a.ckpt, only_resource_ids=only_ids)
     _record_run(result, run_id, dsn)
     print("RESULT:", {k: v for k, v in result.items()
                       if k not in ("started_at", "completed_at", "by_extractor")}, flush=True)

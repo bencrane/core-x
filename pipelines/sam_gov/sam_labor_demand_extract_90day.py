@@ -2106,6 +2106,8 @@ def main(argv=None) -> int:
                    help="comma list of chunk sinks to read (read-only)")
     p.add_argument("--resource-ids", default=None,
                    help="comma list — explicit slice mode (smoke)")
+    p.add_argument("--resource-ids-file", default=None,
+                   help="newline-delimited id file (preferred for thousands of ids)")
     p.add_argument("--max-resources", type=int, default=0,
                    help="cap distinct resources per sink (smoke)")
     p.add_argument("--resume", action="store_true",
@@ -2148,8 +2150,12 @@ def main(argv=None) -> int:
                    help="ingest: land despite a failed run gate (operator override, logged)")
     args = p.parse_args(argv)
     args.sinks = {s.strip() for s in args.sinks.split(",") if s.strip()}
-    args.resource_ids = ([s.strip() for s in args.resource_ids.split(",") if s.strip()]
-                         if args.resource_ids else None)
+    if args.resource_ids_file:
+        with open(args.resource_ids_file) as _fh:
+            args.resource_ids = [ln.strip() for ln in _fh if ln.strip()]
+    else:
+        args.resource_ids = ([s.strip() for s in args.resource_ids.split(",") if s.strip()]
+                             if args.resource_ids else None)
     run_id = args.run_id or f"regex_extract_{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}"
 
     if args.daemon:
