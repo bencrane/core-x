@@ -43,7 +43,7 @@ async def get_draft(conn, draft_id: str) -> dict | None:
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT documenso_template_id, organization_id::text, opportunity_id::text
+            SELECT documenso_template_id, organization_id::text, opportunity_id::text, prefill_values
               FROM business.engagement_mandate_draft_content
              WHERE id = %s::uuid
             """,
@@ -56,6 +56,9 @@ async def get_draft(conn, draft_id: str) -> dict | None:
         "documenso_template_id": row[0],
         "organization_id": row[1],
         "opportunity_id": row[2],
+        # Operator-entered per-deal values, keyed by Documenso field LABEL (e.g.
+        # {"Engagement Fee": "$35,000"}). Confirm passes these through as prefillFields.
+        "prefill_values": row[3] or {},
     }
 
 

@@ -91,6 +91,7 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
     try:
         result = await documenso_client.create_document_from_template(
             draft["documenso_template_id"], external_id=draft_id,
+            prefill_values=draft.get("prefill_values") or {},
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e

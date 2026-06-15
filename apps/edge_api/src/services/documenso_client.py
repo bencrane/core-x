@@ -286,6 +286,7 @@ async def create_document_from_template(
     *,
     external_id: str | None = None,
     recipients: list[dict[str, Any]] | None = None,
+    prefill_values: dict[str, str] | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable v2 envelope FROM AN EXISTING DOCUMENSO TEMPLATE — the direct-to-
     documenso originate path (no DocRaptor render, no anchor field placement).
@@ -315,6 +316,26 @@ async def create_document_from_template(
     async with _client() as client:
         # 1) resolve the template's envelope id (the DB has only the numeric template id)
         payload["envelopeId"] = await _resolve_template_envelope_id(client, documenso_template_id)
+
+        # 1b) PREFILL pass-through. Map operator-entered values (keyed by Documenso field LABEL) onto
+        #     the template field's id + type and attach them as `prefillFields`, so the value lands on
+        #     the NEW document's field at instantiation. CONFIRMED against Documenso v2: `/envelope/use`
+        #     validates prefillFields and requires the field `type` LOWERCASED (`text`/`number`/…) — an
+        #     upper-case type 400s. Labels with no matching field, or an empty value, are skipped.
+        if prefill_values:
+            tmpl = (await client.get(f"/api/v2/envelope/{payload['envelopeId']}")).json()
+            by_label: dict[str, tuple[Any, str]] = {}
+            for fld in tmpl.get("fields") or []:
+                lab = (fld.get("fieldMeta") or {}).get("label")
+                if lab and lab not in by_label:
+                    by_label[lab] = (fld.get("id"), str(fld.get("type") or "").lower())
+            prefill_fields = [
+                {"id": by_label[lab][0], "type": by_label[lab][1], "value": val}
+                for lab, val in prefill_values.items()
+                if lab in by_label and val not in (None, "")
+            ]
+            if prefill_fields:
+                payload["prefillFields"] = prefill_fields
 
         # 2) instantiate a signable document from the template. Multipart: the 'payload' part is a
         #    JSON string (no 'files' part — the template supplies the document). recipients omitted →
