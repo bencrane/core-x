@@ -72,3 +72,21 @@ def test_subset_assertion_consumes_generator():
     # phase1_route passes a generator (r[0] for r in routed); the assertion must materialize it.
     with pytest.raises(RuntimeError):
         _assert_routed_subset((x for x in ["a", "leak"]), {"a"})
+
+
+def test_inner_worklist_alias_not_a_reserved_word():
+    """Regression: _build_tasks registers the inner worklist and JOINs it. The table name MUST NOT be
+    a SQL reserved keyword — `JOIN inner i` is a DuckDB parser error (INNER is reserved); the code uses
+    `inner_wl`. This locks the alias choice so it cannot regress back to a keyword."""
+    import duckdb
+    import pyarrow as pa
+    con = duckdb.connect()
+    con.register("inner_wl", pa.table({"resource_id": ["a"], "blob_key": ["k"]}))
+    con.register("cand", pa.table({"resource_id": ["a"]}))
+    # The chosen name parses and joins.
+    out = con.execute("SELECT c.resource_id FROM cand c JOIN inner_wl i ON c.resource_id = i.resource_id").fetchall()
+    assert out == [("a",)]
+    # The reserved word does NOT (documents the bug this fix resolves).
+    con.register("inner", pa.table({"resource_id": ["a"]}))
+    with pytest.raises(duckdb.ParserException):
+        con.execute("SELECT c.resource_id FROM cand c JOIN inner i ON c.resource_id = i.resource_id").fetchall()

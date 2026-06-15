@@ -1488,13 +1488,13 @@ def _build_tasks(so: dict, lanes: set[str], run_id: str,
     inner = []
     if _dataset_exists(INNER_URI, so):
         innerds = lance.dataset(INNER_URI, storage_options=so).to_table()
-        con.register("inner", innerds)
+        con.register("inner_wl", innerds)   # NOT "inner" — INNER is a DuckDB reserved keyword (parser error)
         inner = con.execute("""
             SELECT c.resource_id, c.parent_resource_id, c.lane,
                    i.mime_sniffed AS mime_declared, i.mime_sniffed, CAST(NULL AS BOOLEAN) AS mime_match,
                    i.content_length, i.sha256_raw, i.blob_key,
                    i.notice_id, i.solicitation_number, i.naics_code, a.contract_award_unique_key
-            FROM cand c JOIN inner i ON c.resource_id = i.resource_id
+            FROM cand c JOIN inner_wl i ON c.resource_id = i.resource_id
             LEFT JOIN award a ON c.parent_resource_id = a.resource_id
             WHERE c.parent_resource_id IS NOT NULL
         """).to_arrow_table().to_pylist()
@@ -1999,6 +1999,9 @@ def _cli() -> None:
     p.add_argument("--pricing-uri", default=None)
     p.add_argument("--unknown-uri", default=None)
     p.add_argument("--dedup-uri", default=None)
+    p.add_argument("--inner-uri", default=None,
+                   help="Phase-1.5 inner-file worklist (expand writes it, extract reads it); "
+                        "override to isolate a scoped run from the shared inner worklist")
     # id allow-list (default OFF): route/expand ONLY these resource_ids, gate forced OFF.
     p.add_argument("--resource-ids", default=None,
                    help="comma-separated ids; route/expand ONLY these (gate forced OFF)")
@@ -2021,12 +2024,13 @@ def _cli() -> None:
         _daemonize(LOG_PATH)                            # BEFORE pool / threaded-lib import (D8)
 
     # Late URI overrides (module globals are read by every helper).
-    global EXTRACTION_URI, SCOPE_URI, PRICING_URI, UNKNOWN_URI, DEDUP_URI
+    global EXTRACTION_URI, SCOPE_URI, PRICING_URI, UNKNOWN_URI, DEDUP_URI, INNER_URI
     EXTRACTION_URI = a.extraction_uri or EXTRACTION_URI
     SCOPE_URI = a.scope_uri or SCOPE_URI
     PRICING_URI = a.pricing_uri or PRICING_URI
     UNKNOWN_URI = a.unknown_uri or UNKNOWN_URI
     DEDUP_URI = a.dedup_uri or DEDUP_URI
+    INNER_URI = a.inner_uri or INNER_URI
 
     so = _r2_storage_options()
     dsn = os.environ.get("HQX_DB_URL_POOLED")
