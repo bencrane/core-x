@@ -175,9 +175,17 @@ def index_sink(name):
     if null_marked:
         log(f"[{name}] NOTE: {null_marked:,} MARKED rows remain NULL (CUI bracket, deferred) — they are "
             f"excluded from the ANN index by construction (NULL vectors are not indexed); correct.")
-    log(f"[{name}] compacting {n:,} rows …")
-    ds.optimize.compact_files()
-    ds = lance.dataset(uri, storage_options=so)
+    # compact_files is a best-effort optimization. pylance 7.0.0 trips an internal encoding bug
+    # ("Repetition buffer too large") compacting the large_string `text` / list columns of these
+    # sinks; the IVF_PQ index does NOT require compaction, so skip on failure and index the
+    # un-compacted fragments (a later Lance fix can compact separately).
+    log(f"[{name}] compacting {n:,} rows (best-effort) …")
+    try:
+        ds.optimize.compact_files()
+        ds = lance.dataset(uri, storage_options=so)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[{name}] compact skipped (non-fatal Lance error): {str(exc)[:140]}")
+        ds = lance.dataset(uri, storage_options=so)
     num_partitions = max(1, round(math.sqrt(n)))
     with SinkCommitLease(uri, holder=f"embed-index:{name}", ttl_s=6 * 60 * 60):
         log(f"[{name}] IVF_PQ cosine: partitions={num_partitions} sub_vectors={IVF_SUB_VECTORS} …")
