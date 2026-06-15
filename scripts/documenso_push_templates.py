@@ -85,7 +85,8 @@ def classify(ph: str, provider_id, participant_id) -> dict:
             "recipientId": rid,
             "placeholder": ph,
             "matchAll": True,
-            "fieldMeta": {"type": "text", "label": label_for(ph)},
+            # readOnly: every {{token}} is operator-prefilled at /template/use, never typed by a signer
+            "fieldMeta": {"type": "text", "label": label_for(ph), "readOnly": True},
             **SIZE["TEXT"],
         }
     return field
