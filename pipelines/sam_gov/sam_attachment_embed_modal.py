@@ -13,6 +13,7 @@ NULL — excluded from the ANN index by construction (verified).
 import modal
 
 EMBED_MODEL = "BAAI/bge-large-en-v1.5"   # pinned — MUST match apps/gtm_mcp/src/embeddings.py
+EMBED_MODEL_REV = "main"                 # HF revision pinned into sub_caps rows for provenance
 EMBED_DIM = 1024
 # A10G measured ~99 passages/s on these (≤512-token) chunks; A100 ~3× cuts the 1.89M bulk to ~1h.
 GPU = "A100"
@@ -20,8 +21,17 @@ ENCODE_BATCH = 384
 SINKS = {
     "scope": "s3://data-sink/active/govcon_scope_vectors_90day/",
     "unknown": "s3://data-sink/active/govcon_unknown_90day/",
+    "sub_caps": "s3://data-sink/active/govcon_sub_capability_vectors_90day/",
 }
-UNMARKED = "embedding IS NULL AND array_length(content_marking) = 0"   # the non-CUI bulk
+UNMARKED = "embedding IS NULL AND array_length(content_marking) = 0"   # the non-CUI bulk (chunk sinks)
+
+
+def _worklist(name: str) -> str:
+    """Per-sink embed worklist. The chunk sinks carry a CUI `content_marking` bracket (marked chunks
+    stay NULL, excluded from the ANN index by construction). `sub_caps` carries NO marking column —
+    `subaward_description` is the firm's own SAM subaward report (sub-self-reported, not solicitation
+    CUI) — so its worklist is the bare NULL set."""
+    return "embedding IS NULL" if name == "sub_caps" else UNMARKED
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -51,9 +61,10 @@ def embed_unmarked(name: str, flush_rows: int = 50000, limit: int | None = None)
 
     so = _so()
     uri = SINKS[name]
+    wl = _worklist(name)
     ds = lance.dataset(uri, storage_options=so)
-    total = ds.count_rows(filter=UNMARKED)
-    print(f"[{name}] unmarked worklist = {total:,}{' limit=' + str(limit) if limit else ''}", flush=True)
+    total = ds.count_rows(filter=wl)
+    print(f"[{name}] worklist ({wl}) = {total:,}{' limit=' + str(limit) if limit else ''}", flush=True)
     if total == 0:
         return {"sink": name, "embedded": 0, "remaining": 0}
 
@@ -67,13 +78,20 @@ def embed_unmarked(name: str, flush_rows: int = 50000, limit: int | None = None)
             raise RuntimeError(f"dim {vecs.shape[1]} != {EMBED_DIM}")
         fsl = pa.FixedSizeListArray.from_arrays(pa.array(vecs.reshape(-1), type=pa.float32()), EMBED_DIM)
         src = buf.set_column(buf.schema.get_field_index("embedding"), "embedding", fsl)
+        # sub_caps carries model provenance columns (pin them); chunk sinks have none → untouched.
+        if name == "sub_caps":
+            n = src.num_rows
+            for col, val in (("model_id", EMBED_MODEL), ("model_revision", EMBED_MODEL_REV)):
+                if col in src.schema.names:
+                    src = src.set_column(src.schema.get_field_index(col), col,
+                                         pa.array([val] * n, pa.string()))
         d = lance.dataset(uri, storage_options=so)
         d.merge_insert("chunk_id").when_matched_update_all().execute(src.cast(d.schema))
         return buf.num_rows
 
     embedded, t0 = 0, time.time()
     batches, nrows = [], 0
-    for batch in ds.scanner(filter=UNMARKED, batch_size=8192).to_batches():
+    for batch in ds.scanner(filter=wl, batch_size=8192).to_batches():
         batches.append(batch); nrows += batch.num_rows
         if nrows >= flush_rows or (limit and embedded + nrows >= limit):
             tbl = pa.Table.from_batches(batches)
@@ -91,8 +109,8 @@ def embed_unmarked(name: str, flush_rows: int = 50000, limit: int | None = None)
             tbl = tbl.slice(0, max(0, limit - embedded))
         if tbl.num_rows:
             embedded += flush(tbl)
-    remaining = lance.dataset(uri, storage_options=so).count_rows(filter=UNMARKED)
-    print(f"[{name}] DONE embed: +{embedded:,} · {remaining:,} unmarked still NULL · "
+    remaining = lance.dataset(uri, storage_options=so).count_rows(filter=wl)
+    print(f"[{name}] DONE embed: +{embedded:,} · {remaining:,} still NULL · "
           f"{time.time() - t0:.0f}s", flush=True)
     return {"sink": name, "embedded": embedded, "remaining": remaining}
 
@@ -105,10 +123,12 @@ def build_index(name: str):
     uri = SINKS[name]
     ds = lance.dataset(uri, storage_options=so)
     n = ds.count_rows()
-    null_unmarked = ds.count_rows(filter=UNMARKED)
-    null_marked = ds.count_rows(filter="embedding IS NULL AND array_length(content_marking) > 0")
-    if null_unmarked != 0:
-        raise RuntimeError(f"[{name}] {null_unmarked:,} UNMARKED still NULL — finish embed before index")
+    wl = _worklist(name)
+    null_remaining = ds.count_rows(filter=wl)
+    null_marked = (0 if name == "sub_caps"
+                   else ds.count_rows(filter="embedding IS NULL AND array_length(content_marking) > 0"))
+    if null_remaining != 0:
+        raise RuntimeError(f"[{name}] {null_remaining:,} worklist rows still NULL — finish embed before index")
     print(f"[{name}] indexing {n:,} rows ({null_marked:,} marked rows remain NULL — bracketed, "
           f"excluded from ANN by construction)", flush=True)
     # compact_files is a best-effort optimization: pylance 7.0.0 trips an internal encoding bug
@@ -152,10 +172,15 @@ def build_scalars(name: str):
     cols = set(ds.schema.names)
     have = {(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
             for i in ds.list_indices()}
-    plan = [("resource_id", "BTREE"), ("contract_award_unique_key", "BTREE"),
-            ("naics_code", "BITMAP"), ("header_class", "BITMAP")]
-    if name == "unknown" and "lexicon_hit" in cols:
-        plan.append(("lexicon_hit", "BITMAP"))
+    if name == "sub_caps":
+        # sub_caps grain is (subawardee_uei, description_chunk_ix); the only prefilter key is
+        # BTREE(subawardee_uei) — already built by build_sub_capability_vectors.py (idempotent skip).
+        plan = [("subawardee_uei", "BTREE")]
+    else:
+        plan = [("resource_id", "BTREE"), ("contract_award_unique_key", "BTREE"),
+                ("naics_code", "BITMAP"), ("header_class", "BITMAP")]
+        if name == "unknown" and "lexicon_hit" in cols:
+            plan.append(("lexicon_hit", "BITMAP"))
     for col, kind in plan:
         if col not in cols or f"{col}_idx" in have:
             continue
