@@ -66,11 +66,13 @@ DOC_SCOPE_URI = f"{ACTIVE}/govcon_doc_scope_90day/"
 CONTRACT_SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges_90day/"
 POCS_URI = f"{ACTIVE}/sam_pocs/"
+SELF_TAGS_URI = f"{ACTIVE}/govcon_sub_self_reported_tags/"   # Path B sidecar (desc_sha → tags)
+SELF_TAG_DESC_CHARS = 600   # MUST match classify_sub_self_reported_tags.MAX_DESC_CHARS (join key)
 
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["sub_uei"]
 BITMAP_INDEXES = ["requires_clearance", "requires_cmmc", "has_extracted_scope", "poc_available",
-                  "marked_solicitation", "req_clearance_level_max"]
+                  "marked_solicitation", "req_clearance_level_max", "tag_source"]
 
 # Deterministic per-sub list caps (bound payload; coverage_truncated set when a cap actually clips).
 TAG_CAP = 30
@@ -131,6 +133,7 @@ def _assemble(so):
     csub = lance.dataset(CONTRACT_SUBAWARD_URI, storage_options=so)
     team = lance.dataset(TEAMING_URI, storage_options=so)
     pocs = lance.dataset(POCS_URI, storage_options=so)
+    selftag = lance.dataset(SELF_TAGS_URI, storage_options=so)   # Path B sidecar
 
     # ── universe + sub→resource map (small feeds; full scans) ────────────────────────────────────
     bridge_tbl = bridge.scanner(columns=[
@@ -171,19 +174,28 @@ def _assemble(so):
         filter=pc.field("resource_id").isin(sub_res_ids)).to_table() if sub_res_ids else dsc.scanner(
         columns=["resource_id", "scope_summary", "capability_tags", "validated", "marked_resource"],
         filter=pc.field("resource_id").isin(["__none__"])).to_table()
+    # PATH B widening: csub is the LEAD AND the universe source now (every sub with a subaward), so it is
+    # scanned in FULL (not bridge-bounded). The scope/requirements feeds stay bridge-resource-bounded
+    # (only bridge subs reach a solicitation resource); teaming + POC + the self-tag sidecar join onto
+    # the full universe.
     csub_tbl = csub.scanner(columns=[
         "subawardee_uei", "subawardee_name", "subawardee_parent_uei", "subaward_description",
         "subaward_number", "subaward_amount", "subaward_action_date", "prime_awardee_uei",
-        "prime_awardee_name", "prime_award_naics_code"],
-        filter=pc.field("subawardee_uei").isin(sub_ueis)).to_table()
+        "prime_awardee_name", "prime_award_naics_code"]).to_table()
+    # full universe = distinct csub subs ∪ bridge subs (bridge ⊂ csub except a tiny edge)
+    full_sub_ueis = sorted({u for u in csub_tbl.column("subawardee_uei").to_pylist() if u} | set(sub_ueis))
     team_tbl = team.scanner(columns=[
         "sub_uei", "prime_uei", "prime_name", "edge_dollars_5y", "edge_count_5y", "top_naics",
-        "last_action_date"], filter=pc.field("sub_uei").isin(sub_ueis)).to_table()
+        "last_action_date"], filter=pc.field("sub_uei").isin(full_sub_ueis)).to_table()
     poc_tbl = pocs.scanner(columns=[
         "uei", "poc_type", "poc_slot_no", "full_name", "title", "city", "state"],
-        filter=pc.field("uei").isin(sub_ueis)).to_table()
+        filter=pc.field("uei").isin(full_sub_ueis)).to_table()
+    selftag_tbl = selftag.scanner(columns=[
+        "description", "self_reported_capability_tags", "n_self_reported_tags"]).to_table()
+    log(f"universe: full_sub_ueis={len(full_sub_ueis):,} (bridge={len(sub_ueis):,})")
     log(f"feeds: reqs={rq_tbl.num_rows:,} doc_scope={dsc_tbl.num_rows:,} "
-        f"contract_subaward={csub_tbl.num_rows:,} teaming={team_tbl.num_rows:,} pocs={poc_tbl.num_rows:,}")
+        f"contract_subaward={csub_tbl.num_rows:,} teaming={team_tbl.num_rows:,} pocs={poc_tbl.num_rows:,} "
+        f"self_tags={selftag_tbl.num_rows:,}")
 
     con = _duck()
     con.execute("PRAGMA threads=1")  # deterministic aggregation order (idempotency / zero-delta DoD)
@@ -194,11 +206,45 @@ def _assemble(so):
     con.register("csub", csub_tbl)
     con.register("team", team_tbl)
     con.register("pocs", poc_tbl)
+    con.register("selftag", selftag_tbl)
 
     clr = _clearance_ord_agg()
     ord_case = " ".join(f"WHEN {o} THEN '{lvl}'" for o, lvl in _ORD_TO_LEVEL.items())
     sql = f"""
-    WITH universe AS (SELECT DISTINCT subawardee_uei AS sub_uei FROM bridge WHERE subawardee_uei IS NOT NULL),
+    -- PATH B universe: every sub with a subaward description ∪ the bridge subs (the bridge is now an
+    -- enrichment join, not the universe). Non-bridge subs get NULL scope-leg fields (correct).
+    WITH universe AS (
+        SELECT DISTINCT sub_uei FROM (
+            SELECT subawardee_uei AS sub_uei FROM csub
+            WHERE subawardee_uei IS NOT NULL AND subaward_description IS NOT NULL
+              AND length(trim(subaward_description)) > 0
+            UNION
+            SELECT subawardee_uei AS sub_uei FROM bridge WHERE subawardee_uei IS NOT NULL
+        )
+    ),
+    -- ── PATH B: self-reported capability tags (the sub's OWN descriptions → controlled vocab) ──────
+    -- join csub descriptions to the LLM sidecar on the truncated-trimmed text (the classifier's key),
+    -- union the tags per sub, cap at TAG_CAP. Separate from the scope-derived capability_tags.
+    selftag_pairs AS (
+        SELECT DISTINCT subawardee_uei AS sub_uei,
+               substr(trim(subaward_description), 1, {SELF_TAG_DESC_CHARS}) AS d
+        FROM csub WHERE subawardee_uei IS NOT NULL AND subaward_description IS NOT NULL
+          AND length(trim(subaward_description)) > 0
+    ),
+    selftag_unnest AS (
+        SELECT DISTINCT p.sub_uei, t
+        FROM selftag_pairs p JOIN selftag sc ON p.d = sc.description,
+             UNNEST(sc.self_reported_capability_tags) AS x(t)
+        WHERE sc.n_self_reported_tags > 0 AND t IS NOT NULL
+    ),
+    selftag_ranked AS (
+        SELECT sub_uei, t, row_number() OVER (PARTITION BY sub_uei ORDER BY t) AS rk FROM selftag_unnest
+    ),
+    selftag_roll AS (
+        SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS self_reported_capability_tags,
+               CAST(count(*) AS INTEGER) AS n_self_reported_tags
+        FROM selftag_ranked GROUP BY 1
+    ),
     -- window column + notices from the bridge
     bridge_roll AS (
         SELECT subawardee_uei AS sub_uei,
@@ -420,6 +466,15 @@ def _assemble(so):
         coalesce(rr.n_requirements_validated, 0) AS n_requirements_validated,
         srr.source_resource_ids, ckr.source_chunk_ids, ntr.source_notice_ids,
         coalesce(rr.marked_solicitation, false) AS marked_solicitation,
+        srt.self_reported_capability_tags,
+        coalesce(srt.n_self_reported_tags, 0) AS n_self_reported_tags,
+        CASE
+            WHEN tgr.capability_tags IS NOT NULL AND len(tgr.capability_tags) > 0
+                 AND coalesce(srt.n_self_reported_tags, 0) > 0 THEN 'both'
+            WHEN tgr.capability_tags IS NOT NULL AND len(tgr.capability_tags) > 0 THEN 'scope'
+            WHEN coalesce(srt.n_self_reported_tags, 0) > 0 THEN 'self_reported'
+            ELSE 'none'
+        END AS tag_source,
         coalesce(tr.n_teaming_primes, 0) AS n_teaming_primes,
         tr.teaming_dollars_5y, coalesce(tr.teaming_edge_count_5y, 0) AS teaming_edge_count_5y,
         tnr.teaming_top_naics, tpr.teaming_prime_ueis, tpr.teaming_prime_names,
@@ -452,17 +507,19 @@ def _assemble(so):
     LEFT JOIN tnaics_roll  tnr USING (sub_uei)
     LEFT JOIN tprime_roll  tpr USING (sub_uei)
     LEFT JOIN poc_roll     pr  USING (sub_uei)
+    LEFT JOIN selftag_roll srt USING (sub_uei)
     """
     tbl = con.execute(sql).to_arrow_table()
 
     import pyarrow.compute as pc2
-    stats = {"rows": tbl.num_rows, "universe_sub_ueis": len(sub_ueis)}
+    stats = {"rows": tbl.num_rows, "universe_sub_ueis": len(full_sub_ueis)}
     for c, key in [("has_extracted_scope", "has_extracted_scope"), ("requires_clearance", "requires_clearance"),
                    ("requires_cmmc", "requires_cmmc"), ("poc_available", "poc_available"),
                    ("marked_solicitation", "marked_solicitation"), ("coverage_truncated", "coverage_truncated")]:
         stats[key] = pc2.sum(tbl.column(c)).as_py() or 0
     stats["with_subaward_desc"] = pc2.sum(pc2.is_valid(tbl.column("top_subaward_description"))).as_py() or 0
     stats["with_teaming"] = int(pc2.sum(pc2.greater(tbl.column("n_teaming_primes"), 0)).as_py() or 0)
+    stats["with_self_reported_tags"] = int(pc2.sum(pc2.greater(tbl.column("n_self_reported_tags"), 0)).as_py() or 0)
     con.close()
     return tbl, stats
 
@@ -492,6 +549,7 @@ def build():
     tbl, stats = _assemble(so)
     log(f"assembled {stats['rows']:,} sub rows · universe={stats['universe_sub_ueis']:,} "
         f"· with_subaward_desc={stats['with_subaward_desc']:,} with_teaming={stats['with_teaming']:,} "
+        f"with_self_reported_tags={stats['with_self_reported_tags']:,} "
         f"· has_extracted_scope={stats['has_extracted_scope']:,} requires_clearance={stats['requires_clearance']:,} "
         f"requires_cmmc={stats['requires_cmmc']:,} poc_available={stats['poc_available']:,} "
         f"· marked_solicitation={stats['marked_solicitation']:,} coverage_truncated={stats['coverage_truncated']:,}")
@@ -499,8 +557,8 @@ def build():
         raise RuntimeError("zero sub profiles assembled")
     if stats["rows"] != stats["universe_sub_ueis"]:
         raise RuntimeError(
-            f"GRAIN VIOLATION: {stats['rows']} rows != {stats['universe_sub_ueis']} distinct bridge sub UEIs "
-            f"(the build must be exactly one row per sub_uei).")
+            f"GRAIN VIOLATION: {stats['rows']} rows != {stats['universe_sub_ueis']} distinct universe sub UEIs "
+            f"(desc-subs ∪ bridge; the build must be exactly one row per sub_uei).")
 
     tbl, snap, built_at = _stamp(tbl, so)
     schema = subawardee_capability_profiles_schema()
@@ -543,21 +601,32 @@ def verify(content_hash: bool = False):
         idx = []
 
     bridge = lance.dataset(BRIDGE_URI, storage_options=so)
+    csub = lance.dataset(CONTRACT_SUBAWARD_URI, storage_options=so)
     con = _duck()
     con.register("bridge", bridge.scanner(columns=["subawardee_uei"]).to_table())
+    con.register("csub", csub.scanner(columns=["subawardee_uei", "subaward_description"]).to_table())
     con.register("prof", ds.scanner().to_table())
-    universe = con.execute("SELECT count(DISTINCT subawardee_uei) FROM bridge WHERE subawardee_uei IS NOT NULL").fetchone()[0]
+    # PATH B universe = distinct csub desc-subs ∪ bridge subs
+    universe = con.execute(
+        "SELECT count(*) FROM (SELECT subawardee_uei AS u FROM csub WHERE subawardee_uei IS NOT NULL "
+        "AND subaward_description IS NOT NULL AND length(trim(subaward_description))>0 "
+        "UNION SELECT subawardee_uei FROM bridge WHERE subawardee_uei IS NOT NULL)").fetchone()[0]
+    bridge_universe = con.execute("SELECT count(DISTINCT subawardee_uei) FROM bridge WHERE subawardee_uei IS NOT NULL").fetchone()[0]
     distinct_ueis = con.execute("SELECT count(DISTINCT sub_uei) FROM prof").fetchone()[0]
     # CUI consistency checks
     clr_no_flag = con.execute("SELECT count(*) FROM prof WHERE req_clearance_level_max IS NOT NULL AND requires_clearance = false").fetchone()[0]
     scope_no_flag = con.execute("SELECT count(*) FROM prof WHERE scope_summary IS NOT NULL AND has_extracted_scope = false").fetchone()[0]
+    # tag_source distribution + self-reported coverage
+    tag_src = {r[0]: r[1] for r in con.execute("SELECT tag_source, count(*) FROM prof GROUP BY 1").fetchall()}
 
     out = {
         "uri": SUB_CAPABILITY_PROFILES_URI, "rows": rows,
-        "universe_bridge_sub_ueis": universe, "distinct_sub_ueis": distinct_ueis,
+        "universe_sub_ueis": universe, "bridge_sub_ueis": bridge_universe, "distinct_sub_ueis": distinct_ueis,
         "row_eq_universe": rows == universe, "row_eq_distinct_uei": rows == distinct_ueis,
         "with_subaward_desc": ds.count_rows(filter="top_subaward_description IS NOT NULL"),
         "with_teaming": ds.count_rows(filter="n_teaming_primes > 0"),
+        "with_self_reported_tags": ds.count_rows(filter="n_self_reported_tags > 0"),
+        "tag_source": tag_src,
         "has_extracted_scope": ds.count_rows(filter="has_extracted_scope = true"),
         "requires_clearance": ds.count_rows(filter="requires_clearance = true"),
         "requires_cmmc": ds.count_rows(filter="requires_cmmc = true"),

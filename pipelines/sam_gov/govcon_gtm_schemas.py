@@ -335,6 +335,14 @@ def subawardee_capability_profiles_schema():
         ("source_chunk_ids", pa.list_(pa.string())),     # cited evidence chunks (unmarked, validated)
         ("source_notice_ids", pa.list_(pa.string())),
         ("marked_solicitation", pa.bool_()),             # audit: a marked source existed (redacted)
+        # PATH B — self-reported capability (the sub's OWN subaward descriptions, classified into the
+        # controlled vocab via LLM). SEPARATE provenance from the scope-derived `capability_tags`:
+        # "what the sub says it did" vs "the solicitation scope it teamed under named". Covers the full
+        # 25,450-sub universe (vs the ~6,586 bridge subs with scope). `tag_source` ∈ scope|self_reported|
+        # both|none marks which provenance populated a row's tag axes. (classify_sub_self_reported_tags.py)
+        ("self_reported_capability_tags", pa.list_(pa.string())),
+        ("n_self_reported_tags", pa.int32()),
+        ("tag_source", pa.string()),
         # TEAM — 5y teaming edges
         ("n_teaming_primes", pa.int32()),
         ("teaming_dollars_5y", pa.float64()), ("teaming_edge_count_5y", pa.int32()),
