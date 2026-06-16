@@ -88,6 +88,18 @@ ENTITY_PROFILE_GOLD_URI = os.environ.get(
 ENTITY_AWARD_LINES_GOLD_URI = os.environ.get(
     "ENTITY_AWARD_LINES_GOLD_LANCE_URI", "s3://data-sink/active/entity_award_lines_gold/"
 )
+# Subawardee drill-down (the /entities/{uei}/subaward-profile route). The capability profile
+# (sub_uei grain, BTREE sub_uei) carries the structured capability block; contract_subaward
+# (the raw sub→prime fact) carries the prime-contract history the sub won work under. The
+# profile covers only the ~6,586 bridge subs; history covers all ~25,449 — so the route serves
+# either (404 only when BOTH are empty).
+SUBAWARDEE_CAPABILITY_PROFILES_URI = os.environ.get(
+    "GOVCON_SUB_CAPABILITY_PROFILES_LANCE_URI",
+    "s3://data-sink/active/govcon_subawardee_capability_profiles/"
+)
+CONTRACT_SUBAWARD_URI = os.environ.get(
+    "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"
+)
 
 # ── Map serving tables (the portal map read surface) ─────────────────────────
 # Denormalized, pre-geocoded read models (1 row per winner / per company), each

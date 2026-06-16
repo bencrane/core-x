@@ -47,6 +47,7 @@ from .src.models import (
     PastPerformanceResponse,
     RecentAward,
     SamProfileResponse,
+    SubawardProfileResponse,
 )
 
 log = logging.getLogger("catalyst_api")
@@ -161,6 +162,7 @@ def _info() -> dict:
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
             "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
+            "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
         },
         "map_datasets": list(DECODERS),
@@ -393,6 +395,26 @@ def entity_dossiers(body: DossierBatchRequest = Body(...)) -> JSONResponse:
         found += 1
         data[u] = model.model_dump(by_alias=True, exclude_none=False)
     return JSONResponse({"data": data, "meta": {"requested": len(ueis), "found": found}})
+
+
+@app.get("/api/v1/entities/{uei}/subaward-profile", response_model=None, dependencies=[Depends(require_operator)])
+def subaward_profile(
+    uei: str = Path(..., description="12-char SAM.gov UEI (of the subawardee)"),
+    history: int = Query(25, ge=1, le=200, description="Max prime-contract (subaward) history rows."),
+) -> JSONResponse:
+    """Subawardee drill-down — what the sub CAN DO + the prime contracts it won work UNDER. Composes a
+    BTREE point-lookup on govcon_subawardee_capability_profiles (the capability block: scope_summary,
+    capability_tags, clearance/cert/labor, teaming, POC — present only for bridge-universe subs) with a
+    point-lookup on contract_subaward (the prime-contract history: which prime, $, description, agency,
+    date — present for all subs). 404 only when the UEI has NEITHER a profile NOR any subaward history."""
+    uei = _require_uei(uei)
+    f_prof = _DOSSIER_POOL.submit(lance_store.subaward_profile_by_uei, uei)
+    f_hist = _DOSSIER_POOL.submit(lance_store.subaward_history_by_uei, uei, history)
+    profile = f_prof.result()
+    hist = f_hist.result()
+    if profile is None and not hist:
+        raise HTTPException(status_code=404, detail=f"no subaward profile or history for uei {uei!r}")
+    return _envelope(SubawardProfileResponse.from_parts(uei, profile, hist))
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──

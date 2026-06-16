@@ -484,6 +484,61 @@ def entity_award_lines_by_uei(uei: str, side: str, limit: int) -> list[dict[str,
     return items[:cap]
 
 
+# ── Surface 4: UEI → subawardee capability profile + prime-contract (subaward) history ──
+# The sub-side drill-down. The capability profile (govcon_subawardee_capability_profiles, 1 row/sub_uei,
+# BTREE sub_uei) carries the structured capability block (scope/tags/clearance/teaming/POC) for the
+# ~6,586 bridge subs; contract_subaward (the raw sub→prime fact) carries the prime-contract history for
+# all ~25,449 subs. CUI: the profile carries only structured / controlled-vocab + sub-self-reported
+# columns (no solicitation chunk verbatim — evidence_quote / requirement_detail are not on its schema);
+# subaward_description is the firm's own SAM subaward report (sub-self-reported, not CUI).
+_SUB_PROFILE_COLS = [
+    "sub_uei", "sub_name", "has_extracted_scope", "scope_summary", "capability_tags",
+    "requires_clearance", "req_clearance_level_max", "requires_cmmc", "req_cert_tags",
+    "top_labor_categories", "n_subawards", "n_distinct_primes_subaward", "total_subaward_amount",
+    "n_scope_solicitations", "n_teaming_primes", "teaming_dollars_5y", "teaming_prime_names",
+    "poc_available", "poc_full_name", "poc_title", "poc_city", "poc_state",
+]
+_SUBAWARD_HISTORY_COLS = [
+    "subawardee_name", "prime_award_unique_key", "prime_award_piid", "prime_awardee_uei",
+    "prime_awardee_name", "prime_award_awarding_agency_name", "subaward_amount", "subaward_number",
+    "subaward_action_date", "subaward_description", "prime_award_naics_code", "usaspending_permalink",
+]
+_SUBAWARD_HISTORY_HARD_CAP = 200
+
+
+def subaward_profile_by_uei(uei: str) -> dict[str, Any] | None:
+    """BTREE point-lookup on ``govcon_subawardee_capability_profiles.sub_uei`` → the sub's capability
+    profile, or ``None`` when the sub is not in the bridge universe (it may still have subaward history)."""
+    uei = (uei or "").strip()
+    if not uei:
+        return None
+    rows = _scan(config.SUBAWARDEE_CAPABILITY_PROFILES_URI, columns=_SUB_PROFILE_COLS,
+                 filter=f"sub_uei = {_sql_str(uei)}", limit=1)
+    return rows[0] if rows else None
+
+
+def subaward_history_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
+    """Point-lookup on ``contract_subaward.subawardee_uei`` → the prime contracts the sub won work
+    under, projected to the join keys + $ + description, sorted by subaward amount desc, capped.
+    ``[]`` when the sub has no subaward fact rows. (Amount is a source string → parsed for the sort
+    only; the model coerces for the wire.)"""
+    uei = (uei or "").strip()
+    if not uei:
+        return []
+    cap = max(1, min(limit, _SUBAWARD_HISTORY_HARD_CAP))
+    rows = _scan(config.CONTRACT_SUBAWARD_URI, columns=_SUBAWARD_HISTORY_COLS,
+                 filter=f"subawardee_uei = {_sql_str(uei)}")
+
+    def _amt(r: dict[str, Any]) -> float:
+        try:
+            return float(r.get("subaward_amount") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows.sort(key=_amt, reverse=True)
+    return rows[:cap]
+
+
 # ── Map surface: compiled filter object → Lance scanner predicate → GeoJSON ──
 # The deterministic EXECUTE side of the portal map. No DuckDB, no SQL engine: a
 # decoder (map_decoders.py) names the allowlisted columns + ops + types, and the
@@ -728,6 +783,8 @@ _SURFACE_DATASETS = {
     "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
     "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],
     "awards_map_serving": lambda: config.MAP_DATASET_URIS["awards"],
+    "subawardee_capability_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
+    "contract_subaward": lambda: config.CONTRACT_SUBAWARD_URI,
 }
 
 
