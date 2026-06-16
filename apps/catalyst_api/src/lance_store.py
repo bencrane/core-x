@@ -497,6 +497,8 @@ _SUB_PROFILE_COLS = [
     "top_labor_categories", "n_subawards", "n_distinct_primes_subaward", "total_subaward_amount",
     "n_scope_solicitations", "n_teaming_primes", "teaming_dollars_5y", "teaming_prime_names",
     "poc_available", "poc_full_name", "poc_title", "poc_city", "poc_state",
+    # Path B: self-reported capability (the sub's own descriptions) + provenance marker
+    "self_reported_capability_tags", "n_self_reported_tags", "tag_source",
 ]
 _SUBAWARD_HISTORY_COLS = [
     "subawardee_name", "prime_award_unique_key", "prime_award_piid", "prime_awardee_uei",

@@ -53,6 +53,8 @@ _RETURN_COLUMNS = [
 _FACT_COLUMNS = ["subawardee_uei", "subawardee_name", "subaward_amount", "prime_awardee_uei"]
 _PROFILE_COLUMNS = [
     "sub_uei", "capability_tags", "requires_clearance", "req_clearance_level_max", "poc_available",
+    # Path B: self-reported capability tags (the sub's own descriptions) + provenance
+    "self_reported_capability_tags", "tag_source",
 ]
 
 _UEI_RE = re.compile(r"^[A-Za-z0-9]{12}$")       # SAM UEI: 12 alnum chars
@@ -276,11 +278,13 @@ def search_subawardee_capabilities(
             "n_subawards": idr.get("n_subawards"),
             "total_subaward_amount": idr.get("total_subaward_amount"),
             "n_distinct_primes_subaward": idr.get("n_distinct_primes_subaward"),
-            "capability_tags": p.get("capability_tags"),
+            "capability_tags": p.get("capability_tags"),                              # scope-derived (bridge)
+            "self_reported_capability_tags": p.get("self_reported_capability_tags"),   # Path B (own descriptions)
+            "tag_source": p.get("tag_source"),                                         # scope|self_reported|both|none
             "requires_clearance": p.get("requires_clearance"),
             "req_clearance_level_max": p.get("req_clearance_level_max"),
             "poc_available": p.get("poc_available"),
-            "profiled": u in prof,    # true → full GTM capability signal; false → identity + work text only
+            "profiled": u in prof,    # true → in the profiles table (now ~full universe); see tag_source for which axis
         })
     return {
         "status": "ok",
