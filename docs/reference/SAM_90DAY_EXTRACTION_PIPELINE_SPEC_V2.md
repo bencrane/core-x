@@ -1,5 +1,12 @@
 # 90-Day SAM.gov Attachment — Text & Structured Extraction Pipeline (Architecture & Execution Spec, v2)
 
+> **Historical-name note (2026-06-16):** `90day` is the original rolling-window name from when the
+> corpus was a trailing 90-day slice. The corpus is now **cumulative** — the Subaward Scope-Enrichment
+> lift folded in older solicitations and the chunk sinks accumulate — so the `90day` suffix on every
+> `*_90day` dataset/module is a **historical artifact, NOT a freshness guarantee**. A physical rename
+> was scoped and deliberately not executed (it is a supervised, prod-affecting cutover of the deployed
+> `gtm-mcp` gateway); see `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md` for the decision record.
+
 **Status:** specification — **CANONICAL, supersedes v1** (`SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`).
 **Implement from THIS document.** A secondary engineering agent should build the pipeline end-to-end
 from §3–§13 with no architectural ambiguity. **Do not write code from memory; follow the spec.**
