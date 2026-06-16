@@ -40,7 +40,7 @@ p { margin: 0 0 8pt; text-align: justify; }
   font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8.5pt; letter-spacing: 0.1em;
   text-transform: uppercase; font-weight: 700; color: #82828c; margin-bottom: 2pt;
 }
-.sig-entity { font-size: 10.5pt; font-weight: 700; color: #fafafa; margin-bottom: 18pt; }
+.sig-entity { font-size: 10.5pt; font-weight: 700; color: #fafafa; line-height: 13pt; min-height: 13pt; margin-bottom: 18pt; }
 .sig-line { border-bottom: 1pt solid #2d3548; height: 30pt; margin-bottom: 4pt; }
 .sig-field { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10pt; color: #e4e4e7; margin: 0 0 2pt; }
 .sig-field .lab { display: inline-block; width: 44pt; color: #82828c; }
