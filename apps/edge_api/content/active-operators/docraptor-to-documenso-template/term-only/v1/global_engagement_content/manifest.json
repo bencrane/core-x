@@ -1,0 +1,13 @@
+{
+  "active_operators_term_only": {
+    "slug": "active_operators_term_only",
+    "name": "Active Operators — Strategic Origination Agreement (Term Only)",
+    "archetype": "term_only",
+    "document": "active_operators_term_only.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}

@@ -49,6 +49,7 @@ from .src.routers.internal_engagement_docs_v1 import router as internal_engageme
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
+from .src.routers.engagement_templates_v1 import router as engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
@@ -203,6 +204,12 @@ app.include_router(engagement_mandate_drafts_router)
 # live Documenso template's fields (set per-field default values via /envelope/field/update-many).
 app.include_router(documenso_template_fields_router)
 
+# engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
+# engagement-doc pathway. Lists selectable (path, archetype, version) from the repo-resident content
+# tree and renders one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned URL.
+# Does NOT touch Documenso (the operator affixes fields in the editor by hand). Service-token gated.
+app.include_router(engagement_templates_router)
+
 # company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
 # (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator
 # session. The booking-profile read resolves the latest snapshot by domain (else the seed).
@@ -241,6 +248,7 @@ def _info() -> dict:
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
+            "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
