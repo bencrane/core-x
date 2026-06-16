@@ -487,3 +487,127 @@ class EntityDossierResponse(_Model):
             recent_activity=RecentActivity(actions=[RecentAwardAction.from_row(a) for a in actions]),
             pocs=[SamPoc.from_row(p) for p in pocs[:_DOSSIER_POC_CAP]],
         )
+
+
+# ── Subawardee drill-down: capability profile + prime-contract (subaward) history ──
+class SubawardHistoryItem(_Model):
+    """One subaward the sub won under a prime contract (a contract_subaward row)."""
+
+    prime_award_unique_key: str | None = None
+    prime_award_piid: str | None = None
+    prime_uei: str | None = None
+    prime_name: str | None = None
+    awarding_agency: str | None = None
+    subaward_amount: float | None = None
+    subaward_number: str | None = None
+    action_date: str | None = None
+    description: str | None = None       # sub-self-reported (the firm's own SAM subaward report)
+    naics_code: str | None = None
+    usaspending_permalink: str | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "SubawardHistoryItem":
+        amt = r.get("subaward_amount")
+        try:
+            amt = float(amt) if amt not in (None, "") else None
+        except (TypeError, ValueError):
+            amt = None
+        adt = r.get("subaward_action_date")
+        return cls(
+            prime_award_unique_key=r.get("prime_award_unique_key"),
+            prime_award_piid=r.get("prime_award_piid"),
+            prime_uei=r.get("prime_awardee_uei"),
+            prime_name=r.get("prime_awardee_name"),
+            awarding_agency=r.get("prime_award_awarding_agency_name"),
+            subaward_amount=amt,
+            subaward_number=r.get("subaward_number"),
+            action_date=(str(adt) if adt not in (None, "") else None),
+            description=r.get("subaward_description"),
+            naics_code=r.get("prime_award_naics_code"),
+            usaspending_permalink=r.get("usaspending_permalink"),
+        )
+
+
+class SubawardCapabilities(_Model):
+    """Structured capability block — present only for subs in the bridge universe (profiled=true)."""
+
+    has_extracted_scope: bool = False
+    scope_summary: str | None = None
+    capability_tags: list[str] = []
+    requires_clearance: bool = False
+    req_clearance_level_max: str | None = None
+    requires_cmmc: bool = False
+    req_cert_tags: list[str] = []
+    top_labor_categories: list[str] = []
+    n_scope_solicitations: int | None = None
+
+
+class SubawardTeaming(_Model):
+    n_teaming_primes: int | None = None
+    teaming_dollars_5y: float | None = None
+    teaming_prime_names: list[str] = []
+
+
+class SubawardProfileResponse(_Model):
+    """Subawardee drill-down: who the sub is + what it can do (profile) + the prime contracts it won
+    work under (contract_subaward). ``profiled`` is true when the capability block is populated (the sub
+    teamed under a tracked solicitation); identity + ``subaward_history`` are present for any sub with
+    fact rows. Carries no solicitation chunk verbatim (CUI-safe by construction)."""
+
+    sub_uei: str | None = None
+    sub_name: str | None = None
+    profiled: bool = False
+    n_subawards: int | None = None                 # full-corpus (profile) when profiled, else null
+    n_distinct_primes: int | None = None
+    total_subaward_amount: float | None = None
+    subaward_history_count: int | None = None      # rows returned (capped — "shown", not total)
+    capabilities: SubawardCapabilities | None = None
+    teaming: SubawardTeaming | None = None
+    poc: SamPoc | None = None
+    subaward_history: list[SubawardHistoryItem] = []
+
+    @classmethod
+    def from_parts(
+        cls, uei: str, profile: dict[str, Any] | None, history: list[dict[str, Any]]
+    ) -> "SubawardProfileResponse":
+        prof = profile or {}
+        profiled = profile is not None
+        sub_name = prof.get("sub_name") or (history[0].get("subawardee_name") if history else None)
+        capabilities = None
+        teaming = None
+        poc = None
+        if profiled:
+            capabilities = SubawardCapabilities(
+                has_extracted_scope=bool(prof.get("has_extracted_scope")),
+                scope_summary=prof.get("scope_summary"),
+                capability_tags=[t for t in (prof.get("capability_tags") or []) if t],
+                requires_clearance=bool(prof.get("requires_clearance")),
+                req_clearance_level_max=prof.get("req_clearance_level_max"),
+                requires_cmmc=bool(prof.get("requires_cmmc")),
+                req_cert_tags=[t for t in (prof.get("req_cert_tags") or []) if t],
+                top_labor_categories=[t for t in (prof.get("top_labor_categories") or []) if t],
+                n_scope_solicitations=prof.get("n_scope_solicitations"),
+            )
+            teaming = SubawardTeaming(
+                n_teaming_primes=prof.get("n_teaming_primes"),
+                teaming_dollars_5y=prof.get("teaming_dollars_5y"),
+                teaming_prime_names=[t for t in (prof.get("teaming_prime_names") or []) if t],
+            )
+            if prof.get("poc_available"):
+                poc = SamPoc(
+                    full_name=prof.get("poc_full_name"), title=prof.get("poc_title"),
+                    city=prof.get("poc_city"), state=prof.get("poc_state"),
+                )
+        return cls(
+            sub_uei=uei,
+            sub_name=sub_name,
+            profiled=profiled,
+            n_subawards=prof.get("n_subawards") if profiled else None,
+            n_distinct_primes=prof.get("n_distinct_primes_subaward") if profiled else None,
+            total_subaward_amount=prof.get("total_subaward_amount") if profiled else None,
+            subaward_history_count=len(history),
+            capabilities=capabilities,
+            teaming=teaming,
+            poc=poc,
+            subaward_history=[SubawardHistoryItem.from_row(h) for h in history],
+        )
