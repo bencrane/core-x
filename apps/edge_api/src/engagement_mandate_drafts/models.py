@@ -37,6 +37,20 @@ class MandateDraftDocument(BaseModel):
     status: str | None
 
 
+class MandatePrefilledDraftOriginated(BaseModel):
+    """The template-use DRAFT sub-lane result — a Documenso document instantiated FROM the template
+    via ``/template/use`` with the opportunity's field values prefilled, left as a DRAFT (never
+    distributed). ``status`` is always ``"draft"``; the operator finalizes (readOnly, signature, send)
+    by hand. The numeric ``document_id`` and ``signing_token`` are surfaced when Documenso returns
+    them on the create response (else null — re-read the envelope to resolve them)."""
+
+    envelope_id: str
+    document_id: int | None = None
+    signing_token: str | None = None
+    status: str = "draft"
+    documenso_host: str
+
+
 class MandateStagingDraft(BaseModel):
     """The opportunity's staging draft as the prep page loads it — the selected template, its
     archetype, and the operator-entered per-deal values. Returned by the by-opportunity read so the

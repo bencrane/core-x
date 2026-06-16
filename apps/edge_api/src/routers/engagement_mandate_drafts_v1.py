@@ -27,6 +27,7 @@ from ..engagement_mandate_drafts.models import (
     MandateDraftCreate,
     MandateDraftCreated,
     MandateDraftDocument,
+    MandatePrefilledDraftOriginated,
     MandateStagingDraft,
     MandateStagingUpsert,
 )
@@ -101,6 +102,54 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
     return MandateDraftConfirmed(
         envelope_id=result.envelope_id,
         signing_token=result.client_token,
+        documenso_host=config.documenso_api_url(),
+    )
+
+
+@router.post(
+    "/{draft_id}/originate-prefilled-draft",
+    dependencies=[Depends(require_service_token)],
+)
+async def originate_prefilled_draft(draft_id: str) -> MandatePrefilledDraftOriginated:
+    """ADDITIVE template-use DRAFT sub-lane — PARALLEL to ``/confirm``, leaving it untouched.
+
+    Instantiates a Documenso document FROM the draft's template via ``POST /api/v2/template/use`` with
+    the opportunity's per-deal ``field_values`` PREFILLED, and DOES NOT distribute — so the new
+    envelope stays ``DRAFT`` (not pending/sent). Unlike ``/confirm`` (which uses ``/envelope/use`` +
+    ``/envelope/distribute`` and pulls the engagement-mandate-draft ``prefill_values``), this lane
+    sources values from ``business.opportunity_specific_content`` and the recipient from the
+    opportunity's contact. No signature/readOnly handling — the operator finalizes by hand.
+    """
+    async with get_db_connection() as conn:
+        draft = await queries.get_draft(conn, draft_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="mandate draft not found")
+        prefill = await queries.get_opportunity_prefill_and_contact(
+            conn, draft["opportunity_id"]
+        )
+    if not prefill:
+        raise HTTPException(
+            status_code=404, detail="no opportunity_specific_content for this opportunity"
+        )
+    if not prefill["recipient_email"]:
+        raise HTTPException(
+            status_code=422, detail="opportunity contact has no email to set as recipient"
+        )
+    try:
+        result = await documenso_client.create_draft_document_from_template(
+            draft["documenso_template_id"],
+            recipient_email=prefill["recipient_email"],
+            recipient_name=prefill["recipient_name"] or prefill["recipient_email"],
+            field_values_by_label=prefill["field_values"],
+            external_id=draft_id,
+        )
+    except documenso_client.DocumensoError as e:
+        raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
+    return MandatePrefilledDraftOriginated(
+        envelope_id=result.envelope_id,
+        document_id=result.document_id,
+        signing_token=result.client_token,
+        status="draft",
         documenso_host=config.documenso_api_url(),
     )
 
