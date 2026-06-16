@@ -1,18 +1,18 @@
-"""Documenso v2 — create a SIGNABLE DOCUMENT from the rendered mandate PDF. STANDALONE.
+"""Documenso v2 — create a DRAFT DOCUMENT from the rendered mandate PDF. STANDALONE.
 
 Own client, own anchors, own recipient/field logic — NOT the proposal pathway's documenso_client.
-A Documenso DOCUMENT (type=DOCUMENT), not a Template. Flow (confirmed against Documenso Cloud v2):
+A Documenso DOCUMENT (type=DOCUMENT), not a Template, left in **DRAFT** (NOT distributed). Flow:
 
   1) POST /api/v2/envelope/create        multipart: payload JSON {type:DOCUMENT, recipients} + the PDF
   2) GET  /api/v2/envelope/{id}          read the recipient ids
   3) POST /api/v2/envelope/field/create-many   SIGNATURE/DATE placed BY PLACEHOLDER — findText resolves
                                          the [[...]] anchors the rendered PDF carries (no coordinates)
-  4) POST /api/v2/envelope/distribute    distributionMethod NONE → expose tokens, Documenso emails no one
-  5) GET  /api/v2/envelope/{id}          read each signer's token
 
-Two SIGNER recipients: Provider (the RS signatory, pre-rendered "Benjamin J. Crane") and Participant
-(the opportunity's contact). The Participant token is the prospect's signing capability; the app
-delivers the link itself.
+We deliberately DO NOT distribute — the document stays in DRAFT until a later, explicit "send" action.
+DRAFT has no signing tokens yet (they are exposed at distribution); we only record the envelope id.
+
+``externalId`` is the OPPORTUNITY id (not the deal/mandate id) — so multiple documents can hang off
+one opportunity, all tagged with it. The webhook (later) resolves the exact document by envelope id.
 
 Auth: ``Authorization: api_<key>`` (DOCUMENSO_API_KEY); base = DOCUMENSO_API_URL — both already in
 core-x/prd. Read straight from the environment so this pathway shares nothing with the proposal one.
@@ -50,9 +50,7 @@ class DocumensoError(RuntimeError):
 @dataclass(frozen=True)
 class DocumensoDocument:
     envelope_id: str
-    document_id: int | None
-    participant_token: str | None
-    provider_token: str | None
+    document_id: int | None  # numeric secondaryId (for later download/distribute)
 
 
 def _api_key() -> str:
@@ -91,21 +89,12 @@ def _recipient_id(env: dict[str, Any], email: str) -> Any:
     return None
 
 
-def _token_for(env: dict[str, Any], email: str) -> str | None:
-    target = (email or "").strip().lower()
-    for r in env.get("recipients") or []:
-        if isinstance(r, dict) and str(_dig(r, "email") or "").strip().lower() == target:
-            tok = _dig(r, "token", "signingToken")
-            return str(tok) if tok else None
-    return None
-
-
 def _raise(resp: httpx.Response, op: str) -> None:
     if resp.status_code // 100 != 2:
         raise DocumensoError(f"documenso {op} {resp.status_code}: {resp.text[:400]}")
 
 
-async def create_signable_document(
+async def create_draft_document(
     pdf_bytes: bytes,
     *,
     title: str,
@@ -113,25 +102,24 @@ async def create_signable_document(
     participant_email: str,
     provider_name: str,
     provider_email: str,
-    external_id: str | None = None,
+    external_id: str,
 ) -> DocumensoDocument:
-    """Create a signable Documenso DOCUMENT from the rendered PDF: two SIGNER recipients, SIGNATURE +
-    DATE placed by anchor for each, distributed NONE (tokens exposed, no email). Returns the envelope
-    id + each signer's token. Raises DocumensoError on any non-2xx."""
+    """Create a DRAFT Documenso DOCUMENT from the rendered PDF: two SIGNER recipients, SIGNATURE +
+    DATE placed by anchor for each, **NOT distributed** (stays DRAFT). ``external_id`` is the
+    opportunity id. Returns the envelope id (+ numeric document id). Raises on any non-2xx."""
     payload: dict[str, Any] = {
         "type": "DOCUMENT",
         "title": title,
+        "externalId": external_id,  # the OPPORTUNITY id — many documents may share it
         "recipients": [
             {"name": provider_name, "email": provider_email, "role": "SIGNER"},
             {"name": participant_name, "email": participant_email, "role": "SIGNER"},
         ],
-        "distributeDocument": False,
+        "distributeDocument": False,  # stay DRAFT
     }
-    if external_id:
-        payload["externalId"] = external_id
 
     async with _client() as client:
-        # 1) create the DOCUMENT envelope with the PDF (multipart: payload JSON + files)
+        # 1) create the DRAFT DOCUMENT envelope with the PDF (multipart: payload JSON + files)
         created = await client.post(
             "/api/v2/envelope/create",
             data={"payload": json.dumps(payload)},
@@ -149,7 +137,8 @@ async def create_signable_document(
         if provider_id is None or participant_id is None:
             raise DocumensoError("envelope/create: could not resolve both recipient ids")
 
-        # 3) place SIGNATURE + DATE per signer, BY ANCHOR (findText resolves position; we set size only)
+        # 3) place SIGNATURE + DATE per signer, BY ANCHOR (findText resolves position; we set size only).
+        #    Fields can be placed while DRAFT; they're ready for when the document is later sent.
         fields = [
             {"type": "SIGNATURE", "recipientId": provider_id, "placeholder": PROVIDER_SIGNATURE_ANCHOR, "matchAll": True, **_SIG_SIZE},
             {"type": "DATE", "recipientId": provider_id, "placeholder": PROVIDER_DATE_ANCHOR, "matchAll": True, **_DATE_SIZE},
@@ -161,19 +150,6 @@ async def create_signable_document(
         )
         _raise(placed, "field/create-many")
 
-        # 4) distribute WITHOUT email — exposes the signing tokens; the app delivers the link
-        distributed = await client.post(
-            "/api/v2/envelope/distribute",
-            json={"envelopeId": envelope_id, "meta": {"distributionMethod": "NONE"}},
-        )
-        _raise(distributed, "distribute")
+        # NO distribute — the document stays in DRAFT until an explicit send action later.
 
-        # 5) read each signer's token back off the live envelope
-        env2 = (await client.get(f"/api/v2/envelope/{envelope_id}")).json()
-
-    return DocumensoDocument(
-        envelope_id=str(envelope_id),
-        document_id=_numeric_document_id(env2),
-        participant_token=_token_for(env2, participant_email),
-        provider_token=_token_for(env2, provider_email),
-    )
+    return DocumensoDocument(envelope_id=str(envelope_id), document_id=_numeric_document_id(env))

@@ -49,8 +49,11 @@ CREATE TABLE IF NOT EXISTS business.ao_engagement_mandates (
     updated_at         timestamptz NOT NULL DEFAULT now()
 );
 
--- One live mandate per opportunity — re-staging/re-rendering UPDATES in place (the upsert target).
-CREATE UNIQUE INDEX IF NOT EXISTS ao_engagement_mandates_opportunity_uidx
+-- MANY deals (documents) per opportunity — each Stage is its own row + its own Documenso document.
+-- opportunity_id is a NON-unique lookup index (NOT a uniqueness constraint). The prior one-per-
+-- opportunity unique index is dropped in place (guarded; no-op once converged / on a fresh DB).
+DROP INDEX IF EXISTS business.ao_engagement_mandates_opportunity_uidx;
+CREATE INDEX IF NOT EXISTS ao_engagement_mandates_opportunity_idx
     ON business.ao_engagement_mandates (opportunity_id);
 CREATE INDEX IF NOT EXISTS ao_engagement_mandates_status_idx  ON business.ao_engagement_mandates (status);
 CREATE INDEX IF NOT EXISTS ao_engagement_mandates_created_idx ON business.ao_engagement_mandates (created_at DESC);

@@ -11,7 +11,6 @@ class GenerateMandateRequest(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    """Body the Trigger.dev task posts to the internal render route."""
+    """Body the Trigger.dev task posts to the internal render route — the deal to render."""
     model_config = ConfigDict(populate_by_name=True)
-    opportunity_id: str = Field(alias="opportunityId")
-    package_key: str = Field(alias="packageKey")
+    mandate_id: str = Field(alias="mandateId")

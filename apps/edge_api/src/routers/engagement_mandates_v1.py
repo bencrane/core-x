@@ -37,28 +37,33 @@ def list_packages() -> list[dict]:
 
 @router.post("/{opportunity_id}")
 async def generate_mandate(opportunity_id: str, body: GenerateMandateRequest) -> dict:
-    """Lock a package on an opportunity and enqueue its mandate render. Records the selection
-    (status='pending') and fires the Trigger.dev task; the task renders + flips it to 'rendered'."""
+    """Stage a new DEAL on an opportunity and enqueue its render. INSERTs a fresh deal row
+    (status='pending') — an opportunity may have MANY — fires the Trigger.dev task for THAT deal, and
+    stamps the run id. The task renders + creates the DRAFT Documenso document, flipping it to
+    'rendered'."""
     pkg = packages.get(body.package_key)
     if pkg is None:
         raise HTTPException(status_code=400, detail=f"unknown package_key: {body.package_key!r}")
 
-    # Fire first so the run id lands on the recorded selection in a single upsert.
-    run_id = await kickoff.trigger_render(opportunity_id=opportunity_id, package_key=pkg.key)
     async with get_db_connection() as conn:
-        mandate = await queries.upsert_mandate(
+        deal = await queries.insert_mandate(
             conn, opportunity_id=opportunity_id, package_key=pkg.key,
             term_fee_cents=pkg.term_fee_cents, duration_months=pkg.duration_months,
-            slug=service.SLUG, style=render.style_for(service.SLUG),
-            status="pending", trigger_run_id=run_id,
+            slug=service.SLUG, style=render.style_for(service.SLUG), status="pending",
         )
         await conn.commit()
+    mandate_id = deal["id"]
 
+    run_id = await kickoff.trigger_render(mandate_id=mandate_id)
     if run_id is None:
-        raise HTTPException(status_code=502, detail="failed to enqueue render (selection recorded)")
+        raise HTTPException(status_code=502, detail="failed to enqueue render (deal recorded)")
+    async with get_db_connection() as conn:
+        await queries.update_mandate(conn, mandate_id=mandate_id, status="pending", trigger_run_id=run_id)
+        await conn.commit()
+
     return {
         "opportunity_id": opportunity_id,
-        "mandate_id": mandate["id"],
+        "mandate_id": mandate_id,
         "status": "pending",
         "package_key": pkg.key,
         "run_id": run_id,
@@ -67,9 +72,9 @@ async def generate_mandate(opportunity_id: str, body: GenerateMandateRequest) ->
 
 @router.get("/{opportunity_id}")
 async def get_mandate(opportunity_id: str) -> dict:
-    """The opportunity's mandate state (status, package, artifact size, last error)."""
+    """The opportunity's LATEST deal (status, package, artifact, Documenso envelope, last error)."""
     async with get_db_connection() as conn:
-        mandate = await queries.get_by_opportunity(conn, opportunity_id)
+        mandate = await queries.get_latest_by_opportunity(conn, opportunity_id)
     if mandate is None:
         raise HTTPException(status_code=404, detail="no mandate for this opportunity")
     return mandate

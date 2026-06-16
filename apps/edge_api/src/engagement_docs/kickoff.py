@@ -12,18 +12,19 @@ logger = logging.getLogger(__name__)
 RENDER_TASK = "engagement-doc-render"
 
 
-async def trigger_render(*, opportunity_id: str, package_key: str) -> str | None:
-    """Enqueue a render run; return the Trigger run id. Idempotency key collapses double-clicks of the
-    same (opportunity, package) selection to one run; changing the package fires a fresh run."""
+async def trigger_render(*, mandate_id: str) -> str | None:
+    """Enqueue a render run for a specific deal; return the Trigger run id. The idempotency key is the
+    deal id (unique per Stage), so double-clicks of the SAME deal collapse to one run while each new
+    Stage is its own deal + its own run."""
     try:
         run = await trigger_task(
             RENDER_TASK,
-            {"opportunityId": opportunity_id, "packageKey": package_key},
-            idempotency_key=f"engagement-doc-render:{opportunity_id}:{package_key}",
+            {"mandateId": mandate_id},
+            idempotency_key=f"engagement-doc-render:{mandate_id}",
         )
     except Exception as exc:  # noqa: BLE001 — caller decides how to surface; never crash the request
-        logger.warning("engagement-doc-render trigger failed for %s: %s", opportunity_id, exc)
+        logger.warning("engagement-doc-render trigger failed for deal %s: %s", mandate_id, exc)
         return None
     run_id = run.get("id") if isinstance(run, dict) else None
-    logger.info("engagement-doc-render triggered for %s -> %s", opportunity_id, run_id)
+    logger.info("engagement-doc-render triggered for deal %s -> %s", mandate_id, run_id)
     return run_id

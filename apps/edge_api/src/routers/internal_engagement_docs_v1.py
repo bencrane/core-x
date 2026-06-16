@@ -21,13 +21,11 @@ router = APIRouter(prefix="/engagement-doc", tags=["internal"])
 
 @router.post("/render", dependencies=[Depends(require_trigger_secret)])
 async def render_mandate(body: RenderRequest) -> dict:
-    opportunity_id = body.opportunity_id.strip()
-    if not opportunity_id:
-        raise HTTPException(status_code=400, detail="opportunityId is required")
+    mandate_id = body.mandate_id.strip()
+    if not mandate_id:
+        raise HTTPException(status_code=400, detail="mandateId is required")
     async with get_db_connection() as conn:
-        result = await service.render_mandate(
-            conn, opportunity_id=opportunity_id, package_key=body.package_key
-        )
+        result = await service.render_mandate(conn, mandate_id=mandate_id)
         await conn.commit()  # persist 'rendered' OR 'failed' BEFORE surfacing any error
     if result.get("status") == "failed":
         raise HTTPException(status_code=502, detail=result.get("error", "render failed"))
