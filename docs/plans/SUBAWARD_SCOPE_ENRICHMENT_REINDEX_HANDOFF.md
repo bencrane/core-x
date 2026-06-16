@@ -1,13 +1,13 @@
 # Subaward Scope-Enrichment — REINDEX HANDOFF (one open item)
 
-**Date:** 2026-06-16 · **Status:** the lift is COMPLETE and delivered; ONE non-blocking housekeeping item remains (rebuild the `govcon_unknown_90day` vector index; confirm `govcon_scope_vectors_90day`'s). **No account/LLM tokens required** — this is a self-hosted, local Lance/MPS operation. Safe to do anytime.
+**Date:** 2026-06-16 · **Status:** ✅ **RESOLVED 2026-06-16.** The `govcon_unknown_90day` IVF_PQ index was rebuilt (`idx_unindexed` 268,164 → **0**; indexed = all 1,310,223 rows; full scalar campaign; live ANN smoke query OK). `govcon_scope_vectors_90day` was already complete and was correctly left as-is (no redundant rebuild). Fix: **PR #491** (`0433801`) broadened the `compact_files` best-effort catch to `except BaseException`. **Execution correction:** the doc's recommended Option A (`from pyo3_runtime import PanicException`) is a **no-op in the operator venv** — `pyo3_runtime` is not importable, so it falls back to `PanicException = ()` and the panic still escapes; the robust fix is `except BaseException` (re-raising `KeyboardInterrupt`/`SystemExit`). No action remains — this doc is retained as the record. (Original handoff below.)
 
 > **Who this is for:** an agent picking up the subaward scope-enrichment lift after the operator's weekly account limit was hit mid-housekeeping. Everything that delivers the coverage lift is already banked in R2; you are NOT redoing the lift. You are finishing one degraded-but-correct index.
 
 ---
 
-## TL;DR — the task
-Phase G (embed) filled all the new vectors, but its `index` leg crashed building the **unknown** sink's IVF_PQ index. Fix the crash (1-line) and re-run the index for **unknown** (and verify **scope** got its index). That's it.
+## TL;DR — the task  ✅ DONE (2026-06-16)
+Phase G (embed) filled all the new vectors, but its `index` leg crashed building the **unknown** sink's IVF_PQ index. Fix the crash and re-run the index for **unknown** (scope was already complete). **Done:** the best-effort compact catch was broadened to `except BaseException` (PR #491); `index --sink unknown` then hit the same panic, caught it, and built the IVF_PQ + scalar indexes (`idx_unindexed` → 0). The original step-by-step below is retained for the record; see the **Status** line above for the one execution correction (the literal Option A import is a no-op in this venv).
 
 - The crash: `pyo3_runtime.PanicException: called Result::unwrap() on an Err value: RecvError(())` raised inside `ds.optimize.compact_files()` during `index --sink unknown`.
 - Root cause: `index_sink`'s best-effort compact is wrapped in `except Exception` (`pipelines/sam_gov/sam_attachment_embed_90day.py:191`), but a **pyo3 Rust panic is a `BaseException`, not `Exception`**, so it escapes the guard and aborts the whole index command. (On the `scope` sink the same compact failed but as a normal `Exception` — "Repetition buffer too large" — and was caught/skipped, so scope proceeded to `create_index`.)

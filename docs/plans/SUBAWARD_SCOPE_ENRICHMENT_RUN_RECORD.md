@@ -1,6 +1,6 @@
 # Subaward Scope-Enrichment Lift — CANONICAL RUN RECORD
 
-**Date:** 2026-06-15 (execution) / record finalized 2026-06-16 · **Status:** ✅ **LIFT COMPLETE & DELIVERED** — one non-blocking housekeeping item open (rebuild the `govcon_unknown_90day` vector index over the new chunks).
+**Date:** 2026-06-15 (execution) / record finalized 2026-06-16 · **Status:** ✅ **LIFT COMPLETE & DELIVERED** — and the one open housekeeping item is now **RESOLVED** (2026-06-16): the `govcon_unknown_90day` IVF_PQ index was rebuilt over the new chunks (`idx_unindexed` 268,164 → **0**; PR #491 `0433801`). See §8. The brittle-`90day`-rename directive was assessed as a supervised, deployed-gateway-affecting migration and prepared (not executed blind) — runbook `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`.
 **Companions (ground truth — cross-referenced, not duplicated here):** runbook `docs/plans/SUBAWARD_SCOPE_ENRICHMENT_EXECUTION_PLAN.md`; the open item `docs/plans/SUBAWARD_SCOPE_ENRICHMENT_REINDEX_HANDOFF.md`; root-cause/worklist `docs/plans/SUBAWARD_SCOPE_ENRICHMENT_LIFT_PLAN.md`.
 **Verification basis:** repo HEAD = `bbb7c8e` (all 5 lift PRs merged to `main`); read-only R2 probes over `core-x/prd` (`s3://data-sink/active/`) executed 2026-06-16; `gh pr view` for each PR.
 
@@ -16,7 +16,7 @@ The lift **unstuck 3,969 subawardee-solicitation PDFs** that were frozen at `ski
 
 **Hard invariant held throughout:** the shared prime extraction ledger `sam_attachment_extraction_90day`'s extraction **verdicts were never mutated** — the only events it gained are 3,056 sanctioned `marking_fullbody` AUDIT events (run_id `sublift-marking`), which the resolution view excludes. **0** route/expand/extract lift events reached it. `✓ verified` (probe below). Every shared write was idempotent (append re-run delta 0; merge_insert by `chunk_id`; profile overwrite by content hash).
 
-**One open item:** the `govcon_unknown_90day` ANN (IVF_PQ) index was not refreshed over the lift's 268,164 new chunks — they are embedded-but-unindexed, so vector search over them is brute-forced (correct, slower). Non-blocking; needs **zero account/LLM tokens**; the deliverable does not use vector search. See §8.
+**One open item — RESOLVED 2026-06-16:** the `govcon_unknown_90day` ANN (IVF_PQ) index has been rebuilt over the lift's 268,164 new chunks. Root cause was a pyo3 Rust `PanicException` in `compact_files` escaping an `except Exception` guard (incident #9); fixed by broadening the best-effort compact catch to `except BaseException` (PR #491, `0433801`), then re-running `index --sink unknown`. Coverage `idx_unindexed` 268,164 → **0** (indexed = all 1,310,223 rows); `scope` was already complete. Zero account/LLM tokens. See §8.
 
 ---
 
@@ -120,7 +120,7 @@ The three deltas (132,184 + 268,164 + 53,308) sum to exactly the 453,656 finaliz
 | 6 | A user interrupt mid-run cascaded into the background grind workflow, killing an in-flight agent → wave-barrier stall | Interrupt propagation to the child Workflow | Re-launched; resumable via result-file skip | **None** — per-resource resume, no double-pay |
 | 7 | Embed "hang" raised **TWICE** as a false alarm | Low CPU = MPS offload; flat counter = `FLUSH_ROWS` cadence | An Opus diagnostic subagent returned **HEALTHY** (measured ~11.6 passages/s, vectors valid 1024-d unit-norm, 0 dup chunk_ids) | **None** — **lesson: do not infer a hang from CPU% on an MPS-offloaded embed** |
 | 8 | Grind under-produced **600/1,614** on the first full pass | The **5-hour account session cap** (agent transcripts: "session limit · resets 8pm") | Re-ground the missing 1,014 on the reset budget → **1,614/1,614, 0 missing** | **None** — resumable; final corpus complete |
-| 9 | Embed `index --sink unknown` pyo3 panic | `pyo3_runtime.PanicException: RecvError(())` inside `ds.optimize.compact_files()` is a `BaseException`, not `Exception`, so it escaped the `except Exception` best-effort guard (embed:191) and aborted the whole index command | **The single OPEN item** — see §8 + handoff doc (1-line catch broadening) | Unknown-sink new chunks embedded-but-unindexed → vector search brute-forced (correct, slower); **deliverable unaffected** (does not use vector search) |
+| 9 | Embed `index --sink unknown` pyo3 panic | `pyo3_runtime.PanicException: RecvError(())` (preceded by `assertion failed: chunk_bytes <= max_chunk_size`) inside `ds.optimize.compact_files()` is a `BaseException`, not `Exception`, so it escaped the `except Exception` best-effort guard (embed:191) and aborted the whole index command | **RESOLVED 2026-06-16** — broadened the catch to `except BaseException` (re-raising `KeyboardInterrupt`/`SystemExit`) so the panic is swallowed and indexing proceeds on un-compacted fragments (PR #491). NB: the handoff's literal `from pyo3_runtime import PanicException` is a **no-op in this venv** (`pyo3_runtime` not importable → falls back to `()`); `BaseException` is the robust equivalent. Re-ran `index --sink unknown`: same panic, now **caught**, IVF_PQ + scalar campaign built, `idx_unindexed` → 0 | Was: unknown chunks brute-forced. Now: fully indexed; **deliverable always unaffected** (does not use vector search) |
 
 ---
 
@@ -138,17 +138,17 @@ The three deltas (132,184 + 268,164 + 53,308) sum to exactly the 453,656 finaliz
 
 ---
 
-## 8. Current state & the ONE open item
+## 8. Current state — open item RESOLVED (2026-06-16)
 
-**Open item:** rebuild the `govcon_unknown_90day` IVF_PQ vector index over the lift's new chunks. Handoff: `docs/plans/SUBAWARD_SCOPE_ENRICHMENT_REINDEX_HANDOFF.md`.
+**The open item (rebuild the `govcon_unknown_90day` IVF_PQ vector index) is DONE.** Handoff (now closed): `docs/plans/SUBAWARD_SCOPE_ENRICHMENT_REINDEX_HANDOFF.md`. `90day`-naming follow-up: `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`.
 
-**Precise current state (`✓ verified` this session):**
-- `govcon_scope_vectors_90day` — `embedding_idx` covers **all 1,481,167 rows** (`idx_indexed = 1,481,167`, `idx_unindexed = 0`). Fully indexed. ✅
-- `govcon_unknown_90day` — `embedding_idx` exists but is **STALE**: it covers only the pre-lift **1,042,059** rows; the **268,164** newly-appended chunks are `idx_unindexed`. The vectors ARE present (`null_unmarked = 0`); only the ANN index was not refreshed over them.
+**Precise current state (`✓ verified` 2026-06-16, after the rebuild):**
+- `govcon_scope_vectors_90day` — `embedding_idx` covers **all 1,481,167 rows** (`idx_indexed = 1,481,167`, `idx_unindexed = 0`). Fully indexed; was already complete and **not** rebuilt (a redundant ~40-min / 7.7 GB pass avoided). ✅
+- `govcon_unknown_90day` — `embedding_idx` **rebuilt over all rows**: `idx_indexed = 1,310,223`, `idx_unindexed = 0` (was 1,042,059 / **268,164** stale). Version 297 → **303**. Full scalar campaign present (`resource_id` + `contract_award_unique_key` BTREE; `naics_code` + `header_class` + `lexicon_hit` BITMAP). A live ANN smoke query returned valid neighbours incl. the self-hit. ✅
 
-**Refinement vs the handoff doc's wording:** the handoff says the unknown index "FAILED" / new chunks are "not in the ANN index." That is substantively correct — the new chunks are unindexed and vector search over them is brute-forced. The precise mechanism: an `embedding_idx` object from a prior build still exists; Phase G's attempt to *refresh* it over the new rows aborted on the pyo3 panic in `compact_files`, so the index was never extended to the 268,164 new rows. The fix and DoD in the handoff are unchanged: broaden the best-effort compact catch (embed:188-193) and re-run `index --sink unknown` (and confirm scope, which is already complete).
+**How it was fixed:** the rebuild crashed in Phase G on a pyo3 `PanicException` in `compact_files` that escaped the `except Exception` best-effort guard (incident #9). The fix broadened that catch to `except BaseException` (re-raising `KeyboardInterrupt`/`SystemExit`) — PR #491 (`0433801`) — after which `index --sink unknown` hit the same panic, **caught** it, skipped the (optional) compaction, and built the IVF_PQ + scalar indexes over the un-compacted fragments. The handoff's literal `from pyo3_runtime import PanicException` was found to be a no-op in the operator venv (module not importable) — the `BaseException` form is the robust equivalent.
 
-**Properties of the open item:** **non-blocking** · **zero account/LLM tokens** (self-hosted Lance/MPS local compute) · **deliverable unaffected** (the capability profile reads requirements/doc_scope, not vectors; coverage locked at 64.1%).
+**Properties (as resolved):** **zero account/LLM tokens** spent (self-hosted Lance/MPS local compute) · prime ledger untouched · **deliverable unaffected throughout** (the capability profile reads requirements/doc_scope, not vectors; coverage locked at 64.1%).
 
 `null_marked` (intentionally NULL, CUI-bracketed, never embedded/indexed): scope **326,866** (`✓ verified`, matches summary); unknown **350,099** (`✓ verified` — note: the summary's "~267k" for unknown is **low**; the actual marked-NULL count is 350,099).
 
@@ -172,7 +172,7 @@ The three deltas (132,184 + 268,164 + 53,308) sum to exactly the 453,656 finaliz
 - `pipelines/sam_gov/reference/p2b_extract_grind_workflow.js` — LLM grind harness (a **Workflow-tool** script, NOT `node`; `✓ verified` exists, 2,509 bytes)
 
 **Datasets touched (shared, R2 `s3://data-sink/active/`)**
-- Chunk sinks (appended): `govcon_scope_vectors_90day` (v286), `govcon_unknown_90day` (v297), `govcon_pricing_90day` (v240)
+- Chunk sinks (appended): `govcon_scope_vectors_90day` (v286), `govcon_unknown_90day` (v297 → **v303** after the 2026-06-16 index rebuild), `govcon_pricing_90day` (v240)
 - Requirements/labor/doc_scope (cumulative): `govcon_award_requirements_90day`, `govcon_labor_demand_90day`, `govcon_doc_scope_90day`
 - Profile (overwritten): `govcon_subawardee_capability_profiles` (v49)
 - Prime ledger (audit-only, verdict-intact): `sam_attachment_extraction_90day` (v267)
@@ -225,7 +225,8 @@ for s in ("govcon_scope_vectors_90day","govcon_unknown_90day"):
     ds.stats.index_stats("embedding_idx")                                            # indexed / unindexed
 ```
 → scope: `null_unmarked=0`, `null_marked=326866`, indexed **1,481,167**, unindexed **0** (complete).
-→ unknown: `null_unmarked=0`, `null_marked=350099`, indexed **1,042,059**, unindexed **268,164** (STALE — the open item).
+→ unknown (pre-rebuild): `null_unmarked=0`, `null_marked=350099`, indexed **1,042,059**, unindexed **268,164** (STALE).
+→ unknown (post-rebuild 2026-06-16, `✓ verified` after PR #491 + `index --sink unknown`): `null_unmarked=0`, `null_marked=350099`, indexed **1,310,223**, unindexed **0** (RESOLVED); ver 297 → 303; live ANN smoke query returned valid neighbours incl. self-hit.
 
 ### E. Phase J cleanup
 ```python
