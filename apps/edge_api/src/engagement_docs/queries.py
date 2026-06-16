@@ -21,7 +21,7 @@ async def read_opportunity_for_doc(conn, opportunity_id: str) -> dict[str, Any] 
             """
             SELECT o.id::text AS opportunity_id,
                    acc.name    AS company_name,
-                   c.first_name, c.last_name, c.title
+                   c.first_name, c.last_name, c.title, c.email
               FROM business.opportunities o
               JOIN business.accounts  acc ON acc.id = o.account_id
          LEFT JOIN business.contacts  c   ON c.id   = o.contact_id
@@ -48,6 +48,10 @@ async def upsert_mandate(
     field_values: dict[str, Any] | None = None,
     trigger_run_id: str | None = None,
     error: str | None = None,
+    documenso_envelope_id: str | None = None,
+    documenso_document_id: int | None = None,
+    participant_signing_token: str | None = None,
+    provider_signing_token: str | None = None,
 ) -> dict[str, Any]:
     """Idempotent upsert keyed on ``opportunity_id`` (one live mandate per opportunity). The id is
     minted on insert and PRESERVED on conflict. Does NOT commit. Returns the row."""
@@ -58,11 +62,15 @@ async def upsert_mandate(
             """
             INSERT INTO business.ao_engagement_mandates AS m
                 (id, opportunity_id, package_key, term_fee_cents, duration_months, document_slug,
-                 style, status, pdf_r2_key, pdf_url, pdf_bytes, field_values, trigger_run_id, error)
+                 style, status, pdf_r2_key, pdf_url, pdf_bytes, field_values, trigger_run_id, error,
+                 documenso_envelope_id, documenso_document_id, participant_signing_token,
+                 provider_signing_token)
             VALUES
                 (%(id)s, %(opportunity_id)s::uuid, %(package_key)s, %(term_fee_cents)s, %(duration_months)s,
                  %(slug)s, %(style)s, %(status)s, %(pdf_r2_key)s, %(pdf_url)s, %(pdf_bytes)s,
-                 %(field_values)s, %(trigger_run_id)s, %(error)s)
+                 %(field_values)s, %(trigger_run_id)s, %(error)s,
+                 %(documenso_envelope_id)s, %(documenso_document_id)s, %(participant_signing_token)s,
+                 %(provider_signing_token)s)
             ON CONFLICT (opportunity_id) DO UPDATE SET
                 package_key     = EXCLUDED.package_key,
                 term_fee_cents  = EXCLUDED.term_fee_cents,
@@ -77,10 +85,15 @@ async def upsert_mandate(
                                        THEN m.field_values ELSE EXCLUDED.field_values END,
                 trigger_run_id  = COALESCE(EXCLUDED.trigger_run_id, m.trigger_run_id),
                 error           = EXCLUDED.error,
+                documenso_envelope_id     = COALESCE(EXCLUDED.documenso_envelope_id, m.documenso_envelope_id),
+                documenso_document_id     = COALESCE(EXCLUDED.documenso_document_id, m.documenso_document_id),
+                participant_signing_token = COALESCE(EXCLUDED.participant_signing_token, m.participant_signing_token),
+                provider_signing_token    = COALESCE(EXCLUDED.provider_signing_token, m.provider_signing_token),
                 updated_at      = now()
             RETURNING id, opportunity_id::text AS opportunity_id, package_key, term_fee_cents,
                       duration_months, document_slug, style, status, pdf_r2_key, pdf_url, pdf_bytes,
-                      trigger_run_id, error
+                      trigger_run_id, error, documenso_envelope_id, documenso_document_id,
+                      participant_signing_token, provider_signing_token
             """,
             {
                 "id": _mint_id(),
@@ -97,6 +110,10 @@ async def upsert_mandate(
                 "field_values": Jsonb(field_values or {}),
                 "trigger_run_id": trigger_run_id,
                 "error": error,
+                "documenso_envelope_id": documenso_envelope_id,
+                "documenso_document_id": documenso_document_id,
+                "participant_signing_token": participant_signing_token,
+                "provider_signing_token": provider_signing_token,
             },
         )
         return await cur.fetchone()
@@ -108,7 +125,8 @@ async def get_by_opportunity(conn, opportunity_id: str) -> dict[str, Any] | None
             """
             SELECT id, opportunity_id::text AS opportunity_id, package_key, term_fee_cents,
                    duration_months, document_slug, style, status, pdf_r2_key, pdf_bytes,
-                   trigger_run_id, error, created_at, updated_at
+                   trigger_run_id, error, documenso_envelope_id, documenso_document_id,
+                   participant_signing_token, provider_signing_token, created_at, updated_at
               FROM business.ao_engagement_mandates
              WHERE opportunity_id = %s::uuid
             """,

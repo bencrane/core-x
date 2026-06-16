@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS business.ao_engagement_mandates (
     pdf_r2_key         text,                                    -- stable R2 object key
     pdf_url            text,                                    -- last presigned GET url (short-lived; informational)
     pdf_bytes          integer,                                 -- rendered size (sanity)
+    -- Documenso v2 linkage — a SIGNABLE DOCUMENT (type=DOCUMENT) created from the rendered PDF:
+    -- SIGNATURE/DATE placed by [[anchor]] (findText), distributed NONE so the signing tokens exist
+    -- WITHOUT Documenso emailing anyone (the app controls delivery). Provider = RS signatory.
+    documenso_envelope_id      text,                            -- envelope_… (the v2 document id)
+    documenso_document_id      integer,                         -- numeric secondaryId (for download)
+    participant_signing_token  text,                            -- the prospect's signing capability
+    provider_signing_token     text,                            -- the RS signatory's signing capability
     -- provenance
     field_values       jsonb       NOT NULL DEFAULT '{}'::jsonb,-- the merge values bound into the document
     trigger_run_id     text,                                    -- the Trigger.dev run that produced it
@@ -47,3 +54,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS ao_engagement_mandates_opportunity_uidx
     ON business.ao_engagement_mandates (opportunity_id);
 CREATE INDEX IF NOT EXISTS ao_engagement_mandates_status_idx  ON business.ao_engagement_mandates (status);
 CREATE INDEX IF NOT EXISTS ao_engagement_mandates_created_idx ON business.ao_engagement_mandates (created_at DESC);
+
+-- Documenso linkage — additive + idempotent for an already-provisioned table (the CREATE TABLE above
+-- only fires on a fresh DB).
+ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS documenso_envelope_id     text;
+ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS documenso_document_id     integer;
+ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS participant_signing_token text;
+ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS provider_signing_token    text;
