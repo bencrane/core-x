@@ -366,6 +366,136 @@ async def create_document_from_template(
     )
 
 
+# ── Template-use DRAFT sub-lane: prefilled DRAFT document, NEVER distributed ───────────────────────
+# A PARALLEL, ADDITIVE path to ``create_document_from_template`` (which uses ``/envelope/use`` then
+# ``/envelope/distribute`` → a PENDING/SENT signable document). This one uses ``POST /template/use``
+# with ``distributeDocument:false`` and DOES NOT distribute, so the new envelope stays DRAFT. It is a
+# pure originate-to-draft: prefill the template's fields, leave SIGNATURE/DATE untouched, return the
+# new envelope handle. The operator finalizes (readOnly, signature, send) later, by hand.
+#
+# CONFIRMED against Documenso v2 + live OpenAPI:
+#   * ``POST /api/v2/template/use`` — UNLIKE ``/envelope/use``, ``recipients`` is REQUIRED, each entry
+#     ``{id, email, name}`` where ``id`` is the TEMPLATE's recipient id (overriding email/name onto the
+#     placeholder recipient). ``distributeDocument:false`` keeps the result a DRAFT.
+#   * ``prefillFields`` is keyed by FIELD ID (not label), ``type`` LOWERCASED (``text``/``number``),
+#     ``value`` always a STRING (even for NUMBER). A label can map to MULTIPLE field ids (e.g.
+#     ``participant_company`` on two fields) — emit one prefill entry PER id. SIGNATURE/DATE and any
+#     label not in ``field_values`` are skipped.
+#   * ``/template/use`` returns ``{id: <NUMERIC document id>, recipients:[{id,token,signingUrl}]}`` —
+#     NO fields, and the id is the LEGACY NUMERIC document id (e.g. ``1461706``), NOT the prefixed
+#     ``envelope_…`` id (this differs from ``/envelope/use``, which returns the prefixed id). Reading it
+#     back therefore goes through ``GET /api/v2/document/{numeric}`` (the ``/envelope/{id}`` endpoint
+#     400s on a numeric id) — that response carries ``status`` (``DRAFT``), the prefixed ``envelopeId``,
+#     and ``fields[]`` for verification.
+
+
+async def create_draft_document_from_template(
+    documenso_template_id: str,
+    *,
+    recipient_email: str,
+    recipient_name: str,
+    field_values_by_label: dict[str, str] | None = None,
+    external_id: str | None = None,
+) -> EnvelopeResult:
+    """Instantiate a DRAFT document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
+    PREFILLED — additive sibling to ``create_document_from_template``; this one NEVER distributes, so
+    the new envelope stays ``DRAFT``.
+
+    Resolves the template live (``GET /api/v2/template/{id}``) for its fields (``id``/``type``/
+    ``fieldMeta.label``) and its recipient id, fans out each provided label to EVERY matching field id
+    (lowercased type, value coerced to a string), overrides the template's recipient with the supplied
+    ``email``/``name``, then ``POST /api/v2/template/use`` with ``distributeDocument:false``. No
+    SIGNATURE/DATE handling, no ``readOnly``. ``EnvelopeResult.envelope_id`` is the PREFIXED envelope
+    id (resolved via the document read-back, since ``/template/use`` returns only the numeric id);
+    ``document_id`` is the numeric id; ``client_token`` is the signer token. NO distribute → DRAFT.
+    """
+    async with _client() as client:
+        # 1) resolve the template's fields + recipient id LIVE (the operator may be editing it; never
+        #    hardcode the field set). ``GET /api/v2/template/{id}`` carries fields[] and recipients[].
+        tmpl_resp = await client.get(f"/api/v2/template/{documenso_template_id}")
+        _raise_for_status(tmpl_resp, "template/get")
+        tmpl = tmpl_resp.json()
+
+        # template recipient id — overridden with the participant's email/name. ``/template/use``
+        # REQUIRES recipients[]; select the SIGNER (fall back to the first) for the single-signer
+        # engagement template.
+        recips = tmpl.get("recipients") or []
+        if not recips:
+            raise DocumensoError(
+                f"template/{documenso_template_id}: no recipients to instantiate"
+            )
+        signer = next(
+            (r for r in recips if isinstance(r, dict) and str(_dig(r, "role") or "").upper() == "SIGNER"),
+            recips[0],
+        )
+        recipient_id = _dig(signer if isinstance(signer, dict) else {}, "id")
+        if recipient_id is None:
+            raise DocumensoError(
+                f"template/{documenso_template_id}: no recipient id to override"
+            )
+
+        # label -> [(field id, lowercased type), …] — a label can appear on MULTIPLE fields, so this
+        # is a fan-out, not a 1:1 map. SIGNATURE/DATE carry no label and are excluded here implicitly.
+        by_label: dict[str, list[tuple[Any, str]]] = {}
+        for fld in tmpl.get("fields") or []:
+            if not isinstance(fld, dict):
+                continue
+            lab = (fld.get("fieldMeta") or {}).get("label")
+            if not lab:
+                continue
+            by_label.setdefault(lab, []).append(
+                (fld.get("id"), str(fld.get("type") or "").lower())
+            )
+
+        # 2) build prefillFields: one entry PER matching field id, value as a STRING, only for labels
+        #    we have a non-empty value for. (TEXT → value; NUMBER → value as a string like "90".)
+        prefill_fields: list[dict[str, Any]] = []
+        for label, value in (field_values_by_label or {}).items():
+            if value in (None, ""):
+                continue
+            for field_id, field_type in by_label.get(label, []):
+                prefill_fields.append(
+                    {"id": field_id, "type": field_type, "value": str(value)}
+                )
+
+        # 3) POST /template/use — distributeDocument:false → DRAFT. recipients[] is REQUIRED; override
+        #    the template recipient's email/name with the participant. NO distribute call follows.
+        payload: dict[str, Any] = {
+            "templateId": int(documenso_template_id),
+            "recipients": [
+                {"id": recipient_id, "email": recipient_email, "name": recipient_name}
+            ],
+            "distributeDocument": False,
+        }
+        if prefill_fields:
+            payload["prefillFields"] = prefill_fields
+        if external_id:
+            payload["externalId"] = external_id
+
+        created = await client.post("/api/v2/template/use", json=payload)
+        _raise_for_status(created, "template/use")
+        body = created.json()
+        # ``/template/use`` returns the LEGACY NUMERIC document id (not a prefixed envelope id) and a
+        # token on each recipient, but NO fields and no prefixed id.
+        numeric_id = _dig(body, "id")
+        if numeric_id is None:
+            raise DocumensoError(f"template/use: no document id in {created.text[:300]}")
+        token = _extract_signer_token(body)
+
+        # 4) read the document back by its numeric id to resolve the PREFIXED envelope id (the durable
+        #    handle the rest of the system addresses by, e.g. /envelope/{id}) and, defensively, the
+        #    signer token. ``/envelope/{id}`` 400s on a numeric id, so this MUST be the document route.
+        #    NO distribute call is made anywhere — the document stays DRAFT.
+        doc = (await client.get(f"/api/v2/document/{numeric_id}")).json()
+
+    prefixed_id = _dig(doc, "envelopeId")
+    return EnvelopeResult(
+        envelope_id=str(prefixed_id or numeric_id),
+        document_id=int(numeric_id) if str(numeric_id).isdigit() else _numeric_document_id(doc),
+        client_token=token or _extract_signer_token(doc),
+    )
+
+
 async def read_template_document(envelope_id: str) -> tuple[str | None, str | None]:
     """Public prospect re-read: the SIGNER token + envelope status from a live, template-instantiated
     envelope. The envelope id is the capability — no per-recipient email is needed to find the token.

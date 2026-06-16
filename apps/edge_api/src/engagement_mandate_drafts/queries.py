@@ -124,6 +124,42 @@ async def get_latest_by_opportunity(conn, opportunity_id: str) -> dict | None:
     }
 
 
+async def get_opportunity_prefill_and_contact(conn, opportunity_id: str) -> dict | None:
+    """For the template-use DRAFT sub-lane: the opportunity's per-deal ``field_values`` (label→value,
+    from ``business.opportunity_specific_content``) plus the participant recipient resolved from the
+    opportunity's contact (``opportunities.contact_id`` → ``business.contacts``).
+
+    Returns ``{"field_values": {...}, "recipient_email": str|None, "recipient_name": str|None}`` —
+    distinct from the engagement-mandate-draft ``prefill_values`` (a different table/source). ``None``
+    when no specific-content row exists OR the ref is not a UUID (UUID-guarded like the other reads so
+    a garbage ref returns 404, never aborts the pooled transaction)."""
+    try:
+        UUID(str(opportunity_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT osc.field_values,
+                   c.email,
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
+              FROM business.opportunity_specific_content osc
+              JOIN business.opportunities o ON o.id = osc.opportunity_id
+              LEFT JOIN business.contacts c ON c.id = o.contact_id
+             WHERE osc.opportunity_id = %s::uuid
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "field_values": row[0] or {},
+        "recipient_email": row[1],
+        "recipient_name": row[2],
+    }
+
+
 async def upsert_staging(
     conn, *, opportunity_id: str, documenso_template_id: str, prefill_values: dict
 ) -> str | None:
