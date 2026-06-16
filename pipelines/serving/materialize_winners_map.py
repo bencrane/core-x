@@ -45,6 +45,10 @@ XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # PHASE 3: award-grain capability profiles, rolled to the prime winner here.
 PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
                               f"{ACTIVE}/govcon_award_capability_profiles/")
+# Sub-side capability: sub_uei-grain profiles feed the subawardee winner rows (without this leg every
+# subawardee row carries has_extracted_scope=false / empty tags — the capability filter excludes them).
+SUB_PROFILES_URI = os.environ.get("GOVCON_SUB_CAPABILITY_PROFILES_URI",
+                                  f"{ACTIVE}/govcon_subawardee_capability_profiles/")
 WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
@@ -112,6 +116,13 @@ def _assemble(so, window_days: int):
         "recipient_uei", "contract_award_unique_key", "has_extracted_scope",
         "requires_clearance", "requires_cmmc", "req_clearance_level_max",
         "capability_tags", "top_labor_categories"]).to_table())
+    # Sub-side profiles (sub_uei grain, already one row per sub). Same CUI posture: only structured /
+    # controlled-vocab columns; evidence_quote / requirement_detail are absent by construction.
+    sub_prof = lance.dataset(SUB_PROFILES_URI, storage_options=so)
+    con.register("sub_prof", sub_prof.scanner(columns=[
+        "sub_uei", "has_extracted_scope", "requires_clearance", "requires_cmmc",
+        "req_clearance_level_max", "capability_tags", "top_labor_categories",
+        "n_scope_solicitations", "source_notice_ids"]).to_table())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -199,22 +210,43 @@ def _assemble(so, window_days: int):
     cap_keys AS (  -- capped drill-down pointer (mega-IDIQ tail bound)
         SELECT winner_uei, list(award_key ORDER BY rk) AS covered_award_keys
         FROM cap_keys_ranked WHERE rk <= {COVERED_AWARD_KEYS_CAP} GROUP BY 1
+    ),
+    -- ── PHASE 3 sub-side capability: sub_uei-grain profiles → subawardee winner rows ─────────────
+    -- The sub profile is already one row per sub_uei with the rolled fields; just project + map.
+    -- covered_award_count ← n_scope_solicitations; covered_award_keys ← source_notice_ids (the
+    -- solicitation provenance, already capped at 50 in the profile build).
+    cap_sub AS (
+        SELECT sub_uei AS winner_uei,
+               coalesce(has_extracted_scope, false) AS has_extracted_scope,
+               coalesce(requires_clearance, false)  AS requires_clearance,
+               coalesce(requires_cmmc, false)       AS requires_cmmc,
+               CASE req_clearance_level_max WHEN 'TS_SCI' THEN 5 WHEN 'TOP_SECRET' THEN 4
+                    WHEN 'SECRET' THEN 3 WHEN 'CONFIDENTIAL' THEN 2 WHEN 'PUBLIC_TRUST' THEN 1
+                    ELSE 0 END AS clr_ord,
+               CAST(coalesce(n_scope_solicitations, 0) AS BIGINT) AS covered_award_count,
+               capability_tags,
+               top_labor_categories AS labor_categories,
+               source_notice_ids[1:{COVERED_AWARD_KEYS_CAP}] AS covered_award_keys
+        FROM sub_prof
+        WHERE sub_uei IS NOT NULL AND length(trim(sub_uei)) > 0
     )
     SELECT k.winner_uei, k.winner_type, k.winner_name, k.street, k.city,
            upper(trim(k.state)) AS state, k.zip, k.naics_code, k.naics2,
            k.award_count, k.total_obligation, k.last_action_date, k.addr_hash,
            x.latitude, x.longitude, x.match_type,
-           -- capability (rolled to the PRIME winner; subawardee rows → defaults via the join cond)
-           coalesce(cap.has_extracted_scope, false) AS has_extracted_scope,
-           coalesce(cap.requires_clearance, false)  AS requires_clearance,
-           coalesce(cap.requires_cmmc, false)       AS requires_cmmc,
-           CASE coalesce(cap.clr_ord, 0) WHEN 5 THEN 'TS_SCI' WHEN 4 THEN 'TOP_SECRET'
+           -- capability: prime winners roll from award profiles (cap*); subawardee winners from the
+           -- sub profiles (cap_sub). The join conds are winner_type-exclusive, so at most one side is
+           -- non-null per row → coalesce(prime, sub, default) is unambiguous.
+           coalesce(cap.has_extracted_scope, cap_sub.has_extracted_scope, false) AS has_extracted_scope,
+           coalesce(cap.requires_clearance, cap_sub.requires_clearance, false)  AS requires_clearance,
+           coalesce(cap.requires_cmmc, cap_sub.requires_cmmc, false)            AS requires_cmmc,
+           CASE coalesce(cap.clr_ord, cap_sub.clr_ord, 0) WHEN 5 THEN 'TS_SCI' WHEN 4 THEN 'TOP_SECRET'
                 WHEN 3 THEN 'SECRET' WHEN 2 THEN 'CONFIDENTIAL' WHEN 1 THEN 'PUBLIC_TRUST'
                 ELSE NULL END AS req_clearance_level_max,
-           CAST(coalesce(cap.covered_award_count, 0) AS BIGINT) AS covered_award_count,
-           cap_tags.capability_tags  AS capability_tags,
-           cap_labor.labor_categories AS labor_categories,
-           cap_keys.covered_award_keys AS covered_award_keys,
+           CAST(coalesce(cap.covered_award_count, cap_sub.covered_award_count, 0) AS BIGINT) AS covered_award_count,
+           coalesce(cap_tags.capability_tags, cap_sub.capability_tags)   AS capability_tags,
+           coalesce(cap_labor.labor_categories, cap_sub.labor_categories) AS labor_categories,
+           coalesce(cap_keys.covered_award_keys, cap_sub.covered_award_keys) AS covered_award_keys,
            'usaspending_winners_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
@@ -223,6 +255,7 @@ def _assemble(so, window_days: int):
     LEFT JOIN cap_tags  ON k.winner_uei = cap_tags.winner_uei  AND k.winner_type = 'prime_recipient'
     LEFT JOIN cap_labor ON k.winner_uei = cap_labor.winner_uei AND k.winner_type = 'prime_recipient'
     LEFT JOIN cap_keys  ON k.winner_uei = cap_keys.winner_uei  AND k.winner_type = 'prime_recipient'
+    LEFT JOIN cap_sub   ON k.winner_uei = cap_sub.winner_uei   AND k.winner_type = 'subawardee'
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
