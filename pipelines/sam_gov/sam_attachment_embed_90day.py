@@ -180,16 +180,24 @@ def index_sink(name):
     if null_marked:
         log(f"[{name}] NOTE: {null_marked:,} MARKED rows remain NULL (CUI bracket, deferred) — they are "
             f"excluded from the ANN index by construction (NULL vectors are not indexed); correct.")
-    # compact_files is a best-effort optimization. pylance 7.0.0 trips an internal encoding bug
-    # ("Repetition buffer too large") compacting the large_string `text` / list columns of these
-    # sinks; the IVF_PQ index does NOT require compaction, so skip on failure and index the
-    # un-compacted fragments (a later Lance fix can compact separately).
+    # compact_files is a best-effort optimization. pylance 7.0.0 trips internal failures compacting
+    # the large_string `text` / list columns of these sinks in two distinct flavours: a normal
+    # Exception ("Repetition buffer too large"), OR a pyo3 Rust panic surfaced as
+    # pyo3_runtime.PanicException — which subclasses BaseException, NOT Exception, so a bare
+    # `except Exception` lets it escape and abort the entire index command (run-record incident #9;
+    # observed on the unknown sink). The IVF_PQ index does NOT require compaction, so skip on EITHER
+    # failure and index the un-compacted fragments (a later Lance fix can compact separately). Catch
+    # BaseException to also swallow the panic, but re-raise KeyboardInterrupt/SystemExit so an
+    # operator interrupt is never eaten. (pyo3_runtime is not importable as a module here, so matching
+    # the panic by its concrete type is not reliable — the BaseException catch is the robust path.)
     log(f"[{name}] compacting {n:,} rows (best-effort) …")
     try:
         ds.optimize.compact_files()
         ds = lance.dataset(uri, storage_options=so)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[{name}] compact skipped (non-fatal Lance error): {str(exc)[:140]}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:  # noqa: BLE001 — must also catch the pyo3 PanicException (BaseException)
+        log(f"[{name}] compact skipped (non-fatal Lance error/panic): {str(exc)[:140]}")
         ds = lance.dataset(uri, storage_options=so)
     num_partitions = max(1, round(math.sqrt(n)))
     with SinkCommitLease(uri, holder=f"embed-index:{name}", ttl_s=6 * 60 * 60):
