@@ -141,7 +141,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
             recipient_email=prefill["recipient_email"],
             recipient_name=prefill["recipient_name"] or prefill["recipient_email"],
             field_values_by_label=prefill["field_values"],
-            external_id=draft_id,
+            # Stamp the OPPORTUNITY as the envelope's externalId — the durable anchor the Documenso
+            # webhook capture carries back (NOT the vestigial mandate-draft id).
+            external_id=draft["opportunity_id"],
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
