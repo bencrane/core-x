@@ -55,6 +55,8 @@ _PROFILE_COLUMNS = [
     "sub_uei", "capability_tags", "requires_clearance", "req_clearance_level_max", "poc_available",
     # Path B: self-reported capability tags (the sub's own descriptions) + provenance
     "self_reported_capability_tags", "tag_source",
+    # GEO: HQ (sub address) + place of performance
+    "hq_state", "hq_city", "pop_state", "pop_states",
 ]
 
 _UEI_RE = re.compile(r"^[A-Za-z0-9]{12}$")       # SAM UEI: 12 alnum chars
@@ -284,6 +286,8 @@ def search_subawardee_capabilities(
             "requires_clearance": p.get("requires_clearance"),
             "req_clearance_level_max": p.get("req_clearance_level_max"),
             "poc_available": p.get("poc_available"),
+            "hq_state": p.get("hq_state"), "hq_city": p.get("hq_city"),     # sub HQ
+            "pop_state": p.get("pop_state"), "pop_states": p.get("pop_states"),  # place of performance
             "profiled": u in prof,    # true → in the profiles table (now ~full universe); see tag_source for which axis
         })
     return {
