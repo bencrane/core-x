@@ -43,11 +43,12 @@ class MandatePrefilledOriginated(BaseModel):
     (``distributionMethod:NONE``) so it lands ``PENDING`` (signable, no email sent). ``status`` is
     ``"pending"``.
 
-    The prospect signing link is ``/p/m/{opportunity_id}/{document_id}``: ``opportunity_id`` (the
-    UUID stamped as the envelope's ``externalId``) is the unguessable access capability, and the
-    numeric ``document_id`` is the disambiguator behind it. Both come off the originate, so the SPA
-    builds the link directly from this response. ``envelope_id`` (the prefixed handle) is retained
-    for continuity but is NOT part of the prospect link anymore."""
+    The prospect signing link is ``/p/m/{opportunity_id}/{document_id}``: ``opportunity_id`` is the
+    opportunity's PUBLIC 8-char handle (``business.opportunities.opportunity_id`` = first 8 of the row
+    UUID) stamped as the envelope's ``externalId`` — the access capability — and the numeric
+    ``document_id`` is the disambiguator behind it. Both come off the originate, so the SPA builds the
+    link directly from this response. ``envelope_id`` (the prefixed handle) is retained for continuity
+    but is NOT part of the prospect link anymore."""
 
     envelope_id: str
     document_id: int | None = None

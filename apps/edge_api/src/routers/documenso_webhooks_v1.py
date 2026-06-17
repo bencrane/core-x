@@ -84,9 +84,10 @@ async def read_sign_state(opportunity_id: str, document_id: str) -> dict[str, An
     prospect-facing ``MandateSignPage`` polls this on a fixed interval while the embed is shown and
     advances to the signed-confirmation view when ``signed`` flips true.
 
-    Security: the read requires the PAIR. ``opportunity_id`` is an unguessable UUID (the capability);
-    ``document_id`` is Documenso's sequential/guessable numeric id, valid only BEHIND a matching UUID.
-    A guessed numeric id with a wrong/missing opportunity → no matching rows → ``signed:false``.
+    Security: the read requires the PAIR. ``opportunity_id`` is the opportunity's public 8-char handle
+    (the access capability — 8 hex = 32 bits); ``document_id`` is Documenso's sequential/guessable
+    numeric id, the unique lookup pin, valid only BEHIND a matching handle. A guessed numeric id with a
+    wrong/missing handle → no matching rows → ``signed:false``.
     """
     async with get_db_connection() as conn:
         state = await queries.read_sign_state(
@@ -109,9 +110,10 @@ async def read_sign_token(opportunity_id: str, document_id: str) -> dict[str, An
     The signing token lives ONLY in Documenso, so this makes ONE live read at embed load:
     ``GET /api/v2/document/{document_id}`` (the numeric id resolves on the *document* endpoint; the
     prefixed ``envelope_…`` handle 400s there). It then PAIR-GATES — asserts the document's
-    ``externalId == opportunity_id`` — and only then returns the recipient signing token. A guessed
-    numeric id whose ``externalId`` does not match the supplied UUID → 404 (no token leaked). This is
-    NOT in the poll loop — the poll is the offline ``/sign-state`` read above.
+    ``externalId == opportunity_id`` (the opportunity's public 8-char handle stamped at originate) —
+    and only then returns the recipient signing token. A guessed numeric id whose ``externalId`` does
+    not match the supplied handle → 404 (no token leaked). This is NOT in the poll loop — the poll is
+    the offline ``/sign-state`` read above.
     """
     try:
         doc = await documenso_client.read_document(document_id)

@@ -129,10 +129,13 @@ async def get_opportunity_prefill_and_contact(conn, opportunity_id: str) -> dict
     from ``business.opportunity_specific_content``) plus the participant recipient resolved from the
     opportunity's contact (``opportunities.contact_id`` → ``business.contacts``).
 
-    Returns ``{"field_values": {...}, "recipient_email": str|None, "recipient_name": str|None}`` —
-    distinct from the engagement-mandate-draft ``prefill_values`` (a different table/source). ``None``
-    when no specific-content row exists OR the ref is not a UUID (UUID-guarded like the other reads so
-    a garbage ref returns 404, never aborts the pooled transaction)."""
+    Returns ``{"field_values": {...}, "recipient_email": str|None, "recipient_name": str|None,
+    "opportunity_ref": str}`` — ``opportunity_ref`` is the opportunity's PUBLIC 8-char handle
+    (``business.opportunities.opportunity_id``, a generated column = first 8 of the row UUID). That
+    handle — NOT the row UUID — is what originate stamps as the envelope's ``externalId`` and what the
+    prospect link carries. Distinct from the engagement-mandate-draft ``prefill_values`` (a different
+    table/source). ``None`` when no specific-content row exists OR the ref is not a UUID (UUID-guarded
+    like the other reads so a garbage ref returns 404, never aborts the pooled transaction)."""
     try:
         UUID(str(opportunity_id))
     except (ValueError, TypeError, AttributeError):
@@ -142,7 +145,8 @@ async def get_opportunity_prefill_and_contact(conn, opportunity_id: str) -> dict
             """
             SELECT osc.field_values,
                    c.email,
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
+                   o.opportunity_id
               FROM business.opportunity_specific_content osc
               JOIN business.opportunities o ON o.id = osc.opportunity_id
               LEFT JOIN business.contacts c ON c.id = o.contact_id
@@ -157,6 +161,9 @@ async def get_opportunity_prefill_and_contact(conn, opportunity_id: str) -> dict
         "field_values": row[0] or {},
         "recipient_email": row[1],
         "recipient_name": row[2],
+        # The public 8-char handle (generated column). Fall back to deriving it from the UUID so the
+        # value is never null even on a pre-migration row.
+        "opportunity_ref": row[3] or str(opportunity_id)[:8],
     }
 
 
