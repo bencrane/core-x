@@ -46,9 +46,9 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
     webhook rows — FULLY OFFLINE (no projection table, no live Documenso call).
 
     Security model — the pair MUST be valid (the document belongs to the opportunity), so a guessed
-    numeric ``document_id`` with a wrong/missing opportunity UUID returns nothing:
-      * ``external_id`` (the captured column) = the opportunity UUID stamped on the envelope at
-        originate (unguessable → the access capability).
+    numeric ``document_id`` with a wrong/missing opportunity handle returns nothing:
+      * ``external_id`` (the captured column) = the opportunity's public 8-char handle stamped on the
+        envelope at originate (the access capability — 8 hex = 32 bits).
       * ``envelope_id`` (the captured column) = Documenso's NUMERIC document id (e.g. ``"1462137"``),
         the same value the webhook payload carries as ``payload.id`` and the SPA link carries as the
         ``document_id`` segment.

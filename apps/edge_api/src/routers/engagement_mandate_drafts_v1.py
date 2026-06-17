@@ -135,24 +135,28 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         raise HTTPException(
             status_code=422, detail="opportunity contact has no email to set as recipient"
         )
+    # The opportunity's PUBLIC 8-char handle (business.opportunities.opportunity_id) — NOT the row
+    # UUID. This is the externally-visible opportunity id: stamped as the envelope's externalId and
+    # carried in the prospect link, so the signing gate matches it exactly on the read side.
+    opportunity_ref = prefill["opportunity_ref"]
     try:
         result = await documenso_client.create_document_from_template(
             draft["documenso_template_id"],
             recipient_email=prefill["recipient_email"],
             recipient_name=prefill["recipient_name"] or prefill["recipient_email"],
             field_values_by_label=prefill["field_values"],
-            # Stamp the OPPORTUNITY as the envelope's externalId — the durable anchor the Documenso
-            # webhook capture carries back (NOT the vestigial mandate-draft id).
-            external_id=draft["opportunity_id"],
+            # Stamp the opportunity's 8-char handle as the envelope's externalId — the durable anchor
+            # the Documenso webhook capture carries back, and the prospect-link access capability.
+            external_id=opportunity_ref,
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
     return MandatePrefilledOriginated(
         envelope_id=result.envelope_id,
         document_id=result.document_id,
-        # The opportunity UUID is the link capability and the externalId stamped on the envelope —
+        # The 8-char handle is the link capability and the externalId stamped on the envelope —
         # surfaced so the SPA can build /p/m/{opportunity_id}/{document_id} directly.
-        opportunity_id=draft["opportunity_id"],
+        opportunity_id=opportunity_ref,
         signing_token=result.client_token,
         status="pending",
         documenso_host=config.documenso_api_url(),
