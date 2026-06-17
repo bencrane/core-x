@@ -33,10 +33,19 @@ def _require_secret() -> str:
 
 
 async def ensure_customer(*, email: str, name: str | None, existing_id: str | None) -> str:
-    """A Stripe Customer id for this prospect, reusing the one already on the row if present."""
-    if existing_id:
-        return existing_id
+    """A Stripe Customer id for this prospect, reusing the one already on the row if it still resolves
+    in the CURRENT Stripe mode. A persisted id can be stale — created under the other mode (test↔live)
+    or since deleted — and passing it to PaymentIntent.create then 502s with "No such customer". So
+    when an id is present we retrieve it first; if it doesn't resolve (or is deleted) we mint a fresh
+    one, and the caller re-persists it so the record self-heals."""
     _require_secret()
+    if existing_id:
+        try:
+            cust = await asyncio.to_thread(stripe.Customer.retrieve, existing_id)
+            if not getattr(cust, "deleted", False):
+                return existing_id
+        except Exception:  # noqa: BLE001 — stale/cross-mode/deleted id → fall through and mint fresh
+            pass
     try:
         customer = await asyncio.to_thread(
             lambda: stripe.Customer.create(
