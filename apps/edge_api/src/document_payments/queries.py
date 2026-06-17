@@ -1,0 +1,155 @@
+"""business.document_payments reads/writes + the inputs the mint needs — psycopg async.
+
+Keyed by the Documenso ``document_id`` (the unique pin); ``opportunity_id`` (8-char handle) carries
+the pair. The fee + customer are resolved by joining the opportunity ON ITS 8-CHAR HANDLE
+(``opportunities.opportunity_id``), so the route works off the link's pair without the row UUID.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any
+
+
+async def get_payment(conn, document_id: str) -> dict | None:
+    """The document payment record for a document, or None if no intent has been minted yet."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT document_id, opportunity_id, amount_cents, currency,
+                   stripe_customer_id, stripe_payment_intent_id, payment_status, paid_at
+              FROM business.document_payments
+             WHERE document_id = %s
+            """,
+            (document_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "document_id": row[0],
+        "opportunity_id": row[1],
+        "amount_cents": row[2],
+        "currency": row[3],
+        "stripe_customer_id": row[4],
+        "stripe_payment_intent_id": row[5],
+        "payment_status": row[6],
+        "paid_at": row[7],
+    }
+
+
+async def get_fee_and_contact(conn, opportunity_id: str) -> dict | None:
+    """Resolve, by the 8-char opportunity handle: the per-deal ``field_values`` (carries ``fee_amount``)
+    and the contact (email/name) used as the Stripe customer. None when the handle is unknown."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT osc.field_values,
+                   c.email,
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
+              FROM business.opportunities o
+              JOIN business.opportunity_specific_content osc ON osc.opportunity_id = o.id
+              LEFT JOIN business.contacts c ON c.id = o.contact_id
+             WHERE o.opportunity_id = %s
+             LIMIT 1
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {"field_values": row[0] or {}, "recipient_email": row[1], "recipient_name": row[2]}
+
+
+async def upsert_intent(
+    conn,
+    *,
+    document_id: str,
+    opportunity_id: str,
+    amount_cents: int,
+    currency: str,
+    customer_id: str,
+    intent_id: str,
+    status: str,
+) -> None:
+    """Persist the minted intent on the pair's payment record (idempotent upsert by document_id).
+    COMMITS. A terminal ``succeeded`` status is NEVER downgraded by a re-mint (defense-in-depth — the
+    webhook is the only writer of ``succeeded``/``paid_at``)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO business.document_payments
+                 (document_id, opportunity_id, amount_cents, currency,
+                  stripe_customer_id, stripe_payment_intent_id, payment_status)
+            VALUES (%(document_id)s, %(opportunity_id)s, %(amount_cents)s, %(currency)s,
+                    %(customer_id)s, %(intent_id)s, %(status)s)
+            ON CONFLICT (document_id) DO UPDATE
+               SET opportunity_id           = EXCLUDED.opportunity_id,
+                   amount_cents             = EXCLUDED.amount_cents,
+                   currency                 = EXCLUDED.currency,
+                   stripe_customer_id       = EXCLUDED.stripe_customer_id,
+                   stripe_payment_intent_id = EXCLUDED.stripe_payment_intent_id,
+                   payment_status           = CASE
+                       WHEN business.document_payments.payment_status = 'succeeded'
+                       THEN business.document_payments.payment_status
+                       ELSE EXCLUDED.payment_status END,
+                   updated_at               = now()
+            """,
+            {
+                "document_id": document_id,
+                "opportunity_id": opportunity_id,
+                "amount_cents": amount_cents,
+                "currency": currency,
+                "customer_id": customer_id,
+                "intent_id": intent_id,
+                "status": status,
+            },
+        )
+    await conn.commit()
+
+
+async def record_event_if_new(
+    conn,
+    *,
+    stripe_event_id: str,
+    event_type: str | None,
+    document_id: str | None,
+    opportunity_id: str | None,
+    payload: Any,
+) -> bool:
+    """Append the raw Stripe event to the audit ledger. Returns False if it was already recorded
+    (UNIQUE ``stripe_event_id`` → ON CONFLICT DO NOTHING) — the webhook idempotency guard. Does NOT
+    commit; the caller commits together with the status advance."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO business.document_payment_events
+                 (stripe_event_id, event_type, document_id, opportunity_id, payload)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (stripe_event_id) DO NOTHING
+            RETURNING id
+            """,
+            (stripe_event_id, event_type, document_id, opportunity_id, json.dumps(payload)),
+        )
+        row = await cur.fetchone()
+    return row is not None
+
+
+async def advance_status(
+    conn, *, document_id: str, status: str, paid: bool, intent_id: str | None = None
+) -> None:
+    """Advance the payment record from a Stripe webhook. ``paid_at`` is set ONCE (COALESCE). Does NOT
+    commit; the caller commits together with the event-ledger insert."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE business.document_payments
+               SET payment_status           = %(status)s,
+                   paid_at                   = CASE WHEN %(paid)s
+                                                    THEN COALESCE(paid_at, now())
+                                                    ELSE paid_at END,
+                   stripe_payment_intent_id  = COALESCE(%(intent_id)s, stripe_payment_intent_id),
+                   updated_at                = now()
+             WHERE document_id = %(document_id)s
+            """,
+            {"status": status, "paid": paid, "intent_id": intent_id, "document_id": document_id},
+        )

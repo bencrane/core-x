@@ -28,6 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..db import get_db_connection
+from ..document_payments import queries as doc_pay_queries
 from ..payments import queries as pay_queries
 from ..payments import stripe_client
 
@@ -61,6 +62,13 @@ async def stripe_webhook(
     event_id = str(event.get("id") or "")
     obj = (event.get("data") or {}).get("object") or {}
     intent_id = obj.get("id")
+
+    # Dispatch by payment kind. Direct-to-documenso "document" payments carry metadata.kind="document"
+    # + the (opportunity_id, document_id) pair → advance business.document_payments. Everything else
+    # falls through to the legacy proposal-ref path below, which is left untouched.
+    if (obj.get("metadata") or {}).get("kind") == "document":
+        return await _handle_document_payment(event_type, event_id, obj, raw)
+
     ref = (obj.get("metadata") or {}).get("ref")
 
     status = _EVENT_TO_STATUS.get(event_type)
@@ -100,3 +108,53 @@ async def stripe_webhook(
         "stripe webhook %s ref=%s applied=%s first_seen=%s", event_type, ref, applied, first_seen
     )
     return {"ok": True, "event": event_type, "status": status, "applied": applied}
+
+
+async def _handle_document_payment(
+    event_type: str, event_id: str, obj: dict[str, Any], raw: bytes
+) -> dict[str, Any]:
+    """Advance ``business.document_payments`` for a direct-to-documenso payment (``metadata.kind=
+    "document"``). Self-contained — no contact with the legacy proposal path. Append the verbatim
+    event first (idempotent on the Stripe event id), then advance the pair's status. ACH settles
+    asynchronously, so this — NOT the browser confirm — is the only thing that sets ``paid``."""
+    status = _EVENT_TO_STATUS.get(event_type)
+    intent_id = obj.get("id")
+    md = obj.get("metadata") or {}
+    document_id = md.get("document_id")
+    opportunity_id = md.get("opportunity_id")
+    if status is None or not document_id:
+        return {"ok": True, "ignored": True, "event": event_type}
+
+    try:
+        envelope = json.loads(raw)
+    except ValueError:
+        envelope = {"raw_unparseable": True}
+
+    paid = status == "succeeded"
+    async with get_db_connection() as conn:
+        # 1) AUDIT + idempotency — append the verbatim event first; a redelivery returns first_seen=False.
+        first_seen = await doc_pay_queries.record_event_if_new(
+            conn,
+            stripe_event_id=event_id,
+            event_type=event_type,
+            document_id=document_id,
+            opportunity_id=opportunity_id,
+            payload=envelope,
+        )
+        # 2) ADVANCE — only on first sight; paid_at is set once (monotonic).
+        if first_seen:
+            await doc_pay_queries.advance_status(
+                conn, document_id=document_id, status=status, paid=paid, intent_id=intent_id
+            )
+        await conn.commit()
+
+    if paid and first_seen:
+        # SEAM: durable post-payment fulfillment (provision / receipt / CRM) belongs here, handed to
+        # Trigger.dev. Intentionally not wired — the document_payment_events row is the audit of record.
+        logger.info(
+            "document %s/%s PAID (intent %s) — fulfillment seam", opportunity_id, document_id, intent_id
+        )
+    logger.info(
+        "stripe webhook(document) %s doc=%s first_seen=%s", event_type, document_id, first_seen
+    )
+    return {"ok": True, "event": event_type, "status": status, "first_seen": first_seen}

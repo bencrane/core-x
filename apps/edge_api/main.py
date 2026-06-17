@@ -60,6 +60,7 @@ from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
+from .src.routers.document_payments_v1 import router as document_payments_router
 from .src.routers.operator_settings_v1 import router as operator_settings_router
 from .src.service_token import require_service_token
 
@@ -173,6 +174,11 @@ app.include_router(proposals_router)
 # No normalization/projection — that's a separate step decided against the captured payloads.
 app.include_router(documenso_webhooks_router)
 
+# document payments: the direct-to-documenso engagement-fee surface (Stripe ACH). PUBLIC, keyed by the
+# (opportunity_id, document_id) pair; mint/reuse the intent + read state. Amount resolved server-side
+# from fee_amount; `paid` advanced only by /webhooks/stripe (metadata.kind="document"). edge_api owns it.
+app.include_router(document_payments_router)
+
 # proposal-templates: the authoring surface (markdown → branded HTML → DocRaptor preview → publish).
 # Service-token gated; the BFF brokers it with the operator session. Markdown source lives in
 # Postgres (business.global_engagement_content); preview PDFs are stashed in R2.
@@ -266,6 +272,7 @@ def _info() -> dict:
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
+            "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
         },
