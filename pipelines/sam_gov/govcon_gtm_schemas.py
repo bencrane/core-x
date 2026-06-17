@@ -321,6 +321,12 @@ def subawardee_capability_profiles_schema():
         ("subaward_numbers", pa.list_(pa.string())),  # cited evidence for the lead work
         ("subaward_prime_ueis", pa.list_(pa.string())),
         ("subaward_prime_names", pa.list_(pa.string())),
+        # GEO — denormalized from contract_subaward so geo is a first-class filter (no join). HQ = the
+        # sub's own reported address (dominant); PoP = where the work was performed (dominant + the full
+        # set of distinct states, for "performed anywhere in X" membership filters). HQ ≠ PoP in general.
+        ("hq_state", pa.string()), ("hq_city", pa.string()),
+        ("pop_state", pa.string()),                   # dominant place-of-performance state (by subaward count)
+        ("pop_states", pa.list_(pa.string())),        # all distinct PoP states the sub performed in
         # ENRICH — solicitation scope worked under (prime scope), validated/controlled-vocab only
         ("has_extracted_scope", pa.bool_()),
         ("n_scope_solicitations", pa.int32()),

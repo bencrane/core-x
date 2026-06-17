@@ -72,7 +72,8 @@ SELF_TAG_DESC_CHARS = 600   # MUST match classify_sub_self_reported_tags.MAX_DES
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["sub_uei"]
 BITMAP_INDEXES = ["requires_clearance", "requires_cmmc", "has_extracted_scope", "poc_available",
-                  "marked_solicitation", "req_clearance_level_max", "tag_source"]
+                  "marked_solicitation", "req_clearance_level_max", "tag_source",
+                  "hq_state", "pop_state"]   # geo filter axes (low-cardinality)
 
 # Deterministic per-sub list caps (bound payload; coverage_truncated set when a cap actually clips).
 TAG_CAP = 30
@@ -181,7 +182,9 @@ def _assemble(so):
     csub_tbl = csub.scanner(columns=[
         "subawardee_uei", "subawardee_name", "subawardee_parent_uei", "subaward_description",
         "subaward_number", "subaward_amount", "subaward_action_date", "prime_awardee_uei",
-        "prime_awardee_name", "prime_award_naics_code"]).to_table()
+        "prime_awardee_name", "prime_award_naics_code",
+        "subawardee_state_code", "subawardee_city_name",            # HQ geo
+        "subaward_primary_place_of_performance_state_code"]).to_table()  # place of performance
     # full universe = distinct csub subs ∪ bridge subs (bridge ⊂ csub except a tiny edge)
     full_sub_ueis = sorted({u for u in csub_tbl.column("subawardee_uei").to_pylist() if u} | set(sub_ueis))
     team_tbl = team.scanner(columns=[
@@ -244,6 +247,31 @@ def _assemble(so):
         SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS self_reported_capability_tags,
                CAST(count(*) AS INTEGER) AS n_self_reported_tags
         FROM selftag_ranked GROUP BY 1
+    ),
+    -- ── GEO: HQ (sub's own address, dominant) + PoP (place of performance, dominant + distinct set) ──
+    hq_counts AS (
+        SELECT subawardee_uei AS sub_uei, subawardee_state_code AS st, subawardee_city_name AS ct, count(*) AS n
+        FROM csub WHERE subawardee_uei IS NOT NULL AND subawardee_state_code IS NOT NULL
+        GROUP BY 1, 2, 3
+    ),
+    hq_ranked AS (
+        SELECT sub_uei, st, ct, row_number() OVER (PARTITION BY sub_uei ORDER BY n DESC, st, ct) AS rk FROM hq_counts
+    ),
+    hq_roll AS (
+        SELECT sub_uei, max(CASE WHEN rk = 1 THEN st END) AS hq_state,
+               max(CASE WHEN rk = 1 THEN ct END) AS hq_city FROM hq_ranked GROUP BY 1
+    ),
+    pop_counts AS (
+        SELECT subawardee_uei AS sub_uei, subaward_primary_place_of_performance_state_code AS st, count(*) AS n
+        FROM csub WHERE subawardee_uei IS NOT NULL AND subaward_primary_place_of_performance_state_code IS NOT NULL
+        GROUP BY 1, 2
+    ),
+    pop_ranked AS (
+        SELECT sub_uei, st, row_number() OVER (PARTITION BY sub_uei ORDER BY n DESC, st) AS rk FROM pop_counts
+    ),
+    pop_top AS (SELECT sub_uei, max(CASE WHEN rk = 1 THEN st END) AS pop_state FROM pop_ranked GROUP BY 1),
+    pop_states_roll AS (
+        SELECT sub_uei, list(st ORDER BY st) AS pop_states FROM (SELECT DISTINCT sub_uei, st FROM pop_counts) GROUP BY 1
     ),
     -- window column + notices from the bridge
     bridge_roll AS (
@@ -454,6 +482,7 @@ def _assemble(so):
         dr.top_subaward_description, dr.subaward_descriptions,
         nr.subaward_numbers,
         spr.subaward_prime_ueis, spr.subaward_prime_names,
+        hqr.hq_state, hqr.hq_city, ptr.pop_state, psr.pop_states,
         (coalesce(sf.n_scope_docs, 0) > 0 OR coalesce(sc.n_scope_solicitations, 0) > 0) AS has_extracted_scope,
         coalesce(sc.n_scope_solicitations, 0) AS n_scope_solicitations,
         sumr.scope_summary,
@@ -508,6 +537,9 @@ def _assemble(so):
     LEFT JOIN tprime_roll  tpr USING (sub_uei)
     LEFT JOIN poc_roll     pr  USING (sub_uei)
     LEFT JOIN selftag_roll srt USING (sub_uei)
+    LEFT JOIN hq_roll      hqr USING (sub_uei)
+    LEFT JOIN pop_top      ptr USING (sub_uei)
+    LEFT JOIN pop_states_roll psr USING (sub_uei)
     """
     tbl = con.execute(sql).to_arrow_table()
 
@@ -626,6 +658,8 @@ def verify(content_hash: bool = False):
         "with_subaward_desc": ds.count_rows(filter="top_subaward_description IS NOT NULL"),
         "with_teaming": ds.count_rows(filter="n_teaming_primes > 0"),
         "with_self_reported_tags": ds.count_rows(filter="n_self_reported_tags > 0"),
+        "with_hq_state": ds.count_rows(filter="hq_state IS NOT NULL"),
+        "with_pop_state": ds.count_rows(filter="pop_state IS NOT NULL"),
         "tag_source": tag_src,
         "has_extracted_scope": ds.count_rows(filter="has_extracted_scope = true"),
         "requires_clearance": ds.count_rows(filter="requires_clearance = true"),
