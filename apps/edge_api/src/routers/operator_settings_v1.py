@@ -52,5 +52,6 @@ async def put_operator_settings(
             auth_user_id=str(auth_user_id),
             render_mode=body.render_mode,
             direct_to_documenso_lane=body.direct_to_documenso_lane,
+            stripe_mode=body.stripe_mode,
         )
     return OperatorSettings(**settings)

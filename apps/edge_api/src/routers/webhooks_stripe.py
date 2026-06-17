@@ -29,8 +29,8 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..db import get_db_connection
 from ..document_payments import queries as doc_pay_queries
+from ..document_payments import stripe as doc_pay_stripe
 from ..payments import queries as pay_queries
-from ..payments import stripe_client
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,11 @@ async def stripe_webhook(
 ) -> dict[str, Any]:
     raw = await request.body()
     try:
-        event = stripe_client.construct_event(raw, stripe_signature)
-    except stripe_client.StripeError as exc:
+        # Verify against ANY configured secret (test + live) — the document-payment mode is
+        # operator-toggleable at runtime, so events arrive signed by whichever mode minted the intent.
+        # The legacy proposal events verify the same way (shared secrets, one Stripe account).
+        event = doc_pay_stripe.construct_event_any(raw, stripe_signature)
+    except doc_pay_stripe.StripeError as exc:
         # Unconfigured secret vs bad signature: 503 vs 400 (never accept unverified).
         if "not set" in str(exc):
             raise HTTPException(status_code=503, detail=str(exc))

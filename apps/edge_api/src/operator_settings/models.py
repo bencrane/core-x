@@ -14,6 +14,10 @@ from pydantic import BaseModel
 
 RenderMode = Literal["through-docraptor", "direct-to-documenso"]
 DirectToDocumensoLane = Literal["envelope-distribute", "prefill-document-from-template"]
+# The document-payment Stripe mode toggle. NULLABLE (no DB default): null = "follow the STRIPE_MODE
+# env" (which is `live`); set = override. The document-payment mint resolves it as the global,
+# single-operator selection.
+StripeMode = Literal["test", "live"]
 
 # DB-default mirror — kept in lockstep with the column DEFAULTs in sql/operator_settings.sql, which
 # remain the database-level system-of-record. Used to resolve effective settings when an operator has
@@ -29,14 +33,16 @@ class OperatorSettings(BaseModel):
 
     render_mode: RenderMode
     direct_to_documenso_lane: DirectToDocumensoLane
+    # null = follow the STRIPE_MODE env (the document-payment flow defaults to it; `live` in prd).
+    stripe_mode: StripeMode | None = None
     updated_at: datetime | None = None
 
 
 class OperatorSettingsUpsert(BaseModel):
-    """The cockpit save payload. Both fields are OPTIONAL and MERGE: an omitted field preserves the
+    """The cockpit save payload. All fields are OPTIONAL and MERGE: an omitted field preserves the
     operator's existing value on update (and falls to the DB default on first insert), so toggling
-    ``render_mode`` alone never clobbers a previously-chosen ``direct_to_documenso_lane``. Values are
-    constrained to the same domains the DB CHECK enforces."""
+    one never clobbers another. Values are constrained to the same domains the DB CHECK enforces."""
 
     render_mode: RenderMode | None = None
     direct_to_documenso_lane: DirectToDocumensoLane | None = None
+    stripe_mode: StripeMode | None = None

@@ -39,11 +39,16 @@ _AMOUNT_MUTABLE = {"requires_payment_method", "requires_confirmation", "requires
 async def create_document_payment_intent(
     opportunity_id: str, document_id: str
 ) -> DocumentPaymentInitPublic:
-    publishable_key = config.stripe_publishable_key()
-    if config.stripe_secret_key() is None or not publishable_key:
-        raise HTTPException(status_code=503, detail="Stripe is not configured")
-
     async with get_db_connection() as conn:
+        # Resolve the operator-selected Stripe mode (operator_settings.stripe_mode, augmenting the env
+        # STRIPE_MODE) and its key set. Single-operator platform: this is the global selection (the
+        # prospect mint has no operator session). Keys are mode-specific so the toggle takes effect
+        # without a redeploy.
+        mode = config.resolve_stripe_mode(await pay_queries.get_stripe_mode_selection(conn))
+        publishable_key = config.stripe_publishable_key_for_mode(mode)
+        if config.stripe_secret_key_for_mode(mode) is None or not publishable_key:
+            raise HTTPException(status_code=503, detail="Stripe is not configured")
+
         # GATE: the document must be signed (DOCUMENT_COMPLETED for the pair). This also enforces the
         # pair — a document that does not belong to this opportunity is not "signed" for it → 409.
         state = await sign_queries.read_sign_state(
@@ -72,10 +77,10 @@ async def create_document_payment_intent(
         # Reuse an open intent (idempotent across refresh/retry); only re-mint after a hard failure.
         if existing_intent and existing_status not in ("failed", "canceled"):
             try:
-                intent = await stripe_client.retrieve_payment_intent(existing_intent)
+                intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
                 if intent.get("amount") != charge_cents and intent.get("status") in _AMOUNT_MUTABLE:
-                    await stripe_client.update_payment_intent_amount(existing_intent, charge_cents)
-                    intent = await stripe_client.retrieve_payment_intent(existing_intent)
+                    await stripe_client.update_payment_intent_amount(existing_intent, charge_cents, mode)
+                    intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
                 if intent.get("client_secret"):
                     return DocumentPaymentInitPublic(
                         client_secret=intent["client_secret"],
@@ -96,6 +101,7 @@ async def create_document_payment_intent(
                 email=info["recipient_email"],
                 name=info["recipient_name"],
                 existing_id=existing_customer,
+                mode=mode,
             )
             created = await stripe_client.create_payment_intent(
                 amount_cents=charge_cents,
@@ -103,6 +109,7 @@ async def create_document_payment_intent(
                 opportunity_id=opportunity_id,
                 document_id=document_id,
                 idempotency_key=f"ach_document_{document_id}",
+                mode=mode,
             )
         except stripe_client.StripeError as exc:
             logger.error(
