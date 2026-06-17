@@ -396,16 +396,24 @@ async def create_document_from_template(
     external_id: str | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
-    PREFILLED, then distribute WITHOUT email so it lands ``PENDING`` (ready to sign, no email sent).
+    PREFILLED and LOCKED (readOnly), then distribute WITHOUT email so it lands ``PENDING`` (ready to
+    sign, no email sent). The signer only applies the SIGNATURE; the DATE fields auto-stamp on signing.
 
     Resolves the template live (``GET /api/v2/template/{id}``) for its fields (``id``/``type``/
     ``fieldMeta.label``) and its recipient id, fans out each provided label to EVERY matching field id
     (lowercased type, value coerced to a string), overrides the template's recipient with the supplied
-    ``email``/``name``, ``POST /api/v2/template/use`` with ``distributeDocument:false``, then
-    ``POST /api/v2/envelope/distribute`` with ``distributionMethod:NONE`` to mint the signer's signing
-    surface without sending email. No SIGNATURE/DATE handling, no ``readOnly`` (the signer fills those).
+    ``email``/``name``, ``POST /api/v2/template/use`` with ``distributeDocument:false``, LOCKS every
+    prefilled field on the NEW document via ``POST /api/v2/envelope/field/update-many`` (``readOnly:true``
+    — operator-set terms are not signer-editable), then ``POST /api/v2/envelope/distribute`` with
+    ``distributionMethod:NONE`` to mint the signer's signing surface without sending email.
     ``/template/use`` returns the full new envelope, so ``envelope_id`` (prefixed), ``document_id``
-    (numeric), and ``client_token`` come straight off that response — no document read-back.
+    (numeric), and ``client_token`` come straight off that response.
+
+    readOnly can't be set at instantiation (neither ``/template/use``'s ``override`` nor ``prefillFields``
+    expose it) and a TEMPLATE field can't be readOnly without static text — so the lock is applied on the
+    DERIVED document, where the prefilled value satisfies Documenso's "read-only must have text" rule. The
+    derived fields carry NEW ids and NO labels, so prefilled fields are identified by a non-empty value
+    (``fieldMeta.text``/``value``); SIGNATURE/DATE carry no value and stay open for the signer.
     """
     async with _client() as client:
         # 1) resolve the template's fields + recipient id LIVE (the operator may be editing it; never
@@ -482,7 +490,39 @@ async def create_document_from_template(
             raise DocumensoError(f"template/use: no envelopeId in {created.text[:300]}")
         token = _extract_signer_token(body)
 
-        # 4) distribute WITHOUT email — DRAFT → PENDING, minting the signer's signing surface (the
+        # 4) LOCK the prefilled fields on the NEW document — set ``readOnly:true`` so the operator-set
+        #    terms (fee, term, company, name, title) are NOT signer-editable. readOnly can't be set at
+        #    instantiation, and a template field can't be readOnly without static text, so it MUST be
+        #    applied here on the derived document, where the prefilled value satisfies the "read-only
+        #    must have text" rule. Derived fields have NEW ids and NO labels → identify the prefilled
+        #    ones by a non-empty value; carry the full fieldMeta + geometry back so nothing is clobbered.
+        new_fields = (await client.get(f"/api/v2/envelope/{envelope_id}")).json().get("fields") or []
+        locks: list[dict[str, Any]] = []
+        for fld in new_fields:
+            if not isinstance(fld, dict):
+                continue
+            ftype = fld.get("type")
+            meta = fld.get("fieldMeta") or {}
+            value = meta.get("text") if ftype == "TEXT" else meta.get("value") if ftype == "NUMBER" else None
+            if ftype not in ("TEXT", "NUMBER") or not str(value or "").strip():
+                continue
+            locked_meta = {k: v for k, v in meta.items() if v is not None}
+            locked_meta["readOnly"] = True
+            entry: dict[str, Any] = {"id": fld.get("id"), "type": ftype, "fieldMeta": locked_meta}
+            for k in ("positionX", "positionY", "width", "height"):
+                if fld.get(k) is not None:
+                    entry[k] = float(fld[k])
+            if fld.get("page") is not None:
+                entry["page"] = int(fld["page"])
+            locks.append(entry)
+        if locks:
+            locked_resp = await client.post(
+                "/api/v2/envelope/field/update-many",
+                json={"envelopeId": envelope_id, "data": locks},
+            )
+            _raise_for_status(locked_resp, "envelope/field/update-many")
+
+        # 5) distribute WITHOUT email — DRAFT → PENDING, minting the signer's signing surface (the
         #    embed needs it). Same no-email distribute the envelope/use lane uses; the consumer app
         #    delivers the link.
         distributed = await client.post(
