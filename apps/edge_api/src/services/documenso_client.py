@@ -103,6 +103,10 @@ def _dig(obj: Any, *keys: str) -> Any:
     return None
 
 
+def _str_or_none(v: Any) -> str | None:
+    return str(v) if v is not None else None
+
+
 def _extract_client_token(body: Any, email: str) -> str | None:
     """Pull the SIGNER recipient's signing token, matched by email when present."""
     env = _dig(body, "envelope", "document", "data") or body
@@ -544,6 +548,50 @@ async def read_template_document(envelope_id: str) -> tuple[str | None, str | No
     """
     env = await get_envelope(envelope_id)
     return _extract_signer_token(env), _dig(env, "status")
+
+
+@dataclass(frozen=True)
+class DocumentReadResult:
+    """A live read of a Documenso document by its NUMERIC id (the (opportunity, document) sign-token
+    lane). ``external_id`` is the opportunity UUID stamped at originate — the caller pair-gates on it
+    before handing back ``signing_token``."""
+
+    document_id: int
+    envelope_id: str | None       # the prefixed v2 handle (envelope_…)
+    external_id: str | None       # the opportunity UUID stamped at originate
+    status: str | None            # Documenso document status (PENDING / COMPLETED / …)
+    signing_token: str | None     # the SIGNER recipient's signing token (drives the embed)
+
+
+async def read_document(document_id: str) -> DocumentReadResult:
+    """Read a Documenso document by its NUMERIC id via ``GET /api/v2/document/{numeric}``.
+
+    This is the document-keyed read for the ``(opportunity_id, document_id)`` signing link. The
+    numeric id resolves directly on the *document* endpoint (the prefixed ``envelope_…`` handle 400s
+    there — verified 2026-06-17), and the response carries ``externalId`` (the opportunity UUID
+    stamped at originate), the prefixed ``envelopeId``, the document ``status``, and the SIGNER
+    recipient's ``token``. The caller asserts ``external_id == opportunity_id`` BEFORE returning the
+    token, so a guessed numeric id with a wrong/missing UUID never yields a signing surface.
+    """
+    async with _client() as client:
+        resp = await client.get(f"/api/v2/document/{document_id}")
+    _raise_for_status(resp, "document/get")
+    body = resp.json()
+    numeric = _dig(body, "id")
+    resolved = (
+        int(numeric)
+        if numeric is not None and str(numeric).isdigit()
+        else int(document_id)
+        if str(document_id).isdigit()
+        else 0
+    )
+    return DocumentReadResult(
+        document_id=resolved,
+        envelope_id=_str_or_none(_dig(body, "envelopeId")),
+        external_id=_str_or_none(_dig(body, "externalId")),
+        status=_str_or_none(_dig(body, "status")),
+        signing_token=_extract_signer_token(body),
+    )
 
 
 async def get_template_text_field_labels(documenso_template_id: str) -> list[str]:

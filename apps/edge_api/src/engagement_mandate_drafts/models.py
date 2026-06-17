@@ -41,11 +41,17 @@ class MandatePrefilledOriginated(BaseModel):
     """The template-use lane result — a Documenso document instantiated FROM the template via
     ``/template/use`` with the opportunity's field values prefilled, then distributed
     (``distributionMethod:NONE``) so it lands ``PENDING`` (signable, no email sent). ``status`` is
-    ``"pending"``. The numeric ``document_id`` and ``signing_token`` come off the ``/template/use``
-    response; the prefixed ``envelope_id`` is the durable handle the prospect link carries."""
+    ``"pending"``.
+
+    The prospect signing link is ``/p/m/{opportunity_id}/{document_id}``: ``opportunity_id`` (the
+    UUID stamped as the envelope's ``externalId``) is the unguessable access capability, and the
+    numeric ``document_id`` is the disambiguator behind it. Both come off the originate, so the SPA
+    builds the link directly from this response. ``envelope_id`` (the prefixed handle) is retained
+    for continuity but is NOT part of the prospect link anymore."""
 
     envelope_id: str
     document_id: int | None = None
+    opportunity_id: str
     signing_token: str | None = None
     status: str = "pending"
     documenso_host: str
