@@ -41,26 +41,29 @@ async def insert_event(
 _TERMINAL_EVENTS = ("DOCUMENT_COMPLETED",)
 
 
-async def read_envelope_state(conn, envelope_ids: list[str]) -> dict[str, Any]:
-    """Project signing state for an envelope AT READ TIME from the raw webhook rows — no projection
-    table, no live Documenso.
+async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dict[str, Any]:
+    """Project signing state for an ``(opportunity_id, document_id)`` PAIR at read time from the raw
+    webhook rows — FULLY OFFLINE (no projection table, no live Documenso call).
 
-    ``envelope_ids`` is the set of candidate handles to match against the ``envelope_id`` column. The
-    column stores the value the webhook extracted from the payload, which is Documenso's NUMERIC
-    document id (e.g. ``"1462137"``) — NOT the prefixed ``envelope_…`` v2 handle the prospect link
-    carries. The caller passes every form it can resolve (the numeric id translated from the handle,
-    plus the raw handle itself as a defensive fallback) so this match works regardless of which shape
-    a given delivery landed under.
+    Security model — the pair MUST be valid (the document belongs to the opportunity), so a guessed
+    numeric ``document_id`` with a wrong/missing opportunity UUID returns nothing:
+      * ``external_id`` (the captured column) = the opportunity UUID stamped on the envelope at
+        originate (unguessable → the access capability).
+      * ``envelope_id`` (the captured column) = Documenso's NUMERIC document id (e.g. ``"1462137"``),
+        the same value the webhook payload carries as ``payload.id`` and the SPA link carries as the
+        ``document_id`` segment.
+    Verified against REAL landed rows 2026-06-17: the pair
+    (``external_id='7bbf1081-…', envelope_id='1462137'``) carries a ``DOCUMENT_COMPLETED`` row.
 
     Returns ``{signed, latest_event, status, received_at}``:
-      * ``signed``       — a terminal (DOCUMENT_COMPLETED) row has landed for this envelope.
+      * ``signed``       — a terminal (DOCUMENT_COMPLETED) row has landed for this pair.
       * ``latest_event`` — the most recent event name seen (by received_at), or None if no rows.
       * ``status``       — the ``payload->payload->>status`` of the latest row (PENDING/COMPLETED/…),
                            the envelope-level Documenso status carried verbatim in the raw body.
     """
-    ids = [i for i in {*envelope_ids} if i]
-    if not ids:
-        return {"signed": False, "latest_event": None, "status": None, "received_at": None}
+    empty = {"signed": False, "latest_event": None, "status": None, "received_at": None}
+    if not opportunity_id or not document_id:
+        return empty
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -70,13 +73,18 @@ async def read_envelope_state(conn, envelope_ids: list[str]) -> dict[str, Any]:
               (array_agg(payload->'payload'->>'status' ORDER BY received_at DESC))[1] AS status,
               max(received_at)                                           AS received_at
             FROM business.documenso_webhook_events
-            WHERE envelope_id = ANY(%(ids)s)
+            WHERE external_id = %(opportunity_id)s
+              AND envelope_id = %(document_id)s
             """,
-            {"terminal": list(_TERMINAL_EVENTS), "ids": ids},
+            {
+                "terminal": list(_TERMINAL_EVENTS),
+                "opportunity_id": opportunity_id,
+                "document_id": document_id,
+            },
         )
         row = await cur.fetchone()
     if row is None or row[3] is None:
-        return {"signed": False, "latest_event": None, "status": None, "received_at": None}
+        return empty
     return {
         "signed": bool(row[0]),
         "latest_event": row[1],

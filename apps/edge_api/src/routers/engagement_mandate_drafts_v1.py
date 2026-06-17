@@ -150,6 +150,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
     return MandatePrefilledOriginated(
         envelope_id=result.envelope_id,
         document_id=result.document_id,
+        # The opportunity UUID is the link capability and the externalId stamped on the envelope —
+        # surfaced so the SPA can build /p/m/{opportunity_id}/{document_id} directly.
+        opportunity_id=draft["opportunity_id"],
         signing_token=result.client_token,
         status="pending",
         documenso_host=config.documenso_api_url(),
