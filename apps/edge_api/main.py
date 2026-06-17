@@ -60,6 +60,7 @@ from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
+from .src.routers.operator_settings_v1 import router as operator_settings_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -206,6 +207,12 @@ app.include_router(engagement_mappings_router)
 # (opportunity_id, documenso_template_id) into business.engagement_mandate_draft_content.
 app.include_router(engagement_mandate_drafts_router)
 
+# operator-settings: the per-operator cockpit config (render_mode + direct_to_documenso_lane) the BFF
+# resolves at originate. Service-token gated; the BFF asserts the validated auth_user_id on the path.
+# RETIRES the BFF's direct Supabase service-role access to public.operator_settings — edge_api is now
+# the sole gateway to the table over the shared HQX_ Postgres (BFF becomes a pass-through).
+app.include_router(operator_settings_router)
+
 # documenso-template-fields: the Settings "Documenso Templates" defaults editor — reads/writes the
 # live Documenso template's fields (set per-field default values via /envelope/field/update-many).
 app.include_router(documenso_template_fields_router)
@@ -260,6 +267,7 @@ def _info() -> dict:
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
+            "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
         },
     }
 

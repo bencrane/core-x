@@ -2,12 +2,15 @@
 -- Postgres (HQX_DB_URL_POOLED). Idempotent DDL (safe to re-run; the ALTER ADD COLUMN IF NOT EXISTS
 -- block upgrades an already-deployed table in place).
 --
--- OWNERSHIP NOTE. This table lives in `public` and is read/written EXCLUSIVELY by the platform-api
--- BFF via its Supabase service-role client (RLS is on, no anon/authenticated grants — service_role
--- bypasses RLS). edge_api itself does NOT serve a settings endpoint; the BFF resolves these values
--- and forwards the resolved pathway to edge_api at originate. This file is the DDL system-of-record
--- for the table's shape, captured here because core-x owns the live control-plane Postgres — the
--- table predates this file (it was originally created live by the BFF).
+-- OWNERSHIP NOTE. This table lives in `public` in the SAME HQX_ Postgres as `business.*`, and is now
+-- read/written through edge_api as its SOLE gateway: `GET/PUT /api/v1/operator-settings/{auth_user_id}`
+-- (service-token gated; src/routers/operator_settings_v1.py). The platform-api BFF NO LONGER touches
+-- this table directly — it validates the operator's Supabase session, asserts the trusted auth_user_id
+-- to edge_api, and is otherwise a pass-through (platform-app -> platform-api -> edge_api). This RETIRES
+-- the prior direct Supabase service-role access. core-x owns the live Postgres; this file is the DDL
+-- system-of-record for the table's shape (the table predates this file — originally created live by the
+-- BFF). Because edge_api now connects as the pooled role (not per-user service_role), RLS is no longer
+-- load-bearing: the access boundary is the service token + the BFF's upstream session check.
 --
 -- GRAIN: one row per operator, keyed by the Supabase auth user id (`auth_user_id`).
 --
@@ -70,6 +73,7 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- RLS on, no policies: service_role (the BFF) bypasses RLS; anon/authenticated have no grants and
--- therefore no access. The table is reachable only via the BFF's service-role client.
+-- RLS stays ENABLED as defense-in-depth, but is no longer load-bearing: edge_api reaches the table
+-- over its pooled application role via the service-token surface, and the access boundary is that token
+-- plus the BFF's upstream Supabase session check. anon/authenticated still have no grants and no access.
 ALTER TABLE public.operator_settings ENABLE ROW LEVEL SECURITY;
