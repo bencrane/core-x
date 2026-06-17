@@ -59,6 +59,7 @@ from .src.routers.proposals_v1 import router as proposals_router
 from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
+from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -165,6 +166,11 @@ app.include_router(pipeline_router, prefix="/internal")
 # proposals: engagement-agreement rendering (DocRaptor) + Documenso v2 e-signature engine.
 # Service-token create/list/provision; PUBLIC ref read + sealed-PDF stream; X-Documenso-Secret webhook.
 app.include_router(proposals_router)
+
+# documenso webhooks: RAW landing for Documenso events (X-Documenso-Secret). Documenso is repointed
+# here from /proposals/webhook; stores every delivery verbatim in business.documenso_webhook_events.
+# No normalization/projection — that's a separate step decided against the captured payloads.
+app.include_router(documenso_webhooks_router)
 
 # proposal-templates: the authoring surface (markdown → branded HTML → DocRaptor preview → publish).
 # Service-token gated; the BFF brokers it with the operator session. Markdown source lives in
