@@ -566,6 +566,10 @@ class SubawardProfileResponse(_Model):
     n_distinct_primes: int | None = None
     total_subaward_amount: float | None = None
     subaward_history_count: int | None = None      # rows returned (capped — "shown", not total)
+    hq_state: str | None = None                    # sub's own reported address (dominant)
+    hq_city: str | None = None
+    pop_state: str | None = None                   # dominant place-of-performance state
+    pop_states: list[str] = []                     # all distinct PoP states the sub performed in
     capabilities: SubawardCapabilities | None = None
     teaming: SubawardTeaming | None = None
     poc: SamPoc | None = None
@@ -614,6 +618,10 @@ class SubawardProfileResponse(_Model):
             n_distinct_primes=prof.get("n_distinct_primes_subaward") if profiled else None,
             total_subaward_amount=prof.get("total_subaward_amount") if profiled else None,
             subaward_history_count=len(history),
+            hq_state=prof.get("hq_state"),
+            hq_city=prof.get("hq_city"),
+            pop_state=prof.get("pop_state"),
+            pop_states=[s for s in (prof.get("pop_states") or []) if s],
             capabilities=capabilities,
             teaming=teaming,
             poc=poc,

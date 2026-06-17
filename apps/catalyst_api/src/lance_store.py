@@ -499,6 +499,8 @@ _SUB_PROFILE_COLS = [
     "poc_available", "poc_full_name", "poc_title", "poc_city", "poc_state",
     # Path B: self-reported capability (the sub's own descriptions) + provenance marker
     "self_reported_capability_tags", "n_self_reported_tags", "tag_source",
+    # GEO: HQ (sub address) + place of performance
+    "hq_state", "hq_city", "pop_state", "pop_states",
 ]
 _SUBAWARD_HISTORY_COLS = [
     "subawardee_name", "prime_award_unique_key", "prime_award_piid", "prime_awardee_uei",
