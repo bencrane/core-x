@@ -13,6 +13,7 @@ against the captured payloads — never inferred ahead of real data.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -71,3 +72,56 @@ async def documenso_webhook(
         )
     logger.info("documenso webhook captured: id=%s event=%s envelope=%s", event_id, event, envelope_id)
     return {"ok": True, "id": event_id}
+
+
+def _numeric_from_secondary(env: dict[str, Any]) -> str | None:
+    """Documenso v2 envelopes expose the legacy numeric document id as ``secondaryId`` =
+    ``document_<n>``. The webhook payload, by contrast, carries that same id as a BARE NUMBER
+    (``payload.id`` = ``1462137``) and stores it verbatim in the ``envelope_id`` column. So to match
+    a prospect's prefixed ``envelope_…`` handle against the captured rows, translate handle →
+    ``secondaryId`` → the bare ``<n>``."""
+    m = re.search(r"(\d+)", str(_dig(env, "secondaryId") or ""))
+    return m.group(1) if m else None
+
+
+@router.get("/envelope/{envelope_id}/state")
+async def read_envelope_state(envelope_id: str) -> dict[str, Any]:
+    """PUBLIC envelope signing-state read — the envelope id is the capability (no service token,
+    exactly like ``/engagement-mandate-drafts/document/{envelope_id}``). The prospect-facing
+    ``MandateSignPage`` polls this while the embed is shown and advances when ``signed`` flips true.
+
+    Signed-truth is DERIVED AT READ TIME from the RAW capture (``business.documenso_webhook_events``)
+    — never from a projection table and never from a live Documenso state read. ``signed`` is true iff
+    a terminal ``DOCUMENT_COMPLETED`` row has landed for this envelope.
+
+    ID-FORM RECONCILIATION (the one load-bearing subtlety, verified against real rows 2026-06-17):
+      * The prospect link / SPA route carries Documenso's PREFIXED v2 handle (``envelope_…``).
+      * The webhook payload carries the BARE NUMERIC document id (``payload.id`` = ``1462137``),
+        which the capture stores verbatim in the ``envelope_id`` column.
+      These do not match, and the webhook payload does NOT contain the prefixed handle anywhere, so
+      the two cannot be reconciled from the raw rows alone. We therefore make ONE live Documenso call
+      PURELY to translate the handle → ``secondaryId`` → the bare numeric id, then derive ``signed``
+      from the raw rows. This is an id-TRANSLATION lookup, not a state read — the signing truth still
+      comes only from the captured events. If the translation call fails (or the SPA ever passes the
+      numeric id directly), the raw handle is still tried verbatim, so the read degrades gracefully
+      rather than 500ing.
+    """
+    candidates = [envelope_id]
+    # If a prefixed v2 handle was passed, resolve it to the numeric document id the rows key on.
+    if envelope_id.startswith("envelope_"):
+        try:
+            env = await documenso_client.get_envelope(envelope_id)
+            numeric = _numeric_from_secondary(env)
+            if numeric:
+                candidates.append(numeric)
+        except documenso_client.DocumensoError:
+            logger.warning("envelope-state: handle->numeric translation failed for %s", envelope_id)
+
+    async with get_db_connection() as conn:
+        state = await queries.read_envelope_state(conn, candidates)
+    return {
+        "envelope_id": envelope_id,
+        "signed": state["signed"],
+        "latest_event": state["latest_event"],
+        "status": state["status"],
+    }
