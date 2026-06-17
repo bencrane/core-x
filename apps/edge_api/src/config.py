@@ -90,6 +90,52 @@ def stripe_webhook_secret() -> str | None:
     return _stripe_secret("STRIPE_WEBHOOK_SECRET")
 
 
+# ── Operator-selectable Stripe mode (the document-payment flow) ───────────────────────────────────
+# The document-payment flow lets the (single) operator pick test/live at runtime via
+# operator_settings.stripe_mode, AUGMENTING the env STRIPE_MODE. The selection indirects through the
+# STRIPE_MODE_{TEST,LIVE} env values the operator configured; an unset selection (None) falls back to
+# the STRIPE_MODE env default. The key getters below resolve the sk_/pk_ for an EXPLICIT mode so the
+# mint can honor the per-request selection without touching the env-based getters the proposal flow uses.
+def resolve_stripe_mode(selection: str | None) -> str:
+    """Effective Stripe mode ('test'|'live') for a document payment. ``selection`` is
+    operator_settings.stripe_mode; indirects through STRIPE_MODE_{TEST,LIVE} env, else STRIPE_MODE env."""
+    if selection in ("test", "live"):
+        return (os.environ.get(f"STRIPE_MODE_{selection.upper()}") or selection).strip().lower()
+    return stripe_mode()
+
+
+def _stripe_secret_for_mode(base: str, mode: str) -> str | None:
+    suffix = "LIVE" if mode == "live" else "TEST"
+    return os.environ.get(f"{base}_{suffix}") or os.environ.get(base)
+
+
+def stripe_secret_key_for_mode(mode: str) -> str | None:
+    """``sk_...`` for an explicit mode — server-side only."""
+    return _stripe_secret_for_mode("STRIPE_SECRET_KEY", mode)
+
+
+def stripe_publishable_key_for_mode(mode: str) -> str | None:
+    """``pk_...`` for an explicit mode — surfaced to the browser."""
+    return _stripe_secret_for_mode("STRIPE_PUBLISHABLE_KEY", mode)
+
+
+def stripe_webhook_secrets() -> list[str]:
+    """ALL configured webhook signing secrets (test + live + bare), de-duplicated. The single
+    ``/webhooks/stripe`` endpoint receives events signed by whichever mode an intent was created in, so
+    a runtime-toggleable mode requires verifying against any of them."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in (
+        os.environ.get("STRIPE_WEBHOOK_SECRET_TEST"),
+        os.environ.get("STRIPE_WEBHOOK_SECRET_LIVE"),
+        os.environ.get("STRIPE_WEBHOOK_SECRET"),
+    ):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 def rs_signer_name() -> str:
     """Rare Structure's signatory name pre-rendered into the agreement (Managing Director)."""
     return os.environ.get("RS_SIGNER_NAME", "Benjamin Crane")

@@ -60,6 +60,25 @@ async def get_fee_and_contact(conn, opportunity_id: str) -> dict | None:
     return {"field_values": row[0] or {}, "recipient_email": row[1], "recipient_name": row[2]}
 
 
+async def get_stripe_mode_selection(conn) -> str | None:
+    """The operator's selected Stripe mode ('test'|'live') from operator_settings, or None to fall
+    back to the STRIPE_MODE env. SINGLE-OPERATOR PLATFORM: Stripe mode is global (one Stripe account)
+    and the prospect-facing mint has no operator session + no opportunity→operator link, so the (one)
+    operator_settings row carries the platform-wide selection. Latest non-null row wins."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT stripe_mode
+              FROM public.operator_settings
+             WHERE stripe_mode IS NOT NULL
+             ORDER BY updated_at DESC
+             LIMIT 1
+            """
+        )
+        row = await cur.fetchone()
+    return row[0] if row else None
+
+
 async def upsert_intent(
     conn,
     *,

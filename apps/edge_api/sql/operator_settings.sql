@@ -40,12 +40,20 @@ CREATE TABLE IF NOT EXISTS public.operator_settings (
     auth_user_id              uuid        PRIMARY KEY,                         -- Supabase auth user id (the JWT sub)
     render_mode               text        NOT NULL DEFAULT 'through-docraptor',-- originate pathway (top-level)
     direct_to_documenso_lane  text        NOT NULL DEFAULT 'envelope-distribute', -- sub-lane (only when render_mode='direct-to-documenso')
+    stripe_mode               text,                                           -- NULLABLE document-payment Stripe mode toggle
     updated_at                timestamptz NOT NULL DEFAULT now()
 );
 
 -- Converge an already-deployed table in place (the table predates this file).
 ALTER TABLE public.operator_settings
     ADD COLUMN IF NOT EXISTS direct_to_documenso_lane text NOT NULL DEFAULT 'envelope-distribute';
+
+-- stripe_mode: which Stripe key set the DOCUMENT-PAYMENT flow uses, AUGMENTING the STRIPE_MODE env.
+-- NULLABLE on purpose: NULL = "follow the STRIPE_MODE env" (which is `live` in prd); 'test'/'live'
+-- overrides it. Single-operator platform → edge_api reads this (the one row) as the GLOBAL selection
+-- at mint time, so test/live flips from the cockpit Settings without a Doppler change + redeploy.
+ALTER TABLE public.operator_settings
+    ADD COLUMN IF NOT EXISTS stripe_mode text;
 
 -- Value domains — enforced at the DB layer (the BFF validates too; this is defense-in-depth and the
 -- canonical record of the allowed strings). Guarded so re-runs don't error on the existing constraint.
@@ -70,6 +78,18 @@ DO $$ BEGIN
         ALTER TABLE public.operator_settings
             ADD CONSTRAINT operator_settings_direct_to_documenso_lane_check
             CHECK (direct_to_documenso_lane = ANY (ARRAY['envelope-distribute'::text, 'prefill-document-from-template'::text]));
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'operator_settings_stripe_mode_check'
+          AND conrelid = 'public.operator_settings'::regclass
+    ) THEN
+        ALTER TABLE public.operator_settings
+            ADD CONSTRAINT operator_settings_stripe_mode_check
+            CHECK (stripe_mode IS NULL OR stripe_mode = ANY (ARRAY['test'::text, 'live'::text]));
     END IF;
 END $$;
 
