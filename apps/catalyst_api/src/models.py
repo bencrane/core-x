@@ -540,6 +540,11 @@ class SubawardCapabilities(_Model):
     req_cert_tags: list[str] = []
     top_labor_categories: list[str] = []
     n_scope_solicitations: int | None = None
+    # Path B — self-reported capability (the sub's OWN subaward descriptions), separate provenance from
+    # the scope-derived capability_tags above. Present for the full universe, not just bridge subs.
+    self_reported_capability_tags: list[str] = []
+    n_self_reported_tags: int | None = None
+    tag_source: str | None = None   # scope | self_reported | both | none
 
 
 class SubawardTeaming(_Model):
@@ -587,6 +592,9 @@ class SubawardProfileResponse(_Model):
                 req_cert_tags=[t for t in (prof.get("req_cert_tags") or []) if t],
                 top_labor_categories=[t for t in (prof.get("top_labor_categories") or []) if t],
                 n_scope_solicitations=prof.get("n_scope_solicitations"),
+                self_reported_capability_tags=[t for t in (prof.get("self_reported_capability_tags") or []) if t],
+                n_self_reported_tags=prof.get("n_self_reported_tags"),
+                tag_source=prof.get("tag_source"),
             )
             teaming = SubawardTeaming(
                 n_teaming_primes=prof.get("n_teaming_primes"),
