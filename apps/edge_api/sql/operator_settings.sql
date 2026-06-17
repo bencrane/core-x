@@ -22,12 +22,12 @@
 --                                documenso lane "Confirm & Originate" uses:
 --                                 'envelope-distribute'  (DEFAULT — existing behavior): /envelope/use
 --                                                        + distribute → POST .../{id}/confirm →
+--                                                        create_document_from_template_with_custom_pdf.
+--                                 'prefill-document-from-template' : /api/v2/template/use with the
+--                                                        opportunity's field values prefilled, then
+--                                                        distribute(NONE) → PENDING (no email) →
+--                                                        POST .../{id}/originate-prefilled →
 --                                                        create_document_from_template.
---                                 'template-prefill-draft' : /api/v2/template/use with the
---                                                        opportunity's field values prefilled,
---                                                        distributeDocument:false → stays DRAFT →
---                                                        POST .../{id}/originate-prefilled-draft →
---                                                        create_draft_document_from_template.
 --                                Ignored when render_mode = 'through-docraptor'. The DEFAULT preserves
 --                                the existing envelope-distribute behavior for every existing row.
 
@@ -66,7 +66,7 @@ DO $$ BEGIN
     ) THEN
         ALTER TABLE public.operator_settings
             ADD CONSTRAINT operator_settings_direct_to_documenso_lane_check
-            CHECK (direct_to_documenso_lane = ANY (ARRAY['envelope-distribute'::text, 'template-prefill-draft'::text]));
+            CHECK (direct_to_documenso_lane = ANY (ARRAY['envelope-distribute'::text, 'prefill-document-from-template'::text]));
     END IF;
 END $$;
 

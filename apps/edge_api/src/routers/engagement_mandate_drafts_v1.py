@@ -27,7 +27,7 @@ from ..engagement_mandate_drafts.models import (
     MandateDraftCreate,
     MandateDraftCreated,
     MandateDraftDocument,
-    MandatePrefilledDraftOriginated,
+    MandatePrefilledOriginated,
     MandateStagingDraft,
     MandateStagingUpsert,
 )
@@ -93,7 +93,7 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
         # NOT from this freshly-minted confirm draft (which carries no prefill_values of its own).
         prefill_values = await queries.get_staged_prefill_values(conn, draft["opportunity_id"])
     try:
-        result = await documenso_client.create_document_from_template(
+        result = await documenso_client.create_document_from_template_with_custom_pdf(
             draft["documenso_template_id"], external_id=draft_id,
             prefill_values=prefill_values,
         )
@@ -107,18 +107,18 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
 
 
 @router.post(
-    "/{draft_id}/originate-prefilled-draft",
+    "/{draft_id}/originate-prefilled",
     dependencies=[Depends(require_service_token)],
 )
-async def originate_prefilled_draft(draft_id: str) -> MandatePrefilledDraftOriginated:
-    """ADDITIVE template-use DRAFT sub-lane — PARALLEL to ``/confirm``, leaving it untouched.
+async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
+    """Template-use lane — PARALLEL to ``/confirm``, leaving it untouched.
 
     Instantiates a Documenso document FROM the draft's template via ``POST /api/v2/template/use`` with
-    the opportunity's per-deal ``field_values`` PREFILLED, and DOES NOT distribute — so the new
-    envelope stays ``DRAFT`` (not pending/sent). Unlike ``/confirm`` (which uses ``/envelope/use`` +
-    ``/envelope/distribute`` and pulls the engagement-mandate-draft ``prefill_values``), this lane
-    sources values from ``business.opportunity_specific_content`` and the recipient from the
-    opportunity's contact. No signature/readOnly handling — the operator finalizes by hand.
+    the opportunity's per-deal ``field_values`` PREFILLED, then distributes with
+    ``distributionMethod:NONE`` so it lands ``PENDING`` (signable, no email sent). Unlike ``/confirm``
+    (the ``/envelope/use`` lane, which pulls the engagement-mandate-draft ``prefill_values``), this
+    lane sources values from ``business.opportunity_specific_content`` and the recipient from the
+    opportunity's contact. No signature/readOnly handling — the signer fills those.
     """
     async with get_db_connection() as conn:
         draft = await queries.get_draft(conn, draft_id)
@@ -136,7 +136,7 @@ async def originate_prefilled_draft(draft_id: str) -> MandatePrefilledDraftOrigi
             status_code=422, detail="opportunity contact has no email to set as recipient"
         )
     try:
-        result = await documenso_client.create_draft_document_from_template(
+        result = await documenso_client.create_document_from_template(
             draft["documenso_template_id"],
             recipient_email=prefill["recipient_email"],
             recipient_name=prefill["recipient_name"] or prefill["recipient_email"],
@@ -145,11 +145,11 @@ async def originate_prefilled_draft(draft_id: str) -> MandatePrefilledDraftOrigi
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
-    return MandatePrefilledDraftOriginated(
+    return MandatePrefilledOriginated(
         envelope_id=result.envelope_id,
         document_id=result.document_id,
         signing_token=result.client_token,
-        status="draft",
+        status="pending",
         documenso_host=config.documenso_api_url(),
     )
 

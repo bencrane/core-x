@@ -37,17 +37,17 @@ class MandateDraftDocument(BaseModel):
     status: str | None
 
 
-class MandatePrefilledDraftOriginated(BaseModel):
-    """The template-use DRAFT sub-lane result — a Documenso document instantiated FROM the template
-    via ``/template/use`` with the opportunity's field values prefilled, left as a DRAFT (never
-    distributed). ``status`` is always ``"draft"``; the operator finalizes (readOnly, signature, send)
-    by hand. The numeric ``document_id`` and ``signing_token`` are surfaced when Documenso returns
-    them on the create response (else null — re-read the envelope to resolve them)."""
+class MandatePrefilledOriginated(BaseModel):
+    """The template-use lane result — a Documenso document instantiated FROM the template via
+    ``/template/use`` with the opportunity's field values prefilled, then distributed
+    (``distributionMethod:NONE``) so it lands ``PENDING`` (signable, no email sent). ``status`` is
+    ``"pending"``. The numeric ``document_id`` and ``signing_token`` come off the ``/template/use``
+    response; the prefixed ``envelope_id`` is the durable handle the prospect link carries."""
 
     envelope_id: str
     document_id: int | None = None
     signing_token: str | None = None
-    status: str = "draft"
+    status: str = "pending"
     documenso_host: str
 
 
