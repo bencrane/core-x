@@ -63,6 +63,11 @@ schema is brought to match *before* the version takes traffic — and a newly co
   version whose code outruns prod's schema serving 500s. (This is the fix for the
   `document_payments.rail` outage: a column added to the committed DDL but never applied
   to prod, so a `SELECT … rail` 500'd every document-payment read.)
+- **Concurrent replicas:** a rolling deploy boots replicas at once, so each per-file
+  apply takes a transaction-scoped advisory lock (`pg_advisory_xact_lock`) — concurrent
+  boots serialize instead of racing on `CREATE`/`ALTER` (which `IF NOT EXISTS` does not
+  fully prevent). Transaction-scoped keeps it safe over the 6543 transaction pooler the
+  request pool already uses (no separate direct-DSN connection).
 - **Seatbelt:** the document-payments router additionally degrades a schema-drift DB
   error (undefined column/table) to a retryable **503**, not a raw 500.
 - **Escape hatch:** set `EDGE_API_SKIP_DB_MIGRATE=1` to skip the startup apply if a bad
