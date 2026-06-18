@@ -162,6 +162,21 @@ def _numeric_document_id(env: dict[str, Any]) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _prefill_value_for_label(label: str, values: dict[str, Any]) -> str | None:
+    """The prefill value for a template field LABEL. Exact key first; else fall back to the BASE name —
+    a label split for multiple placements (e.g. ``participant_company_one`` / ``participant_company_two``)
+    draws from the single ``participant_company`` value. Empty/None yields None (the field stays open)."""
+    v = values.get(label)
+    if v not in (None, ""):
+        return str(v)
+    base = label.rsplit("_", 1)[0]
+    if base != label:
+        bv = values.get(base)
+        if bv not in (None, ""):
+            return str(bv)
+    return None
+
+
 async def create_signing_envelope(
     pdf_bytes: bytes, *, title: str, signer_name: str, signer_email: str,
     external_id: str | None = None,
@@ -427,19 +442,25 @@ async def create_document_from_template(
         _raise_for_status(tmpl_resp, "template/get")
         tmpl = tmpl_resp.json()
 
-        # template recipient id — overridden with the participant's email/name. ``/template/use``
-        # REQUIRES recipients[]; select the SIGNER (fall back to the first) for the single-signer
-        # engagement template.
+        # Bind the prospect to the PLACEHOLDER recipient — the template recipient with NO email set.
+        # A recipient that already carries an email (e.g. the originator, added via "Add Myself") is a
+        # FIXED signer: leave it untouched and OMIT it from ``recipients[]`` below, which keeps its
+        # template default (CONFIRMED against Documenso v2 — recipients omitted from /template/use are
+        # preserved). For a single-recipient template this still selects that one slot; fall back to the
+        # SIGNER/first only if every recipient already has an email (no open placeholder).
         recips = tmpl.get("recipients") or []
         if not recips:
             raise DocumensoError(
                 f"template/{documenso_template_id}: no recipients to instantiate"
             )
-        signer = next(
+        placeholder = next(
+            (r for r in recips if isinstance(r, dict) and not (_dig(r, "email") or "").strip()),
+            None,
+        ) or next(
             (r for r in recips if isinstance(r, dict) and str(_dig(r, "role") or "").upper() == "SIGNER"),
             recips[0],
         )
-        recipient_id = _dig(signer if isinstance(signer, dict) else {}, "id")
+        recipient_id = _dig(placeholder if isinstance(placeholder, dict) else {}, "id")
         if recipient_id is None:
             raise DocumensoError(
                 f"template/{documenso_template_id}: no recipient id to override"
@@ -458,16 +479,19 @@ async def create_document_from_template(
                 (fld.get("id"), str(fld.get("type") or "").lower())
             )
 
-        # 2) build prefillFields: one entry PER matching field id, value as a STRING, only for labels
-        #    we have a non-empty value for. (TEXT → value; NUMBER → value as a string like "90".)
+        # 2) build prefillFields by iterating the TEMPLATE's labelled fields (the source of truth for
+        #    what exists). A label may sit on MULTIPLE fields (fan-out). Each value is resolved exact-
+        #    first, else from its BASE name — a label split for placement (e.g. ``participant_company_one``
+        #    / ``participant_company_two``) draws from the single ``participant_company`` value.
+        #    (TEXT → value; NUMBER → value as a string like "90".)
+        vals = field_values_by_label or {}
         prefill_fields: list[dict[str, Any]] = []
-        for label, value in (field_values_by_label or {}).items():
-            if value in (None, ""):
+        for label, entries in by_label.items():
+            value = _prefill_value_for_label(label, vals)
+            if value is None:
                 continue
-            for field_id, field_type in by_label.get(label, []):
-                prefill_fields.append(
-                    {"id": field_id, "type": field_type, "value": str(value)}
-                )
+            for field_id, field_type in entries:
+                prefill_fields.append({"id": field_id, "type": field_type, "value": value})
 
         # 3) POST /template/use — distributeDocument:false (DRAFT for now); recipients[] is REQUIRED,
         #    override the template recipient's email/name with the participant. Step 4 distributes it.
@@ -500,7 +524,9 @@ async def create_document_from_template(
         numeric_id = _dig(body, "id")
         if not envelope_id:
             raise DocumensoError(f"template/use: no envelopeId in {created.text[:300]}")
-        token = _extract_signer_token(body)
+        # Both signers carry a token; select the CLIENT's by the email we just bound (the prospect) —
+        # NOT "first SIGNER", which is ambiguous now that the originator is a second recipient.
+        token = _extract_client_token(body, recipient_email)
 
         # 4) LOCK the prefilled fields on the NEW document — set ``readOnly:true`` so the operator-set
         #    terms (fee, term, company, name, title) are NOT signer-editable. readOnly can't be set at
