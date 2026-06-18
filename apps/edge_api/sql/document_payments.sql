@@ -22,10 +22,14 @@ CREATE TABLE IF NOT EXISTS business.document_payments (
     stripe_payment_intent_id text,
     -- none | requires_payment | processing | succeeded | failed | canceled
     payment_status           text        NOT NULL DEFAULT 'none',
+    rail                     text,                                    -- 'card' | 'us_bank_account' — settled rail, stamped ONCE by the webhook
     paid_at                  timestamptz,                             -- set ONCE by the webhook on succeeded
     created_at               timestamptz NOT NULL DEFAULT now(),
     updated_at               timestamptz NOT NULL DEFAULT now()
 );
+
+-- Backfill for records created before the card rail (idempotent — safe to re-run on existing tables).
+ALTER TABLE business.document_payments ADD COLUMN IF NOT EXISTS rail text;
 
 -- Pair lookups (by opportunity) and webhook lookups (by intent id) — both load-bearing resolution keys.
 CREATE INDEX IF NOT EXISTS idx_document_payments_opportunity_id

@@ -17,9 +17,12 @@ class DocumentPaymentInitPublic(BaseModel):
 
 class DocumentPaymentStatePublic(BaseModel):
     """The authoritative payment state the SPA polls. ``payment_status`` flips to ``succeeded`` (and
-    ``paid_at`` is set) ONLY via the Stripe webhook, never by the mint/read endpoints."""
+    ``paid_at`` is set) ONLY via the Stripe webhook, never by the mint/read endpoints. ``rail`` is the
+    settled payment method (``'card'`` | ``'us_bank_account'``), stamped by the webhook; ``None`` until
+    settlement. It is cosmetic — the SPA uses it only to tailor the paid-state copy."""
 
     payment_status: str
     amount_cents: int | None = None
     currency: str = "usd"
     paid_at: str | None = None
+    rail: str | None = None
