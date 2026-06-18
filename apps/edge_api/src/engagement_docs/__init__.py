@@ -2,7 +2,8 @@
 
 Action on an opportunity (rare-structure-hq Applications table) → Trigger.dev → edge_api binds the
 opportunity's values + a locked price/term package into the repo-resident STATIC HTML engagement
-content (apps/edge_api/content/global_engagement_content/) → DocRaptor → plain PDF in R2.
+content (apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/)
+→ DocRaptor → plain PDF in R2.
 
 Self-contained by design: its own token substitution, its own DocRaptor call, its own R2 namespace,
 its own ledger (business.ao_engagement_mandates). It does NOT use the proposal markdown→HTML render,

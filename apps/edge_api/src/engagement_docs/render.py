@@ -2,8 +2,9 @@
 
 No proposal-pathway code: its OWN manifest load, its OWN `{{token}}` substitution, its OWN DocRaptor
 call (live mode). The legal body, wordmark, and signature block come from the repo-resident content
-(apps/edge_api/content/global_engagement_content/); the `__STYLESHEET__` slot is filled per the
-manifest `plain` flag. `[[...]]` Documenso anchors use a different grammar and are never touched.
+(apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/);
+the `__STYLESHEET__` slot is filled per the manifest `plain` flag. `[[...]]` Documenso anchors use a
+different grammar and are never touched.
 """
 from __future__ import annotations
 
@@ -16,7 +17,11 @@ import re
 import httpx
 
 # apps/edge_api/src/engagement_docs/render.py -> parents[2] == apps/edge_api
-_CONTENT_DIR = pathlib.Path(__file__).resolve().parents[2] / "content" / "global_engagement_content"
+# Content tree relocated under the active-operators root in #494 (44ef2fc); this lane reads it directly.
+_CONTENT_DIR = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "content" / "active-operators" / "docraptor-to-documenso-document-only" / "global_engagement_content"
+)
 _MANIFEST = _CONTENT_DIR / "manifest.json"
 
 _DOCRAPTOR_URL = "https://docraptor.com/docs"
