@@ -146,6 +146,24 @@ def _extract_signer_token(body: Any) -> str | None:
     return str(tok) if tok else None
 
 
+def _recipient_email_tokens(body: Any) -> tuple[tuple[str, str], ...]:
+    """All ``(email_lowercased, token)`` pairs on the document — lets a caller pick a SPECIFIC signer's
+    token when a document has more than one recipient (e.g. client + originator). Only recipients that
+    actually carry a token are included; blank-email recipients keep an empty-string key."""
+    env = _dig(body, "envelope", "document", "data") or body
+    recips = _dig(env, "recipients", "Recipient") or []
+    if not isinstance(recips, list):
+        return ()
+    out: list[tuple[str, str]] = []
+    for r in recips:
+        if not isinstance(r, dict):
+            continue
+        tok = _dig(r, "token", "signingToken")
+        if tok:
+            out.append(((_dig(r, "email") or "").strip().lower(), str(tok)))
+    return tuple(out)
+
+
 # Field SIZE overrides — PERCENT of the page (0-100). Position is NOT set here: Documenso resolves
 # it from the anchor marker (``findText``). But the anchor's own text box (a thin one-line strip at
 # sig-line font size) is too small to be a usable signature/date target, so we override the box to
@@ -594,7 +612,9 @@ class DocumentReadResult:
     envelope_id: str | None       # the prefixed v2 handle (envelope_…)
     external_id: str | None       # the opportunity UUID stamped at originate
     status: str | None            # Documenso document status (PENDING / COMPLETED / …)
-    signing_token: str | None     # the SIGNER recipient's signing token (drives the embed)
+    signing_token: str | None     # the FIRST SIGNER's signing token (single-signer / fallback)
+    # All (email, token) pairs — the caller picks the client's vs the originator's on a two-signer doc.
+    recipient_tokens: tuple[tuple[str, str], ...] = ()
 
 
 async def read_document(document_id: str) -> DocumentReadResult:
@@ -625,6 +645,7 @@ async def read_document(document_id: str) -> DocumentReadResult:
         external_id=_str_or_none(_dig(body, "externalId")),
         status=_str_or_none(_dig(body, "status")),
         signing_token=_extract_signer_token(body),
+        recipient_tokens=_recipient_email_tokens(body),
     )
 
 

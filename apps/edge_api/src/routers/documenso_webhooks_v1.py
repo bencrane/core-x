@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from .. import config
 from ..db import get_db_connection
@@ -103,17 +103,26 @@ async def read_sign_state(opportunity_id: str, document_id: str) -> dict[str, An
 
 
 @router.get("/sign-token/{opportunity_id}/{document_id}")
-async def read_sign_token(opportunity_id: str, document_id: str) -> dict[str, Any]:
-    """PUBLIC prospect signing-TOKEN read — the ONE-TIME embed load. Keyed by the same
+async def read_sign_token(
+    opportunity_id: str,
+    document_id: str,
+    signer: str = Query("client"),
+) -> dict[str, Any]:
+    """PUBLIC signing-TOKEN read — the ONE-TIME embed load. Keyed by the same
     ``(opportunity_id, document_id)`` pair as the poll.
 
     The signing token lives ONLY in Documenso, so this makes ONE live read at embed load:
     ``GET /api/v2/document/{document_id}`` (the numeric id resolves on the *document* endpoint; the
     prefixed ``envelope_…`` handle 400s there). It then PAIR-GATES — asserts the document's
     ``externalId == opportunity_id`` (the opportunity's public 8-char handle stamped at originate) —
-    and only then returns the recipient signing token. A guessed numeric id whose ``externalId`` does
+    and only then returns a recipient signing token. A guessed numeric id whose ``externalId`` does
     not match the supplied handle → 404 (no token leaked). This is NOT in the poll loop — the poll is
     the offline ``/sign-state`` read above.
+
+    ``signer`` selects WHICH recipient on a two-signer document:
+      * ``client`` (default) — the prospect: the recipient bound to the opportunity's contact email.
+      * ``originator`` — the other signer (you): the recipient whose email is NOT the contact email.
+    A single-signer document has one token and ignores ``signer`` (falls through to ``signing_token``).
     """
     try:
         doc = await documenso_client.read_document(document_id)
@@ -130,8 +139,20 @@ async def read_sign_token(opportunity_id: str, document_id: str) -> dict[str, An
         )
         raise HTTPException(status_code=404, detail="document not found")
 
+    # Pick the recipient's token. Single-token docs (or no email match) fall back to signing_token.
+    token = doc.signing_token
+    pairs = list(doc.recipient_tokens)
+    if len(pairs) > 1:
+        async with get_db_connection() as conn:
+            contact = await queries.get_opportunity_contact_email(conn, opportunity_id)
+        contact_l = (contact or "").strip().lower()
+        # CLIENT = the recipient bound to the opportunity contact; ORIGINATOR = any other recipient.
+        client_tok = next((t for (e, t) in pairs if contact_l and e == contact_l), None)
+        originator_tok = next((t for (e, t) in pairs if e != contact_l), None)
+        token = (originator_tok if signer == "originator" else client_tok) or token
+
     return {
-        "signing_token": doc.signing_token,
+        "signing_token": token,
         "status": doc.status,
         "documenso_host": config.documenso_api_url(),
     }

@@ -41,6 +41,25 @@ async def insert_event(
 _TERMINAL_EVENTS = ("DOCUMENT_COMPLETED",)
 
 
+async def get_opportunity_contact_email(conn, opportunity_id: str) -> str | None:
+    """The opportunity's contact email by its 8-char PUBLIC handle — the email bound to the CLIENT
+    recipient at originate. The sign-token read uses it to tell the client's token from the
+    originator's on a two-signer document. None when the handle/contact is unknown."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT c.email
+              FROM business.opportunities o
+              LEFT JOIN business.contacts c ON c.id = o.contact_id
+             WHERE o.opportunity_id = %s
+             LIMIT 1
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row and row[0] else None
+
+
 async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dict[str, Any]:
     """Project signing state for an ``(opportunity_id, document_id)`` PAIR at read time from the raw
     webhook rows — FULLY OFFLINE (no projection table, no live Documenso call).
