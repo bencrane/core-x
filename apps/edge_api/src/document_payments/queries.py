@@ -16,7 +16,7 @@ async def get_payment(conn, document_id: str) -> dict | None:
         await cur.execute(
             """
             SELECT document_id, opportunity_id, amount_cents, currency,
-                   stripe_customer_id, stripe_payment_intent_id, payment_status, paid_at
+                   stripe_customer_id, stripe_payment_intent_id, payment_status, paid_at, rail
               FROM business.document_payments
              WHERE document_id = %s
             """,
@@ -34,6 +34,7 @@ async def get_payment(conn, document_id: str) -> dict | None:
         "stripe_payment_intent_id": row[5],
         "payment_status": row[6],
         "paid_at": row[7],
+        "rail": row[8],
     }
 
 
@@ -153,22 +154,57 @@ async def record_event_if_new(
     return row is not None
 
 
+# SQL rank mirroring the document payment_status lifecycle so the UPDATE itself enforces forward-only
+# motion (parity with payments.advance_payment_status). Distinct out-of-order deliveries — e.g. a
+# delayed ``processing`` arriving after ``succeeded`` — cannot regress the row.
+_DOC_PAY_RANK_CASE = (
+    "CASE payment_status WHEN 'none' THEN 0 WHEN 'requires_payment' THEN 1 "
+    "WHEN 'processing' THEN 2 WHEN 'succeeded' THEN 3 ELSE 0 END"
+)
+_DOC_PAY_RANK = {"none": 0, "requires_payment": 1, "processing": 2, "succeeded": 3}
+
+
 async def advance_status(
-    conn, *, document_id: str, status: str, paid: bool, intent_id: str | None = None
+    conn,
+    *,
+    document_id: str,
+    status: str,
+    paid: bool,
+    intent_id: str | None = None,
+    rail: str | None = None,
 ) -> None:
-    """Advance the payment record from a Stripe webhook. ``paid_at`` is set ONCE (COALESCE). Does NOT
-    commit; the caller commits together with the event-ledger insert."""
+    """Advance the payment record from a Stripe webhook, MONOTONICALLY. ``paid_at`` and ``rail`` are
+    set ONCE (COALESCE keeps the first value). Forward states (``processing``/``succeeded``) apply only
+    when strictly ahead of the current rank; ``failed``/``canceled`` apply only when not already
+    succeeded — so an out-of-order redelivery cannot regress a terminal row. Does NOT commit; the
+    caller commits together with the event-ledger insert."""
+    # ``rail`` is set-once (COALESCE(rail, new)): ACH stamps 'us_bank_account' on its ``processing``
+    # event and the later ``succeeded`` keeps it; a card intent jumps straight to ``succeeded`` with
+    # rail still NULL, so it is stamped 'card'. The webhook supplies the candidate from the event type.
+    if status in ("failed", "canceled"):
+        guard = "payment_status <> 'succeeded'"
+    else:
+        guard = f"%(rank)s > {_DOC_PAY_RANK_CASE}"
+    sql = f"""
+        UPDATE business.document_payments
+           SET payment_status           = %(status)s,
+               paid_at                   = CASE WHEN %(paid)s
+                                                THEN COALESCE(paid_at, now())
+                                                ELSE paid_at END,
+               stripe_payment_intent_id  = COALESCE(%(intent_id)s, stripe_payment_intent_id),
+               rail                      = COALESCE(rail, %(rail)s),
+               updated_at                = now()
+         WHERE document_id = %(document_id)s AND {guard}
+    """
     async with conn.cursor() as cur:
         await cur.execute(
-            """
-            UPDATE business.document_payments
-               SET payment_status           = %(status)s,
-                   paid_at                   = CASE WHEN %(paid)s
-                                                    THEN COALESCE(paid_at, now())
-                                                    ELSE paid_at END,
-                   stripe_payment_intent_id  = COALESCE(%(intent_id)s, stripe_payment_intent_id),
-                   updated_at                = now()
-             WHERE document_id = %(document_id)s
-            """,
-            {"status": status, "paid": paid, "intent_id": intent_id, "document_id": document_id},
+            sql,
+            {
+                "status": status,
+                "paid": paid,
+                "intent_id": intent_id,
+                "rail": rail,
+                "document_id": document_id,
+                "rank": _DOC_PAY_RANK.get(status, 0),
+            },
         )

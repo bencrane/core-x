@@ -75,20 +75,31 @@ async def create_document_payment_intent(
         existing_status = existing.get("payment_status") or "none"
 
         # Reuse an open intent (idempotent across refresh/retry); only re-mint after a hard failure.
+        # RECREATE a stale single-rail intent (minted before the card rail) — cancel it, then fall
+        # through to the fresh dual-rail mint below — but ONLY when no funds are in flight
+        # (amount-mutable status). An intent already mid-ACH (``processing``) is left alone so the
+        # in-flight debit is never disrupted, even though it lacks the card tab.
         if existing_intent and existing_status not in ("failed", "canceled"):
             try:
                 intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
-                if intent.get("amount") != charge_cents and intent.get("status") in _AMOUNT_MUTABLE:
-                    await stripe_client.update_payment_intent_amount(existing_intent, charge_cents, mode)
-                    intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
-                if intent.get("client_secret"):
-                    return DocumentPaymentInitPublic(
-                        client_secret=intent["client_secret"],
-                        publishable_key=publishable_key,
-                        amount_cents=charge_cents,
-                        currency=existing.get("currency") or "usd",
-                        payment_status=existing_status,
-                    )
+                stale_single_rail = "card" not in (intent.get("payment_method_types") or [])
+                if stale_single_rail and intent.get("status") in _AMOUNT_MUTABLE:
+                    await stripe_client.cancel_payment_intent(existing_intent, mode)
+                    # fall through to a fresh dual-rail mint (new idempotency-key namespace)
+                else:
+                    if intent.get("amount") != charge_cents and intent.get("status") in _AMOUNT_MUTABLE:
+                        await stripe_client.update_payment_intent_amount(
+                            existing_intent, charge_cents, mode
+                        )
+                        intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
+                    if intent.get("client_secret"):
+                        return DocumentPaymentInitPublic(
+                            client_secret=intent["client_secret"],
+                            publishable_key=publishable_key,
+                            amount_cents=charge_cents,
+                            currency=existing.get("currency") or "usd",
+                            payment_status=existing_status,
+                        )
             except Exception as exc:  # noqa: BLE001
                 # Reuse is a pure optimization; ANY failure degrades to a fresh mint (idempotency_key
                 # makes the mint return the SAME intent rather than duplicating), never a 500.
@@ -108,7 +119,7 @@ async def create_document_payment_intent(
                 customer_id=customer_id,
                 opportunity_id=opportunity_id,
                 document_id=document_id,
-                idempotency_key=f"ach_document_{document_id}",
+                idempotency_key=f"pay_document_{document_id}",
                 mode=mode,
             )
         except stripe_client.StripeError as exc:
@@ -156,4 +167,5 @@ async def get_document_payment_state(
         amount_cents=pay.get("amount_cents"),
         currency=pay.get("currency") or "usd",
         paid_at=paid_at.isoformat() if paid_at else None,
+        rail=pay.get("rail"),
     )

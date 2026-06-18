@@ -134,6 +134,19 @@ async def _handle_document_payment(
         envelope = {"raw_unparseable": True}
 
     paid = status == "succeeded"
+    # Derive the settled rail from the event TYPE — reliable for this two-rail intent without a Stripe
+    # call (the webhook stays call-free) and without parsing ``charges`` (absent from PaymentIntent
+    # payloads on the pinned SDK). ACH is always async: ``processing`` ⟹ us_bank_account. Card captures
+    # synchronously, jumping straight to ``succeeded`` with no prior ``processing`` ⟹ card. ``rail`` is
+    # set-once in advance_status (COALESCE), so an ACH ``succeeded`` after its ``processing`` keeps
+    # 'us_bank_account'.
+    rail = (
+        "us_bank_account"
+        if status == "processing"
+        else "card"
+        if status == "succeeded"
+        else None
+    )
     async with get_db_connection() as conn:
         # 1) AUDIT + idempotency — append the verbatim event first; a redelivery returns first_seen=False.
         first_seen = await doc_pay_queries.record_event_if_new(
@@ -144,10 +157,15 @@ async def _handle_document_payment(
             opportunity_id=opportunity_id,
             payload=envelope,
         )
-        # 2) ADVANCE — only on first sight; paid_at is set once (monotonic).
+        # 2) ADVANCE — only on first sight; monotonic (paid_at + rail set once).
         if first_seen:
             await doc_pay_queries.advance_status(
-                conn, document_id=document_id, status=status, paid=paid, intent_id=intent_id
+                conn,
+                document_id=document_id,
+                status=status,
+                paid=paid,
+                intent_id=intent_id,
+                rail=rail,
             )
         await conn.commit()
 
