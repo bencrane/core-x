@@ -46,3 +46,26 @@ Public **Railway** service in its own new project (not `rare-structure-hq`):
 build context = repo root, `RAILWAY_DOCKERFILE_PATH=apps/edge_api/Dockerfile`,
 `DOPPLER_TOKEN` scoped `core-x/prd`. Public domain → `<edge-host>`. Render (Python
 buildpack) is an equivalent alternative — see `requirements.txt`.
+
+## Database schema (`sql/`) — applied automatically on boot
+
+The DDL under [`sql/*.sql`](sql/) is the **source of truth** for the `business.*` /
+`public.*` tables edge_api reads. There is no migration framework: every file is
+idempotent (`CREATE … IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` / guarded `DO`-block
+constraints / `ON CONFLICT DO NOTHING`), and **the service applies all of them to
+`HQX_DB_URL_POOLED` at startup** ([`src/migrate.py`](src/migrate.py), called from the
+FastAPI lifespan). This is schema-as-code: whatever a deploy's code expects, the live
+schema is brought to match *before* the version takes traffic — and a newly committed
+`sql/*.sql` file is auto-discovered, so there is nothing to apply by hand.
+
+- **Fail-loud:** if any file fails to apply, the boot fails → the Railway healthcheck
+  stays red → the **prior healthy deployment keeps serving**. A red deploy beats a
+  version whose code outruns prod's schema serving 500s. (This is the fix for the
+  `document_payments.rail` outage: a column added to the committed DDL but never applied
+  to prod, so a `SELECT … rail` 500'd every document-payment read.)
+- **Seatbelt:** the document-payments router additionally degrades a schema-drift DB
+  error (undefined column/table) to a retryable **503**, not a raw 500.
+- **Escape hatch:** set `EDGE_API_SKIP_DB_MIGRATE=1` to skip the startup apply if a bad
+  DDL file ever wedges the boot and an unrelated hotfix must ship; unset and redeploy to
+  re-sync. The suite targets an already-provisioned control plane (cross-file FKs
+  reference upstream-owned tables), not a bare database.

@@ -13,7 +13,9 @@ webhook (``/webhooks/stripe``), never here.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
+import psycopg
 from fastapi import APIRouter, HTTPException
 
 from .. import config
@@ -30,6 +32,35 @@ router = APIRouter(prefix="/api/v1/documenso", tags=["document-payments"])
 
 # Intent statuses whose amount is still mutable (no funds in flight yet).
 _AMOUNT_MUTABLE = {"requires_payment_method", "requires_confirmation", "requires_action"}
+
+# Schema-drift errors: the live DB is MISSING something the committed code references — a column/table/
+# function not yet applied from sql/*.sql. This is exactly the rail-column outage (PR #518): a committed
+# DDL column never applied to prod made ``SELECT … rail`` raise undefined_column → unhandled 500 on
+# EVERY mint + poll, taking the whole payment surface dark. The startup apply (src/migrate.py) is the
+# fix; this is the seatbelt — if a deploy ever races ahead of the schema again, degrade to a clean,
+# retryable 503 instead of leaking a raw 500.
+_SCHEMA_DRIFT_ERRORS = (
+    psycopg.errors.UndefinedColumn,
+    psycopg.errors.UndefinedTable,
+    psycopg.errors.UndefinedFunction,
+    psycopg.errors.InvalidSchemaName,
+)
+
+
+@asynccontextmanager
+async def _payments_db():
+    """A pooled connection whose schema-drift failures surface as 503, not 500. Any drift error raised
+    by a DB read/write inside the ``async with`` body is thrown back in at the ``yield`` and converted
+    here, so one wrapper covers every query in the block (vs. a raw psycopg 500 reaching the SPA)."""
+    try:
+        async with get_db_connection() as conn:
+            yield conn
+    except _SCHEMA_DRIFT_ERRORS as exc:
+        logger.error(
+            "document payments: schema drift (%s) — live DB is behind committed sql/*.sql; degrading to 503",
+            exc,
+        )
+        raise HTTPException(status_code=503, detail="payment is temporarily unavailable") from exc
 
 
 def _mint_idempotency_key(
@@ -57,7 +88,7 @@ def _mint_idempotency_key(
 async def create_document_payment_intent(
     opportunity_id: str, document_id: str
 ) -> DocumentPaymentInitPublic:
-    async with get_db_connection() as conn:
+    async with _payments_db() as conn:
         # Resolve the operator-selected Stripe mode (operator_settings.stripe_mode, augmenting the env
         # STRIPE_MODE) and its key set. Single-operator platform: this is the global selection (the
         # prospect mint has no operator session). Keys are mode-specific so the toggle takes effect
@@ -199,7 +230,7 @@ async def get_document_payment_state(
 ) -> DocumentPaymentStatePublic:
     """Authoritative payment state for the SPA poll. Returns ``none`` before the first mint (so the
     SPA can poll without erroring) and for a pair mismatch (no info leak about a guessed document id)."""
-    async with get_db_connection() as conn:
+    async with _payments_db() as conn:
         pay = await pay_queries.get_payment(conn, document_id)
     if pay is None or pay.get("opportunity_id") != opportunity_id:
         return DocumentPaymentStatePublic(payment_status="none")
