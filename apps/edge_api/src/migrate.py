@@ -24,6 +24,17 @@ parse on the server intact; a naive split on ``;`` would shred those blocks. Eac
 transaction (applies whole or not at all). Files apply in filename order; the suite targets an
 ALREADY-PROVISIONED control plane — cross-file FKs reference upstream-owned tables (``business.organizations``,
 ``business.documenso_templates``) that already exist in prod — not a bare database.
+
+CONCURRENT REPLICAS: a rolling deploy boots replicas at once, so two could run ``CREATE``/``ALTER``
+against the same object simultaneously — and ``IF NOT EXISTS`` is NOT fully concurrency-safe (Postgres
+can still raise ``tuple concurrently updated`` / a unique-violation on ``pg_*`` catalogs under a race).
+Each per-file transaction first takes a TRANSACTION-scoped advisory lock (``pg_advisory_xact_lock``), so
+the applies serialize: a second replica blocks until the first file's transaction commits, then applies
+the same (now-existing) file as a no-op. Transaction-scoped (not session-scoped) is deliberate — it
+acquires AND releases within one transaction, i.e. on a single backend, so it is safe over the
+transaction-pooler DSN (port 6543) the request pool already uses; a SESSION lock could unlock on a
+different pooled backend than it locked, leaking the lock, and would force a separate direct-DSN
+connection whose reachability from the deploy env is not guaranteed.
 """
 from __future__ import annotations
 
@@ -34,6 +45,11 @@ from . import config
 from .db import get_db_connection
 
 log = logging.getLogger("edge_api.migrate")
+
+# Fixed 64-bit key for the boot-time apply's advisory lock — ASCII "edge" (0x65646765). Any stable value
+# unique to this apply works; concurrent replica boots contend on pg_advisory_xact_lock(this) and apply
+# one file-transaction at a time.
+_APPLY_LOCK_KEY = 0x65646765
 
 # ``src/migrate.py`` → parent ``src`` → parent ``apps/edge_api`` → ``sql/`` (baked into the image by the
 # Dockerfile's ``COPY apps/edge_api apps/edge_api``).
@@ -65,10 +81,13 @@ async def run_migrations() -> None:
         for path in files:
             sql = path.read_text()
             try:
-                # Own transaction per file (whole-or-nothing). NO params → psycopg simple-query
-                # protocol → the entire multi-statement file (incl. DO $$ … $$) runs server-side.
+                # Own transaction per file (whole-or-nothing). NO params on the file → psycopg
+                # simple-query protocol → the entire multi-statement file (incl. DO $$ … $$) runs
+                # server-side. The xact-scoped advisory lock serializes concurrent replica boots (held
+                # for, and released at the end of, THIS transaction — pooler-safe).
                 async with conn.transaction():
                     async with conn.cursor() as cur:
+                        await cur.execute("SELECT pg_advisory_xact_lock(%s)", (_APPLY_LOCK_KEY,))
                         await cur.execute(sql)
             except Exception:
                 log.exception("startup DDL apply FAILED on %s — failing boot", path.name)

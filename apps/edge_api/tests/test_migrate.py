@@ -76,13 +76,18 @@ _SYNTHETIC = {
 }
 
 
-async def _apply_twice_and_verify(tmp_dir: Path) -> tuple[bool, int]:
+async def _apply_twice_and_verify(tmp_dir: Path, *, concurrent: bool = False) -> tuple[bool, int]:
     orig_dir = migrate.SQL_DIR
     migrate.SQL_DIR = tmp_dir
     try:
         await db.init_pool()
-        await migrate.run_migrations()   # pass 1 — fresh
-        await migrate.run_migrations()   # pass 2 — must be a clean no-op (idempotent)
+        if concurrent:
+            # Two boots racing — the xact advisory lock must serialize them with no race error
+            # (no ``tuple concurrently updated`` / catalog unique-violation), and stay idempotent.
+            await asyncio.gather(migrate.run_migrations(), migrate.run_migrations())
+        else:
+            await migrate.run_migrations()   # pass 1 — fresh
+            await migrate.run_migrations()   # pass 2 — must be a clean no-op (idempotent)
         async with db.get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -107,3 +112,17 @@ def test_runner_applies_multistatement_and_is_idempotent(tmp_path, monkeypatch) 
     has_col, n_constraints = asyncio.run(_apply_twice_and_verify(tmp_path))
     assert has_col, "additive column from a multi-statement file must be applied"
     assert n_constraints == 1, "DO-block constraint must apply exactly once across two passes (idempotent)"
+
+
+@pytest.mark.skipif(not _TEST_DSN, reason="set EDGE_API_TEST_DB_DSN to a throwaway Postgres to run")
+def test_runner_serializes_concurrent_boots(tmp_path, monkeypatch) -> None:
+    """Rolling-deploy guard: two replicas booting at once apply the same DDL concurrently. The
+    transaction-scoped advisory lock must serialize them — both finish cleanly and the result is
+    idempotent (constraint applied exactly once), with no catalog race error."""
+    monkeypatch.delenv("EDGE_API_SKIP_DB_MIGRATE", raising=False)
+    monkeypatch.setenv("HQX_DB_URL_POOLED", _TEST_DSN)
+    for name, body in _SYNTHETIC.items():
+        (tmp_path / name).write_text(body)
+    has_col, n_constraints = asyncio.run(_apply_twice_and_verify(tmp_path, concurrent=True))
+    assert has_col
+    assert n_constraints == 1, "concurrent boots must not double-apply the DO-block constraint"
