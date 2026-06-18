@@ -398,6 +398,7 @@ async def create_document_from_template(
     recipient_name: str,
     field_values_by_label: dict[str, str] | None = None,
     external_id: str | None = None,
+    title: str | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
     PREFILLED and LOCKED (readOnly), then distribute WITHOUT email so it lands ``PENDING`` (ready to
@@ -481,6 +482,13 @@ async def create_document_from_template(
             payload["prefillFields"] = prefill_fields
         if external_id:
             payload["externalId"] = external_id
+        if title:
+            # Override the derived document's title — otherwise it inherits the TEMPLATE's filename
+            # (e.g. "AO_Term_Plain_v1.pdf"), which surfaces in the signer's "Are you sure?" confirmation
+            # modal and the downloaded PDF. CONFIRMED against Documenso v2: ``/template/use`` accepts
+            # ``override.title`` (``z.string().min(1).max(255)``, optional, no required siblings); cap at
+            # 255 defensively.
+            payload["override"] = {"title": title[:255]}
 
         created = await client.post("/api/v2/template/use", json=payload)
         _raise_for_status(created, "template/use")
