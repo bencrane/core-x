@@ -148,6 +148,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
             # Stamp the opportunity's 8-char handle as the envelope's externalId — the durable anchor
             # the Documenso webhook capture carries back, and the prospect-link access capability.
             external_id=opportunity_ref,
+            # Prospect-facing title for the derived document — replaces the template's raw filename
+            # ("AO_Term_Plain_v1.pdf") in the signer's confirmation modal + the downloaded PDF.
+            title="Engagement Agreement",
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
