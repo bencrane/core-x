@@ -32,6 +32,24 @@ router = APIRouter(prefix="/api/v1/documenso", tags=["document-payments"])
 _AMOUNT_MUTABLE = {"requires_payment_method", "requires_confirmation", "requires_action"}
 
 
+def _mint_idempotency_key(
+    document_id: str, existing_status: str, existing_intent: str | None
+) -> str:
+    """Idempotency key for the dual-rail mint.
+
+    A pristine pair (or a reuse-block fall-through on an open intent) keys off the document id alone. A
+    retry after a HARD FAILURE (``failed``/``canceled``) must NOT: the spent intent already burned
+    ``pay_document_{document_id}`` against ITS amount, so replaying that fixed key after the operator
+    edits ``fee_amount`` is a Stripe 400 idempotency_error (→ StripeError → 502, wedged for the 24h key
+    TTL). Namespacing the key by the prior intent id makes it fresh across the fee change yet still
+    idempotent within a single retry burst — a double-submit keys off the same persisted failed intent,
+    so Stripe returns the SAME new intent rather than minting a duplicate charge surface.
+    """
+    if existing_status in ("failed", "canceled") and existing_intent:
+        return f"pay_document_{document_id}_retry_{existing_intent}"
+    return f"pay_document_{document_id}"
+
+
 @router.post(
     "/payment-intent/{opportunity_id}/{document_id}",
     response_model=DocumentPaymentInitPublic,
@@ -107,6 +125,28 @@ async def create_document_payment_intent(
                     "reuse of document intent %s failed (%s); minting a new one", existing_intent, exc
                 )
 
+        # RETRY AFTER A HARD FAILURE — mint fresh, with a FRESH idempotency key.
+        # REGRESSION (availability): a ``failed``/``canceled`` row skips the reuse block above (its intent
+        # is spent) and falls straight to the mint below. The prior failed intent ALREADY burned the fixed
+        # ``pay_document_{document_id}`` key against ITS amount, so if the operator edits ``fee_amount``
+        # between the failed attempt and the retry, replaying that fixed key with a new amount is a Stripe
+        # 400 idempotency_error → StripeError → 502 — wedged for the full 24h key TTL. (Stripe REJECTS the
+        # mismatched replay, so it never charges a stale amount; this is availability, not money.) Fix:
+        # ``_mint_idempotency_key`` namespaces the key by the prior intent id (fresh across the fee change,
+        # stable within a retry burst), and we best-effort cancel the spent intent so it cannot linger as
+        # an open ``requires_payment_method`` against the prospect's customer.
+        if existing_status in ("failed", "canceled") and existing_intent:
+            # No funds are in flight on a failed/canceled status; an already-canceled intent (or any
+            # cancel hiccup) is non-fatal — the fresh-key mint is what actually unblocks the retry.
+            try:
+                await stripe_client.cancel_payment_intent(existing_intent, mode)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cancel of spent document intent %s failed (%s); minting fresh anyway",
+                    existing_intent,
+                    exc,
+                )
+
         try:
             customer_id = await stripe_client.ensure_customer(
                 email=info["recipient_email"],
@@ -119,7 +159,9 @@ async def create_document_payment_intent(
                 customer_id=customer_id,
                 opportunity_id=opportunity_id,
                 document_id=document_id,
-                idempotency_key=f"pay_document_{document_id}",
+                idempotency_key=_mint_idempotency_key(
+                    document_id, existing_status, existing_intent
+                ),
                 mode=mode,
             )
         except stripe_client.StripeError as exc:
