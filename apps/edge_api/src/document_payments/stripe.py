@@ -125,6 +125,29 @@ async def retrieve_payment_intent(intent_id: str, mode: str) -> dict[str, Any]:
     }
 
 
+async def retrieve_settled_rail(intent_id: str, mode: str) -> str | None:
+    """The method this intent ACTUALLY settled on ('card' | 'us_bank_account') — read from the charge,
+    the authoritative source. The pinned SDK omits the ``charges`` list from the PaymentIntent payload,
+    so the rail is recovered by retrieving the intent with ``latest_charge`` expanded and reading
+    ``latest_charge.payment_method_details.type``. Returns None when it cannot be resolved (no charge
+    yet, a mode mismatch, or any Stripe error) — the caller treats None as "leave rail unset" rather
+    than guessing. Rail attribution is cosmetic, so this is best-effort and NEVER raises into the
+    webhook."""
+    _require_secret(mode)
+    try:
+        intent = await asyncio.to_thread(
+            lambda: stripe.PaymentIntent.retrieve(intent_id, expand=["latest_charge"])
+        )
+    except Exception:  # noqa: BLE001 — degrade to "unknown rail", never fail the webhook
+        return None
+    # StripeObject attribute access raises AttributeError for absent fields — getattr(...,None) at every
+    # hop. An unexpanded ``latest_charge`` would be a string id (not a Charge); getattr on it returns None.
+    charge = getattr(intent, "latest_charge", None)
+    details = getattr(charge, "payment_method_details", None)
+    rail = getattr(details, "type", None)
+    return str(rail) if rail else None
+
+
 async def update_payment_intent_amount(intent_id: str, amount_cents: int, mode: str) -> None:
     """Re-sync the intent amount if the resolved fee changed before payment (no funds in flight yet)."""
     _require_secret(mode)
