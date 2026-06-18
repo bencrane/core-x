@@ -148,6 +148,8 @@ async def create_document_payment_intent(
                             amount_cents=charge_cents,
                             currency=existing.get("currency") or "usd",
                             payment_status=existing_status,
+                            recipient_name=info.get("recipient_name"),
+                            recipient_email=info.get("recipient_email"),
                         )
             except Exception as exc:  # noqa: BLE001
                 # Reuse is a pure optimization; ANY failure degrades to a fresh mint (idempotency_key
@@ -218,6 +220,8 @@ async def create_document_payment_intent(
         amount_cents=charge_cents,
         currency="usd",
         payment_status="requires_payment",
+        recipient_name=info.get("recipient_name"),
+        recipient_email=info.get("recipient_email"),
     )
 
 

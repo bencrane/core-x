@@ -13,6 +13,10 @@ class DocumentPaymentInitPublic(BaseModel):
     amount_cents: int
     currency: str = "usd"
     payment_status: str
+    # Opportunity contact, for the SPA to PRE-FILL the editable name/email on the pay page (the prospect
+    # is the capability holder — their own contact, no leak). Optional: null when unavailable.
+    recipient_name: str | None = None
+    recipient_email: str | None = None
 
 
 class DocumentPaymentStatePublic(BaseModel):
