@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from .. import config
 from ..db import get_db_connection
 from ..document_payments import queries as doc_pay_queries
 from ..document_payments import stripe as doc_pay_stripe
@@ -134,19 +135,6 @@ async def _handle_document_payment(
         envelope = {"raw_unparseable": True}
 
     paid = status == "succeeded"
-    # Derive the settled rail from the event TYPE — reliable for this two-rail intent without a Stripe
-    # call (the webhook stays call-free) and without parsing ``charges`` (absent from PaymentIntent
-    # payloads on the pinned SDK). ACH is always async: ``processing`` ⟹ us_bank_account. Card captures
-    # synchronously, jumping straight to ``succeeded`` with no prior ``processing`` ⟹ card. ``rail`` is
-    # set-once in advance_status (COALESCE), so an ACH ``succeeded`` after its ``processing`` keeps
-    # 'us_bank_account'.
-    rail = (
-        "us_bank_account"
-        if status == "processing"
-        else "card"
-        if status == "succeeded"
-        else None
-    )
     async with get_db_connection() as conn:
         # 1) AUDIT + idempotency — append the verbatim event first; a redelivery returns first_seen=False.
         first_seen = await doc_pay_queries.record_event_if_new(
@@ -159,6 +147,7 @@ async def _handle_document_payment(
         )
         # 2) ADVANCE — only on first sight; monotonic (paid_at + rail set once).
         if first_seen:
+            rail = await _resolve_rail(conn, status=status, document_id=document_id, intent_id=intent_id)
             await doc_pay_queries.advance_status(
                 conn,
                 document_id=document_id,
@@ -179,3 +168,30 @@ async def _handle_document_payment(
         "stripe webhook(document) %s doc=%s first_seen=%s", event_type, document_id, first_seen
     )
     return {"ok": True, "event": event_type, "status": status, "first_seen": first_seen}
+
+
+async def _resolve_rail(
+    conn, *, status: str, document_id: str, intent_id: str | None
+) -> str | None:
+    """The settled-rail candidate for ``advance_status`` (set ONCE via COALESCE). Returns None when the
+    rail cannot be established, leaving any existing value untouched rather than guessing.
+
+    - ``processing`` is ACH-only and call-free: only ``us_bank_account`` ever emits it.
+    - ``succeeded`` is ambiguous on its own. Card jumps straight to it (no prior ``processing``), but so
+      does an ACH whose ``processing`` delivery was exhausted — e.g. the endpoint was down across the
+      multi-day settlement window. Stamping 'card' on that ACH (the old behavior) misattributes the rail.
+      So on ``succeeded`` the rail is read AUTHORITATIVELY from the charge
+      (``latest_charge.payment_method_details.type``) — but ONLY when not already pinned by a prior
+      ``processing``, so the healthy-ACH path stays call-free."""
+    if status == "processing":
+        return "us_bank_account"
+    if status != "succeeded" or not intent_id:
+        return None
+    # Healthy ACH already pinned 'us_bank_account' on its ``processing`` event — COALESCE keeps it, so
+    # skip the Stripe round-trip entirely. The call is reserved for the genuinely ambiguous succeeded:
+    # a card payment, or an ACH whose ``processing`` never landed.
+    existing = await doc_pay_queries.get_payment(conn, document_id)
+    if existing and existing.get("rail"):
+        return None
+    mode = config.resolve_stripe_mode(await doc_pay_queries.get_stripe_mode_selection(conn))
+    return await doc_pay_stripe.retrieve_settled_rail(intent_id, mode)
