@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse
 
 from .src import config
 from .src.db import close_pool, init_pool
+from .src.migrate import run_migrations
 from .src.mcp.doppler import mcp as doppler_mcp
 from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
@@ -130,7 +131,12 @@ async def lifespan(app_: FastAPI):
         await init_pool()       # edge_api pool (agent-runs ledger)
         await hqx_init_pool()   # vendored app.db pool (pipeline)
         try:
-            log.info("edge_api: boot ok (mounts: trigger, doppler; routes: agent-runs, pipeline; DB pools up)")
+            # Schema-as-code: bring the live schema up to the committed DDL (sql/*.sql) BEFORE serving.
+            # Idempotent + self-healing; a failure re-raises → the boot fails → Railway keeps the prior
+            # healthy deploy on traffic. Closes the code↔schema drift that 500'd document-payment reads
+            # (the rail column added in committed DDL but never applied to prod). See src/migrate.py.
+            await run_migrations()
+            log.info("edge_api: boot ok (mounts: trigger, doppler; routes: agent-runs, pipeline; DB pools up; schema applied)")
             yield
         finally:
             await hqx_close_pool()

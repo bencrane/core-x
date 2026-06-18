@@ -209,3 +209,18 @@ def host() -> str:
     (Anthropic's platform calls the MCP mounts; Trigger.dev calls the pipeline),
     unlike the private, IPv6-only catalyst_api. Override with ``HOST`` if needed."""
     return os.environ.get("HOST", "0.0.0.0")
+
+
+# ── Startup schema apply (sql/*.sql → HQX_DB_URL_POOLED) ──────────────────────────────────────────
+def db_migrate_on_boot() -> bool:
+    """Whether to apply the committed DDL (``sql/*.sql``) to ``HQX_DB_URL_POOLED`` at boot (see
+    ``src/migrate.py``). Default ON: the schema is code, re-applied idempotently every deploy so a
+    column added to a committed file can never lag prod again — the ``document_payments.rail`` 500
+    outage, where a SELECT referenced a column never applied to prod. Escape hatch:
+    ``EDGE_API_SKIP_DB_MIGRATE=1`` lets an unrelated hotfix ship if a bad DDL file ever wedges the boot."""
+    return os.environ.get("EDGE_API_SKIP_DB_MIGRATE", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
