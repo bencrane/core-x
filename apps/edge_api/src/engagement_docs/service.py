@@ -20,6 +20,10 @@ from . import documenso, packages, queries, render, store
 
 logger = logging.getLogger(__name__)
 
+# The engagement-content document this lane renders — the manifest key AND the
+# business.ao_engagement_mandates.document_slug DEFAULT. Single source of truth for the slug.
+SLUG = "active_operators_term_only"
+
 # Provider = the Rare Structure signatory, pre-rendered into the PDF's Provider execution block.
 _PROVIDER_NAME = "Benjamin J. Crane"
 
