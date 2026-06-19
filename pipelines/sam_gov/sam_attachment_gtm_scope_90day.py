@@ -1,6 +1,6 @@
 """SAM.gov 90-day attachment — GTM SCOPE RESOLVER ("Strained Middle" de-contamination gate).
 
-Verdicts every downloaded attachment (sam_attachment_files_90day) as in_scope / out_of_scope for the
+Verdicts every downloaded attachment (sam_attachment_files) as in_scope / out_of_scope for the
 mid-market, labor/capital-intensive GTM cohort, and materializes a tiny per-resource scope table that
 the extraction engine (sam_attachment_extract_90day.py Phase 1) consults to skip out-of-scope files
 BEFORE spending parse/chunk/embed compute on them.
@@ -14,9 +14,9 @@ query. (Separation of concerns: the lake stays universal; the lens is swappable.
 THE BRIDGE (3 datasets, read-only):
   usaspending_api_fresh/contract_prime_txn   prime AWARD substrate (transaction grain, ~90d last_modified)
         └─ contract_award_unique_key ──┐     resolved to award grain (latest last_modified per award key)
-  sam_opps_attachment_manifest_90day_winners │  resource_id ⇄ contract_award_unique_key / award_keys[]
+  sam_opps_attachment_manifest_winners │  resource_id ⇄ contract_award_unique_key / award_keys[]
         └─ resource_id ────────────────┘
-  sam_attachment_files_90day                 the downloaded-resource universe to verdict (status='downloaded')
+  sam_attachment_files                 the downloaded-resource universe to verdict (status='downloaded')
 
 THE RULES (defended against the source directive):
   A  band   : current_total_value_of_award ∈ [$500k, $15M]  (the "Award Amount" — committed value, the
@@ -29,7 +29,7 @@ THE RULES (defended against the source directive):
               flag" exclusion is NOT implementable from FPDS (no clean distributor flag; manufacturer_of_goods
               would wrongly nuke legit fabrication shops) and is deliberately omitted.
 
-OUTPUT  s3://data-sink/active/sam_attachment_gtm_scope_90day/ (Lance v2.1):
+OUTPUT  s3://data-sink/active/sam_attachment_gtm_scope/ (Lance v2.1):
   resource_id, gtm_scope ∈ {in_scope, out_of_scope}, scope_reason ∈ {in_scope, out_of_scope_naics,
   below_band, above_band, failed_frequency_cap, no_award_link}, matched_award_key, recipient_uei,
   matched_naics, matched_amount, run_id, created_at.  BTREE(resource_id) · BITMAP(gtm_scope, scope_reason).
@@ -53,13 +53,13 @@ import sys
 FRESH_URI = os.environ.get(
     "USASPENDING_API_FRESH_URI", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/")
 MANIFEST_URI = os.environ.get(
-    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/")
+    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")
 FILES_LEDGER_URI = os.environ.get(
-    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files_90day/")
+    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files/")
 SCOPE_GATE_URI = os.environ.get(
-    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope_90day/")
+    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")
 
-FEED = "sam_attachment_gtm_scope_90day"
+FEED = "sam_attachment_gtm_scope"
 
 # ── gate config (Rule A/B/C — the swappable lens) ──────────────────────────────────────────────────
 BAND_LO = int(os.environ.get("GTM_BAND_LO", "500000"))
@@ -254,7 +254,7 @@ def _record_run(metrics: dict, run_id: str, status: str, error: str | None,
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
             cur.execute(_ops_ddl())
             cur.execute("""
-                INSERT INTO ops.sam_attachment_gtm_scope_90day_runs
+                INSERT INTO ops.sam_attachment_gtm_scope_runs
                   (run_id, universe_files, in_scope, out_of_scope, r_out_of_scope_naics, r_below_band,
                    r_above_band, r_failed_frequency_cap, r_no_award_link, cohort_in_band_awards,
                    capped_entities, band_lo, band_hi, freq_cap, target_naics, status, error,

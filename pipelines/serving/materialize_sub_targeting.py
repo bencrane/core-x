@@ -1,16 +1,16 @@
-"""Build worker — govcon_sub_targeting_90day: the outreach list (build plan PHASE 4, closes the
+"""Build worker — govcon_sub_targeting: the outreach list (build plan PHASE 4, closes the
 north star). One row per (covered award, candidate subawardee): "do X" subs reachable under primes
 that "need A,B,C," every hop citeable.
 
 GRAIN   1 row per (contract_award_unique_key, candidate_sub_uei). One row per pair — the STRONGEST
         edge_type wins (direct_subaward > teaming_history > capability_match).
-SoR     s3://data-sink/active/govcon_sub_targeting_90day/  (Lance v2.1; derived, SNAPSHOT-OVERWRITE).
+SoR     s3://data-sink/active/govcon_sub_targeting/  (Lance v2.1; derived, SNAPSHOT-OVERWRITE).
         Frozen schema + assert_schema (govcon_gtm_schemas.py) before the first commit.
 
 EDGE SEMANTICS (deterministic v1, no vectors — Phase 5 upgrades capability_match to ANN):
   * direct_subaward  — the prime sub-let THIS covered award (contract_subaward, in-window). dollars/
                        count = the in-window subaward report. The edge witnesses "worked under P on W."
-  * teaming_history  — the sub worked with this prime over the 5y corpus (govcon_teaming_edges_90day).
+  * teaming_history  — the sub worked with this prime over the 5y corpus (govcon_teaming_edges).
                        dollars/count = 5y edge weight. Witnesses "worked under P (habitually)."
   * capability_match — the sub does the trade the award needs: 4-digit NAICS-family equality AND the
                        sub's subaward_description contains ≥1 of the award's validated labor_category
@@ -25,7 +25,7 @@ requirement rows produces NO targeting rows (nothing to cite) — correct.
 
 CUI: this build reads NO solicitation-document text. capability_evidence is the SUB's own
 subaward_description (sub-self-reported, public), never marked-doc egress. Citations to the prime's
-requirements resolve by requirement_id → govcon_award_requirements_90day at query time.
+requirements resolve by requirement_id → govcon_award_requirements at query time.
 
 POC: poc_available is the precomputed bool (candidate_sub_uei ∈ sam_pocs); POC payloads join at
 query time (sam_pocs ~89.3% fill). No POC fields materialize here.
@@ -50,9 +50,9 @@ from pipelines.sam_gov.sam_attachment_extract_90day import _r2_storage_options  
 
 ACTIVE = "s3://data-sink/active"
 PROFILES_URI = f"{ACTIVE}/govcon_award_capability_profiles/"
-REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements_90day/"
+REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements/"
 SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
-TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges_90day/"
+TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges/"
 SAM_POCS_URI = f"{ACTIVE}/sam_pocs/"
 
 DATA_STORAGE_VERSION = "2.1"
@@ -394,7 +394,7 @@ def northstar():
 
 
 def main():
-    p = argparse.ArgumentParser(description="Build govcon_sub_targeting_90day (plan PHASE 4).")
+    p = argparse.ArgumentParser(description="Build govcon_sub_targeting (plan PHASE 4).")
     p.add_argument("cmd", choices=["build", "verify", "northstar"])
     a = p.parse_args()
     if a.cmd == "build":

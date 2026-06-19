@@ -2,7 +2,7 @@
 -- Written by pipelines/serving/materialize_captive_diversification.py:_record_run via psycopg
 -- (HQX_DB_URL_POOLED) on every terminal state, success or failure.
 --
--- DERIVED / rebuildable: captive_sub_diversification_90day is a read model (overwrite each run).
+-- DERIVED / rebuildable: captive_sub_diversification is a read model (overwrite each run).
 -- It scores every single-prime "captive" subawardee (band-bounded) by its BGE capability vector
 -- against the prime-solicitation scope corpus (ANN) to surface fresh awards won by OTHER primes
 -- the sub is a domain-aligned capability match for — the "diversify off your one prime" target list.

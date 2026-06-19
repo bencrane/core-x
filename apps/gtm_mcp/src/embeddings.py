@@ -1,7 +1,7 @@
 """Query-embedding helper for the gtm-mcp vector-search surface.
 
 WHY A LOCAL MODEL, NOT AN EXTERNAL API. The vectors stored in
-``s3://data-sink/active/govcon_scope_vectors_90day/`` (column ``embedding`` =
+``s3://data-sink/active/govcon_scope_vectors/`` (column ``embedding`` =
 ``list_<float32>[1024]``) are written by the Phase-4 embedder of
 ``pipelines/sam_gov/sam_attachment_extract_90day.py``, specified in
 ``docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC_V2.md`` §9 as a **self-hosted
@@ -80,7 +80,7 @@ def embed_query(text: str) -> tuple[float, ...]:
     if len(out) != EMBED_DIM:
         raise RuntimeError(
             f"embedding dimension {len(out)} != expected {EMBED_DIM} for model {EMBED_MODEL!r}; "
-            "the query model and the govcon_scope_vectors_90day writer must use the same model/dim."
+            "the query model and the govcon_scope_vectors writer must use the same model/dim."
         )
     return out
 

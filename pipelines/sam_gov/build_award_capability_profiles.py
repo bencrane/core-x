@@ -3,11 +3,11 @@
 One row per federal award at the EXPLODED `award_keys[]` grain, joining the three durable govcon
 sinks into a single deterministic, idempotent, citeable capability profile:
 
-    govcon_doc_scope_90day            (scope_summary + controlled-vocab capability_tags; LLM lane)
-  ⋈ govcon_award_requirements_90day   (clearance / certification / labor rollups over validated rows)
+    govcon_doc_scope            (scope_summary + controlled-vocab capability_tags; LLM lane)
+  ⋈ govcon_award_requirements   (clearance / certification / labor rollups over validated rows)
   ⋈ contract_prime_txn               (recipient_uei/name, agency, NAICS/PSC, set-aside, PoP, value,
                                        dates — collapsed to award grain, never LLM-extracted)
-  via sam_opps_attachment_manifest_90day_winners (resource_id → award_keys[] explode; the 4.1×-
+  via sam_opps_attachment_manifest_winners (resource_id → award_keys[] explode; the 4.1×-
       coverage spine, NOT the inline scalar key — anti-pattern #5).
 
 GRAIN   1 row per distinct EXPLODED `contract_award_unique_key` over the resources present in
@@ -28,13 +28,13 @@ IDEMPOTENT  overwrite-mode snapshot; deterministic rollups (no Math.random, no w
         the two run stamps, so a re-run is provably zero-delta (DoD).
 
 CUI EGRESS INVARIANT (anti-pattern #10)  the profile carries NO verbatim chunk text. `scope_summary`
-        is sourced only from `govcon_doc_scope_90day`, which is `marked_resource=false` by
+        is sourced only from `govcon_doc_scope`, which is `marked_resource=false` by
         construction (marked docs are bracketed out of the LLM lane). `req_cert_tags` /
         `top_labor_categories` / `capability_tags` are normalized / controlled-vocab values, never
         raw quotes. `evidence_quote` / `requirement_detail` are deliberately absent from the schema.
         `build()` asserts (a) doc_scope has zero marked rows and (b) requirements marked rows carry
         no verbatim text, then refuses to write on violation. Citations for serving resolve at query
-        time: profile.source_resource_ids → govcon_award_requirements_90day (evidence_quote +
+        time: profile.source_resource_ids → govcon_award_requirements (evidence_quote +
         source_chunk_ids on UNMARKED rows only).
 
 INDICES  BTREE(contract_award_unique_key, recipient_uei); BITMAP(requires_clearance, requires_cmmc,
@@ -66,9 +66,9 @@ from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
     _r2_storage_options, _dataset_exists)
 
 ACTIVE = "s3://data-sink/active"
-DOC_SCOPE_URI = f"{ACTIVE}/govcon_doc_scope_90day/"
-REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements_90day/"
-MANIFEST_URI = f"{ACTIVE}/sam_opps_attachment_manifest_90day_winners/"
+DOC_SCOPE_URI = f"{ACTIVE}/govcon_doc_scope/"
+REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements/"
+MANIFEST_URI = f"{ACTIVE}/sam_opps_attachment_manifest_winners/"
 TXN_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 LEGACY_SHELL_URI = f"{ACTIVE}/govcon_award_capability_profiles_90day/"
 
@@ -142,7 +142,7 @@ def _assemble(so):
     n_scope_marked = dsc.count_rows(filter="marked_resource = true")
     if n_scope_marked:
         raise RuntimeError(
-            f"CUI INVARIANT VIOLATION: govcon_doc_scope_90day has {n_scope_marked} marked rows — "
+            f"CUI INVARIANT VIOLATION: govcon_doc_scope has {n_scope_marked} marked rows — "
             f"scope_summary/capability_tags would carry marked-doc content. Marked docs must stay "
             f"bracketed out of the LLM lane (PHASE 2 DECISION 2026-06-12). Build refused.")
     n_marked_leak = rq.count_rows(

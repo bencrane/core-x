@@ -1,7 +1,7 @@
 """GovCon Phase-0 item-1 uniqueness & ledger-reconcile pre-flight (READ-ONLY).
 
 Build plan: docs/plans/GOVCON_SCOPE_PROCESSING_AND_GTM_QUERY_BUILD_PLAN.md — PHASE 0 item 1.
-Per chunk sink (govcon_scope_vectors_90day / govcon_pricing_90day / govcon_unknown_90day):
+Per chunk sink (govcon_scope_vectors / govcon_pricing / govcon_unknown):
 
   (a) UNIQUENESS: assert count(*) == count(DISTINCT chunk_id).
   (b) §12 RECONCILE (spec SAM_90DAY_EXTRACTION_PIPELINE_SPEC_V2.md §12 "Vector integrity"): for

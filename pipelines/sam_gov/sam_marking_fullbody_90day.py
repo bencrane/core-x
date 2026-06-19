@@ -5,7 +5,7 @@ re-run the per-caveat control-marking regexes over the RE-ASSEMBLED full text of
 the three chunk sinks (scope + unknown `text`; pricing `text` AND the doc-level `cells` grid), then
 back-propagate marking PROMOTIONS onto the chunk rows — chunk-level `content_marking` is the single
 enforcement gate for every egress decision; the head-scan-only markings carry a permanent
-false-negative hole without this pass. Ledger events on `sam_attachment_extraction_90day`
+false-negative hole without this pass. Ledger events on `sam_attachment_extraction`
 (state=`marking_fullbody`) are AUDIT PROVENANCE of how each promotion was decided — not a second gate.
 
 SEMANTICS (promotion-only — the hard safety rule):

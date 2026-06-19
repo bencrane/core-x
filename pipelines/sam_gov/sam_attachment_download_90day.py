@@ -1,7 +1,7 @@
 """SAM.gov 90-day-winners attachment byte download — concurrent, WAF-compliant, daemonizable.
 
 Stage 3 (isolated motion) for the staffing demand-side GTM. Consumes the local manifest
-``s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/`` (155,183 rows; built by
+``s3://data-sink/active/sam_opps_attachment_manifest_winners/`` (155,183 rows; built by
 sam_opps_attachment_manifest_90day_winners.py), gates to ``access_level='public'`` distinct
 downloadable files, and pulls the actual file bytes into an ISOLATED content-addressed blob
 tier + an ENRICHED Lance ledger.
@@ -31,10 +31,10 @@ OOM-safe way to pull >=50 MB files at concurrency 6 (the 90-day set has 718 file
 PURE DETERMINISTIC I/O. No LLM, no extraction, no embedding (downstream stages).
 
 Output (ISOLATED — never merged with the historical landing/ or active/sam_attachment_* sets):
-  * bytes  -> s3://data-sink/active/sam_attachment_blobs_90day/<resource_id>   (R2 CAS)
-  * ledger -> s3://data-sink/active/sam_attachment_files_90day/                (Lance v2.1, SoR)
-  * worklist -> s3://data-sink/active/sam_attachment_worklist_90day/           (Lance v2.1, snapshot)
-  * run row -> ops.sam_attachment_download_90day_runs                          (Postgres, per batch)
+  * bytes  -> s3://data-sink/active/sam_attachment_blobs/<resource_id>   (R2 CAS)
+  * ledger -> s3://data-sink/active/sam_attachment_files/                (Lance v2.1, SoR)
+  * worklist -> s3://data-sink/active/sam_attachment_worklist/           (Lance v2.1, snapshot)
+  * run row -> ops.sam_attachment_download_runs                          (Postgres, per batch)
 
 Full daemonized run:
     doppler run --project core-x --config prd -- \
@@ -59,10 +59,10 @@ import os
 import sys
 
 MANIFEST_URI = os.environ.get(
-    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/")
-LEDGER_URI = os.environ.get("SAM90_LEDGER_URI", "s3://data-sink/active/sam_attachment_files_90day/")
-BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs_90day/")
-WORKLIST_URI = os.environ.get("SAM90_WORKLIST_URI", "s3://data-sink/active/sam_attachment_worklist_90day/")
+    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")
+LEDGER_URI = os.environ.get("SAM90_LEDGER_URI", "s3://data-sink/active/sam_attachment_files/")
+BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs/")
+WORKLIST_URI = os.environ.get("SAM90_WORKLIST_URI", "s3://data-sink/active/sam_attachment_worklist/")
 CKPT_PATH = os.environ.get("SAM90_CKPT", "/tmp/sam_90day_ckpt.jsonl")
 LOG_PATH = os.environ.get("SAM90_LOG", "/tmp/sam_90day_download.log")
 FEED = "sam_attachment_download_90day"
@@ -87,7 +87,7 @@ _CONTENT_TYPE = {
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
-CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_90day_runs (
+CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_runs (
     id bigserial PRIMARY KEY, run_id text NOT NULL, scope text,
     concurrency int, req_per_sec numeric,
     attempted int, downloaded int, skipped int, failed int, restricted int, gone int, oversize int,
@@ -431,7 +431,7 @@ def _record_run(stats: dict, dsn: str | None) -> None:
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
             cur.execute(OPS_DDL)
             cur.execute("""
-                INSERT INTO ops.sam_attachment_download_90day_runs
+                INSERT INTO ops.sam_attachment_download_runs
                   (run_id, scope, concurrency, req_per_sec, attempted, downloaded, skipped, failed,
                    restricted, gone, oversize, waf_blocks_429, waf_blocks_403, bytes_downloaded,
                    sustained_mbps, size_mismatches, mime_mismatches, status, error, started_at, completed_at)

@@ -1,8 +1,8 @@
 """Subawardee capability vector search — semantic retrieval over what subawardees ACTUALLY DID,
 from their own SAM subaward reports.
 
-Dataset: ``s3://data-sink/active/govcon_sub_capability_vectors_90day/`` (auto-registered by the
-dynamic registry as ``govcon_sub_capability_vectors_90day``). Written by
+Dataset: ``s3://data-sink/active/govcon_sub_capability_vectors/`` (auto-registered by the
+dynamic registry as ``govcon_sub_capability_vectors``). Written by
 ``pipelines/sam_gov/build_sub_capability_vectors.py`` (text substrate) + the
 ``sam_attachment_embed_modal.py`` ``sub_caps`` sink (``embedding`` = ``list<float32>[1024]``,
 ``BAAI/bge-large-en-v1.5``, cosine, IVF_PQ). One row per (subawardee_uei, distinct-description)
@@ -37,7 +37,7 @@ from typing import Any
 
 from .. import database, embeddings
 
-DATASET = "govcon_sub_capability_vectors_90day"
+DATASET = "govcon_sub_capability_vectors"
 # Identity (name + subaward count/$ + distinct primes) — UNIVERSAL: the vectors cover all ~25,449 subs
 # in contract_subaward, far more than the 6,586 bridge subs in the profiles, so identity must come from
 # the fact table or most results would be bare UEIs.

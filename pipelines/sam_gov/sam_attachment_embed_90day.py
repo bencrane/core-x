@@ -42,8 +42,8 @@ from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
     _r2_storage_options, _dataset_exists, SinkCommitLease)
 
 ACTIVE = "s3://data-sink/active"
-SCOPE_URI = os.environ.get("SAM90_EMBED_SCOPE_URI", f"{ACTIVE}/govcon_scope_vectors_90day/")
-UNKNOWN_URI = os.environ.get("SAM90_EMBED_UNKNOWN_URI", f"{ACTIVE}/govcon_unknown_90day/")
+SCOPE_URI = os.environ.get("SAM90_EMBED_SCOPE_URI", f"{ACTIVE}/govcon_scope_vectors/")
+UNKNOWN_URI = os.environ.get("SAM90_EMBED_UNKNOWN_URI", f"{ACTIVE}/govcon_unknown/")
 SINKS = {"scope": SCOPE_URI, "unknown": UNKNOWN_URI}
 
 # Pinned to the query side (apps/gtm_mcp/src/embeddings.py) via the SAME env vars — writer and query

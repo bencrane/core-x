@@ -6,9 +6,9 @@ into a deterministic, idempotent, citeable capability profile:
 
     contract_subaward                 (LEAD — what the sub actually did: subaward_description, $,
                                        NAICS, which primes, action dates; sub-self-reported)
-  ⊕ govcon_award_requirements_90day   (ENRICH — the prime SCOPE worked under: clearance/cert/labor
-    + govcon_doc_scope_90day           rollups + capability_tags + scope_summary, validated rows)
-  ⊕ govcon_teaming_edges_90day        (TEAM — $/count/NAICS/which primes over the 5y teaming corpus)
+  ⊕ govcon_award_requirements   (ENRICH — the prime SCOPE worked under: clearance/cert/labor
+    + govcon_doc_scope           rollups + capability_tags + scope_summary, validated rows)
+  ⊕ govcon_teaming_edges        (TEAM — $/count/NAICS/which primes over the 5y teaming corpus)
   ⊕ sam_pocs                          (REACH — best government-business POC per sub_uei)
 
 UNIVERSE  distinct `subawardee_uei` in `subawardee_solicitations_bridge` (the subs that teamed under
@@ -28,7 +28,7 @@ IDEMPOTENT  overwrite-mode snapshot; deterministic rollups (no wall-clock in the
         so a re-run over the same upstream is provably zero-delta (DoD).
 
 CUI EGRESS INVARIANT (anti-pattern #10)  carries NO verbatim solicitation chunk text. `scope_summary`
-        sourced only from `govcon_doc_scope_90day` (marked_resource=false by construction);
+        sourced only from `govcon_doc_scope` (marked_resource=false by construction);
         requirement rollups are normalized/controlled-vocab; `source_chunk_ids`/`source_resource_ids`
         are populated from UNMARKED validated rows only; `marked_solicitation` is audit provenance.
         `build()` asserts (a) doc_scope has zero marked rows and (b) marked requirement rows carry no
@@ -61,10 +61,10 @@ from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
 ACTIVE = "s3://data-sink/active"
 BRIDGE_URI = f"{ACTIVE}/subawardee_solicitations_bridge/"
 MANIFEST_URI = f"{ACTIVE}/subawardee_solicitations_manifest/"
-REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements_90day/"
-DOC_SCOPE_URI = f"{ACTIVE}/govcon_doc_scope_90day/"
+REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements/"
+DOC_SCOPE_URI = f"{ACTIVE}/govcon_doc_scope/"
 CONTRACT_SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
-TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges_90day/"
+TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges/"
 POCS_URI = f"{ACTIVE}/sam_pocs/"
 SELF_TAGS_URI = f"{ACTIVE}/govcon_sub_self_reported_tags/"   # Path B sidecar (desc_sha → tags)
 SELF_TAG_DESC_CHARS = 600   # MUST match classify_sub_self_reported_tags.MAX_DESC_CHARS (join key)
@@ -153,7 +153,7 @@ def _assemble(so):
     n_scope_marked = dsc.count_rows(filter="marked_resource = true")
     if n_scope_marked:
         raise RuntimeError(
-            f"CUI INVARIANT VIOLATION: govcon_doc_scope_90day has {n_scope_marked} marked rows — "
+            f"CUI INVARIANT VIOLATION: govcon_doc_scope has {n_scope_marked} marked rows — "
             f"scope_summary/capability_tags would carry marked-doc content. Build refused.")
     n_marked_leak = rq.count_rows(
         filter="marked_resource = true AND (evidence_quote IS NOT NULL OR requirement_detail IS NOT NULL)")

@@ -2,14 +2,14 @@
 -- Written by pipelines/sam_gov/sam_attachment_download_90day.py:_record_run via psycopg
 -- (HQX_DB_URL_POOLED) on every terminal state. ISOLATED from the historical
 -- ops.sam_attachment_download_runs by design (separate Stage-3 motion, separate CAS
--- prefix sam_attachment_blobs_90day/). One row per download batch. Idempotent DDL.
+-- prefix sam_attachment_blobs/). One row per download batch. Idempotent DDL.
 --
 -- CANONICAL COPY. The worker mirrors this verbatim as OPS_DDL and applies it
 -- (CREATE ... IF NOT EXISTS) before each insert. Keep in sync.
 
 CREATE SCHEMA IF NOT EXISTS ops;
 
-CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_90day_runs (
+CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_runs (
     id               bigserial PRIMARY KEY,
     run_id           text        NOT NULL,   -- '90day-<UTC ISO>' batch identifier
     scope            text,                   -- composed gate predicate (provenance)
@@ -35,6 +35,6 @@ CREATE TABLE IF NOT EXISTS ops.sam_attachment_download_90day_runs (
 );
 
 CREATE INDEX IF NOT EXISTS sam_attachment_download_90day_runs_run_id_idx
-    ON ops.sam_attachment_download_90day_runs (run_id);
+    ON ops.sam_attachment_download_runs (run_id);
 CREATE INDEX IF NOT EXISTS sam_attachment_download_90day_runs_started_at_idx
-    ON ops.sam_attachment_download_90day_runs (started_at DESC);
+    ON ops.sam_attachment_download_runs (started_at DESC);

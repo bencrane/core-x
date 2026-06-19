@@ -30,7 +30,7 @@ Pipeline (4 stages, run in order):
             {resourceId, name, mimeType, size, accessLevel, attachmentOrder, ...}
 
   4. SINK               attachment-grain (one row per file) → Lance v2.1 at
-     ``s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/``, retaining
+     ``s3://data-sink/active/sam_opps_attachment_manifest_winners/``, retaining
      the FPDS linkage (``solicitation_identifier`` + ``contract_award_unique_key`` +
      ``award_keys[]``). BTREE on the resolution keys.
 
@@ -67,7 +67,7 @@ SAM_ACTIVE_URI = os.environ.get("SAM_OPPS_ACTIVE_URI", "s3://data-sink/sam-gov-o
 SAM_ARCHIVED_URI = os.environ.get("SAM_OPPS_ARCHIVED_URI", "s3://data-sink/sam-gov-opps/archived/")
 MANIFEST_URI = os.environ.get(
     "SAM_ATTACH_MANIFEST_90DAY_URI",
-    "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/",
+    "s3://data-sink/active/sam_opps_attachment_manifest_winners/",
 )
 
 WORKDIR = os.environ.get("WINNERS_WORKDIR", "/tmp/sam_90day_winners")

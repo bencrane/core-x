@@ -1,4 +1,4 @@
-"""Build worker — govcon_sub_capability_vectors_90day: the SUBAWARDEE capability-vector text substrate
+"""Build worker — govcon_sub_capability_vectors: the SUBAWARDEE capability-vector text substrate
 (build plan PHASE 5 sub leg; docs/plans/SUBAWARDEE_CAPABILITY_BUILDOUT_PLAN.md §4.1).
 
 THE TEXT-STAMP HALF ONLY. This module dedups + chunks the subawardees' self-reported subaward
@@ -12,7 +12,7 @@ the chunk sinks: extract/chunk here, embed/index there. No embedding code lives 
     GRAIN    (subawardee_uei, description_chunk_ix). Per-(sub, distinct-description) dedup → ≤1,200-char
              whitespace chunks → per-sub text-dedup → per-sub ordinal. Per-UEI concat is REJECTED (p99
              concat = 78,225 chars; ~1,080 prolific subs would truncate at bge's 512-token ceiling).
-    SoR      s3://data-sink/active/govcon_sub_capability_vectors_90day/ (Lance v2.1; derived, OVERWRITE).
+    SoR      s3://data-sink/active/govcon_sub_capability_vectors/ (Lance v2.1; derived, OVERWRITE).
              No window suffix beyond the inherited `_90day`; the window is DATA (created_at + run_id).
              Frozen schema + assert_schema (govcon_gtm_schemas.py) BEFORE the first commit.
     IDEMPOTENT  overwrite-mode snapshot. `chunk_id = sha256(subawardee_uei|chunk_ix|text)[:24]`;
@@ -270,7 +270,7 @@ def verify(content_hash: bool = False):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="build govcon_sub_capability_vectors_90day text substrate")
+    ap = argparse.ArgumentParser(description="build govcon_sub_capability_vectors text substrate")
     ap.add_argument("cmd", choices=["build", "verify"])
     ap.add_argument("--content-hash", action="store_true", help="(verify) include business-column content hash")
     args = ap.parse_args()

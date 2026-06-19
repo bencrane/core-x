@@ -9,10 +9,10 @@ datasets. `assert_schema(uri)` is therefore the ONLY drift detector: every write
 open, every build must call it before its first commit.
 
 Frozen set (plan §2 artifact map):
-  * govcon_award_requirements_90day        — Phase-1 requirement grain (merge_insert sink)
-  * govcon_labor_demand_90day              — spec §3.6 exact (same Phase-1 pass)
-  * govcon_requirements_extract_ledger_90day — plan §5 resource-grain ledger (merge on resource_id)
-  * govcon_doc_scope_90day                 — Phase-2 DOC-grain LLM outputs (scope_summary +
+  * govcon_award_requirements        — Phase-1 requirement grain (merge_insert sink)
+  * govcon_labor_demand              — spec §3.6 exact (same Phase-1 pass)
+  * govcon_requirements_extract_ledger — plan §5 resource-grain ledger (merge on resource_id)
+  * govcon_doc_scope                 — Phase-2 DOC-grain LLM outputs (scope_summary +
         capability_tags at resource grain; plan gap resolved per hard rule 4 — the plan routes
         doc-level outputs only to the award-grain profiles overwrite build, which needs a durable
         resource-grain source to roll up from)
@@ -25,9 +25,9 @@ Frozen set (plan §2 artifact map):
         sourced columns typed per the RAW `usaspending_api_fresh/contract_prime_txn` schema (all
         string — probed live 2026-06-14); `pop_start`/`pop_end` carry the txn
         period_of_performance_*_date strings; value fields = the four obligation/value columns below
-  * govcon_teaming_edges_90day             — Phase-0 (prime_uei, sub_uei) grain (overwrite rebuild)
-  * govcon_sub_targeting_90day             — Phase-4 (award, candidate_sub_uei) grain (snapshot-overwrite)
-  * govcon_sub_capability_vectors_90day    — Phase-5 (subawardee_uei, description_chunk_ix) grain
+  * govcon_teaming_edges             — Phase-0 (prime_uei, sub_uei) grain (overwrite rebuild)
+  * govcon_sub_targeting             — Phase-4 (award, candidate_sub_uei) grain (snapshot-overwrite)
+  * govcon_sub_capability_vectors    — Phase-5 (subawardee_uei, description_chunk_ix) grain
 
 Type law: `confidence` is float32 everywhere (regex rows write 1.0, never a string); dates are
 date32 where the plan tables say date32; embeddings are fixed_size_list<float32>[1024]; chunk text
@@ -47,28 +47,28 @@ from pipelines.sam_gov.sam_attachment_extract_90day import _dataset_exists, _r2_
 
 # ── URIs (plan §2 artifact map; env-overridable for smoke) ───────────────────────────────────────
 REQUIREMENTS_URI = os.environ.get(
-    "GOVCON_REQUIREMENTS_URI", "s3://data-sink/active/govcon_award_requirements_90day/")
+    "GOVCON_REQUIREMENTS_URI", "s3://data-sink/active/govcon_award_requirements/")
 LABOR_DEMAND_URI = os.environ.get(
-    "GOVCON_LABOR_DEMAND_URI", "s3://data-sink/active/govcon_labor_demand_90day/")
+    "GOVCON_LABOR_DEMAND_URI", "s3://data-sink/active/govcon_labor_demand/")
 EXTRACT_LEDGER_URI = os.environ.get(
-    "GOVCON_EXTRACT_LEDGER_URI", "s3://data-sink/active/govcon_requirements_extract_ledger_90day/")
+    "GOVCON_EXTRACT_LEDGER_URI", "s3://data-sink/active/govcon_requirements_extract_ledger/")
 DOC_SCOPE_URI = os.environ.get(
-    "GOVCON_DOC_SCOPE_URI", "s3://data-sink/active/govcon_doc_scope_90day/")
+    "GOVCON_DOC_SCOPE_URI", "s3://data-sink/active/govcon_doc_scope/")
 CAPABILITY_PROFILES_URI = os.environ.get(
     "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_capability_profiles/")
 TEAMING_EDGES_URI = os.environ.get(
-    "GOVCON_TEAMING_EDGES_URI", "s3://data-sink/active/govcon_teaming_edges_90day/")
+    "GOVCON_TEAMING_EDGES_URI", "s3://data-sink/active/govcon_teaming_edges/")
 SUB_TARGETING_URI = os.environ.get(
-    "GOVCON_SUB_TARGETING_URI", "s3://data-sink/active/govcon_sub_targeting_90day/")
+    "GOVCON_SUB_TARGETING_URI", "s3://data-sink/active/govcon_sub_targeting/")
 SUB_CAPABILITY_VECTORS_URI = os.environ.get(
-    "GOVCON_SUB_CAPABILITY_VECTORS_URI", "s3://data-sink/active/govcon_sub_capability_vectors_90day/")
+    "GOVCON_SUB_CAPABILITY_VECTORS_URI", "s3://data-sink/active/govcon_sub_capability_vectors/")
 SUB_CAPABILITY_PROFILES_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_subawardee_capability_profiles/")
 
 
 # ── Frozen schemas (plan column/type tables, verbatim) ───────────────────────────────────────────
 def requirements_schema():
-    """govcon_award_requirements_90day — requirement grain, merge_insert sink (plan Phase 1).
+    """govcon_award_requirements — requirement grain, merge_insert sink (plan Phase 1).
     `requirement_id` = sha256(resource_id|requirement_type|value_norm)[:24] — content hash, never
     ordinal. `evidence_quote`/`requirement_detail` are NULL at write for marked resources (egress
     gate is write-side)."""
@@ -96,7 +96,7 @@ def requirements_schema():
 
 
 def labor_demand_schema():
-    """govcon_labor_demand_90day — spec §3.6 exact, emitted by the same Phase-1 pass. `demand_id`
+    """govcon_labor_demand — spec §3.6 exact, emitted by the same Phase-1 pass. `demand_id`
     ordinal is assigned deterministically by rank over (labor_category_norm, first chunk_ix)."""
     import pyarrow as pa
     return pa.schema([
@@ -114,7 +114,7 @@ def labor_demand_schema():
 
 
 def extract_ledger_schema():
-    """govcon_requirements_extract_ledger_90day — plan §5, resource grain, merge on resource_id.
+    """govcon_requirements_extract_ledger — plan §5, resource grain, merge on resource_id.
     Per-lane states: regex_state ∈ {pending, done, quarantined, failed}; llm_state ∈ {pending,
     submitted, results_fetched, done, quarantined, failed, truncated, marked_local_only,
     excluded_marked, excluded_out_of_scope}. The two excluded_* values are the Phase-2 BRACKET
@@ -142,7 +142,7 @@ def extract_ledger_schema():
 
 
 def doc_scope_schema():
-    """govcon_doc_scope_90day — DOC (resource) grain, merge_insert on resource_id (plan Phase 2;
+    """govcon_doc_scope — DOC (resource) grain, merge_insert on resource_id (plan Phase 2;
     plan-gap resolution per hard rule 4: the plan's only doc-level destination is the award-grain
     profiles OVERWRITE build, which needs a durable resource-grain source — this sink is it).
     Written ONLY by the LLM lane (validator-passing results); idempotency = delete-by-resource_id
@@ -173,7 +173,7 @@ def capability_profiles_schema():
     """govcon_award_capability_profiles — award grain, overwrite build (plan Phase 2). THE PRODUCT
     (spec §10): one row per award at the EXPLODED `award_keys[]` grain (manifest explode per
     resource, never the inline scalar — 4.1× coverage; anti-pattern #5). Joins three sources:
-    `govcon_doc_scope_90day` (scope_summary + capability_tags), `govcon_award_requirements_90day`
+    `govcon_doc_scope` (scope_summary + capability_tags), `govcon_award_requirements`
     (clearance/cert/labor rollups over `validated` rows), and `contract_prime_txn` collapsed to
     award grain (row_number() over last_modified_date DESC).
 
@@ -225,7 +225,7 @@ def capability_profiles_schema():
 
 
 def teaming_edges_schema():
-    """govcon_teaming_edges_90day — (prime_uei, sub_uei) grain, overwrite rebuild (plan Phase 0).
+    """govcon_teaming_edges — (prime_uei, sub_uei) grain, overwrite rebuild (plan Phase 0).
     Dollars/counts sourced from the 5y usaspending/subaward_search corpus."""
     import pyarrow as pa
     return pa.schema([
@@ -240,7 +240,7 @@ def teaming_edges_schema():
 
 
 def sub_targeting_schema():
-    """govcon_sub_targeting_90day — (contract_award_unique_key, candidate_sub_uei) grain,
+    """govcon_sub_targeting — (contract_award_unique_key, candidate_sub_uei) grain,
     snapshot-overwrite (plan Phase 4). edge_type ∈ {direct_subaward, teaming_history,
     capability_match}; edge_dollars/count NULL for capability_match; matched_requirement_ids never
     empty. POC fields never materialize here — `poc_available` is the precomputed bool."""
@@ -260,7 +260,7 @@ def sub_targeting_schema():
 
 
 def sub_capability_vectors_schema():
-    """govcon_sub_capability_vectors_90day — (subawardee_uei, description_chunk_ix) grain,
+    """govcon_sub_capability_vectors — (subawardee_uei, description_chunk_ix) grain,
     overwrite per window (plan Phase 5). chunk_id = sha256(subawardee_uei|chunk_ix|text)[:24];
     embedding L2-normalized float32[1024] at write; model id+revision pinned per row."""
     import pyarrow as pa
@@ -287,11 +287,11 @@ def subawardee_capability_profiles_schema():
       LEAD   `usaspending_api_fresh/contract_subaward`  — the sub's actual reported work
              (`subaward_description`), $ volume, NAICS, which primes, action dates. Sub-self-reported
              text (the firm's own SAM subaward report), NOT solicitation CUI — safe to surface.
-      ENRICH `govcon_award_requirements_90day` + `govcon_doc_scope_90day` rolled up over the
+      ENRICH `govcon_award_requirements` + `govcon_doc_scope` rolled up over the
              solicitation resources the sub worked under (bridge `notice_id` → manifest `resource_id`):
              the prime SCOPE they operated under (clearance/cert/labor/capability tags). Validated
              rows only; controlled-vocab/normalized values only.
-      TEAM   `govcon_teaming_edges_90day` — $/count/NAICS/which primes (5y teaming corpus).
+      TEAM   `govcon_teaming_edges` — $/count/NAICS/which primes (5y teaming corpus).
       REACH  `sam_pocs` — best government-business POC for the sub_uei (name/title/city/state).
 
     WINDOW-AS-DATA (same discipline as the prime table): no `_90day` suffix; `sub_action_date`
@@ -300,7 +300,7 @@ def subawardee_capability_profiles_schema():
     append, not a new table.
 
     CUI EGRESS INVARIANT (anti-pattern #10): carries NO verbatim solicitation chunk text.
-    `scope_summary` derives only from `govcon_doc_scope_90day` (marked_resource=false by construction);
+    `scope_summary` derives only from `govcon_doc_scope` (marked_resource=false by construction);
     requirement rollups are normalized/controlled-vocab; `source_chunk_ids`/`source_resource_ids` are
     IDs (drill-down pointers), populated from UNMARKED validated rows only. `marked_solicitation` is
     audit provenance that a marked source existed (its verbatim text is redacted upstream).
@@ -330,7 +330,7 @@ def subawardee_capability_profiles_schema():
         # ENRICH — solicitation scope worked under (prime scope), validated/controlled-vocab only
         ("has_extracted_scope", pa.bool_()),
         ("n_scope_solicitations", pa.int32()),
-        ("scope_summary", pa.string()),               # from govcon_doc_scope_90day (marked-free)
+        ("scope_summary", pa.string()),               # from govcon_doc_scope (marked-free)
         ("capability_tags", pa.list_(pa.string())),   # controlled vocabulary
         ("requires_clearance", pa.bool_()), ("req_clearance_level_max", pa.string()),
         ("requires_cmmc", pa.bool_()),
@@ -368,14 +368,14 @@ def subawardee_capability_profiles_schema():
 
 # name → (uri, schema factory). The single registry every ensure/assert path iterates.
 FROZEN: dict[str, tuple[str, callable]] = {
-    "govcon_award_requirements_90day": (REQUIREMENTS_URI, requirements_schema),
-    "govcon_labor_demand_90day": (LABOR_DEMAND_URI, labor_demand_schema),
-    "govcon_requirements_extract_ledger_90day": (EXTRACT_LEDGER_URI, extract_ledger_schema),
-    "govcon_doc_scope_90day": (DOC_SCOPE_URI, doc_scope_schema),
+    "govcon_award_requirements": (REQUIREMENTS_URI, requirements_schema),
+    "govcon_labor_demand": (LABOR_DEMAND_URI, labor_demand_schema),
+    "govcon_requirements_extract_ledger": (EXTRACT_LEDGER_URI, extract_ledger_schema),
+    "govcon_doc_scope": (DOC_SCOPE_URI, doc_scope_schema),
     "govcon_award_capability_profiles": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
-    "govcon_teaming_edges_90day": (TEAMING_EDGES_URI, teaming_edges_schema),
-    "govcon_sub_targeting_90day": (SUB_TARGETING_URI, sub_targeting_schema),
-    "govcon_sub_capability_vectors_90day": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
+    "govcon_teaming_edges": (TEAMING_EDGES_URI, teaming_edges_schema),
+    "govcon_sub_targeting": (SUB_TARGETING_URI, sub_targeting_schema),
+    "govcon_sub_capability_vectors": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
     "govcon_subawardee_capability_profiles": (SUB_CAPABILITY_PROFILES_URI,
                                               subawardee_capability_profiles_schema),
 }
