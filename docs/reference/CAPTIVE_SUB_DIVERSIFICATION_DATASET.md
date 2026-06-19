@@ -1,4 +1,6 @@
-# captive_sub_diversification_90day — dataset spec
+# captive_sub_diversification — dataset spec
+
+> **⚠️ Renamed 2026-06-19 ([#542](https://github.com/bencrane/core-x/pull/542)):** the SAM/govcon `_90day` suffix was dropped plane-wide (window-as-data discipline — the acquisition window is a read-time predicate, not part of the stored entity's name). Every `*_90day` dataset/ledger referenced below now lives at its de-suffixed canonical name (e.g. `captive_sub_diversification_90day` → `captive_sub_diversification`, `govcon_scope_vectors_90day` → `govcon_scope_vectors`). R2 was server-side-copied, so all versions/indices/row-counts carry over unchanged; figures below predate the rename but remain valid under the new names.
 
 **Built:** 2026-06-19 · **SoR:** `s3://data-sink/active/captive_sub_diversification_90day/` (Lance storage-format v2.1, snapshot-overwrite; live dataset-version probe = **v15**) · **CSV mirror:** `~/Desktop/captive_sub_diversification.csv`
 

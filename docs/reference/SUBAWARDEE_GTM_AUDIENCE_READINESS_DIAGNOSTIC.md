@@ -1,5 +1,7 @@
 # Subawardee GTM Audience — Readiness Diagnostic
 
+> **⚠️ Renamed 2026-06-19 ([#542](https://github.com/bencrane/core-x/pull/542)):** the SAM/govcon `_90day` suffix was dropped plane-wide (window-as-data — the harvest window is a read-time predicate, not part of the stored entity's name). Every `*_90day` dataset/ledger named below now lives at its de-suffixed canonical name (e.g. `govcon_scope_vectors_90day` → `govcon_scope_vectors`, `govcon_sub_capability_vectors_90day` → `govcon_sub_capability_vectors`). R2 was server-side-copied — versions/indices/row-counts carry over unchanged; figures below predate the rename but remain valid under the new names.
+
 **Question:** *"As of right now, via the gtm-agent using the gtm-mcp, can I build an audience of 'subawardees that X or Y' for GTM targeting?"*
 
 **Date:** 2026-06-19 · **Method:** read-only recon over canonical source (`apps/gtm_mcp/`, `pipelines/{usaspending,sam_gov,serving}/`) plus a full re-measurement of every quantitative claim **live against the R2 SoR + gtm-mcp `/healthz` + hq-x Postgres on 2026-06-19** (`lance.dataset(...).count_rows()/version`, DuckDB distinct counts, `build_subawardee_capability_profiles.py verify`, and the `ops.captive_diversification_serving_runs` ledger). **No data mutated.**
