@@ -54,8 +54,6 @@ from .src.routers.clay_find_companies_v1 import router as clay_find_companies_ro
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
-from .src.routers.proposals_v1 import router as proposals_router
-from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
@@ -114,7 +112,7 @@ async def lifespan(app_: FastAPI):
         )
     if config.stripe_secret_key() is None or config.stripe_publishable_key() is None:
         log.warning(
-            "STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY unset -- /api/v1/proposals/{ref}/payment-intent "
+            "STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY unset -- the document-payment intent route "
             "refuses (503), so ACH payment cannot be initiated. Set both in core-x/prd."
         )
     if config.stripe_webhook_secret() is None:
@@ -168,10 +166,6 @@ app.include_router(clay_find_companies_router)
 # Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
 # /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
 app.include_router(pipeline_router, prefix="/internal")
-
-# proposals: engagement-agreement rendering (DocRaptor) + Documenso v2 e-signature engine.
-# Service-token create/list/provision; PUBLIC ref read + sealed-PDF stream; X-Documenso-Secret webhook.
-app.include_router(proposals_router)
 
 # documenso webhooks: RAW landing for Documenso events (X-Documenso-Secret). Documenso is repointed
 # here from /proposals/webhook; stores every delivery verbatim in business.documenso_webhook_events.
@@ -241,11 +235,6 @@ app.include_router(map_ask_router)
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
 app.include_router(webhooks_cal_router)
 
-# payments: Stripe ACH (us_bank_account) PaymentIntent + Elements for the engagement fee. PUBLIC ref
-# endpoints (mint/reuse the intent, read state); the charge amount is resolved server-side from the
-# proposal content. ``paid`` is set only by the webhook, never the browser. Reuses the /api/v1/proposals prefix.
-app.include_router(payments_router)
-
 # stripe webhook: authoritative ACH payment-state advance + append-only audit (business.engagement_events).
 # Signature-gated (Stripe-Signature / STRIPE_WEBHOOK_SECRET). NOT under /api/v1 — Stripe posts /webhooks/stripe.
 app.include_router(webhooks_stripe_router)
@@ -262,13 +251,11 @@ def _info() -> dict:
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
-            "proposals": True,         # /api/v1/proposals/* (create, ref-read, signed-pdf, webhook)
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
-            "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
