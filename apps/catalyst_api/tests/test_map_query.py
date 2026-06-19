@@ -422,6 +422,70 @@ def test_teaming_fields_are_not_gated():
         assert WINNERS.fields[name].gated is False, f"{name} must not be gated"
 
 
+# ── SUB-only SELF-REPORTED axis: the /ask self-report + cert queries compile + stay UNGATED ──
+def test_self_reported_capability_has_compiles_no_scope_gate():
+    # "subs that self-report software development" → array_has on the self-reported column with
+    # NO has_extracted_scope gate (the whole point: it must reach the 13,792-sub long tail, not
+    # the ~4,220 scope-extracted slice the gated capability_tag axis would clip to).
+    pred = _compile(WINNERS, [
+        {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"}])
+    assert pred == "array_has(self_reported_capability_tags, 'software_development')"
+    assert "has_extracted_scope" not in pred
+
+
+def test_self_reported_capability_distinct_from_gated_capability_tag():
+    # The gated capability_tag axis DOES acquire the scope gate; the self-reported axis does not —
+    # proving they are distinct fields with opposite gating, never collapsed.
+    gated_pred = _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "software_development"}])
+    assert gated_pred == ("array_has(capability_tags, 'software_development') "
+                          "AND has_extracted_scope = true")
+    sr_pred = _compile(WINNERS, [{"field": "self_reported_capability_tag", "op": "has", "value": "software_development"}])
+    assert "has_extracted_scope" not in sr_pred
+
+
+def test_self_reported_capability_reuses_controlled_vocab_enum():
+    # Same 77-tag enum as capability_tag → an off-vocab value is rejected (→ 422), never reaches Lance.
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(WINNERS, [{"field": "self_reported_capability_tag", "op": "has", "value": "not_a_tag"}])
+
+
+def test_self_reported_capability_via_synonym_compiles_ungated():
+    syn = WINNERS.synonyms["self-reported aircraft maintenance"]
+    pred = _compile(WINNERS, [syn])
+    assert pred == "array_has(self_reported_capability_tags, 'aircraft_maintenance')"
+    assert "has_extracted_scope" not in pred
+
+
+def test_req_cert_tag_has_any_compiles_no_scope_gate():
+    # "subs with an ISO 9001 / CMMC / AS9100 certification" → array_has_any over exact cert tokens;
+    # open-valued (no enum) → any string token is accepted; UNGATED.
+    pred = _compile(WINNERS, [
+        {"field": "req_cert_tag", "op": "has_any", "value": ["iso_9001", "as9100", "cmmc"]}])
+    assert pred == "array_has_any(req_cert_tags, ['iso_9001', 'as9100', 'cmmc'])"
+    assert "has_extracted_scope" not in pred
+
+
+def test_req_cert_tag_synonym_resolves_to_exact_tokens():
+    # A cert synonym ("cmmc certification") decodes to has_any over every observed CMMC token.
+    syn = WINNERS.synonyms["cmmc certification"]
+    pred = _compile(WINNERS, [syn])
+    assert pred == "array_has_any(req_cert_tags, ['cmmc', 'cmmc_l1', 'cmmc_l2'])"
+    assert "has_extracted_scope" not in pred
+
+
+def test_req_cert_tag_is_open_valued_and_escaped():
+    # Open-valued (no enum) → _sql_str quote-doubling is the only escaping; assert it holds.
+    pred = _compile(WINNERS, [{"field": "req_cert_tag", "op": "has", "value": "iso_9001' OR '1'='1"}])
+    assert pred == "array_has(req_cert_tags, 'iso_9001'' OR ''1''=''1')"
+
+
+def test_self_reported_and_cert_fields_are_not_gated():
+    for name in ("self_reported_capability_tag", "req_cert_tag"):
+        assert WINNERS.fields[name].gated is False, f"{name} must not be gated"
+    # And the self-reported enum is the SAME object/value-set as the gated capability_tag enum.
+    assert WINNERS.fields["self_reported_capability_tag"].enum == WINNERS.fields["capability_tag"].enum
+
+
 # ── PHASE 3: CUI egress invariant — chunk-derived text never in any decoder ───
 def test_no_chunk_derived_text_in_catalyst_decoders():
     banned = {"evidence_quote", "requirement_detail", "scope_summary"}

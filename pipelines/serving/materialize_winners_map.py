@@ -17,7 +17,11 @@ SIGNALS total_obligation (Σ federal_action_obligation / subaward_amount), award
        ``array_has``), covered_award_count + covered_award_keys (capped drill-down pointer). The
        SUB-only TEAMING axis (sourced from the sub profiles, NULL on prime rows): teaming_dollars_5y
        / n_teaming_primes (range-filterable, BTREE) + teaming_prime_names (list — exact prime legal
-       names, filterable via ``array_has``). NO
+       names, filterable via ``array_has``). The SUB-only SELF-REPORTED axis (also sourced from the
+       sub profiles, NULL on prime rows + on subs with no self-reported signal): self_reported_capability_tags
+       (same 77-tag controlled vocab as capability_tags — the long-tail 13,792 subs that self-report)
+       + req_cert_tags (open-valued cert vocabulary) — both list columns, filterable via ``array_has``,
+       UNGATED (they cover the full sub long tail, not the scope-extracted slice). NO
        chunk-derived verbatim text crosses into the serving table (CUI egress invariant — only
        structured/controlled-vocab fields; evidence_quote/requirement_detail never selected).
 LEDGER ops.winners_map_serving_runs (HQX_DB_URL_POOLED) on every terminal state.
@@ -129,7 +133,11 @@ def _assemble(so, window_days: int):
         "req_clearance_level_max", "capability_tags", "top_labor_categories",
         "n_scope_solicitations", "source_notice_ids",
         # Teaming axis (sub-only): who the sub has subcontracted under + $ + breadth.
-        "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names"]).to_table())
+        "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names",
+        # Self-reported axis (sub-only): the long-tail capability/cert signal subs assert about
+        # themselves (UNGATED downstream — 13,792 subs self-report vs. the ~4,220 scope-extracted
+        # slice). Same 77-tag controlled vocab as capability_tags; req_cert_tags is open-valued.
+        "self_reported_capability_tags", "req_cert_tags"]).to_table())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -238,7 +246,11 @@ def _assemble(so, window_days: int):
                -- teaming reads 0, never null); keep the prime-name list as-is.
                coalesce(teaming_dollars_5y, 0) AS teaming_dollars_5y,
                CAST(coalesce(n_teaming_primes, 0) AS BIGINT) AS n_teaming_primes,
-               teaming_prime_names
+               teaming_prime_names,
+               -- Self-reported axis (sub-only): keep the lists as-is (NULL for the ~11.7k subs
+               -- with no self-reported signal). UNGATED — these are the long-tail signal.
+               self_reported_capability_tags,
+               req_cert_tags
         FROM sub_prof
         WHERE sub_uei IS NOT NULL AND length(trim(sub_uei)) > 0
     )
@@ -264,6 +276,10 @@ def _assemble(so, window_days: int):
            cap_sub.teaming_dollars_5y   AS teaming_dollars_5y,
            cap_sub.n_teaming_primes     AS n_teaming_primes,
            cap_sub.teaming_prime_names  AS teaming_prime_names,
+           -- Self-reported axis: SUB-only (sourced from cap_sub). NULL on prime rows AND on subs
+           -- with no self-reported signal — the decoder treats these as UNGATED list filters.
+           cap_sub.self_reported_capability_tags AS self_reported_capability_tags,
+           cap_sub.req_cert_tags                 AS req_cert_tags,
            'usaspending_winners_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
@@ -375,6 +391,17 @@ def verify():
         out["teaming_dollars_5y_ge_10m"] = ds.count_rows(filter="teaming_dollars_5y >= 10000000")
         out["teamed_with_lockheed"] = ds.count_rows(
             filter="array_has(teaming_prime_names, 'LOCKHEED MARTIN CORPORATION')")
+    # ── SUB-only SELF-REPORTED axis coverage (the /ask self-report + cert denominators) ──
+    if "self_reported_capability_tags" in cap_cols:
+        out["has_self_reported_capability"] = ds.count_rows(
+            filter="self_reported_capability_tags IS NOT NULL")
+        out["self_reports_software_development"] = ds.count_rows(
+            filter="array_has(self_reported_capability_tags, 'software_development')")
+        out["self_reports_aircraft_maintenance"] = ds.count_rows(
+            filter="array_has(self_reported_capability_tags, 'aircraft_maintenance')")
+        out["has_req_cert"] = ds.count_rows(filter="req_cert_tags IS NOT NULL")
+        out["req_cert_iso_9001"] = ds.count_rows(filter="array_has(req_cert_tags, 'iso_9001')")
+        out["req_cert_as9100"] = ds.count_rows(filter="array_has(req_cert_tags, 'as9100')")
     print(json.dumps(out, indent=2, default=str))
 
 

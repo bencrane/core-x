@@ -108,9 +108,25 @@ _TEAMING_BOOZ_ALLEN = ("BOOZ ALLEN HAMILTON INC.", "BOOZ ALLEN HAMILTON INC")
 _TEAMING_SAIC = ("SCIENCE APPLICATIONS INTERNATIONAL CORPORATION",
                  "SCIENCE APPLICATIONS INTERNATIONAL CORP")
 
+# ── Cert-token canonical sets for the SUB-only req_cert_tags axis (probed live 2026-06-19 from
+# govcon_subawardee_capability_profiles.req_cert_tags — a 172-distinct OPEN vocabulary, too
+# granular/niche for an enum). The field stays open-valued; these synonyms map common cert
+# phrasings to has_any over the EXACT stored tokens (array_has needs the exact list element).
+# Every token below was confirmed present in the live column.
+_CERT_CMMC = ("cmmc", "cmmc_l1", "cmmc_l2")
+_CERT_ISO_9001 = ("iso_9001",)
+_CERT_ISO_27001 = ("iso_27001",)
+_CERT_ISO_14001 = ("iso_14001",)
+_CERT_ISO_17025 = ("iso_17025",)
+_CERT_AS9100 = ("as9100", "as9110")
+_CERT_FAA_PART_145 = ("faa_part_145", "faa_part_145_certification", "faa_part_145_repair_station")
+_CERT_CISSP = ("cissp",)
+_CERT_PMP = ("pmp", "pmi_pmp", "project_management_professional")
+_CERT_OSHA_30 = ("osha_30", "osha_30_hour")
+
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v4",   # v3→v4: SUB-only teaming axis (dollars/primes/prime-name list)
+    version="winners.v5",   # v4→v5: SUB-only self-reported axis (capability tags + cert tags, UNGATED)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date",
@@ -119,7 +135,9 @@ WINNERS = Decoder(
                 "requires_cmmc", "capability_tags", "labor_categories",
                 "covered_award_count", "covered_award_keys",
                 # SUB-only teaming surface (null on prime rows)
-                "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names"),
+                "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names",
+                # SUB-only self-reported surface (null on prime rows + on subs with no signal)
+                "self_reported_capability_tags", "req_cert_tags"),
     fields={
         "naics2":           FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "state":            FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
@@ -152,6 +170,15 @@ WINNERS = Decoder(
         # Exact prime legal names (open-valued — the synonyms below map common primes to their
         # observed canonical variant sets, since array_has needs the exact stored element).
         "teaming_prime":       FieldSpec("teaming_prime_names", "list", ("has", "has_any")),
+        # ── SUB-only SELF-REPORTED axis (NOT gated: 13,792 subs self-report capability vs. the
+        # ~4,220 scope-extracted slice the gated capability_tag axis reaches — gating would defeat
+        # the long-tail purpose). Distinct, ADDITIONAL field; does NOT replace gated capability_tag.
+        # Same 77-tag controlled vocab → reuse _CAPABILITY_TAGS for the enum. Null on prime rows. ──
+        "self_reported_capability_tag": FieldSpec("self_reported_capability_tags", "list",
+                                                  ("has", "has_any"), enum=_CAPABILITY_TAGS),
+        # Certification tokens (open-valued — 172-distinct granular vocab; the synonyms below map
+        # common cert phrasings to has_any over the exact stored tokens). Null on prime rows.
+        "req_cert_tag":        FieldSpec("req_cert_tags", "list", ("has", "has_any")),
     },
     synonyms={
         "construction": {"field": "naics2", "op": "=", "value": "23"},
@@ -181,6 +208,24 @@ WINNERS = Decoder(
         "leidos":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LEIDOS)},
         "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
         "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
+        # ── SUB-only SELF-REPORTED phrasings. These route the "self-report"/"self-reported" cue to
+        # the UNGATED self_reported_capability_tag field — the distinct long-tail axis, NOT the gated
+        # capability_tag axis (whose own synonyms electrical/electricians are left untouched). ──
+        "self-report software development":   {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
+        "self-reported software development": {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
+        "self-report aircraft maintenance":   {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+        "self-reported aircraft maintenance": {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+        # ── Certification phrasings → has_any over the EXACT stored cert tokens (open vocab). ──
+        "cmmc certification":  {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CMMC)},
+        "iso 9001":            {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_9001)},
+        "iso 27001":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_27001)},
+        "iso 14001":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_14001)},
+        "iso 17025":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_17025)},
+        "as9100":              {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_AS9100)},
+        "faa part 145":        {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_FAA_PART_145)},
+        "cissp":               {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CISSP)},
+        "pmp":                 {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_PMP)},
+        "osha 30":             {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_OSHA_30)},
     },
 )
 
