@@ -1,4 +1,4 @@
-"""Build worker — govcon_subawardee_capability_profiles: the SUB-side GTM target list (build plan
+"""Build worker — govcon_subawardee_profiles: the SUB-side GTM target list (build plan
 PHASE 4 sub pivot, extended to a durable per-sub profile).
 
 One row per subawardee UEI in the tracked-solicitation universe, fusing three signals + a contact
@@ -18,7 +18,7 @@ UNIVERSE  distinct `subawardee_uei` in `subawardee_solicitations_bridge` (the su
 
 GRAIN   exactly one row per distinct `sub_uei`. DoD asserts profile_rows == distinct bridge sub UEIs.
 
-SoR     s3://data-sink/active/govcon_subawardee_capability_profiles/ (Lance v2.1; derived, OVERWRITE).
+SoR     s3://data-sink/active/govcon_subawardee_profiles/ (Lance v2.1; derived, OVERWRITE).
         No window suffix (operator naming decision): the window is DATA — `sub_action_date` +
         `first_sub_action_date` + `built_at`. Frozen schema + assert_schema (govcon_gtm_schemas.py)
         BEFORE the first commit.
@@ -227,7 +227,7 @@ def _assemble(so):
     ),
     -- ── PATH B: self-reported capability tags (the sub's OWN descriptions → controlled vocab) ──────
     -- join csub descriptions to the LLM sidecar on the truncated-trimmed text (the classifier's key),
-    -- union the tags per sub, cap at TAG_CAP. Separate from the scope-derived capability_tags.
+    -- union the tags per sub, cap at TAG_CAP. Separate from the scope-derived solicitation_scope_tags.
     selftag_pairs AS (
         SELECT DISTINCT subawardee_uei AS sub_uei,
                substr(trim(subaward_description), 1, {SELF_TAG_DESC_CHARS}) AS d
@@ -244,8 +244,8 @@ def _assemble(so):
         SELECT sub_uei, t, row_number() OVER (PARTITION BY sub_uei ORDER BY t) AS rk FROM selftag_unnest
     ),
     selftag_roll AS (
-        SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS self_reported_capability_tags,
-               CAST(count(*) AS INTEGER) AS n_self_reported_tags
+        SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS subaward_description_tags,
+               CAST(count(*) AS INTEGER) AS n_subaward_description_tags
         FROM selftag_ranked GROUP BY 1
     ),
     -- ── GEO: HQ (sub's own address, dominant) + PoP (place of performance, dominant + distinct set) ──
@@ -408,7 +408,7 @@ def _assemble(so):
         SELECT DISTINCT sub_uei, t FROM (SELECT sub_uei, UNNEST(capability_tags) AS t FROM scope_join WHERE validated) WHERE t IS NOT NULL
     ),
     tag_ranked AS (SELECT sub_uei, t, row_number() OVER (PARTITION BY sub_uei ORDER BY t) AS rk FROM tag_src),
-    tag_roll AS (SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS capability_tags FROM tag_ranked GROUP BY 1),
+    tag_roll AS (SELECT sub_uei, list(t ORDER BY rk) FILTER (WHERE rk <= {TAG_CAP}) AS solicitation_scope_tags FROM tag_ranked GROUP BY 1),
     summary_ranked AS (
         SELECT sub_uei, scope_summary,
                row_number() OVER (PARTITION BY sub_uei ORDER BY length(scope_summary) DESC, resource_id) AS rk
@@ -486,7 +486,7 @@ def _assemble(so):
         (coalesce(sf.n_scope_docs, 0) > 0 OR coalesce(sc.n_scope_solicitations, 0) > 0) AS has_extracted_scope,
         coalesce(sc.n_scope_solicitations, 0) AS n_scope_solicitations,
         sumr.scope_summary,
-        tgr.capability_tags,
+        tgr.solicitation_scope_tags,
         coalesce(rr.requires_clearance, false) AS requires_clearance,
         CASE rr.clr_ord {ord_case} ELSE NULL END AS req_clearance_level_max,
         coalesce(rr.requires_cmmc, false) AS requires_cmmc,
@@ -495,13 +495,13 @@ def _assemble(so):
         coalesce(rr.n_requirements_validated, 0) AS n_requirements_validated,
         srr.source_resource_ids, ckr.source_chunk_ids, ntr.source_notice_ids,
         coalesce(rr.marked_solicitation, false) AS marked_solicitation,
-        srt.self_reported_capability_tags,
-        coalesce(srt.n_self_reported_tags, 0) AS n_self_reported_tags,
+        srt.subaward_description_tags,
+        coalesce(srt.n_subaward_description_tags, 0) AS n_subaward_description_tags,
         CASE
-            WHEN tgr.capability_tags IS NOT NULL AND len(tgr.capability_tags) > 0
-                 AND coalesce(srt.n_self_reported_tags, 0) > 0 THEN 'both'
-            WHEN tgr.capability_tags IS NOT NULL AND len(tgr.capability_tags) > 0 THEN 'scope'
-            WHEN coalesce(srt.n_self_reported_tags, 0) > 0 THEN 'self_reported'
+            WHEN tgr.solicitation_scope_tags IS NOT NULL AND len(tgr.solicitation_scope_tags) > 0
+                 AND coalesce(srt.n_subaward_description_tags, 0) > 0 THEN 'both'
+            WHEN tgr.solicitation_scope_tags IS NOT NULL AND len(tgr.solicitation_scope_tags) > 0 THEN 'scope'
+            WHEN coalesce(srt.n_subaward_description_tags, 0) > 0 THEN 'self_reported'
             ELSE 'none'
         END AS tag_source,
         coalesce(tr.n_teaming_primes, 0) AS n_teaming_primes,
@@ -551,7 +551,7 @@ def _assemble(so):
         stats[key] = pc2.sum(tbl.column(c)).as_py() or 0
     stats["with_subaward_desc"] = pc2.sum(pc2.is_valid(tbl.column("top_subaward_description"))).as_py() or 0
     stats["with_teaming"] = int(pc2.sum(pc2.greater(tbl.column("n_teaming_primes"), 0)).as_py() or 0)
-    stats["with_self_reported_tags"] = int(pc2.sum(pc2.greater(tbl.column("n_self_reported_tags"), 0)).as_py() or 0)
+    stats["with_self_reported_tags"] = int(pc2.sum(pc2.greater(tbl.column("n_subaward_description_tags"), 0)).as_py() or 0)
     con.close()
     return tbl, stats
 
@@ -657,7 +657,7 @@ def verify(content_hash: bool = False):
         "row_eq_universe": rows == universe, "row_eq_distinct_uei": rows == distinct_ueis,
         "with_subaward_desc": ds.count_rows(filter="top_subaward_description IS NOT NULL"),
         "with_teaming": ds.count_rows(filter="n_teaming_primes > 0"),
-        "with_self_reported_tags": ds.count_rows(filter="n_self_reported_tags > 0"),
+        "with_self_reported_tags": ds.count_rows(filter="n_subaward_description_tags > 0"),
         "with_hq_state": ds.count_rows(filter="hq_state IS NOT NULL"),
         "with_pop_state": ds.count_rows(filter="pop_state IS NOT NULL"),
         "tag_source": tag_src,
@@ -698,7 +698,7 @@ def query():
     con.register("prof", ds.scanner().to_table())
     where = []
     if tag:
-        where.append(f"list_contains(capability_tags, '{tag}')")
+        where.append(f"list_contains(solicitation_scope_tags, '{tag}')")
     if desc:
         d = desc.replace("'", "''")
         where.append(f"(lower(top_subaward_description) LIKE '%{d.lower()}%' "
@@ -718,7 +718,7 @@ def query():
     total = con.execute(f"SELECT count(*) FROM prof WHERE {clause}").fetchone()[0]
     rowset = con.execute(f"""
         SELECT sub_uei, sub_name, n_subawards, total_subaward_amount,
-               top_subaward_description, capability_tags, req_clearance_level_max, requires_cmmc,
+               top_subaward_description, solicitation_scope_tags, req_clearance_level_max, requires_cmmc,
                req_cert_tags, top_labor_categories, n_teaming_primes, teaming_prime_names,
                source_resource_ids, source_chunk_ids, subaward_numbers, marked_solicitation,
                poc_full_name, poc_title, poc_city, poc_state
@@ -728,8 +728,8 @@ def query():
     """).fetchall()
     cols = [d[0] for d in con.description]
     print(json.dumps({
-        "query": {"capability_tag": tag or None, "description_ilike": desc or None,
-                  "min_clearance": min_clr or None, "require_cmmc": require_cmmc,
+        "query": {"solicitation_scope_tag": tag or None, "description_ilike": desc or None,
+                  "min_clearance": min_clr or None, "require_cmmc": require_cmmc,  # query echo
                   "teaming_prime_uei": prime_uei or None, "require_poc": require_poc},
         "matched_subs": total, "showing": len(rowset)}, indent=2))
     for r in rowset:
@@ -740,7 +740,7 @@ def query():
               f"teaming_primes={d['n_teaming_primes']}  marked={d['marked_solicitation']}")
         if d.get("top_subaward_description"):
             print(f"  does: {str(d['top_subaward_description'])[:240]}")
-        print(f"  scope: tags={d['capability_tags']} clearance={d['req_clearance_level_max']} "
+        print(f"  scope: tags={d['solicitation_scope_tags']} clearance={d['req_clearance_level_max']} "
               f"cmmc={d['requires_cmmc']} certs={d['req_cert_tags']} labor={d['top_labor_categories']}")
         print(f"  teaming: {d['teaming_prime_names']}")
         print(f"  CITED: subaward_numbers={(d['subaward_numbers'] or [])[:3]} "
@@ -753,7 +753,7 @@ def query():
 
 
 def main():
-    p = argparse.ArgumentParser(description="Build govcon_subawardee_capability_profiles (sub_uei grain).")
+    p = argparse.ArgumentParser(description="Build govcon_subawardee_profiles (sub_uei grain).")
     p.add_argument("cmd", choices=["build", "verify", "query"])
     p.add_argument("--content-hash", action="store_true", help="verify: include idempotency hash")
     a = p.parse_args()

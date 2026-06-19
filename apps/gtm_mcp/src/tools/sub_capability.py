@@ -19,8 +19,8 @@ mirror of ``search_govcon_scopes``).
 HYBRID EXECUTION. ``scanner(filter=<sub_uei/date predicate or None>, prefilter=True,
 nearest={...})`` — the optional scalar prefilter (a sub_uei pin or extraction-date window) is pushed
 down FIRST (BTREE), then cosine ANN runs over the survivors. Results are collapsed to DISTINCT subs
-(best distance per sub) and enriched from ``govcon_subawardee_capability_profiles`` (name, subaward
-count/$, capability_tags, clearance) so the caller gets a ranked target list, not raw chunks.
+(best distance per sub) and enriched from ``govcon_subawardee_profiles`` (name, subaward
+count/$, solicitation_scope_tags, clearance) so the caller gets a ranked target list, not raw chunks.
 
 GRACEFUL DEGRADATION. Until the embed + IVF_PQ stage runs, ``embedding`` is NULL and no vector index
 exists; the tool returns ``vector_index_absent`` rather than brute-force-scanning the lake. Profile
@@ -44,7 +44,7 @@ DATASET = "govcon_sub_capability_vectors"
 SUBAWARD_FACT_DATASET = "usaspending_api_fresh/contract_subaward"
 # Capability axis (tags/clearance/POC) — BONUS: only the ~6,586 bridge subs carry it (the profiles are
 # scoped to subs that teamed under tracked solicitations). Absent → fields null, `profiled` = false.
-PROFILES_DATASET = "govcon_subawardee_capability_profiles"
+PROFILES_DATASET = "govcon_subawardee_profiles"
 
 # vectors-table columns (the ANN survivors); no NAICS/clearance here — those live on the profiles.
 _RETURN_COLUMNS = [
@@ -52,9 +52,9 @@ _RETURN_COLUMNS = [
 ]
 _FACT_COLUMNS = ["subawardee_uei", "subawardee_name", "subaward_amount", "prime_awardee_uei"]
 _PROFILE_COLUMNS = [
-    "sub_uei", "capability_tags", "requires_clearance", "req_clearance_level_max", "poc_available",
+    "sub_uei", "solicitation_scope_tags", "requires_clearance", "req_clearance_level_max", "poc_available",
     # Path B: self-reported capability tags (the sub's own descriptions) + provenance
-    "self_reported_capability_tags", "tag_source",
+    "subaward_description_tags", "tag_source",
     # GEO: HQ (sub address) + place of performance
     "hq_state", "hq_city", "pop_state", "pop_states",
 ]
@@ -168,11 +168,11 @@ def search_subawardee_capabilities(
 
     Each subawardee's self-reported ``subaward_description`` text (the work they performed under prime
     contracts) is embedded; this matches a free-text query by cosine ANN and returns a ranked list of
-    DISTINCT subawardees, each enriched with name, subaward count/$, controlled-vocab capability_tags,
-    and clearance from ``govcon_subawardee_capability_profiles``. Use it for "who can do X" sourcing —
+    DISTINCT subawardees, each enriched with name, subaward count/$, controlled-vocab solicitation_scope_tags,
+    and clearance from ``govcon_subawardee_profiles``. Use it for "who can do X" sourcing —
     e.g. "substation switchgear and power distribution installation", "aircraft avionics depot repair",
     "SCIF / sensitive compartmented facility construction" — where keyword/NAICS filtering misses
-    paraphrase. For STRUCTURED conjunction (capability_tag ∧ clearance ∧ teaming-prime), use the
+    paraphrase. For STRUCTURED conjunction (solicitation_scope_tag ∧ clearance ∧ teaming-prime), use the
     profiles query path instead; this tool is the open-vocabulary recall leg.
 
     Args:
@@ -185,7 +185,7 @@ def search_subawardee_capabilities(
     Returns ``{"status", "query", "filter", "k", "sub_count", "subs": [...], "embed_cache"}``. Each
     ``subs`` entry: ``{subawardee_uei, sub_name, best_distance (cosine; smaller=closer),
     matched_description, n_chunks_matched, n_subawards, total_subaward_amount,
-    n_distinct_primes_subaward, capability_tags, requires_clearance, req_clearance_level_max,
+    n_distinct_primes_subaward, solicitation_scope_tags, requires_clearance, req_clearance_level_max,
     poc_available}``. Non-``ok`` ``status``: ``dataset_unavailable`` (vectors not landed),
     ``vector_index_absent`` (embed/IVF_PQ not built), ``embedder_unavailable`` (local model missing).
     Drill a returned ``subawardee_uei`` via the catalyst_api ``/entities/{uei}/subaward-profile`` route
@@ -280,8 +280,8 @@ def search_subawardee_capabilities(
             "n_subawards": idr.get("n_subawards"),
             "total_subaward_amount": idr.get("total_subaward_amount"),
             "n_distinct_primes_subaward": idr.get("n_distinct_primes_subaward"),
-            "capability_tags": p.get("capability_tags"),                              # scope-derived (bridge)
-            "self_reported_capability_tags": p.get("self_reported_capability_tags"),   # Path B (own descriptions)
+            "solicitation_scope_tags": p.get("solicitation_scope_tags"),                              # scope-derived (bridge)
+            "subaward_description_tags": p.get("subaward_description_tags"),   # Path B (own descriptions)
             "tag_source": p.get("tag_source"),                                         # scope|self_reported|both|none
             "requires_clearance": p.get("requires_clearance"),
             "req_clearance_level_max": p.get("req_clearance_level_max"),

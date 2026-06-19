@@ -5,21 +5,21 @@ crosswalk so every winner carries a lat/lon dot. The read model behind the sales
 GRAIN  1 row per (winner_uei, winner_type ∈ {prime_recipient, subawardee}).
 SoR    s3://data-sink/active/usaspending_winners_map_serving/  (Lance v2.1; derived, overwrite)
 INPUTS prime + subaward fresh feeds (rolling 90d by action_date) ⋈ geocode_xwalk (addr_hash)
-       ⋈ govcon_award_capability_profiles (award grain) rolled to the prime winner (PHASE 3).
+       ⋈ govcon_award_solicitation_profiles (award grain) rolled to the prime winner (PHASE 3).
        The window lives HERE (a WHERE), not in the crosswalk — extend it freely.
 SIGNALS total_obligation (Σ federal_action_obligation / subaward_amount), award_count, naics,
        state — the demo filters ("construction NAICS 23, > $150k") — PLUS the PHASE-3 capability
-       axis rolled from govcon_award_capability_profiles to the PRIME winner (recipient_uei =
+       axis rolled from govcon_award_solicitation_profiles to the PRIME winner (recipient_uei =
        winner_uei). Subawardee rows carry capability defaults (scope is extracted from the prime's
        solicitation docs). Per prime winner: has_extracted_scope / requires_clearance / requires_cmmc
        (bool_or over the winner's profiled awards), req_clearance_level_max (max over covered awards),
-       capability_tags / labor_categories (deduped controlled-vocab union — FILTERABLE via Lance
+       solicitation_scope_tags / labor_categories (deduped controlled-vocab union — FILTERABLE via Lance
        ``array_has``), covered_award_count + covered_award_keys (capped drill-down pointer). The
        SUB-only TEAMING axis (sourced from the sub profiles, NULL on prime rows): teaming_dollars_5y
        / n_teaming_primes (range-filterable, BTREE) + teaming_prime_names (list — exact prime legal
        names, filterable via ``array_has``). The SUB-only SELF-REPORTED axis (also sourced from the
-       sub profiles, NULL on prime rows + on subs with no self-reported signal): self_reported_capability_tags
-       (same 77-tag controlled vocab as capability_tags — the long-tail 13,792 subs that self-report)
+       sub profiles, NULL on prime rows + on subs with no self-reported signal): subaward_description_tags
+       (same 77-tag controlled vocab as solicitation_scope_tags — the long-tail 13,792 subs that self-report)
        + req_cert_tags (open-valued cert vocabulary) — both list columns, filterable via ``array_has``,
        UNGATED (they cover the full sub long tail, not the scope-extracted slice). NO
        chunk-derived verbatim text crosses into the serving table (CUI egress invariant — only
@@ -51,11 +51,11 @@ SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # PHASE 3: award-grain capability profiles, rolled to the prime winner here.
 PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
-                              f"{ACTIVE}/govcon_award_capability_profiles/")
+                              f"{ACTIVE}/govcon_award_solicitation_profiles/")
 # Sub-side capability: sub_uei-grain profiles feed the subawardee winner rows (without this leg every
 # subawardee row carries has_extracted_scope=false / empty tags — the capability filter excludes them).
 SUB_PROFILES_URI = os.environ.get("GOVCON_SUB_CAPABILITY_PROFILES_URI",
-                                  f"{ACTIVE}/govcon_subawardee_capability_profiles/")
+                                  f"{ACTIVE}/govcon_subawardee_profiles/")
 WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
@@ -124,20 +124,20 @@ def _assemble(so, window_days: int):
     con.register("prof", prof.scanner(columns=[
         "recipient_uei", "contract_award_unique_key", "has_extracted_scope",
         "requires_clearance", "requires_cmmc", "req_clearance_level_max",
-        "capability_tags", "top_labor_categories"]).to_table())
+        "solicitation_scope_tags", "top_labor_categories"]).to_table())
     # Sub-side profiles (sub_uei grain, already one row per sub). Same CUI posture: only structured /
     # controlled-vocab columns; evidence_quote / requirement_detail are absent by construction.
     sub_prof = lance.dataset(SUB_PROFILES_URI, storage_options=so)
     con.register("sub_prof", sub_prof.scanner(columns=[
         "sub_uei", "has_extracted_scope", "requires_clearance", "requires_cmmc",
-        "req_clearance_level_max", "capability_tags", "top_labor_categories",
+        "req_clearance_level_max", "solicitation_scope_tags", "top_labor_categories",
         "n_scope_solicitations", "source_notice_ids",
         # Teaming axis (sub-only): who the sub has subcontracted under + $ + breadth.
         "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names",
         # Self-reported axis (sub-only): the long-tail capability/cert signal subs assert about
         # themselves (UNGATED downstream — 13,792 subs self-report vs. the ~4,220 scope-extracted
-        # slice). Same 77-tag controlled vocab as capability_tags; req_cert_tags is open-valued.
-        "self_reported_capability_tags", "req_cert_tags"]).to_table())
+        # slice). Same 77-tag controlled vocab as solicitation_scope_tags; req_cert_tags is open-valued.
+        "subaward_description_tags", "req_cert_tags"]).to_table())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -193,7 +193,7 @@ def _assemble(so, window_days: int):
                coalesce(requires_clearance, false) AS rc,
                coalesce(requires_cmmc, false) AS rcm,
                req_clearance_level_max AS clr,
-               capability_tags, top_labor_categories
+               solicitation_scope_tags, top_labor_categories
         FROM prof
         WHERE recipient_uei IS NOT NULL AND length(trim(recipient_uei)) > 0
     ),
@@ -208,8 +208,8 @@ def _assemble(so, window_days: int):
         FROM cap_src GROUP BY 1
     ),
     cap_tags AS (   -- controlled-vocab union of the winner's awards' capability tags (sorted, deduped)
-        SELECT winner_uei, list(t ORDER BY t) AS capability_tags
-        FROM (SELECT DISTINCT winner_uei, unnest(capability_tags) AS t FROM cap_src)
+        SELECT winner_uei, list(t ORDER BY t) AS solicitation_scope_tags
+        FROM (SELECT DISTINCT winner_uei, unnest(solicitation_scope_tags) AS t FROM cap_src)
         WHERE t IS NOT NULL GROUP BY 1
     ),
     cap_labor AS ( -- controlled-vocab union of the winner's awards' labor categories
@@ -239,7 +239,7 @@ def _assemble(so, window_days: int):
                     WHEN 'SECRET' THEN 3 WHEN 'CONFIDENTIAL' THEN 2 WHEN 'PUBLIC_TRUST' THEN 1
                     ELSE 0 END AS clr_ord,
                CAST(coalesce(n_scope_solicitations, 0) AS BIGINT) AS covered_award_count,
-               capability_tags,
+               solicitation_scope_tags,
                top_labor_categories AS labor_categories,
                source_notice_ids[1:{COVERED_AWARD_KEYS_CAP}] AS covered_award_keys,
                -- Teaming axis (sub-only): coalesce numerics to 0 (a profiled sub with no
@@ -249,7 +249,7 @@ def _assemble(so, window_days: int):
                teaming_prime_names,
                -- Self-reported axis (sub-only): keep the lists as-is (NULL for the ~11.7k subs
                -- with no self-reported signal). UNGATED — these are the long-tail signal.
-               self_reported_capability_tags,
+               subaward_description_tags,
                req_cert_tags
         FROM sub_prof
         WHERE sub_uei IS NOT NULL AND length(trim(sub_uei)) > 0
@@ -268,7 +268,7 @@ def _assemble(so, window_days: int):
                 WHEN 3 THEN 'SECRET' WHEN 2 THEN 'CONFIDENTIAL' WHEN 1 THEN 'PUBLIC_TRUST'
                 ELSE NULL END AS req_clearance_level_max,
            CAST(coalesce(cap.covered_award_count, cap_sub.covered_award_count, 0) AS BIGINT) AS covered_award_count,
-           coalesce(cap_tags.capability_tags, cap_sub.capability_tags)   AS capability_tags,
+           coalesce(cap_tags.solicitation_scope_tags, cap_sub.solicitation_scope_tags)   AS solicitation_scope_tags,
            coalesce(cap_labor.labor_categories, cap_sub.labor_categories) AS labor_categories,
            coalesce(cap_keys.covered_award_keys, cap_sub.covered_award_keys) AS covered_award_keys,
            -- Teaming axis: SUB-only (sourced from cap_sub). Prime rows have no cap_sub match,
@@ -278,7 +278,7 @@ def _assemble(so, window_days: int):
            cap_sub.teaming_prime_names  AS teaming_prime_names,
            -- Self-reported axis: SUB-only (sourced from cap_sub). NULL on prime rows AND on subs
            -- with no self-reported signal — the decoder treats these as UNGATED list filters.
-           cap_sub.self_reported_capability_tags AS self_reported_capability_tags,
+           cap_sub.subaward_description_tags AS subaward_description_tags,
            cap_sub.req_cert_tags                 AS req_cert_tags,
            'usaspending_winners_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
@@ -381,7 +381,7 @@ def verify():
         out["northstar_electrical_secret_plottable"] = ds.count_rows(
             filter="has_extracted_scope = true AND requires_clearance = true "
                    "AND req_clearance_level_max IN ('SECRET','TOP_SECRET','TS_SCI') "
-                   "AND array_has(capability_tags, 'electrical_systems') AND latitude IS NOT NULL")
+                   "AND array_has(solicitation_scope_tags, 'electrical_systems') AND latitude IS NOT NULL")
         # window-mismatch sanity: how many cleared-capability winners actually plot
         out["capability_winners_plottable"] = ds.count_rows(
             filter="has_extracted_scope = true AND latitude IS NOT NULL")
@@ -392,13 +392,13 @@ def verify():
         out["teamed_with_lockheed"] = ds.count_rows(
             filter="array_has(teaming_prime_names, 'LOCKHEED MARTIN CORPORATION')")
     # ── SUB-only SELF-REPORTED axis coverage (the /ask self-report + cert denominators) ──
-    if "self_reported_capability_tags" in cap_cols:
+    if "subaward_description_tags" in cap_cols:
         out["has_self_reported_capability"] = ds.count_rows(
-            filter="self_reported_capability_tags IS NOT NULL")
+            filter="subaward_description_tags IS NOT NULL")
         out["self_reports_software_development"] = ds.count_rows(
-            filter="array_has(self_reported_capability_tags, 'software_development')")
+            filter="array_has(subaward_description_tags, 'software_development')")
         out["self_reports_aircraft_maintenance"] = ds.count_rows(
-            filter="array_has(self_reported_capability_tags, 'aircraft_maintenance')")
+            filter="array_has(subaward_description_tags, 'aircraft_maintenance')")
         out["has_req_cert"] = ds.count_rows(filter="req_cert_tags IS NOT NULL")
         out["req_cert_iso_9001"] = ds.count_rows(filter="array_has(req_cert_tags, 'iso_9001')")
         out["req_cert_as9100"] = ds.count_rows(filter="array_has(req_cert_tags, 'as9100')")

@@ -533,7 +533,7 @@ class SubawardCapabilities(_Model):
 
     has_extracted_scope: bool = False
     scope_summary: str | None = None
-    capability_tags: list[str] = []
+    solicitation_scope_tags: list[str] = []
     requires_clearance: bool = False
     req_clearance_level_max: str | None = None
     requires_cmmc: bool = False
@@ -541,9 +541,9 @@ class SubawardCapabilities(_Model):
     top_labor_categories: list[str] = []
     n_scope_solicitations: int | None = None
     # Path B — self-reported capability (the sub's OWN subaward descriptions), separate provenance from
-    # the scope-derived capability_tags above. Present for the full universe, not just bridge subs.
-    self_reported_capability_tags: list[str] = []
-    n_self_reported_tags: int | None = None
+    # the scope-derived solicitation_scope_tags above. Present for the full universe, not just bridge subs.
+    subaward_description_tags: list[str] = []
+    n_subaward_description_tags: int | None = None
     tag_source: str | None = None   # scope | self_reported | both | none
 
 
@@ -589,15 +589,15 @@ class SubawardProfileResponse(_Model):
             capabilities = SubawardCapabilities(
                 has_extracted_scope=bool(prof.get("has_extracted_scope")),
                 scope_summary=prof.get("scope_summary"),
-                capability_tags=[t for t in (prof.get("capability_tags") or []) if t],
+                solicitation_scope_tags=[t for t in (prof.get("solicitation_scope_tags") or []) if t],
                 requires_clearance=bool(prof.get("requires_clearance")),
                 req_clearance_level_max=prof.get("req_clearance_level_max"),
                 requires_cmmc=bool(prof.get("requires_cmmc")),
                 req_cert_tags=[t for t in (prof.get("req_cert_tags") or []) if t],
                 top_labor_categories=[t for t in (prof.get("top_labor_categories") or []) if t],
                 n_scope_solicitations=prof.get("n_scope_solicitations"),
-                self_reported_capability_tags=[t for t in (prof.get("self_reported_capability_tags") or []) if t],
-                n_self_reported_tags=prof.get("n_self_reported_tags"),
+                subaward_description_tags=[t for t in (prof.get("subaward_description_tags") or []) if t],
+                n_subaward_description_tags=prof.get("n_subaward_description_tags"),
                 tag_source=prof.get("tag_source"),
             )
             teaming = SubawardTeaming(

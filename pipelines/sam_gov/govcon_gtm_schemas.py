@@ -16,7 +16,7 @@ Frozen set (plan §2 artifact map):
         capability_tags at resource grain; plan gap resolved per hard rule 4 — the plan routes
         doc-level outputs only to the award-grain profiles overwrite build, which needs a durable
         resource-grain source to roll up from)
-  * govcon_award_capability_profiles    — Phase-2 award grain (overwrite build). **No window
+  * govcon_award_solicitation_profiles    — Phase-2 award grain (overwrite build). **No window
         suffix (operator naming decision 2026-06-14, overrides the plan's _90day):** the window is
         carried as DATA — denormalized `award_last_modified_date` (the canonical window column) +
         `award_action_date` + a `built_at` run stamp — so "last 90 days" is a column filter and
@@ -55,7 +55,7 @@ EXTRACT_LEDGER_URI = os.environ.get(
 DOC_SCOPE_URI = os.environ.get(
     "GOVCON_DOC_SCOPE_URI", "s3://data-sink/active/govcon_doc_scope/")
 CAPABILITY_PROFILES_URI = os.environ.get(
-    "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_capability_profiles/")
+    "GOVCON_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_award_solicitation_profiles/")
 TEAMING_EDGES_URI = os.environ.get(
     "GOVCON_TEAMING_EDGES_URI", "s3://data-sink/active/govcon_teaming_edges/")
 SUB_TARGETING_URI = os.environ.get(
@@ -63,7 +63,7 @@ SUB_TARGETING_URI = os.environ.get(
 SUB_CAPABILITY_VECTORS_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_VECTORS_URI", "s3://data-sink/active/govcon_sub_capability_vectors/")
 SUB_CAPABILITY_PROFILES_URI = os.environ.get(
-    "GOVCON_SUB_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_subawardee_capability_profiles/")
+    "GOVCON_SUB_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_subawardee_profiles/")
 
 
 # ── Frozen schemas (plan column/type tables, verbatim) ───────────────────────────────────────────
@@ -170,7 +170,7 @@ def doc_scope_schema():
 
 
 def capability_profiles_schema():
-    """govcon_award_capability_profiles — award grain, overwrite build (plan Phase 2). THE PRODUCT
+    """govcon_award_solicitation_profiles — award grain, overwrite build (plan Phase 2). THE PRODUCT
     (spec §10): one row per award at the EXPLODED `award_keys[]` grain (manifest explode per
     resource, never the inline scalar — 4.1× coverage; anti-pattern #5). Joins three sources:
     `govcon_doc_scope` (scope_summary + capability_tags), `govcon_award_requirements`
@@ -210,7 +210,7 @@ def capability_profiles_schema():
         ("current_total_value_of_award", pa.string()),
         # LLM + requirement rollups (validated rows only)
         ("scope_summary", pa.string()),
-        ("capability_tags", pa.list_(pa.string())),   # controlled vocabulary
+        ("solicitation_scope_tags", pa.list_(pa.string())),   # controlled vocabulary
         ("requires_clearance", pa.bool_()), ("req_clearance_level_max", pa.string()),
         ("requires_cmmc", pa.bool_()),
         ("req_cert_tags", pa.list_(pa.string())),
@@ -277,7 +277,7 @@ def sub_capability_vectors_schema():
 
 
 def subawardee_capability_profiles_schema():
-    """govcon_subawardee_capability_profiles — SUBAWARDEE grain (one row per sub_uei), overwrite
+    """govcon_subawardee_profiles — SUBAWARDEE grain (one row per sub_uei), overwrite
     build. The sub-side analog of capability_profiles: the GTM target list of subawardees connected
     to tracked prime solicitations, describing what each sub DOES with cited evidence + an outreach
     contact. Universe = distinct `subawardee_uei` in `subawardee_solicitations_bridge` (the subs
@@ -331,7 +331,7 @@ def subawardee_capability_profiles_schema():
         ("has_extracted_scope", pa.bool_()),
         ("n_scope_solicitations", pa.int32()),
         ("scope_summary", pa.string()),               # from govcon_doc_scope (marked-free)
-        ("capability_tags", pa.list_(pa.string())),   # controlled vocabulary
+        ("solicitation_scope_tags", pa.list_(pa.string())),   # controlled vocabulary
         ("requires_clearance", pa.bool_()), ("req_clearance_level_max", pa.string()),
         ("requires_cmmc", pa.bool_()),
         ("req_cert_tags", pa.list_(pa.string())),
@@ -346,8 +346,8 @@ def subawardee_capability_profiles_schema():
         # "what the sub says it did" vs "the solicitation scope it teamed under named". Covers the full
         # 25,450-sub universe (vs the ~6,586 bridge subs with scope). `tag_source` ∈ scope|self_reported|
         # both|none marks which provenance populated a row's tag axes. (classify_sub_self_reported_tags.py)
-        ("self_reported_capability_tags", pa.list_(pa.string())),
-        ("n_self_reported_tags", pa.int32()),
+        ("subaward_description_tags", pa.list_(pa.string())),
+        ("n_subaward_description_tags", pa.int32()),
         ("tag_source", pa.string()),
         # TEAM — 5y teaming edges
         ("n_teaming_primes", pa.int32()),
@@ -372,11 +372,11 @@ FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_labor_demand": (LABOR_DEMAND_URI, labor_demand_schema),
     "govcon_requirements_extract_ledger": (EXTRACT_LEDGER_URI, extract_ledger_schema),
     "govcon_doc_scope": (DOC_SCOPE_URI, doc_scope_schema),
-    "govcon_award_capability_profiles": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
+    "govcon_award_solicitation_profiles": (CAPABILITY_PROFILES_URI, capability_profiles_schema),
     "govcon_teaming_edges": (TEAMING_EDGES_URI, teaming_edges_schema),
     "govcon_sub_targeting": (SUB_TARGETING_URI, sub_targeting_schema),
     "govcon_sub_capability_vectors": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
-    "govcon_subawardee_capability_profiles": (SUB_CAPABILITY_PROFILES_URI,
+    "govcon_subawardee_profiles": (SUB_CAPABILITY_PROFILES_URI,
                                               subawardee_capability_profiles_schema),
 }
 

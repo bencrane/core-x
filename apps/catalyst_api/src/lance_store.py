@@ -485,20 +485,20 @@ def entity_award_lines_by_uei(uei: str, side: str, limit: int) -> list[dict[str,
 
 
 # ── Surface 4: UEI → subawardee capability profile + prime-contract (subaward) history ──
-# The sub-side drill-down. The capability profile (govcon_subawardee_capability_profiles, 1 row/sub_uei,
+# The sub-side drill-down. The capability profile (govcon_subawardee_profiles, 1 row/sub_uei,
 # BTREE sub_uei) carries the structured capability block (scope/tags/clearance/teaming/POC) for the
 # ~6,586 bridge subs; contract_subaward (the raw sub→prime fact) carries the prime-contract history for
 # all ~25,449 subs. CUI: the profile carries only structured / controlled-vocab + sub-self-reported
 # columns (no solicitation chunk verbatim — evidence_quote / requirement_detail are not on its schema);
 # subaward_description is the firm's own SAM subaward report (sub-self-reported, not CUI).
 _SUB_PROFILE_COLS = [
-    "sub_uei", "sub_name", "has_extracted_scope", "scope_summary", "capability_tags",
+    "sub_uei", "sub_name", "has_extracted_scope", "scope_summary", "solicitation_scope_tags",
     "requires_clearance", "req_clearance_level_max", "requires_cmmc", "req_cert_tags",
     "top_labor_categories", "n_subawards", "n_distinct_primes_subaward", "total_subaward_amount",
     "n_scope_solicitations", "n_teaming_primes", "teaming_dollars_5y", "teaming_prime_names",
     "poc_available", "poc_full_name", "poc_title", "poc_city", "poc_state",
     # Path B: self-reported capability (the sub's own descriptions) + provenance marker
-    "self_reported_capability_tags", "n_self_reported_tags", "tag_source",
+    "subaward_description_tags", "n_subaward_description_tags", "tag_source",
     # GEO: HQ (sub address) + place of performance
     "hq_state", "hq_city", "pop_state", "pop_states",
 ]
@@ -511,7 +511,7 @@ _SUBAWARD_HISTORY_HARD_CAP = 200
 
 
 def subaward_profile_by_uei(uei: str) -> dict[str, Any] | None:
-    """BTREE point-lookup on ``govcon_subawardee_capability_profiles.sub_uei`` → the sub's capability
+    """BTREE point-lookup on ``govcon_subawardee_profiles.sub_uei`` → the sub's capability
     profile, or ``None`` when the sub is not in the bridge universe (it may still have subaward history)."""
     uei = (uei or "").strip()
     if not uei:
@@ -621,7 +621,7 @@ def _map_days_ago_sql(spec, op: str, value: Any, today: "dt_date") -> str:
 
 def _map_list_sql(spec, op: str, value: Any) -> str:
     """Compile a ``list`` clause (set membership over a list<string> column — e.g. the
-    PHASE-3 capability_tags / labor_categories controlled-vocab columns). ``has`` →
+    PHASE-3 solicitation_scope_tags / labor_categories controlled-vocab columns). ``has`` →
     ``array_has(col, 'v')`` (the row's list contains the value); ``has_any`` →
     ``array_has_any(col, ['a','b'])`` (the list contains ANY value). Values are
     enum-checked + ``_sql_str``-escaped (same quote-doubling as every other string
@@ -787,7 +787,7 @@ _SURFACE_DATASETS = {
     "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
     "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],
     "awards_map_serving": lambda: config.MAP_DATASET_URIS["awards"],
-    "subawardee_capability_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
+    "subawardee_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
     "contract_subaward": lambda: config.CONTRACT_SUBAWARD_URI,
 }
 

@@ -94,8 +94,8 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v5",
-        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): self_reported_capability_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
+        "version": "winners.v6",
+        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
@@ -111,8 +111,8 @@ DECODERS: dict[str, dict] = {
             "req_clearance_level_max": {"type": "string", "ops": ("=", "in"), "enum": _CLEARANCE_LEVELS,
                                         "desc": "highest clearance required across the winner's covered awards. 'secret clearance' → in [SECRET, TOP_SECRET, TS_SCI]"},
             "requires_cmmc":           {"type": "bool", "ops": ("=",), "desc": "true = ≥1 covered award requires CMMC certification"},
-            "capability_tag":          {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
-                                        "desc": "controlled capability the winner DOES (set membership). 'does electrical work' → capability_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
+            "solicitation_scope_tag":          {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the winner DOES (set membership). 'does electrical work' → solicitation_scope_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
             "labor_category":          {"type": "list", "ops": ("has", "has_any"), "enum": _LABOR_CATEGORIES,
                                         "desc": "skilled labor/trade the winner's covered awards staff. 'electricians' → labor_category has 'electrician'; 'cleared trades' → requires_clearance=true AND labor_category has_any the trade list"},
             # ── SUBAWARDEE teaming axis (which primes the sub has subcontracted under, last 5y) ──
@@ -123,8 +123,8 @@ DECODERS: dict[str, dict] = {
             "teaming_prime":           {"type": "list", "ops": ("has", "has_any"),
                                         "desc": "EXACT full legal name(s) of primes the subawardee has subcontracted under. Use the known synonyms for major primes ('teamed with Lockheed' → use the 'lockheed' synonym); for a prime not in the synonyms, put it in unmapped (exact legal name required). Subawardees only"},
             # ── SUBAWARDEE self-reported axis (the long-tail signal subs assert about themselves) ──
-            "self_reported_capability_tag": {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
-                                        "desc": "controlled capability the SUBAWARDEE self-reports doing (set membership; same 77-tag vocab as capability_tag, but self-asserted across the FULL sub long tail rather than the scope-extracted slice). 'subs that self-report software development' → self_reported_capability_tag has 'software_development'. Subawardees only"},
+            "subaward_description_tag": {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the SUBAWARDEE self-reports doing (set membership; same 77-tag vocab as solicitation_scope_tag, but self-asserted across the FULL sub long tail rather than the scope-extracted slice). 'subs that self-report software development' → subaward_description_tag has 'software_development'. Subawardees only"},
             "req_cert_tag":            {"type": "list", "ops": ("has", "has_any"),
                                         "desc": "certification the SUBAWARDEE holds, as a granular open-vocabulary token (e.g. 'iso_9001', 'cmmc', 'as9100', 'cissp', 'pmp'). Prefer the known cert synonyms ('iso 9001', 'as9100', 'cmmc certification', 'faa part 145'); for a cert not in the synonyms put the exact lowercase token, or surface it in unmapped if unsure. Subawardees only"},
         },
@@ -138,7 +138,7 @@ DECODERS: dict[str, dict] = {
             "secret clearance": {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
             "top secret":       {"field": "req_clearance_level_max", "op": "in", "value": ["TOP_SECRET", "TS_SCI"]},
             "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
-            "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
+            "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
             "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
             # SUBAWARDEE teaming phrasings (prime names are exact stored legal names → has_any).
             "lockheed":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LOCKHEED)},
@@ -153,10 +153,10 @@ DECODERS: dict[str, dict] = {
             "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
             "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
             # SUBAWARDEE self-reported phrasings (route the self-report cue to the UNGATED axis).
-            "self-report software development":   {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
-            "self-reported software development": {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
-            "self-report aircraft maintenance":   {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
-            "self-reported aircraft maintenance": {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+            "self-report software development":   {"field": "subaward_description_tag", "op": "has", "value": "software_development"},
+            "self-reported software development": {"field": "subaward_description_tag", "op": "has", "value": "software_development"},
+            "self-report aircraft maintenance":   {"field": "subaward_description_tag", "op": "has", "value": "aircraft_maintenance"},
+            "self-reported aircraft maintenance": {"field": "subaward_description_tag", "op": "has", "value": "aircraft_maintenance"},
             # Certification phrasings → has_any over the EXACT stored cert tokens (open vocab).
             "cmmc certification":  {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CMMC)},
             "iso 9001":            {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_9001)},

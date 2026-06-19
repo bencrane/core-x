@@ -403,8 +403,8 @@ def subaward_profile(
     history: int = Query(25, ge=1, le=200, description="Max prime-contract (subaward) history rows."),
 ) -> JSONResponse:
     """Subawardee drill-down — what the sub CAN DO + the prime contracts it won work UNDER. Composes a
-    BTREE point-lookup on govcon_subawardee_capability_profiles (the capability block: scope_summary,
-    capability_tags, clearance/cert/labor, teaming, POC — present only for bridge-universe subs) with a
+    BTREE point-lookup on govcon_subawardee_profiles (the capability block: scope_summary,
+    solicitation_scope_tags, clearance/cert/labor, teaming, POC — present only for bridge-universe subs) with a
     point-lookup on contract_subaward (the prime-contract history: which prime, $, description, agency,
     date — present for all subs). 404 only when the UEI has NEITHER a profile NOR any subaward history."""
     uei = _require_uei(uei)
