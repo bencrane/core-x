@@ -165,6 +165,28 @@ def test_empty_batch_no_scan(wired):
     assert sum(counter.values()) == 0                              # NO scan issued for an empty batch
 
 
+def test_large_batch_one_scan_and_in_list_capped(wired):
+    """The amortization-at-scale invariant + the IN-list cap (directive §contract).
+
+    A LARGE batch (the whole 20-row fixture, plus an over-cap padding of junk ids) must
+    STILL resolve in exactly ONE scanner call per tool — N ids → 1 R2 round-trip, never N —
+    and the implementation must cap the IN-list at a sane bound (≤1000) WITHOUT raising on a
+    batch that exceeds it. This pins the core round-trip-amortization claim at N≫1 (the empty
+    + 3-id tests only exercise the small case) and the directive's explicit IN-list cap."""
+    counter = wired
+    all_ueis = [f"UEI{i:05d}" for i in range(20)]                  # every award/sam id in the fixture
+    over_cap = all_ueis + [f"JUNK{i:06d}" for i in range(1500)]    # > 1000-id ceiling, must not raise
+
+    aw = batch_lookups.lookup_awards_by_ueis(over_cap)
+    assert aw["found"] == 20 and set(aw["by_uei"]) == set(all_ueis)
+    assert counter.get("awards", 0) == 1                          # ONE scan for the whole (capped) batch
+
+    all_doms = [f"dom{i}.example.com" for i in range(20)]
+    co = batch_lookups.search_companies_by_domains(all_doms + [f"junk{i}.example.com" for i in range(1500)])
+    assert set(co["by_domain"]) == set(all_doms)
+    assert counter.get("companies", 0) == 1                       # ONE scan regardless of N
+
+
 def test_register_mounts_exactly_the_batch_surface():
     registered: list[str] = []
 
