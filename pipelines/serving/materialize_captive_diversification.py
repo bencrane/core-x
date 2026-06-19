@@ -446,8 +446,7 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=60 * 60,        # 1h — the ANN matchmaking over ~3k subs is ~5-10 min
     memory=32768,           # 32 GB — the scope-vector IVF_PQ index is the driver
-    cpu=8.0,
-    ephemeral_disk=32768,   # DuckDB spill scratch
+    cpu=8.0,                # default ephemeral disk suffices (small DuckDB /tmp spill only)
     retries=1,              # idempotent overwrite → safe to retry on preemption
 )
 def run_build(window_days: int = WINDOW_DAYS, trigger_callback_url: str | None = None) -> dict:
