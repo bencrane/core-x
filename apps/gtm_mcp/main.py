@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .src.tools import audience, capability, catalog, corex, dmaas, federal, govcon, hydration, ops, parallel, provider360, sub_capability
+from .src.tools import audience, capability, catalog, corex, dmaas, federal, govcon, hydration, ops, parallel, provider360, sam_entities, sub_capability
 
 # Disable the SDK's DNS-rebinding protection. It defaults on for localhost and
 # rejects any non-localhost Host header with `421 Invalid Host header` — which
@@ -64,6 +64,7 @@ govcon.register(mcp)  # hybrid filter→ANN semantic search over govcon_scope_ve
 sub_capability.register(mcp)  # open-vocab ANN over govcon_sub_capability_vectors_90day → distinct subs + profile enrichment
 federal.register(mcp)  # FEDERAL group: deterministic map/chart aggregations + entity resolution over entity_profile_gold (separate from CRM audience tools)
 capability.register(mcp)  # GovCon CAPABILITY group (plan §3, phase-scheduled): Phase-1 hard-predicate conjunction over govcon_award_requirements_90day → company grain + facets
+sam_entities.register(mcp)  # typed sam.gov entity point-lookups (uei/naics/cage + contacts)
 
 
 async def _info(request):  # noqa: ANN001 — Starlette endpoint
