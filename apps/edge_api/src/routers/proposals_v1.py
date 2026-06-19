@@ -92,15 +92,9 @@ async def _provision(
     """Render the legal PDF (DocRaptor, live) and create the Documenso envelope; bind it to the
     row (draft → sent). Returns (ok, error_message). Non-raising so create can be best-effort.
 
-    `render_mode` selects the originate pathway (resolved server-side from the operator's settings):
-      - 'through-docraptor' (default / None): render PDF → Documenso envelope. CURRENT behavior.
-      - 'direct-to-documenso': the no-DocRaptor pathway — NOT YET WIRED (stub below).
+    `render_mode` is accepted for forward-compatibility (resolved server-side from the operator's
+    settings) but this provisioner is the through-docraptor path: render PDF → Documenso envelope.
     """
-    if render_mode == "direct-to-documenso":
-        # Prototype branch — intentionally unimplemented. Non-raising, mirroring the deferred-
-        # provision contract: the committed draft row survives, the operator sees a clear status.
-        logger.info("proposal %s: direct-to-documenso requested — pathway not yet wired", p.ref)
-        return False, "direct-to-documenso pathway not yet wired"
     try:
         pdf = await docraptor_client.render_pdf(await _agreement_html(conn, p), name=p.ref)
         env = await documenso_client.create_signing_envelope(

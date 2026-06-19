@@ -1,19 +1,17 @@
 """Engagement mandate drafts — the direct-to-documenso Originate Mandate flow.
 
-  POST /api/v1/engagement-mandate-drafts                 service-token — stamp (opportunity_id, template)
-  POST /api/v1/engagement-mandate-drafts/{id}/confirm    service-token — instantiate the Documenso doc
-  GET  /api/v1/engagement-mandate-drafts/document/{eid}  PUBLIC        — prospect reads the signer token
+  POST /api/v1/engagement-mandate-drafts                          service-token — stamp (opportunity_id, template)
+  GET  /api/v1/engagement-mandate-drafts/by-opportunity/{id}      service-token — read the opportunity's staging draft
+  PUT  /api/v1/engagement-mandate-drafts/by-opportunity/{id}      service-token — save the opportunity's staging draft
+  POST /api/v1/engagement-mandate-drafts/{id}/originate-prefilled service-token — instantiate the prefilled Documenso doc
 
 When the operator is in ``direct-to-documenso`` mode, "Originate Mandate" inserts one row into
 ``business.engagement_mandate_draft_content`` (the gated replacement for the createProposal path);
-"Confirm & originate" then instantiates a signable Documenso document FROM the draft's template (no
-DocRaptor render) and returns the envelope id + signer token. The confirm/create writes are
-service-token gated (the platform-api BFF brokers them with the operator session); the prospect's
-document read is PUBLIC — the envelope id is the capability, exactly like the proposal ``ref``.
-
-STATELESS by design: no envelope/token columns are added to the draft. The envelope id carried in
-the prospect link is the only handle back to the document (re-confirm mints a fresh one) — durable
-persistence is a clean follow-up, not a prerequisite for the flow.
+"Originate prefilled" then instantiates a signable Documenso document FROM the draft's template via
+``/api/v2/template/use`` with the opportunity's per-deal field values prefilled, distributes WITHOUT
+email (``PENDING``), and returns the envelope id + numeric document id + signer token. The create
+writes are service-token gated (the platform-api BFF brokers them with the operator session); the
+prospect reads the document by the ``(opportunity_id, document_id)`` sign-token surface.
 """
 from __future__ import annotations
 
@@ -23,10 +21,8 @@ from .. import config
 from ..db import get_db_connection
 from ..engagement_mandate_drafts import queries
 from ..engagement_mandate_drafts.models import (
-    MandateDraftConfirmed,
     MandateDraftCreate,
     MandateDraftCreated,
-    MandateDraftDocument,
     MandatePrefilledOriginated,
     MandateStagingDraft,
     MandateStagingUpsert,
@@ -79,46 +75,18 @@ async def upsert_staging_by_opportunity(
     return MandateDraftCreated(id=draft_id)
 
 
-@router.post("/{draft_id}/confirm", dependencies=[Depends(require_service_token)])
-async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
-    """Direct-to-documenso originate: instantiate a signable Documenso document from the draft's
-    template and hand back the envelope id + signer token. No PDF render — the template carries the
-    document, recipients, and fields; we only instantiate, distribute (no email), and read the token.
-    """
-    async with get_db_connection() as conn:
-        draft = await queries.get_draft(conn, draft_id)
-        if not draft:
-            raise HTTPException(status_code=404, detail="mandate draft not found")
-        # Pull the per-deal values from the opportunity's STAGED draft (the Stage-mandate save),
-        # NOT from this freshly-minted confirm draft (which carries no prefill_values of its own).
-        prefill_values = await queries.get_staged_prefill_values(conn, draft["opportunity_id"])
-    try:
-        result = await documenso_client.create_document_from_template_with_custom_pdf(
-            draft["documenso_template_id"], external_id=draft_id,
-            prefill_values=prefill_values,
-        )
-    except documenso_client.DocumensoError as e:
-        raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
-    return MandateDraftConfirmed(
-        envelope_id=result.envelope_id,
-        signing_token=result.client_token,
-        documenso_host=config.documenso_api_url(),
-    )
-
-
 @router.post(
     "/{draft_id}/originate-prefilled",
     dependencies=[Depends(require_service_token)],
 )
 async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
-    """Template-use lane — PARALLEL to ``/confirm``, leaving it untouched.
+    """Template-use lane — the canonical direct-to-documenso originate path.
 
     Instantiates a Documenso document FROM the draft's template via ``POST /api/v2/template/use`` with
     the opportunity's per-deal ``field_values`` PREFILLED, then distributes with
-    ``distributionMethod:NONE`` so it lands ``PENDING`` (signable, no email sent). Unlike ``/confirm``
-    (the ``/envelope/use`` lane, which pulls the engagement-mandate-draft ``prefill_values``), this
-    lane sources values from ``business.opportunity_specific_content`` and the recipient from the
-    opportunity's contact. No signature/readOnly handling — the signer fills those.
+    ``distributionMethod:NONE`` so it lands ``PENDING`` (signable, no email sent). Values are sourced
+    from ``business.opportunity_specific_content`` and the recipient from the opportunity's contact.
+    No signature/readOnly handling — the signer fills those.
     """
     async with get_db_connection() as conn:
         draft = await queries.get_draft(conn, draft_id)
@@ -163,19 +131,4 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         signing_token=result.client_token,
         status="pending",
         documenso_host=config.documenso_api_url(),
-    )
-
-
-@router.get("/document/{envelope_id}")
-async def read_mandate_draft_document(envelope_id: str) -> MandateDraftDocument:
-    """PUBLIC prospect read — the envelope id is the capability (no service token). Re-reads the live
-    Documenso envelope for the signer token + status that drive the embedded signer."""
-    try:
-        token, status = await documenso_client.read_template_document(envelope_id)
-    except documenso_client.DocumensoError as e:
-        raise HTTPException(status_code=404, detail="document not found") from e
-    return MandateDraftDocument(
-        signing_token=token,
-        documenso_host=config.documenso_api_url(),
-        status=status,
     )

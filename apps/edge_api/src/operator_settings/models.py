@@ -24,7 +24,7 @@ StripeMode = Literal["test", "live"]
 # no row yet (GET) and to seed the INSERT branch of the upsert, so the default lives in exactly one
 # place per layer and the BFF never re-encodes it.
 DEFAULT_RENDER_MODE: RenderMode = "through-docraptor"
-DEFAULT_DIRECT_TO_DOCUMENSO_LANE: DirectToDocumensoLane = "envelope-distribute"
+DEFAULT_DIRECT_TO_DOCUMENSO_LANE: DirectToDocumensoLane = "prefill-document-from-template"
 
 
 class OperatorSettings(BaseModel):

@@ -318,97 +318,10 @@ async def _resolve_template_envelope_id(client: httpx.AsyncClient, documenso_tem
     return str(envelope_id)
 
 
-async def create_document_from_template_with_custom_pdf(
-    documenso_template_id: str,
-    *,
-    external_id: str | None = None,
-    recipients: list[dict[str, Any]] | None = None,
-    prefill_values: dict[str, str] | None = None,
-) -> EnvelopeResult:
-    """Instantiate a signable v2 envelope FROM AN EXISTING DOCUMENSO TEMPLATE — the direct-to-
-    documenso originate path (no DocRaptor render, no anchor field placement).
-
-    Validated against Documenso Cloud v2 (live OpenAPI):
-      1) ``GET /api/v2/template/{id}`` → ``.envelopeId`` (the DB carries only the numeric template id).
-      2) ``POST /api/v2/envelope/use`` (multipart — the ``payload`` part is a JSON string). ``recipients``
-         is OPTIONAL on this endpoint (only ``envelopeId`` is required); omitting it instantiates every
-         recipient straight from the template's stored defaults, each minted a signing token. (The
-         sibling ``/template/use`` REQUIRES ``recipients`` — hence ``/envelope/use``.) ``distributeDocument``
-         stays false: the new envelope is a draft until step 3.
-      3) ``POST /api/v2/envelope/distribute`` with ``distributionMethod: NONE`` — exposes the signing
-         tokens WITHOUT sending email; the consumer app delivers the link and embeds the token.
-      4) read the SIGNER recipient's token (+ numeric document id) back off the created envelope.
-
-    ``recipients`` is an optional override (e.g. ``[{"id": 2544431, "email": "...", "name": "..."}]``)
-    to stamp the prospect's identity onto the template's placeholder recipient; omit it to use the
-    template's stored defaults verbatim (which may be blank). ``external_id`` is stamped on the new
-    envelope so a webhook can match it back to the originating draft.
-    """
-    payload: dict[str, Any] = {"distributeDocument": False}
-    if external_id:
-        payload["externalId"] = external_id
-    if recipients:
-        payload["recipients"] = recipients
-
-    async with _client() as client:
-        # 1) resolve the template's envelope id (the DB has only the numeric template id)
-        payload["envelopeId"] = await _resolve_template_envelope_id(client, documenso_template_id)
-
-        # 1b) PREFILL pass-through. Map operator-entered values (keyed by Documenso field LABEL) onto
-        #     the template field's id + type and attach them as `prefillFields`, so the value lands on
-        #     the NEW document's field at instantiation. CONFIRMED against Documenso v2: `/envelope/use`
-        #     validates prefillFields and requires the field `type` LOWERCASED (`text`/`number`/…) — an
-        #     upper-case type 400s. Labels with no matching field, or an empty value, are skipped.
-        if prefill_values:
-            tmpl = (await client.get(f"/api/v2/envelope/{payload['envelopeId']}")).json()
-            by_label: dict[str, tuple[Any, str]] = {}
-            for fld in tmpl.get("fields") or []:
-                lab = (fld.get("fieldMeta") or {}).get("label")
-                if lab and lab not in by_label:
-                    by_label[lab] = (fld.get("id"), str(fld.get("type") or "").lower())
-            prefill_fields = [
-                {"id": by_label[lab][0], "type": by_label[lab][1], "value": val}
-                for lab, val in prefill_values.items()
-                if lab in by_label and val not in (None, "")
-            ]
-            if prefill_fields:
-                payload["prefillFields"] = prefill_fields
-
-        # 2) instantiate a signable document from the template. Multipart: the 'payload' part is a
-        #    JSON string (no 'files' part — the template supplies the document). recipients omitted →
-        #    the template's own recipient defaults populate the document.
-        created = await client.post(
-            "/api/v2/envelope/use",
-            files={"payload": (None, json.dumps(payload), "application/json")},
-        )
-        _raise_for_status(created, "envelope/use")
-        envelope_id = _dig(created.json(), "id")
-        if not envelope_id:
-            raise DocumensoError(f"envelope/use: no envelope id in {created.text[:300]}")
-
-        # 3) distribute WITHOUT email — exposes the signing token; the consumer app delivers the link
-        distributed = await client.post(
-            "/api/v2/envelope/distribute",
-            json={"envelopeId": envelope_id, "meta": {"distributionMethod": "NONE"}},
-        )
-        _raise_for_status(distributed, "envelope/distribute")
-
-        # 4) read the signer recipient's token + numeric document id from the live envelope
-        env = (await client.get(f"/api/v2/envelope/{envelope_id}")).json()
-
-    return EnvelopeResult(
-        envelope_id=str(envelope_id),
-        document_id=_numeric_document_id(env),
-        client_token=_extract_signer_token(env),
-    )
-
-
 # ── Template-use lane: prefilled signable document via /template/use → distribute(NONE) → PENDING ───
-# The CANONICAL direct-to-documenso path. PARALLEL to ``create_document_from_template_with_custom_pdf``
-# (the reserved ``/envelope/use`` + ``files[]`` lane that replaces the PDF bytes with a custom render).
-# This lane uses the template's stored PDF as-is: prefill the template's fields, bind the prospect as
-# recipient, then distribute WITHOUT email so the document lands PENDING (signable, no email sent).
-# SIGNATURE/DATE are left for the signer.
+# The CANONICAL direct-to-documenso path: it uses the template's stored PDF as-is — prefill the
+# template's fields, bind the prospect as recipient, then distribute WITHOUT email so the document
+# lands PENDING (signable, no email sent). SIGNATURE/DATE are left for the signer.
 #
 # CONFIRMED against Documenso v2 + live OpenAPI:
 #   * ``POST /api/v2/template/use`` — UNLIKE ``/envelope/use``, ``recipients`` is REQUIRED, each entry
@@ -592,14 +505,6 @@ async def create_document_from_template(
         document_id=int(numeric_id) if numeric_id is not None and str(numeric_id).isdigit() else None,
         client_token=token,
     )
-
-
-async def read_template_document(envelope_id: str) -> tuple[str | None, str | None]:
-    """Public prospect re-read: the SIGNER token + envelope status from a live, template-instantiated
-    envelope. The envelope id is the capability — no per-recipient email is needed to find the token.
-    """
-    env = await get_envelope(envelope_id)
-    return _extract_signer_token(env), _dig(env, "status")
 
 
 @dataclass(frozen=True)
