@@ -23,30 +23,31 @@
 --   direct_to_documenso_lane  — a SECOND, INDEPENDENT sub-selector that ONLY applies when
 --                                render_mode = 'direct-to-documenso'. It picks which direct-to-
 --                                documenso lane "Confirm & Originate" uses:
---                                 'envelope-distribute'  (DEFAULT — existing behavior): /envelope/use
---                                                        + distribute → POST .../{id}/confirm →
---                                                        create_document_from_template_with_custom_pdf.
---                                 'prefill-document-from-template' : /api/v2/template/use with the
---                                                        opportunity's field values prefilled, then
+--                                 'prefill-document-from-template' (DEFAULT): /api/v2/template/use with
+--                                                        the opportunity's field values prefilled, then
 --                                                        distribute(NONE) → PENDING (no email) →
 --                                                        POST .../{id}/originate-prefilled →
 --                                                        create_document_from_template.
---                                Ignored when render_mode = 'through-docraptor'. The DEFAULT preserves
---                                the existing envelope-distribute behavior for every existing row.
+--                                 'envelope-distribute' : RETIRED. The /envelope/use + .../{id}/confirm
+--                                                        lane was removed in code; the CHECK still
+--                                                        accepts the value so a pre-existing row never
+--                                                        violates it, but no live path serves it.
+--                                Ignored when render_mode = 'through-docraptor'. The DEFAULT routes new
+--                                and row-less operators to the live prefill-from-template lane.
 
 CREATE SCHEMA IF NOT EXISTS public;
 
 CREATE TABLE IF NOT EXISTS public.operator_settings (
     auth_user_id              uuid        PRIMARY KEY,                         -- Supabase auth user id (the JWT sub)
     render_mode               text        NOT NULL DEFAULT 'through-docraptor',-- originate pathway (top-level)
-    direct_to_documenso_lane  text        NOT NULL DEFAULT 'envelope-distribute', -- sub-lane (only when render_mode='direct-to-documenso')
+    direct_to_documenso_lane  text        NOT NULL DEFAULT 'prefill-document-from-template', -- sub-lane (only when render_mode='direct-to-documenso')
     stripe_mode               text,                                           -- NULLABLE document-payment Stripe mode toggle
     updated_at                timestamptz NOT NULL DEFAULT now()
 );
 
 -- Converge an already-deployed table in place (the table predates this file).
 ALTER TABLE public.operator_settings
-    ADD COLUMN IF NOT EXISTS direct_to_documenso_lane text NOT NULL DEFAULT 'envelope-distribute';
+    ADD COLUMN IF NOT EXISTS direct_to_documenso_lane text NOT NULL DEFAULT 'prefill-document-from-template';
 
 -- stripe_mode: which Stripe key set the DOCUMENT-PAYMENT flow uses, AUGMENTING the STRIPE_MODE env.
 -- NULLABLE on purpose: NULL = "follow the STRIPE_MODE env" (which is `live` in prd); 'test'/'live'
