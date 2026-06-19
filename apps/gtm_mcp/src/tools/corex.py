@@ -485,10 +485,73 @@ def create_campaign(
             "campaign": _jsonify(row)}
 
 
+# The recipient_uei → people bridge. A subawardee/contractor audience keyed on
+# `recipient_uei` (the federal-spend spine's UEI grain) carries no contact_id/company_id to
+# resolve against the `people` graph directly. `sam_master_domains` is the SAM entity index
+# mapping each UEI to its normalized web domain (BTREE on `uei`); bridging through it yields
+# the domain anchor the `people` graph IS keyed on (BTREE on `people.normalized_domain`), so
+# the existing most-senior-per-company resolution then applies unchanged.
+_UEI_BRIDGE_DATASET = "sam_master_domains"
+
+
+def _sql_in_list(values: list[str]) -> str:
+    """A de-duplicated, single-quote-escaped SQL/Lance ``IN (...)`` body."""
+    return ",".join("'" + v.replace("'", "''") + "'" for v in dict.fromkeys(values))
+
+
+def _most_senior_per_company(prows: list[dict]) -> list[dict]:
+    """Collapse raw `people` rows to ONE most-senior contact per company (the enroll grain:
+    one human per company), ranked by `_title_rank`."""
+    best: dict[str, dict] = {}
+    for p in prows:
+        comp = str(p["company_id"])
+        if comp not in best or _title_rank(p.get("title")) > _title_rank(best[comp].get("title")):
+            best[comp] = p
+    return [{"contact_id": str(p["contact_id"]), "company_id": str(p["company_id"]),
+             "normalized_domain": p.get("normalized_domain"), "full_name": p.get("full_name"),
+             "title": p.get("title")} for p in best.values()]
+
+
+def _resolve_by_domains(domains: list[str]) -> list[dict]:
+    """Resolve the most-senior contact at each web domain from the `people` graph (BTREE on
+    `people.normalized_domain`), one batched query."""
+    domains = [d for d in (str(d or "").strip() for d in domains) if d]
+    if not domains:
+        return []
+    pres = database.query(
+        f"""SELECT contact_id, company_id, normalized_domain, full_name, title
+            FROM people WHERE normalized_domain IN ({_sql_in_list(domains)})""",
+        datasets={"people"}, max_rows=1000,
+    )
+    return _most_senior_per_company(pres["rows"])
+
+
+def _bridge_ueis_to_domains(ueis: list[str]) -> list[str]:
+    """Bridge a batch of recipient UEIs to their normalized web domains via the
+    `sam_master_domains` SAM index — the proven Lance BTREE scanner pushdown on `uei` (NOT
+    the DuckDB→substrait path). Fails LOUDLY when the bridge dataset is not registered in the
+    active sink, so a recipient_uei audience can never silently resolve to zero contacts."""
+    if _UEI_BRIDGE_DATASET not in database.get_registry():
+        raise RuntimeError(
+            f"cannot enroll a recipient_uei-keyed audience: the UEI→domain bridge dataset "
+            f"{_UEI_BRIDGE_DATASET!r} is not registered in the active sink. Re-key the "
+            f"audience on 'company_id' or 'contact_id', or land {_UEI_BRIDGE_DATASET} first."
+        )
+    tbl = (
+        database.open_dataset(_UEI_BRIDGE_DATASET)
+        .scanner(filter=f"uei IN ({_sql_in_list(ueis)})", columns=["normalized_domain"])
+        .to_table()
+    )
+    return [d for d in tbl.column("normalized_domain").to_pylist() if d]
+
+
 def _resolve_contacts(rows: list[dict], result_key: str) -> list[dict]:
     """Turn audience rows into contact identities. result_key='contact_id' → the rows
-    already ARE contacts. result_key='company_id' → resolve the most-senior contact at
-    each company from the Lance `people` graph (one batched query)."""
+    already ARE contacts. result_key='company_id' → resolve the most-senior contact at each
+    company from the Lance `people` graph (one batched query). result_key='recipient_uei' →
+    bridge each UEI to its web domain via `sam_master_domains` (BTREE on `uei`), then resolve
+    the most-senior contact at each domain from `people`; this fails LOUDLY when the bridge
+    dataset is unregistered rather than silently resolving zero contacts."""
     if result_key == "contact_id":
         out = []
         for r in rows:
@@ -499,23 +562,21 @@ def _resolve_contacts(rows: list[dict], result_key: str) -> list[dict]:
                             "full_name": r.get("full_name"), "title": r.get("title")})
         return out
 
+    if result_key == "recipient_uei":
+        ueis = [u for u in (str(r.get("recipient_uei") or "").strip().upper() for r in rows) if u]
+        if not ueis:
+            return []
+        return _resolve_by_domains(_bridge_ueis_to_domains(ueis))
+
     company_ids = [str(r["company_id"]) for r in rows if r.get("company_id")]
     if not company_ids:
         return []
-    in_list = ",".join("'" + c.replace("'", "''") + "'" for c in dict.fromkeys(company_ids))
     pres = database.query(
         f"""SELECT contact_id, company_id, normalized_domain, full_name, title
-            FROM people WHERE company_id IN ({in_list})""",
+            FROM people WHERE company_id IN ({_sql_in_list(company_ids)})""",
         datasets={"people"}, max_rows=1000,
     )
-    best: dict[str, dict] = {}
-    for p in pres["rows"]:
-        comp = str(p["company_id"])
-        if comp not in best or _title_rank(p.get("title")) > _title_rank(best[comp].get("title")):
-            best[comp] = p
-    return [{"contact_id": str(p["contact_id"]), "company_id": str(p["company_id"]),
-             "normalized_domain": p.get("normalized_domain"), "full_name": p.get("full_name"),
-             "title": p.get("title")} for p in best.values()]
+    return _most_senior_per_company(pres["rows"])
 
 
 def enroll_leads_from_audience(
