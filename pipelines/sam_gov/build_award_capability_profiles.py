@@ -1,4 +1,4 @@
-"""Build worker — govcon_award_capability_profiles: THE PRODUCT (spec §10 / build plan PHASE 2).
+"""Build worker — govcon_award_solicitation_profiles: THE PRODUCT (spec §10 / build plan PHASE 2).
 
 One row per federal award at the EXPLODED `award_keys[]` grain, joining the three durable govcon
 sinks into a single deterministic, idempotent, citeable capability profile:
@@ -16,7 +16,7 @@ GRAIN   1 row per distinct EXPLODED `contract_award_unique_key` over the resourc
         exploded ≥ inline-key floor (anti-pattern #5: a count near the inline floor means the
         fan-out got dropped).
 
-SoR     s3://data-sink/active/govcon_award_capability_profiles/  (Lance v2.1; derived, OVERWRITE).
+SoR     s3://data-sink/active/govcon_award_solicitation_profiles/  (Lance v2.1; derived, OVERWRITE).
         **No window suffix (operator naming decision 2026-06-14, overrides the plan's _90day):** the
         window is DATA — `award_last_modified_date` (the canonical window column) + `award_action_
         date` + the `built_at` run stamp. "last 90 days" is a column filter; widening the window is
@@ -30,7 +30,7 @@ IDEMPOTENT  overwrite-mode snapshot; deterministic rollups (no Math.random, no w
 CUI EGRESS INVARIANT (anti-pattern #10)  the profile carries NO verbatim chunk text. `scope_summary`
         is sourced only from `govcon_doc_scope`, which is `marked_resource=false` by
         construction (marked docs are bracketed out of the LLM lane). `req_cert_tags` /
-        `top_labor_categories` / `capability_tags` are normalized / controlled-vocab values, never
+        `top_labor_categories` / `solicitation_scope_tags` are normalized / controlled-vocab values, never
         raw quotes. `evidence_quote` / `requirement_detail` are deliberately absent from the schema.
         `build()` asserts (a) doc_scope has zero marked rows and (b) requirements marked rows carry
         no verbatim text, then refuses to write on violation. Citations for serving resolve at query
@@ -279,7 +279,7 @@ def _assemble(so):
         FROM tag_src
     ),
     tag_roll AS (
-        SELECT contract_award_unique_key, list(t ORDER BY rk) AS capability_tags
+        SELECT contract_award_unique_key, list(t ORDER BY rk) AS solicitation_scope_tags
         FROM tag_ranked WHERE rk <= {TAG_CAP} GROUP BY 1
     ),
     summary_ranked AS (
@@ -324,7 +324,7 @@ def _assemble(so):
         pa.federal_action_obligation, pa.total_dollars_obligated,
         pa.base_and_all_options_value, pa.current_total_value_of_award,
         sr.scope_summary,
-        tr.capability_tags,
+        tr.solicitation_scope_tags,
         coalesce(rr.requires_clearance, false) AS requires_clearance,
         CASE rr.clr_ord {' '.join(f"WHEN {o} THEN '{lvl}'" for o, lvl in _ORD_TO_LEVEL.items())}
              ELSE NULL END AS req_clearance_level_max,
@@ -523,7 +523,7 @@ def query():
     con = _duck()
     con.register("prof", ds.scanner(columns=[
         "contract_award_unique_key", "recipient_uei", "recipient_name", "awarding_agency_name",
-        "naics_code", "capability_tags", "requires_clearance", "req_clearance_level_max",
+        "naics_code", "solicitation_scope_tags", "requires_clearance", "req_clearance_level_max",
         "requires_cmmc", "req_cert_tags", "top_labor_categories", "source_resource_ids",
         "scope_summary", "marked_award"]).to_table())
     con.register("req", rq.scanner(columns=[
@@ -538,7 +538,7 @@ def query():
                top_labor_categories, source_resource_ids, marked_award,
                substr(scope_summary, 1, 240) AS scope_excerpt
         FROM prof
-        WHERE list_contains(capability_tags, '{tag}')
+        WHERE list_contains(solicitation_scope_tags, '{tag}')
           AND requires_clearance = true
           AND req_clearance_level_max IN ({allowed_sql})
           {cmmc_clause}
@@ -549,18 +549,18 @@ def query():
 
     total = con.execute(f"""
         SELECT count(*) FROM prof
-        WHERE list_contains(capability_tags, '{tag}') AND requires_clearance = true
+        WHERE list_contains(solicitation_scope_tags, '{tag}') AND requires_clearance = true
           AND req_clearance_level_max IN ({allowed_sql}) {cmmc_clause}
     """).fetchone()[0]
     distinct_companies = con.execute(f"""
         SELECT count(DISTINCT recipient_uei) FROM prof
-        WHERE list_contains(capability_tags, '{tag}') AND requires_clearance = true
+        WHERE list_contains(solicitation_scope_tags, '{tag}') AND requires_clearance = true
           AND req_clearance_level_max IN ({allowed_sql}) {cmmc_clause}
           AND recipient_uei IS NOT NULL
     """).fetchone()[0]
 
     print(json.dumps({
-        "query": f"capability_tags ∋ '{tag}' AND requires_clearance≥{min_clr}"
+        "query": f"solicitation_scope_tags ∋ '{tag}' AND requires_clearance≥{min_clr}"
                  f"{' AND requires_cmmc' if require_cmmc else ''}",
         "matched_award_rows": total, "distinct_companies": distinct_companies,
         "showing": len(matches)}, indent=2))
@@ -627,7 +627,7 @@ def drop_legacy_shell():
 
 
 def main():
-    p = argparse.ArgumentParser(description="Build govcon_award_capability_profiles (plan PHASE 2).")
+    p = argparse.ArgumentParser(description="Build govcon_award_solicitation_profiles (plan PHASE 2).")
     p.add_argument("cmd", choices=["build", "verify", "query", "drop_legacy_shell"])
     p.add_argument("--content-hash", action="store_true", help="verify: include idempotency hash")
     a = p.parse_args()

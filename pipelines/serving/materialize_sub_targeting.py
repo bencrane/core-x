@@ -49,7 +49,7 @@ from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
 from pipelines.sam_gov.sam_attachment_extract_90day import _r2_storage_options  # noqa: E402
 
 ACTIVE = "s3://data-sink/active"
-PROFILES_URI = f"{ACTIVE}/govcon_award_capability_profiles/"
+PROFILES_URI = f"{ACTIVE}/govcon_award_solicitation_profiles/"
 REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements/"
 SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges/"
@@ -94,7 +94,7 @@ def _assemble(so):
 
     con.register("prof", prof.scanner(columns=[
         "contract_award_unique_key", "recipient_uei", "recipient_name", "naics_code",
-        "capability_tags", "source_resource_ids"]).to_table())
+        "solicitation_scope_tags", "source_resource_ids"]).to_table())
     con.register("req", req.scanner(columns=[
         "resource_id", "requirement_id", "requirement_type", "requirement_value", "validated"]).to_table())
     con.register("sub", sub.scanner(columns=[
@@ -342,7 +342,7 @@ def northstar():
     con = _duck()
     con.register("t", ds.to_table())
     con.register("prof", prof.scanner(columns=[
-        "contract_award_unique_key", "recipient_name", "capability_tags",
+        "contract_award_unique_key", "recipient_name", "solicitation_scope_tags",
         "requires_clearance", "req_clearance_level_max", "requires_cmmc"]).to_table())
     con.register("req", req.scanner(columns=["requirement_id", "requirement_type", "requirement_value",
                                              "clearance_level", "marked_resource", "validated"]).to_table())
@@ -351,7 +351,7 @@ def northstar():
     rows = con.execute(f"""
         WITH target_awards AS (
             SELECT contract_award_unique_key AS award, recipient_name AS prime_name
-            FROM prof WHERE list_contains(capability_tags, '{tag}') AND requires_clearance
+            FROM prof WHERE list_contains(solicitation_scope_tags, '{tag}') AND requires_clearance
               AND req_clearance_level_max IN ('SECRET','TOP_SECRET','TS_SCI')
         )
         SELECT ta.prime_name, t.contract_award_unique_key, t.candidate_sub_uei, t.edge_type,
@@ -364,12 +364,12 @@ def northstar():
     cols = [d[0] for d in con.description]
     n_awards, n_subs = con.execute(f"""
         WITH target_awards AS (SELECT contract_award_unique_key AS award FROM prof
-            WHERE list_contains(capability_tags, '{tag}') AND requires_clearance
+            WHERE list_contains(solicitation_scope_tags, '{tag}') AND requires_clearance
               AND req_clearance_level_max IN ('SECRET','TOP_SECRET','TS_SCI'))
         SELECT count(DISTINCT t.contract_award_unique_key), count(DISTINCT t.candidate_sub_uei)
         FROM t JOIN target_awards ta ON t.contract_award_unique_key = ta.award
     """).fetchone()
-    print(json.dumps({"query": f"capability_tags ∋ '{tag}' AND clearance≥SECRET → sub bench",
+    print(json.dumps({"query": f"solicitation_scope_tags ∋ '{tag}' AND clearance≥SECRET → sub bench",
                       "target_award_rows_with_subs": n_awards, "distinct_candidate_subs": n_subs,
                       "showing": len(rows)}, indent=2))
     for r in rows:

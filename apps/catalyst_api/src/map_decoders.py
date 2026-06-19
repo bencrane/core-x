@@ -53,7 +53,7 @@ class Decoder:
     synonyms: dict[str, dict]         # NL term -> {"field","op","value"} (canned + prompt rows)
 
 
-# ── PHASE-3 capability controlled vocabularies (frozen from govcon_award_capability_profiles,
+# ── PHASE-3 capability controlled vocabularies (frozen from govcon_award_solicitation_profiles,
 # probed live 2026-06-14). These bound the TRANSLATE output space and EXECUTE enum-checks.
 _CLEARANCE_LEVELS = ("PUBLIC_TRUST", "CONFIDENTIAL", "SECRET", "TOP_SECRET", "TS_SCI")
 _CAPABILITY_TAGS = (
@@ -89,7 +89,7 @@ _LABOR_CATEGORIES = (
     "site_superintendent", "surveyor", "translator", "truck_driver", "welder")
 
 # ── Teaming prime canonical-name sets (probed live 2026-06-19 from
-# govcon_subawardee_capability_profiles.teaming_prime_names; stored as full UPPERCASE legal
+# govcon_subawardee_profiles.teaming_prime_names; stored as full UPPERCASE legal
 # names, one company → several variants). array_has needs the EXACT element, so a "lockheed"
 # synonym maps to has_any over the observed corporate-entity variants. Subsidiaries that carry a
 # distinct brand are kept out (e.g. Lockheed Sippican/Services) — the synonym is the parent family.
@@ -109,7 +109,7 @@ _TEAMING_SAIC = ("SCIENCE APPLICATIONS INTERNATIONAL CORPORATION",
                  "SCIENCE APPLICATIONS INTERNATIONAL CORP")
 
 # ── Cert-token canonical sets for the SUB-only req_cert_tags axis (probed live 2026-06-19 from
-# govcon_subawardee_capability_profiles.req_cert_tags — a 172-distinct OPEN vocabulary, too
+# govcon_subawardee_profiles.req_cert_tags — a 172-distinct OPEN vocabulary, too
 # granular/niche for an enum). The field stays open-valued; these synonyms map common cert
 # phrasings to has_any over the EXACT stored tokens (array_has needs the exact list element).
 # Every token below was confirmed present in the live column.
@@ -126,18 +126,18 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v5",   # v4→v5: SUB-only self-reported axis (capability tags + cert tags, UNGATED)
+    version="winners.v6",   # v4→v5: SUB-only self-reported axis (capability tags + cert tags, UNGATED)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date",
                 # PHASE-3 capability surface (structured only — NO chunk-derived verbatim text)
                 "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
-                "requires_cmmc", "capability_tags", "labor_categories",
+                "requires_cmmc", "solicitation_scope_tags", "labor_categories",
                 "covered_award_count", "covered_award_keys",
                 # SUB-only teaming surface (null on prime rows)
                 "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names",
                 # SUB-only self-reported surface (null on prime rows + on subs with no signal)
-                "self_reported_capability_tags", "req_cert_tags"),
+                "subaward_description_tags", "req_cert_tags"),
     fields={
         "naics2":           FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "state":            FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
@@ -157,7 +157,7 @@ WINNERS = Decoder(
                                              enum=_CLEARANCE_LEVELS, index="BITMAP", gated=True),
         "requires_cmmc":       FieldSpec("requires_cmmc", "bool", ("=",), index="BITMAP", gated=True),
         # list<string> capability columns — set membership via Lance array_has / array_has_any.
-        "capability_tag":      FieldSpec("capability_tags", "list", ("has", "has_any"),
+        "solicitation_scope_tag":      FieldSpec("solicitation_scope_tags", "list", ("has", "has_any"),
                                          enum=_CAPABILITY_TAGS, gated=True),
         "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
                                          enum=_LABOR_CATEGORIES, gated=True),
@@ -171,10 +171,10 @@ WINNERS = Decoder(
         # observed canonical variant sets, since array_has needs the exact stored element).
         "teaming_prime":       FieldSpec("teaming_prime_names", "list", ("has", "has_any")),
         # ── SUB-only SELF-REPORTED axis (NOT gated: 13,792 subs self-report capability vs. the
-        # ~4,220 scope-extracted slice the gated capability_tag axis reaches — gating would defeat
-        # the long-tail purpose). Distinct, ADDITIONAL field; does NOT replace gated capability_tag.
+        # ~4,220 scope-extracted slice the gated solicitation_scope_tag axis reaches — gating would defeat
+        # the long-tail purpose). Distinct, ADDITIONAL field; does NOT replace gated solicitation_scope_tag.
         # Same 77-tag controlled vocab → reuse _CAPABILITY_TAGS for the enum. Null on prime rows. ──
-        "self_reported_capability_tag": FieldSpec("self_reported_capability_tags", "list",
+        "subaward_description_tag": FieldSpec("subaward_description_tags", "list",
                                                   ("has", "has_any"), enum=_CAPABILITY_TAGS),
         # Certification tokens (open-valued — 172-distinct granular vocab; the synonyms below map
         # common cert phrasings to has_any over the exact stored tokens). Null on prime rows.
@@ -193,7 +193,7 @@ WINNERS = Decoder(
         "top secret":       {"field": "req_clearance_level_max", "op": "in",
                              "value": ["TOP_SECRET", "TS_SCI"]},
         "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
-        "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
+        "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
         "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
         # SUB-only teaming phrasings. Prime names are exact stored legal names → has_any over the
         # observed canonical variant set (so "teamed with lockheed" hits every Lockheed entity).
@@ -209,12 +209,12 @@ WINNERS = Decoder(
         "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
         "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
         # ── SUB-only SELF-REPORTED phrasings. These route the "self-report"/"self-reported" cue to
-        # the UNGATED self_reported_capability_tag field — the distinct long-tail axis, NOT the gated
-        # capability_tag axis (whose own synonyms electrical/electricians are left untouched). ──
-        "self-report software development":   {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
-        "self-reported software development": {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
-        "self-report aircraft maintenance":   {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
-        "self-reported aircraft maintenance": {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+        # the UNGATED subaward_description_tag field — the distinct long-tail axis, NOT the gated
+        # solicitation_scope_tag axis (whose own synonyms electrical/electricians are left untouched). ──
+        "self-report software development":   {"field": "subaward_description_tag", "op": "has", "value": "software_development"},
+        "self-reported software development": {"field": "subaward_description_tag", "op": "has", "value": "software_development"},
+        "self-report aircraft maintenance":   {"field": "subaward_description_tag", "op": "has", "value": "aircraft_maintenance"},
+        "self-reported aircraft maintenance": {"field": "subaward_description_tag", "op": "has", "value": "aircraft_maintenance"},
         # ── Certification phrasings → has_any over the EXACT stored cert tokens (open vocab). ──
         "cmmc certification":  {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CMMC)},
         "iso 9001":            {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_9001)},

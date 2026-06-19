@@ -95,7 +95,7 @@ ENTITY_AWARD_LINES_GOLD_URI = os.environ.get(
 # either (404 only when BOTH are empty).
 SUBAWARDEE_CAPABILITY_PROFILES_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_PROFILES_LANCE_URI",
-    "s3://data-sink/active/govcon_subawardee_capability_profiles/"
+    "s3://data-sink/active/govcon_subawardee_profiles/"
 )
 CONTRACT_SUBAWARD_URI = os.environ.get(
     "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"
