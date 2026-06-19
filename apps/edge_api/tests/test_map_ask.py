@@ -195,3 +195,41 @@ def test_teaming_prime_synonym_values_match_catalyst():
         assert cat_syn[term] == edge_syn[term], f"teaming synonym {term!r} drift edge vs catalyst"
         assert cat_syn[term]["field"] == "teaming_prime"
         assert cat_syn[term]["op"] == "has_any"
+
+
+# ── SUB-only SELF-REPORTED axis: present both sides, UNGATED, enum reused, cert synonyms in sync ──
+def test_self_reported_axis_present_both_sides_and_ungated():
+    sr = {"self_reported_capability_tag", "req_cert_tag"}
+    assert sr <= set(cat.DECODERS["winners"].fields)
+    assert sr <= set(edge.DECODERS["winners"]["fields"])
+    # Must NOT be gated — gating would clip the 13,792-sub long tail to the scope-extracted slice.
+    for n in sr:
+        assert cat.DECODERS["winners"].fields[n].gated is False, f"{n} must not be gated"
+
+
+def test_self_reported_capability_reuses_controlled_capability_enum_both_sides():
+    # Same 77-tag controlled vocab as the gated capability_tag axis — on both sides.
+    cap_enum = set(cat.DECODERS["winners"].fields["capability_tag"].enum)
+    assert set(cat.DECODERS["winners"].fields["self_reported_capability_tag"].enum) == cap_enum
+    assert set(edge.DECODERS["winners"]["fields"]["self_reported_capability_tag"]["enum"]) == cap_enum
+    # req_cert_tag is OPEN-valued on both sides (no enum) — the 172-distinct cert vocab is too granular.
+    assert cat.DECODERS["winners"].fields["req_cert_tag"].enum is None
+    assert edge.DECODERS["winners"]["fields"]["req_cert_tag"].get("enum") is None
+
+
+def test_self_reported_and_cert_synonym_values_match_catalyst():
+    # The self-report cues + cert-token sets are version-keyed allowlist values: a drift means a
+    # "self-report software development" or "iso 9001" sentence resolves differently per side.
+    cat_syn = cat.DECODERS["winners"].synonyms
+    edge_syn = edge.DECODERS["winners"]["synonyms"]
+    for term in ("self-report software development", "self-reported software development",
+                 "self-report aircraft maintenance", "self-reported aircraft maintenance",
+                 "cmmc certification", "iso 9001", "iso 27001", "iso 14001", "iso 17025",
+                 "as9100", "faa part 145", "cissp", "pmp", "osha 30"):
+        assert term in cat_syn and term in edge_syn, f"self-reported/cert synonym {term!r} missing a side"
+        assert cat_syn[term] == edge_syn[term], f"synonym {term!r} drift edge vs catalyst"
+    # Self-report cues route to the UNGATED self_reported field, not the gated capability_tag.
+    assert cat_syn["self-report software development"]["field"] == "self_reported_capability_tag"
+    # Cert cues route to req_cert_tag via has_any over exact tokens.
+    assert cat_syn["iso 9001"]["field"] == "req_cert_tag"
+    assert cat_syn["iso 9001"]["op"] == "has_any"

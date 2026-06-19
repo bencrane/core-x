@@ -78,10 +78,24 @@ _TEAMING_BOOZ_ALLEN = ("BOOZ ALLEN HAMILTON INC.", "BOOZ ALLEN HAMILTON INC")
 _TEAMING_SAIC = ("SCIENCE APPLICATIONS INTERNATIONAL CORPORATION",
                  "SCIENCE APPLICATIONS INTERNATIONAL CORP")
 
+# Cert-token canonical sets for the SUB-only req_cert_tags axis — MUST match
+# catalyst_api/src/map_decoders.py (the synonym values are part of the version-keyed allowlist;
+# the parity test asserts the cert synonyms match byte-for-byte).
+_CERT_CMMC = ("cmmc", "cmmc_l1", "cmmc_l2")
+_CERT_ISO_9001 = ("iso_9001",)
+_CERT_ISO_27001 = ("iso_27001",)
+_CERT_ISO_14001 = ("iso_14001",)
+_CERT_ISO_17025 = ("iso_17025",)
+_CERT_AS9100 = ("as9100", "as9110")
+_CERT_FAA_PART_145 = ("faa_part_145", "faa_part_145_certification", "faa_part_145_repair_station")
+_CERT_CISSP = ("cissp",)
+_CERT_PMP = ("pmp", "pmi_pmp", "project_management_professional")
+_CERT_OSHA_30 = ("osha_30", "osha_30_hour")
+
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v4",
-        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions.",
+        "version": "winners.v5",
+        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): self_reported_capability_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
@@ -108,6 +122,11 @@ DECODERS: dict[str, dict] = {
                                         "desc": "count of DISTINCT primes this subawardee has teamed with (last 5y). 'teamed with 5+ primes' → n_teaming_primes >= 5. Subawardees only"},
             "teaming_prime":           {"type": "list", "ops": ("has", "has_any"),
                                         "desc": "EXACT full legal name(s) of primes the subawardee has subcontracted under. Use the known synonyms for major primes ('teamed with Lockheed' → use the 'lockheed' synonym); for a prime not in the synonyms, put it in unmapped (exact legal name required). Subawardees only"},
+            # ── SUBAWARDEE self-reported axis (the long-tail signal subs assert about themselves) ──
+            "self_reported_capability_tag": {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the SUBAWARDEE self-reports doing (set membership; same 77-tag vocab as capability_tag, but self-asserted across the FULL sub long tail rather than the scope-extracted slice). 'subs that self-report software development' → self_reported_capability_tag has 'software_development'. Subawardees only"},
+            "req_cert_tag":            {"type": "list", "ops": ("has", "has_any"),
+                                        "desc": "certification the SUBAWARDEE holds, as a granular open-vocabulary token (e.g. 'iso_9001', 'cmmc', 'as9100', 'cissp', 'pmp'). Prefer the known cert synonyms ('iso 9001', 'as9100', 'cmmc certification', 'faa part 145'); for a cert not in the synonyms put the exact lowercase token, or surface it in unmapped if unsure. Subawardees only"},
         },
         "synonyms": {
             "construction":  {"field": "naics2", "op": "=", "value": "23"},
@@ -133,6 +152,22 @@ DECODERS: dict[str, dict] = {
             "leidos":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LEIDOS)},
             "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
             "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
+            # SUBAWARDEE self-reported phrasings (route the self-report cue to the UNGATED axis).
+            "self-report software development":   {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
+            "self-reported software development": {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"},
+            "self-report aircraft maintenance":   {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+            "self-reported aircraft maintenance": {"field": "self_reported_capability_tag", "op": "has", "value": "aircraft_maintenance"},
+            # Certification phrasings → has_any over the EXACT stored cert tokens (open vocab).
+            "cmmc certification":  {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CMMC)},
+            "iso 9001":            {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_9001)},
+            "iso 27001":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_27001)},
+            "iso 14001":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_14001)},
+            "iso 17025":           {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_ISO_17025)},
+            "as9100":              {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_AS9100)},
+            "faa part 145":        {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_FAA_PART_145)},
+            "cissp":               {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_CISSP)},
+            "pmp":                 {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_PMP)},
+            "osha 30":             {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_OSHA_30)},
         },
     },
     "company": {
@@ -321,7 +356,8 @@ _ROUTING_CUES = {
     "winners": "PER-WINNER ROLLUPS of the last 90 days: 'entities whose total won in the"
                " window exceeds $X', aggregate award_count over the window. ALSO the SUBAWARDEE"
                " TEAMING axis: 'subs that have teamed with <prime>', '$X+ teaming', 'subs that"
-               " teamed with N+ primes'.",
+               " teamed with N+ primes'. ALSO the SUBAWARDEE SELF-REPORTED axis: 'subs that"
+               " self-report <capability>', 'subs with an ISO 9001 / CMMC / AS9100 certification'.",
 }
 
 
