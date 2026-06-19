@@ -74,7 +74,7 @@ def substitute_tokens(html_doc: str, values: dict[str, str], *, escape: bool = T
     return _TOKEN_RE.sub(repl, html_doc)
 
 
-# Render identity, resolved from an organization (``proposals.queries.get_org_identity``):
+# Render identity, resolved from an organization:
 #   {"display_name": str, "legal_name": str, "theme": {color tokens}}
 # Absent identity (or any missing key) → the built-in Rare Structure default, so a null/partial org
 # theme can never break a render.

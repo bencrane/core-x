@@ -20,7 +20,6 @@ Mounted at ``/webhooks/stripe`` (NOT under ``/api/v1``) — the path Stripe post
 """
 from __future__ import annotations
 
-import datetime as _dt
 import json
 import logging
 from typing import Any
@@ -31,7 +30,6 @@ from .. import config
 from ..db import get_db_connection
 from ..document_payments import queries as doc_pay_queries
 from ..document_payments import stripe as doc_pay_stripe
-from ..payments import queries as pay_queries
 
 logger = logging.getLogger(__name__)
 
@@ -65,53 +63,14 @@ async def stripe_webhook(
     event_type = str(event.get("type") or "")
     event_id = str(event.get("id") or "")
     obj = (event.get("data") or {}).get("object") or {}
-    intent_id = obj.get("id")
 
-    # Dispatch by payment kind. Direct-to-documenso "document" payments carry metadata.kind="document"
-    # + the (opportunity_id, document_id) pair → advance business.document_payments. Everything else
-    # falls through to the legacy proposal-ref path below, which is left untouched.
+    # Direct-to-documenso "document" payments carry metadata.kind="document" + the
+    # (opportunity_id, document_id) pair → advance business.document_payments. This is the only
+    # payment kind edge_api mints; anything without it is ignored.
     if (obj.get("metadata") or {}).get("kind") == "document":
         return await _handle_document_payment(event_type, event_id, obj, raw)
 
-    ref = (obj.get("metadata") or {}).get("ref")
-
-    status = _EVENT_TO_STATUS.get(event_type)
-    if status is None or not intent_id:
-        return {"ok": True, "ignored": True, "event": event_type}
-
-    # The verbatim, signature-verified body (plain JSON) is the audit record.
-    try:
-        envelope = json.loads(raw)
-    except ValueError:
-        envelope = {"raw_unparseable": True}
-
-    async with get_db_connection() as conn:
-        if not ref:
-            ref = await pay_queries.ref_for_intent(conn, intent_id)
-        if not ref:
-            return {"ok": True, "ignored": True, "event": event_type, "reason": "no matching proposal"}
-
-        # 1) AUDIT — append the verbatim event first (idempotent on the Stripe event id).
-        first_seen = await pay_queries.insert_event(
-            conn, ref=ref, source="stripe", event_type=event_type, idempotency_key=event_id,
-            payload=envelope,
-        )
-        # 2) ADVANCE — monotonic; out-of-order/duplicate deliveries cannot regress state.
-        paid_at = _dt.datetime.now(_dt.timezone.utc) if status == "succeeded" else None
-        amount_cents = obj.get("amount") if status == "succeeded" else None
-        applied = await pay_queries.advance_payment_status(
-            conn, intent_id=intent_id, status=status, paid_at=paid_at, amount_cents=amount_cents,
-        )
-
-    if status == "succeeded" and first_seen and applied:
-        # SEAM: hand durable fulfillment to Trigger.dev here (provision, receipt, CRM/ledger fan-out).
-        # Intentionally not wired yet — the engagement_events row above is the audit of record.
-        logger.info("engagement %s PAID (intent %s) — fulfillment seam", ref, intent_id)
-
-    logger.info(
-        "stripe webhook %s ref=%s applied=%s first_seen=%s", event_type, ref, applied, first_seen
-    )
-    return {"ok": True, "event": event_type, "status": status, "applied": applied}
+    return {"ok": True, "ignored": True, "event": event_type, "reason": "not a document payment"}
 
 
 async def _handle_document_payment(

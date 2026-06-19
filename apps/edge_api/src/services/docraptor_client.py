@@ -1,10 +1,10 @@
 """DocRaptor (PrinceXML) HTML → PDF — LIVE mode.
 
-The agreement HTML (``proposals.agreement_template``) is rendered to a clean, paged PDF that
-becomes the legal artifact Documenso signs + seals. Always ``test=False`` — DocRaptor's free
-test output is watermarked, so a clean document requires a paid production render.
+Authored engagement-template HTML (``proposals.template_render``, via ``proposal_templates_v1``) is
+rendered to a clean, paged PDF. Always ``test=False`` — DocRaptor's free test output is watermarked,
+so a clean document requires a paid production render.
 
-Returns the raw PDF bytes inline (synchronous render) for immediate upload to Documenso.
+Returns the raw PDF bytes inline (synchronous render).
 """
 from __future__ import annotations
 
