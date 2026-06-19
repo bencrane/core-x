@@ -61,6 +61,22 @@ def _sql_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+# Documented agent-facing column contracts — the EXACT projected sets the point-lookup
+# docstrings promise (and the benchmark's COMPANY_DOC/PEOPLE_DOC golden keys). Passed as
+# the Lance scanner ``columns=`` so only these are read/deserialized from R2 instead of the
+# full wide row; the wide undocumented filler never crosses the object-store boundary. These
+# lists ARE the contract — adding a documented column means editing both the docstring and
+# this list. Order matches the docstrings.
+_COMPANY_COLUMNS = [
+    "company_id", "company_name", "normalized_domain",
+    "company_linkedin_url", "source_platform",
+]
+_PEOPLE_COLUMNS = [
+    "contact_id", "company_id", "normalized_domain", "full_name",
+    "first_name", "last_name", "title", "person_linkedin_url", "source_platform",
+]
+
+
 # ── Semantic point-lookups (Lance BTREE pushdown, sub-100 ms) ────────────────
 def search_company_by_domain(domain: str) -> dict[str, Any]:
     """Look up companies by web domain. Pushes the predicate into the Lance
@@ -81,7 +97,11 @@ def search_company_by_domain(domain: str) -> dict[str, Any]:
         return {"normalized_domain": None, "match_count": 0, "companies": []}
     tbl = (
         database.open_dataset("companies")
-        .scanner(filter=f"normalized_domain = {_sql_str(norm)}", limit=_LOOKUP_LIMIT)
+        .scanner(
+            filter=f"normalized_domain = {_sql_str(norm)}",
+            columns=_COMPANY_COLUMNS,
+            limit=_LOOKUP_LIMIT,
+        )
         .to_table()
     )
     rows = tbl.to_pylist()
@@ -103,7 +123,11 @@ def search_people_by_domain(domain: str) -> dict[str, Any]:
         return {"normalized_domain": None, "match_count": 0, "people": []}
     tbl = (
         database.open_dataset("people")
-        .scanner(filter=f"normalized_domain = {_sql_str(norm)}", limit=_LOOKUP_LIMIT)
+        .scanner(
+            filter=f"normalized_domain = {_sql_str(norm)}",
+            columns=_PEOPLE_COLUMNS,
+            limit=_LOOKUP_LIMIT,
+        )
         .to_table()
     )
     rows = tbl.to_pylist()
