@@ -129,6 +129,32 @@ def test_memoize_disabled_bypasses():
     assert calls["n"] == 3                  # disabled → never cached
 
 
+def test_cache_enabled_env_kill_switch(monkeypatch):
+    # Default ON (var absent) → caching active.
+    monkeypatch.delenv("GTM_LOOKUP_CACHE_DISABLED", raising=False)
+    assert lookup_cache.cache_enabled() is True
+    # Each documented disabling token flips it OFF.
+    for tok in ("1", "true", "yes"):
+        monkeypatch.setenv("GTM_LOOKUP_CACHE_DISABLED", tok)
+        assert lookup_cache.cache_enabled() is False, tok
+    # An unrelated value leaves caching ON (only the documented tokens disable).
+    monkeypatch.setenv("GTM_LOOKUP_CACHE_DISABLED", "0")
+    assert lookup_cache.cache_enabled() is True
+
+    # And the decorator honors the real cache_enabled() default-ON path end-to-end.
+    monkeypatch.delenv("GTM_LOOKUP_CACHE_DISABLED", raising=False)
+    clk = _Clock()
+    calls = {"n": 0}
+
+    @lookup_cache.memoize(ttl_s=1000, maxsize=16, clock=clk)
+    def f(x):
+        calls["n"] += 1
+        return x
+
+    f(5); f(5)
+    assert calls["n"] == 1                   # default-ON → 2nd call served from cache
+
+
 def test_clear_all_resets():
     clk = _Clock()
     calls = {"n": 0}
