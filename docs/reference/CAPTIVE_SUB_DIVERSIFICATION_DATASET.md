@@ -1,4 +1,11 @@
-# captive_sub_diversification — dataset spec
+# captive_sub_diversification — dataset spec (RETIRED — now a view)
+
+> **⛔ SUPERSEDED 2026-06-19:** this materialized dataset has been **dropped**. "Captive" is now a
+> derived **view** over the full-universe substrate `govcon_sub_diversification`
+> (spec: `docs/reference/SUB_DIVERSIFICATION_DATASET.md`):
+> `SELECT * FROM govcon_sub_diversification WHERE n_incumbent_primes = 1 AND sub_n_subawards >= 3 AND sub_total_dollars BETWEEN 500000 AND 50000000`
+> — which reproduces this dataset (3,156 subs / 2,343 NAICS2-aligned / 28,923 rows, ±feed drift).
+> The content below is historical.
 
 > **⚠️ Renamed 2026-06-19 ([#542](https://github.com/bencrane/core-x/pull/542)):** the SAM/govcon `_90day` suffix was dropped plane-wide (window-as-data discipline — the acquisition window is a read-time predicate, not part of the stored entity's name). Every `*_90day` dataset/ledger referenced below now lives at its de-suffixed canonical name (e.g. `captive_sub_diversification_90day` → `captive_sub_diversification`, `govcon_scope_vectors_90day` → `govcon_scope_vectors`). R2 was server-side-copied, so all versions/indices/row-counts carry over unchanged; figures below predate the rename but remain valid under the new names.
 
