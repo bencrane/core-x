@@ -33,6 +33,18 @@ set. Invariant to projection (undocumented-column removal does not change it), s
 correctness across optimization iterations.
 `components_ms` (stdout JSON): per-phase best-of-N breakdown so the optimizable share (the
 projection-eligible point-lookups vs the DuckDB audience SQL) is visible.
+
+REPRESENTATIVENESS CAVEAT (verified 2026-06-19 vs doppler core-x/prd). These fixtures are
+synthetically WIDE (filler columns on companies/people) to make projection pushdown
+*measurable*. The REAL prod datasets are NARROW — live `companies` has exactly the 5
+documented columns and `people` exactly the 9 — so projection pushdown is a no-op for
+production bytes on those two datasets; its value there is contract-hygiene (pinning the
+documented output against future schema widening), NOT speed. The local projection gain this
+benchmark reports therefore OVER-states the production perf benefit. The durable, real finding
+from this harness: cProfile shows ~86% of a retrieval pass is native Lance scan execution and
+all gateway-side Python is <1% of a run — the gtm-mcp retrieval path is already well-optimized,
+and the remaining cost (native scan + R2 I/O) is upstream of anything gateway code can shave.
+Audit trail: ~/Desktop/hq/directives/2026-06-18-gtm-mcp-lance-retrieval-opt.md.
 """
 from __future__ import annotations
 
