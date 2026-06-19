@@ -5,8 +5,8 @@ spec §17 fixed-name module (docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC_V
 structured extraction artifact; the LLM lane lands here later as Phase 2 of the build plan).
 
 WHAT IT DOES (one pass per resource over the three READ-ONLY chunk sinks):
-  * INPUT = all resources in govcon_scope_vectors_90day / govcon_pricing_90day /
-    govcon_unknown_90day (ALL unknown docs — the lexicon gate applies to the LLM lane only).
+  * INPUT = all resources in govcon_scope_vectors / govcon_pricing /
+    govcon_unknown (ALL unknown docs — the lexicon gate applies to the LLM lane only).
   * Re-assembles each resource's text in `chunk_ix` order via OVERLAP-AWARE suffix→prefix matching
     (the chunker whitespace-snaps and .strip()s, so the overlap is ~CHUNK_OVERLAP, never exactly
     CHUNK_OVERLAP; fixed-width stripping corrupts text). A char-offset→chunk_id interval map built
@@ -27,14 +27,14 @@ WHAT IT DOES (one pass per resource over the three READ-ONLY chunk sinks):
     `place_of_performance` (also doc-verbatim free text) are NULLed under the same rule
     (anti-pattern #10: verbatim text from marked docs never reaches serving). Structured/enum
     fields stay.
-  * Same pass emits govcon_labor_demand_90day (spec §3.6 exact): one row per
+  * Same pass emits govcon_labor_demand (spec §3.6 exact): one row per
     (resource, labor_category_norm); `demand_id = <resource_id>:<n>` with n assigned
     DETERMINISTICALLY by rank over (labor_category_norm, first chunk_ix) — never a write-order
     ordinal. Also computes `lexicon_hit_fullbody` over the reassembled body for the ledger.
 
 IDEMPOTENCY (plan §5 / anti-pattern #3 — scoped delete-before-merge, the regex lane's own lane):
   * Per flush batch, BEFORE merging: delete("resource_id IN (...) AND extractor LIKE 'regex:%'")
-    on the requirements sink and delete("resource_id IN (...)") on govcon_labor_demand_90day
+    on the requirements sink and delete("resource_id IN (...)") on govcon_labor_demand
     (plan Phase-1 verbatim — the labor sink delete is unscoped because demand_id is a
     deterministic rank, and stale ranks from ANY prior pass must die before the new ranks land).
     Extractor evolution shifts value_norm (→ new requirement_id) and chunking changes shift
@@ -45,7 +45,7 @@ IDEMPOTENCY (plan §5 / anti-pattern #3 — scoped delete-before-merge, the rege
     rows (a transient failure never destroys a prior good extraction).
   * JSONL checkpoint per resource written ONLY AFTER its batch's deletes+merges+ledger are durable;
     resume = ledger regex_state terminal ∪ checkpoint (re-select non-terminal).
-  * Ledger govcon_requirements_extract_ledger_90day merges on resource_id PRESERVING the LLM-lane
+  * Ledger govcon_requirements_extract_ledger merges on resource_id PRESERVING the LLM-lane
     columns (llm_state/batch_id/model/prompt_hash/n_requirements_llm/validation_pass_rate) — the
     regex lane writes batch_id NULL and llm_state='pending' only on first insert.
 

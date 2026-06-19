@@ -19,9 +19,9 @@ EMBED_DIM = 1024
 GPU = "A100"
 ENCODE_BATCH = 384
 SINKS = {
-    "scope": "s3://data-sink/active/govcon_scope_vectors_90day/",
-    "unknown": "s3://data-sink/active/govcon_unknown_90day/",
-    "sub_caps": "s3://data-sink/active/govcon_sub_capability_vectors_90day/",
+    "scope": "s3://data-sink/active/govcon_scope_vectors/",
+    "unknown": "s3://data-sink/active/govcon_unknown/",
+    "sub_caps": "s3://data-sink/active/govcon_sub_capability_vectors/",
 }
 UNMARKED = "embedding IS NULL AND array_length(content_marking) = 0"   # the non-CUI bulk (chunk sinks)
 

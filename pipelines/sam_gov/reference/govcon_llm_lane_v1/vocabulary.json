@@ -4,7 +4,7 @@
   "seeded_from": {
     "naics_sectors": "2022 NAICS 2-digit sectors (capability_tags families)",
     "psc_families": "FPDS PSC service category letters A–Z (capability_tags families)",
-    "govcon_requirement_facets": "live govcon_award_requirements_90day regex lane, probed 2026-06-12 (148,965 rows) — labor_categories + value_norm_hints are the live normalized vocabulary"
+    "govcon_requirement_facets": "live govcon_award_requirements regex lane, probed 2026-06-12 (148,965 rows) — labor_categories + value_norm_hints are the live normalized vocabulary"
   },
   "note": "This file is hashed into prompt_hash (sha256 of template+vocabulary+schema). ANY change requires a prompt_version bump in sam_labor_demand_extract_90day.py.",
   "capability_tags": [

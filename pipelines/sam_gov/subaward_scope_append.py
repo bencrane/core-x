@@ -49,9 +49,9 @@ from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
 
 # (throwaway_uri, shared_uri, schema_fn, sink_kind)
 DEFAULT_PAIRS = [
-    ("s3://data-sink/active/_sublift_scope/",   "s3://data-sink/active/govcon_scope_vectors_90day", _scope_schema,   "scope"),
-    ("s3://data-sink/active/_sublift_unknown/", "s3://data-sink/active/govcon_unknown_90day",        _unknown_schema, "unknown"),
-    ("s3://data-sink/active/_sublift_pricing/", "s3://data-sink/active/govcon_pricing_90day",        _pricing_schema, "pricing"),
+    ("s3://data-sink/active/_sublift_scope/",   "s3://data-sink/active/govcon_scope_vectors", _scope_schema,   "scope"),
+    ("s3://data-sink/active/_sublift_unknown/", "s3://data-sink/active/govcon_unknown",        _unknown_schema, "unknown"),
+    ("s3://data-sink/active/_sublift_pricing/", "s3://data-sink/active/govcon_pricing",        _pricing_schema, "pricing"),
 ]
 HOLDER = "subaward_scope_append"
 LEASE_TTL_S = 24 * 60 * 60

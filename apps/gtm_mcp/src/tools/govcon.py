@@ -1,8 +1,8 @@
 """GovCon scope vector search — hybrid (scalar filter → ANN) retrieval over the
 90-day SAM.gov solicitation scope corpus.
 
-Dataset: ``s3://data-sink/active/govcon_scope_vectors_90day/`` (auto-registered by the
-dynamic registry as ``govcon_scope_vectors_90day``). Written by Phase 2 of
+Dataset: ``s3://data-sink/active/govcon_scope_vectors/`` (auto-registered by the
+dynamic registry as ``govcon_scope_vectors``). Written by Phase 2 of
 ``pipelines/sam_gov/sam_attachment_extract_90day.py`` — one row per ~1,200-char scope
 chunk (SOW/PWS/SOO text) with the join keys and the Phase-4 ``embedding``
 (``list<float32>[1024]``, ``BAAI/bge-large-en-v1.5``, cosine, IVF_PQ).
@@ -37,7 +37,7 @@ from typing import Any
 
 from .. import database, embeddings
 
-DATASET = "govcon_scope_vectors_90day"
+DATASET = "govcon_scope_vectors"
 
 _RETURN_COLUMNS = [
     "chunk_id", "resource_id", "notice_id", "solicitation_number", "naics_code",

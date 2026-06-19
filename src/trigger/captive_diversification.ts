@@ -3,10 +3,10 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
 /**
  * Control plane — captive-sub diversification serving rebuild (weekly).
  *
- * Rebuilds s3://data-sink/active/captive_sub_diversification_90day/ — the "diversify off your
+ * Rebuilds s3://data-sink/active/captive_sub_diversification/ — the "diversify off your
  * one prime" GTM target list: every single-prime captive subawardee scored (BGE ANN over the
  * prime-solicitation scope corpus) against fresh awards won by OTHER primes it is a domain-aligned
- * capability match for. The ANN, full-universe upgrade of govcon_sub_targeting_90day's deterministic
+ * capability match for. The ANN, full-universe upgrade of govcon_sub_targeting's deterministic
  * capability_match leg.
  *
  * Dispatches the Modal `run_build` worker (app "captive-diversification") through the Universal

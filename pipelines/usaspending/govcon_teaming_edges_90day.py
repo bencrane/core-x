@@ -43,7 +43,7 @@ from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
 
 # ─────────────────────────── constants ───────────────────────────
 
-FEED = "govcon_teaming_edges_90day"
+FEED = "govcon_teaming_edges"
 
 PROFILE_URI = os.environ.get(
     "SUBAWARDEE_WORK_PROFILE_URI",

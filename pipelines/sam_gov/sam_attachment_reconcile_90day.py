@@ -4,9 +4,9 @@ Durability backstop for sam_attachment_download_90day.py. Proves (and with --bac
 RESTORES) consistency between the three durable artifacts, depending on NOTHING in the
 local session:
 
-  * CAS blobs   -> s3://data-sink/active/sam_attachment_blobs_90day/<resource_id>   (the bytes)
-  * Lance ledger-> s3://data-sink/active/sam_attachment_files_90day/                (the catalog)
-  * worklist    -> s3://data-sink/active/sam_attachment_worklist_90day/             (resource_id -> file_name + meta)
+  * CAS blobs   -> s3://data-sink/active/sam_attachment_blobs/<resource_id>   (the bytes)
+  * Lance ledger-> s3://data-sink/active/sam_attachment_files/                (the catalog)
+  * worklist    -> s3://data-sink/active/sam_attachment_worklist/             (resource_id -> file_name + meta)
 
 The blob bytes are durable per-file the instant they land; the ledger commits every N files.
 A crash between ledger flushes therefore leaves *orphan blobs* (bytes present, no catalog row)
@@ -31,9 +31,9 @@ import argparse
 import datetime as dt
 import os
 
-BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs_90day/")
-LEDGER_URI = os.environ.get("SAM90_LEDGER_URI", "s3://data-sink/active/sam_attachment_files_90day/")
-WORKLIST_URI = os.environ.get("SAM90_WORKLIST_URI", "s3://data-sink/active/sam_attachment_worklist_90day/")
+BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs/")
+LEDGER_URI = os.environ.get("SAM90_LEDGER_URI", "s3://data-sink/active/sam_attachment_files/")
+WORKLIST_URI = os.environ.get("SAM90_WORKLIST_URI", "s3://data-sink/active/sam_attachment_worklist/")
 _CONTENT_TYPE = {"pdf": "application/pdf",
                  "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                  "doc": "application/msword",

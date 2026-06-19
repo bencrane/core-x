@@ -1,4 +1,4 @@
-"""Serving worker — captive_sub_diversification_90day: the "diversify off your one prime"
+"""Serving worker — captive_sub_diversification: the "diversify off your one prime"
 target list. One row per (captive subawardee, candidate NEW prime) — fresh prime awards won by
 a DIFFERENT prime that the sub is a domain-aligned capability match for.
 
@@ -7,14 +7,14 @@ Universal Dispatcher (core/modal_dispatcher.py) on a Trigger schedule, or run ma
 ``modal run``. No web endpoint.
 
 GRAIN  1 row per (sub_uei, cand_prime_uei) — the best-scoring fresh award per (captive sub, new prime).
-SoR    s3://data-sink/active/captive_sub_diversification_90day/  (Lance v2.1; derived, overwrite).
-METHOD (full-universe semantic matchmaking; the ANN upgrade of govcon_sub_targeting_90day's
+SoR    s3://data-sink/active/captive_sub_diversification/  (Lance v2.1; derived, overwrite).
+METHOD (full-universe semantic matchmaking; the ANN upgrade of govcon_sub_targeting's
        deterministic capability_match leg, which reached only 169 subs):
   1. CAPTIVE segment — over usaspending_api_fresh/contract_subaward: COUNT(DISTINCT prime)=1
      ∧ COUNT(*)>=CAPTIVE_MIN_SUBAWARDS ∧ total ∈ [CAPTIVE_MIN_DOLLARS, CAPTIVE_MAX_DOLLARS].
   2. SUB EMBEDDING — mean-pooled, renormalized centroid of each sub's
-     govcon_sub_capability_vectors_90day chunks (BGE-large 1024-d).
-  3. SEMANTIC MATCH — per-sub ANN over govcon_scope_vectors_90day (prime-solicitation scope chunks,
+     govcon_sub_capability_vectors chunks (BGE-large 1024-d).
+  3. SEMANTIC MATCH — per-sub ANN over govcon_scope_vectors (prime-solicitation scope chunks,
      IVF_PQ). Matched chunk → contract_award_unique_key (direct column) → award.
   4. AWARD→PRIME — resolved via usaspending_api_fresh/contract_prime_txn (latest txn per award):
      recipient_uei (the new prime), NAICS, action_date (freshness window), value, agency, set-aside.
@@ -42,10 +42,10 @@ import modal
 # Constants
 # --------------------------------------------------------------------------- #
 ACTIVE = "s3://data-sink/active"
-SERVING_URI = os.environ.get("CAPTIVE_DIVERSIFICATION_URI", f"{ACTIVE}/captive_sub_diversification_90day/")
+SERVING_URI = os.environ.get("CAPTIVE_DIVERSIFICATION_URI", f"{ACTIVE}/captive_sub_diversification/")
 SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
-SUBVEC_URI = f"{ACTIVE}/govcon_sub_capability_vectors_90day/"
-SCOPEVEC_URI = f"{ACTIVE}/govcon_scope_vectors_90day/"
+SUBVEC_URI = f"{ACTIVE}/govcon_sub_capability_vectors/"
+SCOPEVEC_URI = f"{ACTIVE}/govcon_scope_vectors/"
 PRIMETXN_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 FEED = "captive_sub_diversification"
 DATA_STORAGE_VERSION = "2.1"
@@ -224,9 +224,9 @@ def _assemble(so: dict, window_days: int) -> tuple:
             cent[u] = (m / n).tolist()
     log(f"subs with vectors: {len(cent)} / {len(ueis)}")
     if not cent:
-        raise RuntimeError("no captive sub carries a capability vector (govcon_sub_capability_vectors_90day)")
+        raise RuntimeError("no captive sub carries a capability vector (govcon_sub_capability_vectors)")
 
-    log("ANN matchmaking over govcon_scope_vectors_90day (IVF_PQ) …")
+    log("ANN matchmaking over govcon_scope_vectors (IVF_PQ) …")
     sc = lance.dataset(SCOPEVEC_URI, storage_options=so)
 
     def _match(u: str):
@@ -450,7 +450,7 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     retries=1,              # idempotent overwrite → safe to retry on preemption
 )
 def run_build(window_days: int = WINDOW_DAYS, trigger_callback_url: str | None = None) -> dict:
-    """Rebuild captive_sub_diversification_90day end-to-end; record the ledger row + POST the
+    """Rebuild captive_sub_diversification end-to-end; record the ledger row + POST the
     Trigger waitpoint callback. Snapshot-overwrite (idempotent)."""
     import datetime as dt
 

@@ -6,8 +6,8 @@ routing + content-canonical dedup), §6 (Phase 1.5 zip expansion), §7 (Phase 2 
 structured field extraction (Phase 5) are SEPARATE artifacts (spec §17) and are NOT in this script.
 
 ARCHITECTURE (locked — do not alter):
-  * STATE is a NEW append-only event ledger `sam_attachment_extraction_90day` (D1). The download SoR
-    `sam_attachment_files_90day` is read-only and untouched. "Current state" = the latest-terminal
+  * STATE is a NEW append-only event ledger `sam_attachment_extraction` (D1). The download SoR
+    `sam_attachment_files` is read-only and untouched. "Current state" = the latest-terminal
     resolution view (D2). Resume = resolution view ∪ per-result JSONL checkpoint.
   * PARALLEL extract, SINGLE committing process per dataset (D3). The pipeline commits directly to R2
     with no commit_lock, so exactly one writer (the main process) ever commits; workers are pure
@@ -27,7 +27,7 @@ ARCHITECTURE (locked — do not alter):
   * IDEMPOTENCY (§7.6/C11): chunk writes are merge_insert on `chunk_id` (the idempotency floor). A
     result's per-result checkpoint line is written ONLY AFTER its chunks (and its ledger event) are
     durably committed to LanceDB — never before — so resume never loses chunks (#19/#20).
-  * GTM SCOPE GATE (optional): Phase 1 consults `sam_attachment_gtm_scope_90day` (built by
+  * GTM SCOPE GATE (optional): Phase 1 consults `sam_attachment_gtm_scope` (built by
     sam_attachment_gtm_scope_90day.py — the "Strained Middle" mid-market cohort: NAICS set ∩ dollar band
     ∩ frequency cap). Out-of-scope resources get a terminal `skipped_out_of_scope` and never enter a lane,
     so no parse/chunk compute is spent on them. Absent table ⇒ no gate; disabled under --max-files (smoke).
@@ -64,20 +64,20 @@ import sys
 
 # ── URIs (immutable inputs read-only; new Stage-4 sinks under active/) ────────────────────────────
 FILES_LEDGER_URI = os.environ.get(
-    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files_90day/")        # INPUT (read-only SoR)
-BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs_90day/")  # INPUT CAS
+    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files/")        # INPUT (read-only SoR)
+BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs/")  # INPUT CAS
 MANIFEST_URI = os.environ.get(
-    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/")  # INPUT (award join)
+    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")  # INPUT (award join)
 EXTRACTION_URI = os.environ.get(
-    "SAM90_EXTRACTION_URI", "s3://data-sink/active/sam_attachment_extraction_90day/")  # append-only event ledger
-SCOPE_URI = os.environ.get("SAM90_SCOPE_URI", "s3://data-sink/active/govcon_scope_vectors_90day/")
-PRICING_URI = os.environ.get("SAM90_PRICING_URI", "s3://data-sink/active/govcon_pricing_90day/")
-UNKNOWN_URI = os.environ.get("SAM90_UNKNOWN_URI", "s3://data-sink/active/govcon_unknown_90day/")
-DEDUP_URI = os.environ.get("SAM90_DEDUP_URI", "s3://data-sink/active/sam_attachment_content_dedup_90day/")
+    "SAM90_EXTRACTION_URI", "s3://data-sink/active/sam_attachment_extraction/")  # append-only event ledger
+SCOPE_URI = os.environ.get("SAM90_SCOPE_URI", "s3://data-sink/active/govcon_scope_vectors/")
+PRICING_URI = os.environ.get("SAM90_PRICING_URI", "s3://data-sink/active/govcon_pricing/")
+UNKNOWN_URI = os.environ.get("SAM90_UNKNOWN_URI", "s3://data-sink/active/govcon_unknown/")
+DEDUP_URI = os.environ.get("SAM90_DEDUP_URI", "s3://data-sink/active/sam_attachment_content_dedup/")
 INNER_URI = os.environ.get(  # Phase-1.5 materialization of expanded inner-file metadata (§6)
-    "SAM90_INNER_URI", "s3://data-sink/active/sam_attachment_inner_files_90day/")
+    "SAM90_INNER_URI", "s3://data-sink/active/sam_attachment_inner_files/")
 SCOPE_GATE_URI = os.environ.get(  # GTM "Strained Middle" gate (sam_attachment_gtm_scope_90day.py). ABSENT ⇒ no gate
-    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope_90day/")  # INPUT (read-only)
+    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")  # INPUT (read-only)
 CKPT_PATH = os.environ.get("SAM90_EXTRACT_CKPT", "/tmp/sam_90day_extract_ckpt.jsonl")
 LOG_PATH = os.environ.get("SAM90_EXTRACT_LOG", "/tmp/sam_90day_extract.log")
 SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
@@ -169,7 +169,7 @@ _REATTEMPT = {"requires_ocr", "extract_failed", "ocr_failed"}
 # Worker-process module globals (born ONLY in _init_worker under spawn — D8/C3). Never inherited.
 _WORKER_S3 = None
 _WORKER_BUCKET = None
-_WORKER_PREFIX = None   # CAS key prefix (e.g. active/sam_attachment_blobs_90day/) — prepended to blob_key
+_WORKER_PREFIX = None   # CAS key prefix (e.g. active/sam_attachment_blobs/) — prepended to blob_key
 _BIG_SEMA = None        # cross-process cap on concurrent extraction of files > BIG_FILE_BYTES (§7.2)
 
 
@@ -515,7 +515,7 @@ def _read_resolution(so: dict):
 
 
 def _read_scope_gate(so: dict):
-    """GTM "Strained Middle" verdicts per resource_id (sam_attachment_gtm_scope_90day, built by
+    """GTM "Strained Middle" verdicts per resource_id (sam_attachment_gtm_scope, built by
     sam_attachment_gtm_scope_90day.py). None ⇒ no gate (Phase 1 routes every downloaded resource).
     When present, out-of-scope resources are diverted to a terminal `skipped_out_of_scope` BEFORE lane
     classification, so the extract worklist never spends parse/chunk compute on them. The gate is a
@@ -1891,7 +1891,7 @@ def phase_finalize(*, so: dict, run_id: str) -> dict:
 # ════════════════════════════════════════════════════════════════════════ ops roll-up (§3.8)
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
-CREATE TABLE IF NOT EXISTS ops.sam_extraction_90day_runs (
+CREATE TABLE IF NOT EXISTS ops.sam_extraction_runs (
     id bigserial PRIMARY KEY, run_id text NOT NULL, phase text, lane text, files_in int,
     extracted_scope int, extracted_pricing int, extracted_spreadsheet int, extracted_unknown int,
     dropped_boilerplate int, dropped_duplicate int, dropped_content_noise int, content_marked int,
@@ -1903,12 +1903,12 @@ CREATE TABLE IF NOT EXISTS ops.sam_extraction_90day_runs (
 -- (count of rows with >=1 detected content marking). Idempotent.
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='ops'
-             AND table_name='sam_extraction_90day_runs' AND column_name='cui_tagged') THEN
-    ALTER TABLE ops.sam_extraction_90day_runs RENAME COLUMN cui_tagged TO content_marked;
+             AND table_name='sam_extraction_runs' AND column_name='cui_tagged') THEN
+    ALTER TABLE ops.sam_extraction_runs RENAME COLUMN cui_tagged TO content_marked;
   END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx ON ops.sam_extraction_90day_runs (run_id);
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_started_at_idx ON ops.sam_extraction_90day_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx ON ops.sam_extraction_runs (run_id);
+CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_started_at_idx ON ops.sam_extraction_runs (started_at DESC);
 """
 
 
@@ -1957,7 +1957,7 @@ def _record_run(result: dict, run_id: str, dsn: str | None) -> None:
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
             cur.execute(OPS_DDL)
             cur.execute("""
-                INSERT INTO ops.sam_extraction_90day_runs
+                INSERT INTO ops.sam_extraction_runs
                   (run_id, phase, lane, files_in, extracted_scope, extracted_pricing,
                    extracted_spreadsheet, extracted_unknown, dropped_boilerplate, dropped_duplicate,
                    dropped_content_noise, content_marked, expanded_container, requires_ocr, extract_failed,

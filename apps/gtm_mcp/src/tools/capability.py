@@ -5,7 +5,7 @@ this module; §3 defines the legs). THIS FILE SHIPS EXACTLY THE PHASE-1 LEG:
 
   HARD-PREDICATE CONJUNCTION (§3 item 1, live at Phase 1). "Companies whose covered awards
   need A AND B AND C" — deterministic, citeable, polarity-correct predicates over
-  ``govcon_award_requirements_90day`` (requirement_type / value_norm AND-combinations),
+  ``govcon_award_requirements`` (requirement_type / value_norm AND-combinations),
   aggregated up the grain ladder:
 
       requirement rows → resource_id → manifest ``award_keys[]`` EXPLODE → award grain
@@ -30,8 +30,8 @@ the 1,119,355 trailing-90d prime awards have readable solicitation text; "no mat
 DOCUMENT, not no need. Every response carries the caveat plus the measured per-query
 denominators (per-leg row counts, exploded award counts, txn resolution rate).
 
-READ PATHS. ``govcon_award_requirements_90day`` (frozen schema —
-``pipelines/sam_gov/govcon_gtm_schemas.py``), ``sam_opps_attachment_manifest_90day_winners``
+READ PATHS. ``govcon_award_requirements`` (frozen schema —
+``pipelines/sam_gov/govcon_gtm_schemas.py``), ``sam_opps_attachment_manifest_winners``
 (resource_id → award_keys[], BTREE on resource_id), ``usaspending_api_fresh/contract_prime_txn``
 (BTREE on contract_award_unique_key). All reads go through ``database.open_dataset`` (warm
 handle cache) + Lance scanner pushdown; the chunk sinks are never touched.
@@ -40,7 +40,7 @@ PHASE SCHEDULE — activation points for the later legs (plan §2/§3; NOT built
   * Phase 2 — grain-ladder leg over ``govcon_award_capability_profiles``
     (``capability_tags`` / ``scope_summary`` / clearance rollups; the degraded north-star
     gate query "companies tagged electrical_systems under awards requiring SECRET + CMMC L2").
-  * Phase 4 — sub pivot: award set → prime UEIs → ``govcon_sub_targeting_90day`` →
+  * Phase 4 — sub pivot: award set → prime UEIs → ``govcon_sub_targeting`` →
     ``sam_pocs`` join at query time.
   * Phase 5 — fuzzy-X ANN leg over both chunk sinks (k≈1000, ``prefilter=True``,
     max-of-top-m per-award scoring; resource_id IN-lists derived in DuckDB, never
@@ -55,8 +55,8 @@ from typing import Any
 from .. import database
 
 # ── Bound dataset names (registry keys) ──────────────────────────────────────
-REQUIREMENTS = "govcon_award_requirements_90day"
-MANIFEST = "sam_opps_attachment_manifest_90day_winners"
+REQUIREMENTS = "govcon_award_requirements"
+MANIFEST = "sam_opps_attachment_manifest_winners"
 PRIME_TXN = "usaspending_api_fresh/contract_prime_txn"
 
 # Plan Phase-1 requirement_type enum (frozen schema column comment; plan Phase-1 table).
@@ -287,7 +287,7 @@ def govcon_companies_by_requirements(
     hard-predicate leg.
 
     Each ``requirements`` leg is one predicate over the extracted-requirements corpus
-    (``govcon_award_requirements_90day``): ``{"requirement_type": <enum>, "value": <
+    (``govcon_award_requirements``): ``{"requirement_type": <enum>, "value": <
     normalized requirement_value, optional>, "clearance_level": <optional>, "mandatory":
     <optional bool>}``. ``requirement_type`` ∈ certification · clearance · labor_category ·
     standard_compliance · license · equipment_capability · past_performance · deliverable ·
@@ -525,7 +525,7 @@ def govcon_requirement_facets(
     normalized ``requirement_value`` / ``clearance_level`` strings; this tool enumerates
     what those values ARE, with row + document counts, so legs can be composed precisely.
 
-    Groups ``validated = true`` rows of ``govcon_award_requirements_90day`` by
+    Groups ``validated = true`` rows of ``govcon_award_requirements`` by
     ``(requirement_type, requirement_value, clearance_level)``. Optional
     ``requirement_type`` (Phase-1 enum) and ``naics`` (2–6 digit notice-NAICS code/prefix)
     restrict the scan. Returns ``{"status", "group_count", "returned", "rows": [
@@ -595,7 +595,7 @@ def govcon_requirement_facets(
 def register(mcp) -> None:
     """Mount the GovCon CAPABILITY tool group (plan §3 legs, phase-scheduled). Phase 1 ships
     the hard-predicate conjunction + facet discovery ONLY. Later legs activate here:
-    Phase 2 (profiles grain-ladder leg), Phase 4 (sub pivot via govcon_sub_targeting_90day +
+    Phase 2 (profiles grain-ladder leg), Phase 4 (sub pivot via govcon_sub_targeting +
     sam_pocs), Phase 5 (fuzzy-X ANN over the chunk sinks) — see the module docstring."""
     for fn in (govcon_companies_by_requirements, govcon_requirement_facets):
         mcp.add_tool(fn)

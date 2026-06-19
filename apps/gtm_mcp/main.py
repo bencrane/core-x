@@ -60,10 +60,10 @@ hydration.register(mcp)  # Directive 20-Final: launch Waterfall ICP contact hydr
 corex.register(mcp)  # GTM control surface: initiative→campaign→lead→send (corex schema)
 parallel.register(mcp)  # Directive 24: Parallel.ai enrich / deep_research / web_search + refresh_catalog
 provider360.register(mcp)  # entity-360 targeting: independent platforms / acquisition groups / dual-pole (e2b479c)
-govcon.register(mcp)  # hybrid filter→ANN semantic search over govcon_scope_vectors_90day (Tier B)
-sub_capability.register(mcp)  # open-vocab ANN over govcon_sub_capability_vectors_90day → distinct subs + profile enrichment
+govcon.register(mcp)  # hybrid filter→ANN semantic search over govcon_scope_vectors (Tier B)
+sub_capability.register(mcp)  # open-vocab ANN over govcon_sub_capability_vectors → distinct subs + profile enrichment
 federal.register(mcp)  # FEDERAL group: deterministic map/chart aggregations + entity resolution over entity_profile_gold (separate from CRM audience tools)
-capability.register(mcp)  # GovCon CAPABILITY group (plan §3, phase-scheduled): Phase-1 hard-predicate conjunction over govcon_award_requirements_90day → company grain + facets
+capability.register(mcp)  # GovCon CAPABILITY group (plan §3, phase-scheduled): Phase-1 hard-predicate conjunction over govcon_award_requirements → company grain + facets
 sam_entities.register(mcp)  # typed sam.gov entity point-lookups (uei/naics/cage + contacts)
 batch_lookups.register(mcp)  # batched multi-id lookups (amortize R2 round-trips)
 

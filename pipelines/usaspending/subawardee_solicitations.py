@@ -106,8 +106,8 @@ BRIDGE_BAND = (15_000, 20_000)
 # notice election AND the offline-first source for the hop-3 manifest. Order = preference order
 # when the same (notice_id, resource_id) appears in several sources (after 'live').
 OFFLINE_MANIFEST_SOURCES = [
-    ("offline:sam_opps_attachment_manifest_90day_winners",
-     "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/"),
+    ("offline:sam_opps_attachment_manifest_winners",
+     "s3://data-sink/active/sam_opps_attachment_manifest_winners/"),
     ("offline:sam_opps_attachment_manifest",
      "s3://data-sink/active/sam_opps_attachment_manifest/"),
 ]
