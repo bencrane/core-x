@@ -168,5 +168,30 @@ def test_capability_axis_present_and_gated_winners_only():
     assert cap <= set(edge.DECODERS["winners"]["fields"])
     gated = {n for n, s in cat.DECODERS["winners"].fields.items() if s.gated}
     # has_extracted_scope is the gate target, NOT gated; the rest of the capability axis is.
+    # The SUB-only teaming axis is NOT gated (teaming is on all profiled subs, not the scope slice).
     assert gated == cap - {"has_extracted_scope"}
     assert cat.DECODERS["winners"].fields["has_extracted_scope"].gated is False
+
+
+# ── SUB-only teaming axis: present on both sides, ungated, synonyms in sync ───
+def test_teaming_axis_present_both_sides_and_ungated():
+    teaming = {"teaming_dollars_5y", "n_teaming_primes", "teaming_prime"}
+    assert teaming <= set(cat.DECODERS["winners"].fields)
+    assert teaming <= set(edge.DECODERS["winners"]["fields"])
+    # Teaming must NOT be gated (would wrongly AND has_extracted_scope and drop subs).
+    for n in teaming:
+        assert cat.DECODERS["winners"].fields[n].gated is False, f"{n} must not be gated"
+
+
+def test_teaming_prime_synonym_values_match_catalyst():
+    # The canonical prime-variant sets are part of the version-keyed allowlist: edge prompts the
+    # model with them and EXECUTE resolves them, so a drift means a "lockheed" sentence translates
+    # to a different array_has_any on each side. Assert the synonym values are byte-identical.
+    cat_syn = cat.DECODERS["winners"].synonyms
+    edge_syn = edge.DECODERS["winners"]["synonyms"]
+    for term in ("lockheed", "lockheed martin", "boeing", "raytheon", "rtx", "northrop",
+                 "northrop grumman", "general dynamics", "leidos", "booz allen", "saic"):
+        assert term in cat_syn and term in edge_syn, f"teaming synonym {term!r} missing a side"
+        assert cat_syn[term] == edge_syn[term], f"teaming synonym {term!r} drift edge vs catalyst"
+        assert cat_syn[term]["field"] == "teaming_prime"
+        assert cat_syn[term]["op"] == "has_any"

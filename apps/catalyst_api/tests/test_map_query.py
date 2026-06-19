@@ -366,6 +366,62 @@ def test_northstar_construction_secret_electrical_compiles():
                     "AND has_extracted_scope = true")
 
 
+# ── SUB-only teaming axis: the /ask teaming queries compile to valid Lance predicates ──
+def test_teaming_dollars_threshold_compiles_no_scope_gate():
+    # "subs with $10M+ teaming" → a plain range predicate; teaming is NOT gated, so the
+    # has_extracted_scope coverage gate must NOT be appended (it would wrongly drop subs).
+    pred = _compile(WINNERS, [{"field": "teaming_dollars_5y", "op": ">=", "value": 10000000}])
+    assert pred == "teaming_dollars_5y >= 10000000.0"
+    assert "has_extracted_scope" not in pred
+
+
+def test_n_teaming_primes_between_compiles():
+    pred = _compile(WINNERS, [{"field": "n_teaming_primes", "op": "between", "value": [2, 10]}])
+    assert pred == "n_teaming_primes >= 2 AND n_teaming_primes <= 10"
+
+
+def test_teaming_prime_has_compiles_to_array_has():
+    # exact stored legal name → array_has; NOT gated, so no scope gate.
+    pred = _compile(WINNERS, [
+        {"field": "teaming_prime", "op": "has", "value": "LOCKHEED MARTIN CORPORATION"}])
+    assert pred == "array_has(teaming_prime_names, 'LOCKHEED MARTIN CORPORATION')"
+    assert "has_extracted_scope" not in pred
+
+
+def test_teaming_prime_has_any_compiles_to_array_has_any():
+    pred = _compile(WINNERS, [
+        {"field": "teaming_prime", "op": "has_any",
+         "value": ["LOCKHEED MARTIN CORPORATION", "LOCKHEED MARTIN CORP"]}])
+    assert pred == ("array_has_any(teaming_prime_names, "
+                    "['LOCKHEED MARTIN CORPORATION', 'LOCKHEED MARTIN CORP'])")
+
+
+def test_teamed_with_lockheed_via_synonym_resolves_to_canonical_variants():
+    # The NL phrase "teamed with lockheed" decodes through the WINNERS synonym to a has_any
+    # over the EXACT stored variants (so "Lockheed" actually hits "LOCKHEED MARTIN CORPORATION").
+    syn = WINNERS.synonyms["lockheed"]
+    pred = _compile(WINNERS, [syn])
+    assert pred == ("array_has_any(teaming_prime_names, "
+                    "['LOCKHEED MARTIN CORPORATION', 'LOCKHEED MARTIN CORP'])")
+
+
+def test_teaming_prime_has_rejects_non_string():
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(WINNERS, [{"field": "teaming_prime", "op": "has", "value": 123}])
+
+
+def test_teaming_prime_value_is_escaped_not_executed():
+    # open-valued (no enum) → the _sql_str quote-doubling is the only escaping; assert it holds.
+    pred = _compile(WINNERS, [{"field": "teaming_prime", "op": "has", "value": "ACME' OR '1'='1"}])
+    assert pred == "array_has(teaming_prime_names, 'ACME'' OR ''1''=''1')"
+
+
+def test_teaming_fields_are_not_gated():
+    # Teaming is on every profiled sub (not the scope-extracted slice) — must NOT be gated.
+    for name in ("teaming_dollars_5y", "n_teaming_primes", "teaming_prime"):
+        assert WINNERS.fields[name].gated is False, f"{name} must not be gated"
+
+
 # ── PHASE 3: CUI egress invariant — chunk-derived text never in any decoder ───
 def test_no_chunk_derived_text_in_catalyst_decoders():
     banned = {"evidence_quote", "requirement_detail", "scope_summary"}

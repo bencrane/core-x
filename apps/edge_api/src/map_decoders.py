@@ -61,10 +61,27 @@ _LABOR_CATEGORIES = (
     "registered_nurse", "roofer", "safety_officer", "security_guard", "sheet_metal_worker",
     "site_superintendent", "surveyor", "translator", "truck_driver", "welder")
 
+# Teaming prime canonical-name sets — MUST match catalyst_api/src/map_decoders.py (the synonym
+# values are part of the version-keyed allowlist; the parity test asserts synonyms match).
+_TEAMING_LOCKHEED = ("LOCKHEED MARTIN CORPORATION", "LOCKHEED MARTIN CORP")
+_TEAMING_BOEING = ("BOEING COMPANY, THE", "THE BOEING COMPANY")
+_TEAMING_RAYTHEON = ("RAYTHEON COMPANY",)
+_TEAMING_NORTHROP = ("NORTHROP GRUMMAN SYSTEMS CORPORATION", "NORTHROP GRUMMAN SYSTEMS CORP")
+_TEAMING_GENERAL_DYNAMICS = (
+    "GENERAL DYNAMICS INFORMATION TECHNOLOGY, INC.", "GENERAL DYNAMICS MISSION SYSTEMS, INC.",
+    "GENERAL DYNAMICS MISSION SYSTEMS, INC", "GENERAL DYNAMICS LAND SYSTEMS INC.",
+    "GENERAL DYNAMICS GLOBAL FORCE, LLC", "GENERAL DYNAMICS ONE SOURCE LLC",
+    "GENERAL DYNAMICS-OTS, INC.")
+_TEAMING_LEIDOS = ("LEIDOS, INC.", "LEIDOS INC", "LEIDOS INNOVATIONS CORPORATION",
+                   "LEIDOS BIOMEDICAL RESEARCH, INC.")
+_TEAMING_BOOZ_ALLEN = ("BOOZ ALLEN HAMILTON INC.", "BOOZ ALLEN HAMILTON INC")
+_TEAMING_SAIC = ("SCIENCE APPLICATIONS INTERNATIONAL CORPORATION",
+                 "SCIENCE APPLICATIONS INTERNATIONAL CORP")
+
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v3",
-        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions.",
+        "version": "winners.v4",
+        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
@@ -84,6 +101,13 @@ DECODERS: dict[str, dict] = {
                                         "desc": "controlled capability the winner DOES (set membership). 'does electrical work' → capability_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
             "labor_category":          {"type": "list", "ops": ("has", "has_any"), "enum": _LABOR_CATEGORIES,
                                         "desc": "skilled labor/trade the winner's covered awards staff. 'electricians' → labor_category has 'electrician'; 'cleared trades' → requires_clearance=true AND labor_category has_any the trade list"},
+            # ── SUBAWARDEE teaming axis (which primes the sub has subcontracted under, last 5y) ──
+            "teaming_dollars_5y":      {"type": "float", "ops": (">=", "<=", "between"),
+                                        "desc": "total $ this SUBAWARDEE has subcontracted under prime contractors over the last 5 years. '$10M+ teaming' / 'over $10M in teaming' → teaming_dollars_5y >= 10000000. Subawardees only"},
+            "n_teaming_primes":        {"type": "int", "ops": (">=", "<=", "between"),
+                                        "desc": "count of DISTINCT primes this subawardee has teamed with (last 5y). 'teamed with 5+ primes' → n_teaming_primes >= 5. Subawardees only"},
+            "teaming_prime":           {"type": "list", "ops": ("has", "has_any"),
+                                        "desc": "EXACT full legal name(s) of primes the subawardee has subcontracted under. Use the known synonyms for major primes ('teamed with Lockheed' → use the 'lockheed' synonym); for a prime not in the synonyms, put it in unmapped (exact legal name required). Subawardees only"},
         },
         "synonyms": {
             "construction":  {"field": "naics2", "op": "=", "value": "23"},
@@ -97,6 +121,18 @@ DECODERS: dict[str, dict] = {
             "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
             "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
             "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
+            # SUBAWARDEE teaming phrasings (prime names are exact stored legal names → has_any).
+            "lockheed":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LOCKHEED)},
+            "lockheed martin":   {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LOCKHEED)},
+            "boeing":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOEING)},
+            "raytheon":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_RAYTHEON)},
+            "rtx":               {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_RAYTHEON)},
+            "northrop":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_NORTHROP)},
+            "northrop grumman":  {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_NORTHROP)},
+            "general dynamics":  {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_GENERAL_DYNAMICS)},
+            "leidos":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LEIDOS)},
+            "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
+            "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
         },
     },
     "company": {
@@ -283,7 +319,9 @@ _ROUTING_CUES = {
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",
     "winners": "PER-WINNER ROLLUPS of the last 90 days: 'entities whose total won in the"
-               " window exceeds $X', aggregate award_count over the window.",
+               " window exceeds $X', aggregate award_count over the window. ALSO the SUBAWARDEE"
+               " TEAMING axis: 'subs that have teamed with <prime>', '$X+ teaming', 'subs that"
+               " teamed with N+ primes'.",
 }
 
 

@@ -14,7 +14,10 @@ SIGNALS total_obligation (Σ federal_action_obligation / subaward_amount), award
        solicitation docs). Per prime winner: has_extracted_scope / requires_clearance / requires_cmmc
        (bool_or over the winner's profiled awards), req_clearance_level_max (max over covered awards),
        capability_tags / labor_categories (deduped controlled-vocab union — FILTERABLE via Lance
-       ``array_has``), covered_award_count + covered_award_keys (capped drill-down pointer). NO
+       ``array_has``), covered_award_count + covered_award_keys (capped drill-down pointer). The
+       SUB-only TEAMING axis (sourced from the sub profiles, NULL on prime rows): teaming_dollars_5y
+       / n_teaming_primes (range-filterable, BTREE) + teaming_prime_names (list — exact prime legal
+       names, filterable via ``array_has``). NO
        chunk-derived verbatim text crosses into the serving table (CUI egress invariant — only
        structured/controlled-vocab fields; evidence_quote/requirement_detail never selected).
 LEDGER ops.winners_map_serving_runs (HQX_DB_URL_POOLED) on every terminal state.
@@ -52,7 +55,9 @@ SUB_PROFILES_URI = os.environ.get("GOVCON_SUB_CAPABILITY_PROFILES_URI",
 WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
-BTREE_INDEXES = ["winner_uei", "addr_hash"]
+BTREE_INDEXES = ["winner_uei", "addr_hash",
+                 # SUB-only teaming axis (range/threshold filters): null on prime rows.
+                 "teaming_dollars_5y", "n_teaming_primes"]
 BITMAP_INDEXES = ["naics2", "state", "winner_type",
                   # PHASE-3 capability filter axes (low-cardinality → BITMAP pushdown).
                   "has_extracted_scope", "requires_clearance", "requires_cmmc",
@@ -122,7 +127,9 @@ def _assemble(so, window_days: int):
     con.register("sub_prof", sub_prof.scanner(columns=[
         "sub_uei", "has_extracted_scope", "requires_clearance", "requires_cmmc",
         "req_clearance_level_max", "capability_tags", "top_labor_categories",
-        "n_scope_solicitations", "source_notice_ids"]).to_table())
+        "n_scope_solicitations", "source_notice_ids",
+        # Teaming axis (sub-only): who the sub has subcontracted under + $ + breadth.
+        "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names"]).to_table())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -226,7 +233,12 @@ def _assemble(so, window_days: int):
                CAST(coalesce(n_scope_solicitations, 0) AS BIGINT) AS covered_award_count,
                capability_tags,
                top_labor_categories AS labor_categories,
-               source_notice_ids[1:{COVERED_AWARD_KEYS_CAP}] AS covered_award_keys
+               source_notice_ids[1:{COVERED_AWARD_KEYS_CAP}] AS covered_award_keys,
+               -- Teaming axis (sub-only): coalesce numerics to 0 (a profiled sub with no
+               -- teaming reads 0, never null); keep the prime-name list as-is.
+               coalesce(teaming_dollars_5y, 0) AS teaming_dollars_5y,
+               CAST(coalesce(n_teaming_primes, 0) AS BIGINT) AS n_teaming_primes,
+               teaming_prime_names
         FROM sub_prof
         WHERE sub_uei IS NOT NULL AND length(trim(sub_uei)) > 0
     )
@@ -247,6 +259,11 @@ def _assemble(so, window_days: int):
            coalesce(cap_tags.capability_tags, cap_sub.capability_tags)   AS capability_tags,
            coalesce(cap_labor.labor_categories, cap_sub.labor_categories) AS labor_categories,
            coalesce(cap_keys.covered_award_keys, cap_sub.covered_award_keys) AS covered_award_keys,
+           -- Teaming axis: SUB-only (sourced from cap_sub). Prime rows have no cap_sub match,
+           -- so these are NULL on primes (intended — mirrors how the sub-only signals behave).
+           cap_sub.teaming_dollars_5y   AS teaming_dollars_5y,
+           cap_sub.n_teaming_primes     AS n_teaming_primes,
+           cap_sub.teaming_prime_names  AS teaming_prime_names,
            'usaspending_winners_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
@@ -352,6 +369,12 @@ def verify():
         # window-mismatch sanity: how many cleared-capability winners actually plot
         out["capability_winners_plottable"] = ds.count_rows(
             filter="has_extracted_scope = true AND latitude IS NOT NULL")
+    # ── SUB-only teaming axis coverage (the /ask teaming queries' denominator) ──
+    if "teaming_dollars_5y" in cap_cols:
+        out["has_teaming"] = ds.count_rows(filter="n_teaming_primes > 0")
+        out["teaming_dollars_5y_ge_10m"] = ds.count_rows(filter="teaming_dollars_5y >= 10000000")
+        out["teamed_with_lockheed"] = ds.count_rows(
+            filter="array_has(teaming_prime_names, 'LOCKHEED MARTIN CORPORATION')")
     print(json.dumps(out, indent=2, default=str))
 
 
