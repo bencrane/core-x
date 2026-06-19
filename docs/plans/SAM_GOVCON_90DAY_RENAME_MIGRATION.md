@@ -1,6 +1,6 @@
 # `*_90day` Dataset Rename — MIGRATION PLAN (decision-ready, supervised)
 
-**Date:** 2026-06-16 · **Status:** PLAN — not executed. Authored while finishing the Subaward
+**Date:** 2026-06-16 · **Status:** ✅ **EXECUTED 2026-06-19 via [#542](https://github.com/bencrane/core-x/pull/542)** — full plane-wide cutover (18 R2 datasets + 3 `ops.*` ledgers), not just the 3 chunk sinks. R2 server-side copy → Lance integrity verify (rows/version/indices, IVF_PQ vector smoke) → one-PR code flip → gtm-mcp Render redeploy (deploy `dep-d8qpju3bc2fs73e6bm70`, commit `0b1efba`, status live) → Postgres `ALTER TABLE RENAME` → old-prefix delete after parity verify. Zero data loss. Authored while finishing the Subaward
 Scope-Enrichment reindex, in response to the directive "rename it to remove `90day` from the name
 since that is brittle and gets inaccurate as time passes."
 **Companions:** `SUBAWARD_SCOPE_ENRICHMENT_RUN_RECORD.md` (the lift this came out of),
