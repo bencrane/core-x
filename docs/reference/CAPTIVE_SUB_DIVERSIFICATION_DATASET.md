@@ -21,6 +21,8 @@ The full-universe, semantic version of the "captive sub → fresh award under a 
 
 avg match_score (cosine) 0.721. **Always filter `naics2_aligned = true`** (or `naics4_aligned`) — the unaligned rows are semantic noise.
 
+> The table above is the all-dates **validation** build. The standing worker writes a rolling **365-day** window; latest **production** run (2026-06-19): **28,965 rows · 8,118 NAICS-sector-aligned · 2,340 subs · 1,541 new primes · 1,862 matchable awards** · avg cosine **0.7215**.
+
 ## Schema
 `sub_uei, sub_name, sub_state, sub_total_dollars, sub_n_subawards, sub_naics, sole_prime_uei, sole_prime_name, cand_prime_uei, cand_prime_name, award_key, match_score, award_naics, award_naics_desc, award_agency, award_action_date, award_value, award_set_aside, award_pop_end, award_desc, naics2_aligned, naics4_aligned, sub_evidence, built_at`.
 BTREE indices: `sub_uei`, `cand_prime_uei`, `award_key`.
@@ -37,7 +39,7 @@ ORDER BY sub_total_dollars DESC, match_score DESC
 ```
 
 ## Caveats (do not over-quote)
-1. **Award side is bridge-bound.** Matches resolve only against the **2,298 distinct awards** that have harvested + award-linked solicitation scope text — a slice of the trailing-90-day prime universe, not all of it. Sub side is full (all 3,156 captives scored).
+1. **Award side is bridge-bound.** The matchable-award **ceiling is 4,988 distinct awards** — the only ones with harvested + award-linked solicitation scope text (`govcon_scope_vectors_90day` = 1,481,167 chunks but just **4,988** distinct `contract_award_unique_key`), i.e. **0.40%** of the 1,247,391 distinct prime awards. Each run surfaces a subset of that ceiling (the all-dates validation run's ANN hit 2,298; the production 365-day window resolved 1,862). Sub side is full (all 3,156 captives scored).
 2. **Window mixes dates.** `award_action_date` ranges across the feed (mostly 2026, some older); filter by it for true freshness. The subaward feed is ~days stale (no daily Trigger cadence yet).
 3. **Construction-skewed** — subaward + solicitation density concentrates in building/heavy construction; IT/professional-services subs get fewer aligned matches (sparser scope text in 5415/5416).
 4. **NAICS is a prime-award proxy** for the sub's trade, not the sub's registered code.
