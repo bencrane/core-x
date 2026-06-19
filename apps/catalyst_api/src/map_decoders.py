@@ -88,16 +88,38 @@ _LABOR_CATEGORIES = (
     "registered_nurse", "roofer", "safety_officer", "security_guard", "sheet_metal_worker",
     "site_superintendent", "surveyor", "translator", "truck_driver", "welder")
 
+# ── Teaming prime canonical-name sets (probed live 2026-06-19 from
+# govcon_subawardee_capability_profiles.teaming_prime_names; stored as full UPPERCASE legal
+# names, one company → several variants). array_has needs the EXACT element, so a "lockheed"
+# synonym maps to has_any over the observed corporate-entity variants. Subsidiaries that carry a
+# distinct brand are kept out (e.g. Lockheed Sippican/Services) — the synonym is the parent family.
+_TEAMING_LOCKHEED = ("LOCKHEED MARTIN CORPORATION", "LOCKHEED MARTIN CORP")
+_TEAMING_BOEING = ("BOEING COMPANY, THE", "THE BOEING COMPANY")
+_TEAMING_RAYTHEON = ("RAYTHEON COMPANY",)
+_TEAMING_NORTHROP = ("NORTHROP GRUMMAN SYSTEMS CORPORATION", "NORTHROP GRUMMAN SYSTEMS CORP")
+_TEAMING_GENERAL_DYNAMICS = (
+    "GENERAL DYNAMICS INFORMATION TECHNOLOGY, INC.", "GENERAL DYNAMICS MISSION SYSTEMS, INC.",
+    "GENERAL DYNAMICS MISSION SYSTEMS, INC", "GENERAL DYNAMICS LAND SYSTEMS INC.",
+    "GENERAL DYNAMICS GLOBAL FORCE, LLC", "GENERAL DYNAMICS ONE SOURCE LLC",
+    "GENERAL DYNAMICS-OTS, INC.")
+_TEAMING_LEIDOS = ("LEIDOS, INC.", "LEIDOS INC", "LEIDOS INNOVATIONS CORPORATION",
+                   "LEIDOS BIOMEDICAL RESEARCH, INC.")
+_TEAMING_BOOZ_ALLEN = ("BOOZ ALLEN HAMILTON INC.", "BOOZ ALLEN HAMILTON INC")
+_TEAMING_SAIC = ("SCIENCE APPLICATIONS INTERNATIONAL CORPORATION",
+                 "SCIENCE APPLICATIONS INTERNATIONAL CORP")
+
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v3",   # v2→v3: PHASE-3 capability axis (gated by has_extracted_scope)
+    version="winners.v4",   # v3→v4: SUB-only teaming axis (dollars/primes/prime-name list)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date",
                 # PHASE-3 capability surface (structured only — NO chunk-derived verbatim text)
                 "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
                 "requires_cmmc", "capability_tags", "labor_categories",
-                "covered_award_count", "covered_award_keys"),
+                "covered_award_count", "covered_award_keys",
+                # SUB-only teaming surface (null on prime rows)
+                "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names"),
     fields={
         "naics2":           FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "state":            FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
@@ -121,6 +143,15 @@ WINNERS = Decoder(
                                          enum=_CAPABILITY_TAGS, gated=True),
         "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
                                          enum=_LABOR_CATEGORIES, gated=True),
+        # ── SUB-only teaming axis (NOT gated: teaming is on every profiled sub, not the
+        # scope-extracted slice — do not self-AND has_extracted_scope). Null on prime rows. ──
+        "teaming_dollars_5y":  FieldSpec("teaming_dollars_5y", "float", (">=", "<=", "between"),
+                                         index="BTREE"),
+        "n_teaming_primes":    FieldSpec("n_teaming_primes", "int", (">=", "<=", "between"),
+                                         index="BTREE"),
+        # Exact prime legal names (open-valued — the synonyms below map common primes to their
+        # observed canonical variant sets, since array_has needs the exact stored element).
+        "teaming_prime":       FieldSpec("teaming_prime_names", "list", ("has", "has_any")),
     },
     synonyms={
         "construction": {"field": "naics2", "op": "=", "value": "23"},
@@ -137,6 +168,19 @@ WINNERS = Decoder(
         "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
         "electrical":       {"field": "capability_tag", "op": "has", "value": "electrical_systems"},
         "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
+        # SUB-only teaming phrasings. Prime names are exact stored legal names → has_any over the
+        # observed canonical variant set (so "teamed with lockheed" hits every Lockheed entity).
+        "lockheed":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LOCKHEED)},
+        "lockheed martin":   {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LOCKHEED)},
+        "boeing":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOEING)},
+        "raytheon":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_RAYTHEON)},
+        "rtx":               {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_RAYTHEON)},
+        "northrop":          {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_NORTHROP)},
+        "northrop grumman":  {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_NORTHROP)},
+        "general dynamics":  {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_GENERAL_DYNAMICS)},
+        "leidos":            {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_LEIDOS)},
+        "booz allen":        {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_BOOZ_ALLEN)},
+        "saic":              {"field": "teaming_prime", "op": "has_any", "value": list(_TEAMING_SAIC)},
     },
 )
 
