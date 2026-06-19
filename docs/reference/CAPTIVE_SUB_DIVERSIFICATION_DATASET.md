@@ -1,6 +1,8 @@
 # captive_sub_diversification_90day — dataset spec
 
-**Built:** 2026-06-19 · **SoR:** `s3://data-sink/active/captive_sub_diversification_90day/` (Lance v2.1, snapshot-overwrite) · **CSV mirror:** `~/Desktop/captive_sub_diversification.csv`
+**Built:** 2026-06-19 · **SoR:** `s3://data-sink/active/captive_sub_diversification_90day/` (Lance storage-format v2.1, snapshot-overwrite; live dataset-version probe = **v15**) · **CSV mirror:** `~/Desktop/captive_sub_diversification.csv`
+
+> **All figures below are live-measured against the R2 SoR + hq-x Postgres ops ledger on 2026-06-19** (`lance.dataset(...).count_rows()/version`, DuckDB distinct counts, and `ops.captive_diversification_serving_runs` latest terminal row). The production rolling-window build is the operative live state.
 
 ## What it is
 The full-universe, semantic version of the "captive sub → fresh award under a *different* prime" diversification play. For every single-prime **captive** subawardee, it lists the fresh prime awards (won by other primes) whose scope semantically matches what the sub actually does — the "you depend on one prime; here's where else you fit" target list. Replaces the deterministic `govcon_sub_targeting_90day` `capability_match` leg (which reached only 169 subs) with vector recall across all captive subs.
@@ -21,7 +23,7 @@ The full-universe, semantic version of the "captive sub → fresh award under a 
 
 avg match_score (cosine) 0.721. **Always filter `naics2_aligned = true`** (or `naics4_aligned`) — the unaligned rows are semantic noise.
 
-> The table above is the all-dates **validation** build. The standing worker writes a rolling **365-day** window; latest **production** run (2026-06-19): **28,965 rows · 8,118 NAICS-sector-aligned · 2,340 subs · 1,541 new primes · 1,862 matchable awards** · avg cosine **0.7215**.
+> The table above is the all-dates **validation** build (historical). The standing worker writes a rolling **365-day** window, and that **production** build is the live operative dataset. **Measured 2026-06-19** (`captive_sub_diversification_90day` v15, DuckDB distinct counts + `ops.captive_diversification_serving_runs` latest row, `status=success`, `completed_at=2026-06-19 15:35 UTC`): **28,965 rows · 3,156 distinct captive subs scored · 1,541 distinct new primes · 1,862 distinct matchable awards** · avg cosine **0.7215**. Aligned tiers: **`naics2_aligned` = 8,118 rows / 2,340 subs / 993 distinct awards** (the usable list); **`naics4_aligned` = 2,973 rows / 1,341 subs** (high precision).
 
 ## Schema
 `sub_uei, sub_name, sub_state, sub_total_dollars, sub_n_subawards, sub_naics, sole_prime_uei, sole_prime_name, cand_prime_uei, cand_prime_name, award_key, match_score, award_naics, award_naics_desc, award_agency, award_action_date, award_value, award_set_aside, award_pop_end, award_desc, naics2_aligned, naics4_aligned, sub_evidence, built_at`.
@@ -39,7 +41,7 @@ ORDER BY sub_total_dollars DESC, match_score DESC
 ```
 
 ## Caveats (do not over-quote)
-1. **Award side is bridge-bound.** The matchable-award **ceiling is 4,988 distinct awards** — the only ones with harvested + award-linked solicitation scope text (`govcon_scope_vectors_90day` = 1,481,167 chunks but just **4,988** distinct `contract_award_unique_key`), i.e. **0.40%** of the 1,247,391 distinct prime awards. Each run surfaces a subset of that ceiling (the all-dates validation run's ANN hit 2,298; the production 365-day window resolved 1,862). Sub side is full (all 3,156 captives scored).
+1. **Award side is bridge-bound.** The matchable-award **ceiling is 4,988 distinct awards** (measured 2026-06-19) — the only ones with harvested + award-linked solicitation scope text (`govcon_scope_vectors_90day` v286 = 1,481,167 chunks but just **4,988** distinct `contract_award_unique_key`), i.e. **0.40%** of the 1,247,391 distinct prime awards (`contract_prime_txn` v22 distinct `contract_award_unique_key`, measured 2026-06-19). Each run surfaces a subset of that ceiling (the all-dates validation run's ANN hit 2,298; the live production 365-day window resolved **1,862** distinct awards). Sub side is full (all 3,156 captives scored).
 2. **Window mixes dates.** `award_action_date` ranges across the feed (mostly 2026, some older); filter by it for true freshness. The subaward feed is ~days stale (no daily Trigger cadence yet).
 3. **Construction-skewed** — subaward + solicitation density concentrates in building/heavy construction; IT/professional-services subs get fewer aligned matches (sparser scope text in 5415/5416).
 4. **NAICS is a prime-award proxy** for the sub's trade, not the sub's registered code.
@@ -48,8 +50,8 @@ ORDER BY sub_total_dollars DESC, match_score DESC
 ## Production worker (standing surface)
 - **Worker:** `pipelines/serving/materialize_captive_diversification.py` — Modal app `captive-diversification`, function `run_build` (snapshot-overwrite + BTREE/BITMAP indices). Logic is a 1:1 port of the validated build.
 - **Ledger:** `ops.captive_diversification_serving_runs` (self-bootstrapping; one terminal row per run with the full stats payload).
-- **Schedule:** `src/trigger/captive_diversification.ts` — `schedules.task`, **Mon 11:00 UTC**, dispatches `run_build` through the universal-dispatcher and waits on a durable token. Cron + `CAPTIVE_WINDOW_DAYS` (default 365) are tunable.
-- **Deploy:** `modal deploy pipelines/serving/materialize_captive_diversification.py` (registers the worker by name) + `npm run trigger:deploy` (registers the schedule). The dispatcher resolves `captive-diversification`/`run_build` by name — no dispatcher edit.
+- **Schedule:** `src/trigger/captive_diversification.ts` — `schedules.task`, **Mon 11:00 UTC**, dispatches `run_build` through the universal-dispatcher and waits on a durable token. Cron + `CAPTIVE_WINDOW_DAYS` (default 365) are tunable. **State as of 2026-06-19:** the schedule is **defined in `src/trigger/captive_diversification.ts` and merged to `main`**; it has **not** been registered with Trigger.dev via `npm run trigger:deploy` (deploy requires a `TRIGGER_ACCESS_TOKEN`). The Modal worker itself is deployed (app `captive-diversification`) and the dataset is rebuildable on demand now; the weekly cadence activates the moment `trigger:deploy` runs.
+- **Deploy:** `modal deploy pipelines/serving/materialize_captive_diversification.py` (registers the worker by name; **done** — the Modal app is deployed and has executed, ledger row `status=success`, `completed_at=2026-06-19 15:35 UTC`) + `npm run trigger:deploy` (registers the schedule; **not yet run**). The dispatcher resolves `captive-diversification`/`run_build` by name — no dispatcher edit.
 - **Manual run:** `modal run pipelines/serving/materialize_captive_diversification.py::main --cmd build` (or `verify` / `init_ops`).
 
 > The earlier one-shot (`/tmp/build_div.py`) is superseded by the worker; the worker adds the rolling `award_action_date` window, the ops ledger, and the Trigger cadence.
