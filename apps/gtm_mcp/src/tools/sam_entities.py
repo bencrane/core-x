@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import database
+from . import lookup_cache
 
 # Per-lookup row ceiling for the fan-out tools (NAICS prefix, contacts). A NAICS
 # prefix legitimately matches many entities and a UEI may carry several POCs; this
@@ -70,6 +71,7 @@ def _present(name: str, columns: list[str]) -> list[str]:
 
 
 # ── lookup_sam_entity_by_uei (BTREE on uei) ──────────────────────────────────
+@lookup_cache.memoize(ttl_s=lookup_cache.SAM_TTL_S, key_fn=_normalize)
 def lookup_sam_entity_by_uei(uei: str) -> dict[str, Any]:
     """Fetch one SAM.gov entity profile by its UEI (Unique Entity Identifier). Pushes
     the predicate into the Lance BTREE on ``sam_master_entities.uei`` for a sub-100 ms
@@ -98,6 +100,7 @@ def lookup_sam_entity_by_uei(uei: str) -> dict[str, Any]:
 
 
 # ── lookup_sam_entity_by_cage (BTREE on cage_code) ───────────────────────────
+@lookup_cache.memoize(ttl_s=lookup_cache.SAM_TTL_S, key_fn=_normalize)
 def lookup_sam_entity_by_cage(cage_code: str) -> dict[str, Any]:
     """Fetch one SAM.gov entity profile by its CAGE code (Commercial And Government
     Entity code). Pushes the predicate into the Lance BTREE on

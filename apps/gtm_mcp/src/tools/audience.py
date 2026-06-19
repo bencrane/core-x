@@ -33,6 +33,7 @@ from typing import Any
 from core.name_norm import name_norm
 
 from .. import database
+from . import lookup_cache
 
 # Per-lookup row ceiling. A normalized_domain is NOT unique (e.g. jpmorgan.com
 # resolves to several source-platform rows), so a domain lookup legitimately
@@ -77,7 +78,21 @@ _PEOPLE_COLUMNS = [
 ]
 
 
+# ── Cache key normalizers — collapse each lookup's arg to the SAME stored anchor the
+# function itself normalizes to, so casing/whitespace variants share one cache entry and the
+# cached result is byte-identical to the uncached one. Mirrors _normalize_domain / the UEI
+# upper-trim below; an empty/None arg keys deterministically (its early-return result is the
+# same empty-shape dict, so caching it stays transparent).
+def _domain_key(domain: str) -> str:
+    return _normalize_domain(domain) or ""
+
+
+def _uei_key(recipient_uei: str) -> str:
+    return (recipient_uei or "").strip().upper()
+
+
 # ── Semantic point-lookups (Lance BTREE pushdown, sub-100 ms) ────────────────
+@lookup_cache.memoize(ttl_s=lookup_cache.COMPANY_TTL_S, key_fn=_domain_key)
 def search_company_by_domain(domain: str) -> dict[str, Any]:
     """Look up companies by web domain. Pushes the predicate into the Lance
     BTREE on ``companies.normalized_domain`` for a sub-100 ms point-lookup.
@@ -108,6 +123,7 @@ def search_company_by_domain(domain: str) -> dict[str, Any]:
     return {"normalized_domain": norm, "match_count": len(rows), "companies": rows}
 
 
+@lookup_cache.memoize(ttl_s=lookup_cache.PEOPLE_TTL_S, key_fn=_domain_key)
 def search_people_by_domain(domain: str) -> dict[str, Any]:
     """Look up people (contacts) by their company's web domain. Pushes the
     predicate into the Lance BTREE on ``people.normalized_domain`` (denormalized
@@ -134,6 +150,7 @@ def search_people_by_domain(domain: str) -> dict[str, Any]:
     return {"normalized_domain": norm, "match_count": len(rows), "people": rows}
 
 
+@lookup_cache.memoize(ttl_s=lookup_cache.AWARDS_TTL_S, key_fn=_uei_key)
 def lookup_awards_by_uei(recipient_uei: str) -> dict[str, Any]:
     """Fetch the precomputed federal-spend resume for one recipient UEI. Pushes
     the predicate into the Lance BTREE on ``awards.recipient_uei``
