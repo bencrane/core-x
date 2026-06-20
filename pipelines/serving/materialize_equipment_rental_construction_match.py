@@ -51,6 +51,7 @@ import sys
 A = "s3://data-sink/active"
 GAA = f"{A}/govcon_active_awards/"
 SME = f"{A}/sam_master_entities/"
+SMD = f"{A}/sam_master_domains/"   # canonical normalized entity_url → domain (blocklist-filtered)
 ZCTA = f"{A}/zcta_zip_centroids/"
 GX = f"{A}/geocode_xwalk/"
 SERVING_URI = os.environ.get("EQUIP_RENTAL_MATCH_URI", f"{A}/govcon_equipment_rental_construction_match/")
@@ -107,6 +108,7 @@ def build() -> dict:
     con.execute(f"SET memory_limit='{DUCK_MEM}'")
     con.register("gaa", lance.dataset(GAA, storage_options=so))
     con.register("sme", lance.dataset(SME, storage_options=so))
+    con.register("smd", lance.dataset(SMD, storage_options=so))
     con.register("zcta", lance.dataset(ZCTA, storage_options=so))
     con.register("gx", lance.dataset(GX, storage_options=so))
     inb = "(" + ",".join(f"'{c}'" for c in BUNDLE) + ")"
@@ -140,6 +142,11 @@ def build() -> dict:
           AND g.pop_zip IS NOT NULL AND length(trim(g.pop_zip)) >= 5
     """)
 
+    # one normalized domain per uei (sam_master_domains is the canonical, blocklist-filtered
+    # entity_url→domain index; collapse to 1/uei so the join can't fan out the match grain).
+    con.execute("CREATE TEMP TABLE dom AS "
+                "SELECT uei, min(normalized_domain) AS sub_website FROM smd GROUP BY uei")
+
     # ── SUPPLY: US-active equip-rental firms, geocoded, + SAM Reps & Certs designation flags ──
     # bt = self-cert business_types list; sbap = 2-char SBA-cert prefixes (date-suffix stripped).
     bt, sbap = "coalesce(m.business_types, [])", (
@@ -158,7 +165,7 @@ def build() -> dict:
           WHERE (m.primary_naics IN {inb} OR len(list_filter(coalesce(m.naics_codes,[]), x -> x IN {inb})) > 0)
             AND m.is_active AND m.physical_address_country_code = 'USA'
         )
-        SELECT * EXCLUDE (bt, sbap),
+        SELECT s0.* EXCLUDE (bt, sbap), dom.sub_website,
           list_contains(bt,'QF')                                                       AS sub_sdvosb,
           (list_contains(bt,'A5') OR list_contains(bt,'QF'))                           AS sub_veteran_owned,
           (list_contains(bt,'8W') OR list_contains(sbap,'A9') OR list_contains(sbap,'A0')) AS sub_wosb,
@@ -174,7 +181,7 @@ def build() -> dict:
              OR list_contains(bt,'A2') OR list_contains(bt,'27') OR list_contains(bt,'23')
              OR list_contains(bt,'8C') OR list_contains(sbap,'A6') OR list_contains(sbap,'XX')
              OR list_contains(sbap,'A9') OR list_contains(sbap,'A0'))                  AS sub_any_designation
-        FROM s0
+        FROM s0 LEFT JOIN dom ON s0.sub_uei = dom.uei
     """)
 
     nd = con.execute("SELECT count(*) FROM demand").fetchone()[0]
@@ -192,7 +199,7 @@ def build() -> dict:
                d.awarding_agency_name,
                d.pop_city, d.pop_state_code, d.pop_zip5, d.demand_centroid_source,
                s.sub_uei, s.sub_name, s.sub_primary_naics, s.sub_city, s.sub_state, s.sub_zip5,
-               s.supply_addr_is_hq_pin, s.supply_centroid_source,
+               s.sub_website, s.supply_addr_is_hq_pin, s.supply_centroid_source,
                {sub_desig_sel},
                round({hav}, 1) AS straight_miles,
                round({hav} * {ROAD_FACTOR}, 1) AS road_miles,
