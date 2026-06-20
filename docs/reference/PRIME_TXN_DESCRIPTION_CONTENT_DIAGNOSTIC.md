@@ -97,3 +97,25 @@ Probe: `/tmp/active_awards_desc_intersect.py`. Joins the base-description substa
 - **Working set:** active ∩ substantive = **28,323 awards / $462.9B**; active ∩ directional = **~48,100 awards / $930.6B** (recommended envelope). Concentration: P(active|substantive) 19.1% vs P(active|any) 15.2% (1.26×).
 
 **Operational gap:** `govcon_active_awards` carries **no description column** (`materialize_active_awards.py` `_SRC_COLS` is scalar-only) — this intersection requires a re-join to `contract_prime_txn`. To make the active substrate directly sub-mineable, add `prime_award_base_transaction_description` (+ a precomputed `scope_words` / `has_substantive_scope` flag) to `_SRC_COLS` and rebuild.
+
+---
+
+## 8. Does the subawardee's NAICS materially differ from the prime award's? (empirical)
+
+Probe: `/tmp/prime_sub_naics_divergence.py`. Resolves every reported subawardee in `usaspending/subaward_search` (sub-contract rows: 2.64M; `naics` = the **prime award's** NAICS) to its **own** industry via `contractor_award_summary.primary_naics`, and compares sectors. (`sub_naics` on the feed is a verbatim copy of the prime's `naics` — FSRS captures no sub NAICS — discarded. `subaward_amount` is outlier-poisoned: max $39T, 116 rows >$1B → COUNT is the trustworthy weight.)
+
+**Resolved 1,756,591 real prime↔sub contract relationships (67.4% of contract subawards; 37,498 distinct subs):**
+
+| subawardee vs prime-award NAICS | share of resolved |
+|---|---|
+| **different 2-digit SECTOR** ("materially different") | **41.2%** |
+| different 4-digit industry group | 77.8% |
+| different 6-digit NAICS | **87.0%** |
+| same 6-digit (sub matches award's exact NAICS) | **13.0%** |
+| different-sector $ (outlier-capped ≤$100M) | 34.8% |
+
+**Top cross-sector flows (by count):** 54 Professional/Sci/Tech → 31-33 Manufacturing (161,613) · 42 Wholesale → 33 Mfg (78,689) · 33 Mfg → 54 Prof (59,895) · 48-49 Transport → 33 Mfg (44,549) · 54 Prof → 51 Information (39,265) · 23 Construction → 33 Mfg (17,950) · 23 Construction → 54 Prof (12,083). Signature: **services/professional primes pull in manufacturing, IT, logistics, construction subs.** Same-sector pools also large (Mfg→Mfg 639K, Prof→Prof 299K) but cross-sector is the 41% plurality.
+
+**Conclusion:** materially-different-NAICS subcontracting is the **dominant** pattern, not an edge case. Only 13% of subcontract relationships stay inside the prime award's exact NAICS. A sub-targeting model keyed on "match the prime award NAICS" misses the 41% that crosses sectors (87% if requiring exact NAICS). This is the structural justification for mining the SOW description: the award NAICS gives the prime's *lane*; the description exposes the multi-NAICS *execution surface* that NAICS alone cannot see.
+
+**Caveats:** sub industry = modal `primary_naics` (firms span multiple); 32.6% of subs are pure-subs with no prime history (unresolved); corpus is FFATA/FSRS-reported subcontracts economy-wide (establishes the structural fact, not localized to the active/substantive subset).
