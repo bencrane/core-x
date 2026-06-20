@@ -24,6 +24,10 @@ assembly + enrollment**.
 Validated funnel (first run, 2026-06-20): **8,402** active firms → **4,989** with domain →
 **3,322** PDL-matched → **3,009** distinct company LinkedIn URLs.
 
+The **~1,667** firms with a domain but no PDL company (`4,989 − 3,322`) are unreachable by this
+LinkedIn-keyed path; the sibling **Workflow C** enrollment picks them up on their SAM domain alone —
+see `EQUIPMENT_RENTAL_FIRMO_ENROLLMENT_CASCADE.md`.
+
 The supply definition mirrors the match table's supply side exactly (no geo/centroid gate — firmographics
 are company-level, so HQ-pin national chains are **included**). The LinkedIn URL is the actual string PDL
 stored, never a slug reconstruction.
