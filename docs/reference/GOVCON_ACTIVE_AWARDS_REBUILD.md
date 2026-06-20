@@ -1,7 +1,7 @@
 # `govcon_active_awards` — rebuilt reference (zero-join GTM hunting ground)
 
 **Date:** 2026-06-20 (UTC) · **SoR:** `s3://data-sink/active/govcon_active_awards/` (Lance v2.1, snapshot-overwrite)
-**Shape:** **189,272 rows · 124 columns · 60 scalar indexes** · `as_of_date` = 2026-06-20
+**Shape:** **189,272 rows · 127 columns · 64 scalar indexes** · `as_of_date` = 2026-06-20
 **Worker:** `pipelines/serving/materialize_active_awards.py` · **Ledger:** `ops.active_awards_serving_runs` · **Landed:** [PR #557](https://github.com/bencrane/core-x/pull/557)
 All figures below are live-measured against the R2 SoR by the probe in §9.
 
@@ -114,7 +114,7 @@ Two directive names were corrected to the actual feed columns: `alaskan_native_c
 **Identity & structure:** `contract_award_unique_key`(string), `award_id_piid`, `parent_award_id_piid`, `award_or_idv_flag`, `award_type`, `award_type_code`, `idv_type`.
 **Time / liveness:** `pop_start`/`pop_current_end`/`pop_potential_end`/`ordering_period_end`/`latest_action_date`(date32), `action_date_fiscal_year`(int32), `last_modified_date`(string), `active_current`/`active_potential`/`has_option_tail`/`pop_unknown`(bool).
 **Recipient/prime:** `recipient_uei`, `recipient_name`, `recipient_parent_uei`, `recipient_parent_name`, `cage_code`, `business_size`, `business_size_code`.
-**Set-aside / NAICS / PSC:** `type_of_set_aside`(+`_code`), `naics_code`, `naics_description`, `psc_code`, `psc_description`.
+**Set-aside / NAICS / PSC:** `type_of_set_aside`(+`_code`), `naics_code`, `naics_description`, `psc_code`, `psc_description`, `psc_category`(1-char), `psc_fsg`(2-char), `psc_is_service`(bool). PSC is first-class: `psc_code` BTREE-indexed (exact, 1,782 distinct); `psc_category`/`psc_fsg`/`psc_is_service` BITMAP. `psc_is_service` = first char is a letter (services/R&D) vs digit (products) — the product/service split NAICS can't give. Measured: **97,607 services · 91,665 products**; 33 categories · 166 FSGs.
 **Dollars (double):** `federal_action_obligation`, `current_total_value_of_award`, `base_and_all_options_value`, `potential_total_value_of_award`, `total_dollars_obligated`, `base_and_exercised_options_value`.
 **Agency / funding office:** `awarding_agency_name`, `awarding_sub_agency_name`, `funding_agency_name`, `funding_sub_agency_name`, `funding_office_name`.
 **Place of performance:** `pop_state_code`, `pop_state_name`, `pop_city`, `pop_zip`, `pop_country_code`, `pop_county`.
@@ -132,8 +132,8 @@ Two directive names were corrected to the actual feed columns: `alaskan_native_c
 
 ## 8. Indexes (60) & zero-join query patterns
 
-**BTREE (11):** `contract_award_unique_key`, `recipient_uei`, `naics_code`, `pop_current_end`, `pop_potential_end`, `solicitation_identifier`, `scope_words`, `scope_chars`, `total_dollars_obligated`, `base_and_exercised_options_value`, `number_of_offers_received`.
-**BITMAP (49):** `business_size`, `type_of_set_aside`, `award_or_idv_flag`, the 4 liveness flags, `has_subcontracting_plan`, `subcontracting_plan_code`, `has_substantive_scope`, `has_directional_scope`, `extent_competed`, `type_of_contract_pricing`, `contract_bundling`, `performance_based_service_acquisition`, `construction_wage_rate_requirements`, `labor_standards`, `commercial_item_acquisition_procedures`, `solicitation_procedures`, `consolidated_contract`, `multi_year_contract`, `undefinitized_action`, `fair_opportunity_limited_sources`, `other_than_full_and_open_competition`, `domestic_or_foreign_entity`, `organizational_type`, and all 23 socioeconomic/demographic flags.
+**BTREE (12):** `contract_award_unique_key`, `recipient_uei`, `naics_code`, `psc_code`, `pop_current_end`, `pop_potential_end`, `solicitation_identifier`, `scope_words`, `scope_chars`, `total_dollars_obligated`, `base_and_exercised_options_value`, `number_of_offers_received`.
+**BITMAP (52):** `business_size`, `type_of_set_aside`, `award_or_idv_flag`, the 4 liveness flags, `has_subcontracting_plan`, `subcontracting_plan_code`, `has_substantive_scope`, `has_directional_scope`, `psc_category`, `psc_fsg`, `psc_is_service`, `extent_competed`, `type_of_contract_pricing`, `contract_bundling`, `performance_based_service_acquisition`, `construction_wage_rate_requirements`, `labor_standards`, `commercial_item_acquisition_procedures`, `solicitation_procedures`, `consolidated_contract`, `multi_year_contract`, `undefinitized_action`, `fair_opportunity_limited_sources`, `other_than_full_and_open_competition`, `domestic_or_foreign_entity`, `organizational_type`, and all 23 socioeconomic/demographic flags.
 
 Example zero-join GTM filters (single table, no joins), with measured counts:
 ```sql
