@@ -120,6 +120,9 @@ CREATE TABLE IF NOT EXISTS ops.enrichment_cohort_runs (
     recorded_at         timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT enrichment_cohort_runs_status_chk CHECK (status IN ('success', 'error'))
 );
+CREATE INDEX IF NOT EXISTS enrichment_cohort_runs_feed_idx        ON ops.enrichment_cohort_runs (feed);
+CREATE INDEX IF NOT EXISTS enrichment_cohort_runs_cohort_idx      ON ops.enrichment_cohort_runs (cohort_name);
+CREATE INDEX IF NOT EXISTS enrichment_cohort_runs_recorded_at_idx ON ops.enrichment_cohort_runs (recorded_at DESC);
 """
 
 
@@ -295,7 +298,7 @@ def _publish_parquet(domains: list[str], so: dict) -> str:
 
 
 def _record_run(stats: dict, r2_key: str | None, status: str, error: str | None,
-                started_at: dt.datetime, completed_at: dt.datetime) -> None:
+                started_at: dt.datetime, completed_at: dt.datetime) -> bool:
     try:
         conn = _open_conn(_hqx_dsn())
         try:
@@ -309,15 +312,22 @@ def _record_run(stats: dict, r2_key: str | None, status: str, error: str | None,
                      started_at, completed_at)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
+                # firms_with_linkedin = 0 by construction: gap firms have NO PDL company → no LinkedIn.
+                # (Was the firms_gap latent bug — firms_gap was written into the firms_with_linkedin
+                # column; mirrors cohort_equipment_rental_cascade.py.)
                 (FEED, COHORT_NAME, stats.get("firms_total", 0), stats.get("firms_with_domain", 0),
-                 stats.get("firms_pdl_matched", 0), stats.get("firms_gap", 0),
+                 stats.get("firms_pdl_matched", 0), 0,
                  len(stats.get("domains", [])), r2_key, COHORT_COLUMN if r2_key else None,
                  status, error, started_at, completed_at),
             )
         finally:
             conn.close()
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARN: ops.enrichment_cohort_runs write failed: {exc}")
+        return True
+    except Exception as exc:  # noqa: BLE001 — audit must not mask the build; surface LOUDLY (stderr)
+        import sys
+        print(f"ERROR: ops.enrichment_cohort_runs write FAILED (cohort published to R2 but "
+              f"UNJOURNALED): {exc}", file=sys.stderr)
+        return False
 
 
 def _post_callback(url: str | None, payload: dict, attempts: int = 3) -> None:
@@ -361,9 +371,11 @@ def _run(write: bool, run_id: str | None, trigger_callback_url: str | None) -> d
         print(f"[{run_root}] FAILED: {error}")
     finally:
         if write:
-            _record_run(stats, r2_key, status, error, started_at, dt.datetime.now(dt.timezone.utc))
+            ledger_written = _record_run(stats, r2_key, status, error, started_at,
+                                         dt.datetime.now(dt.timezone.utc))
             _post_callback(trigger_callback_url, {
                 "status": status, "feed": FEED, "cohort_name": COHORT_NAME,
+                "ledger_written": ledger_written,
                 "r2_key": r2_key, "column": COHORT_COLUMN if r2_key else None,
                 "distinct_domains": len(stats.get("domains", [])),
                 "firms_total": stats.get("firms_total", 0),

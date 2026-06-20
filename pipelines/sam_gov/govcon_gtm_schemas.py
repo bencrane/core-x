@@ -64,6 +64,8 @@ SUB_CAPABILITY_VECTORS_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_VECTORS_URI", "s3://data-sink/active/govcon_sub_capability_vectors/")
 SUB_CAPABILITY_PROFILES_URI = os.environ.get(
     "GOVCON_SUB_CAPABILITY_PROFILES_URI", "s3://data-sink/active/govcon_subawardee_profiles/")
+SUB_CERTIFICATIONS_MV_URI = os.environ.get(
+    "GOVCON_SUB_CERTIFICATIONS_MV_URI", "s3://data-sink/active/govcon_sub_certifications_mv/")
 
 
 # ── Frozen schemas (plan column/type tables, verbatim) ───────────────────────────────────────────
@@ -366,6 +368,77 @@ def subawardee_capability_profiles_schema():
     ])
 
 
+def sub_certifications_mv_schema():
+    """govcon_sub_certifications_mv — UEI grain (one row per firm), snapshot-overwrite serving MV.
+    Fuses DSBS adjudicated certifications (system of record) with SAM.gov self-certifications across
+    the subawardee + targeting + greenfield-DSBS universe. Two STRICTLY DISJOINT namespaces:
+
+      cert_*       ADJUDICATED — sourced ONLY from the DSBS `certs` JSON (status='Active' AND not
+                   expired). A firm absent from DSBS has every cert_* false — SAM claims never
+                   populate cert_* (the structural override). 8a/hubzone/wosb/edwosb/vosb/sdvosb
+                   (+ 8a_jv; the two JV-only programs vosb_jv/sdvosb_jv are data-absent, not carried).
+      sam_self_*   SELF-CERTIFIED — sourced ONLY from SAM `business_types` decoded via
+                   `sam_business_type_code_dict` WHERE sba_administered=false AND the designation has
+                   no DSBS-adjudicated equivalent → exactly {minority_owned(23), self_cert_sdb(27),
+                   woman_owned/general(A2), veteran_owned/general(A5)}. 8W/8C/QF are excluded (DSBS
+                   owns wosb/sdvosb). The two namespaces share zero designations (verify asserts it).
+
+    DECOUPLED PAYLOAD: email/phone/contact_person/website are pulled NATIVELY from DSBS (no
+    firmographics_blitz join); poc_full_name/poc_title fall back from govcon_subawardee_profiles for
+    the sub-only tier that has no DSBS record. Geo coalesces DSBS → profiles hq_*.
+
+    INDEX (zero-join frontend filtering): BTREE uei/naics_primary/zipcode/next_cert_expiration_date;
+    BITMAP every membership/cert/self-cert bool + state/universe_tier/cert_lifecycle/contact_source/
+    geo_source. cert_programs is audit-only (unindexed). Per-program exit-date BTREEs are deferred."""
+    import pyarrow as pa
+    return pa.schema([
+        # identity + universe membership
+        ("uei", pa.string()),
+        ("legal_business_name", pa.string()),
+        ("universe_tier", pa.string()),              # greenfield_dsbs | dsbs_and_sub | sub_only
+        ("in_dsbs", pa.bool_()),
+        ("is_subawardee", pa.bool_()),
+        ("is_targeting_candidate", pa.bool_()),
+        ("is_greenfield", pa.bool_()),
+        # ADJUDICATED namespace (DSBS certs JSON, status='Active' ∧ not expired)
+        ("cert_any", pa.bool_()),
+        ("cert_count", pa.int32()),
+        ("cert_programs", pa.string()),              # pipe list, audit/display (unindexed)
+        ("cert_8a", pa.bool_()), ("cert_hubzone", pa.bool_()), ("cert_wosb", pa.bool_()),
+        ("cert_edwosb", pa.bool_()), ("cert_vosb", pa.bool_()), ("cert_sdvosb", pa.bool_()),
+        ("cert_8a_jv", pa.bool_()),
+        ("cert_8a_exit_date", pa.date32()), ("cert_hubzone_exit_date", pa.date32()),
+        ("cert_wosb_exit_date", pa.date32()), ("cert_edwosb_exit_date", pa.date32()),
+        ("cert_vosb_exit_date", pa.date32()), ("cert_sdvosb_exit_date", pa.date32()),
+        ("next_cert_expiration_date", pa.date32()),  # min future exit across active programs
+        ("cert_lifecycle", pa.string()),             # none | expiring_90d | active
+        # SELF-CERTIFIED namespace (SAM business_types ∩ dict, non-adjudicated-equivalent)
+        ("sam_self_any", pa.bool_()),
+        ("sam_self_minority_owned", pa.bool_()), ("sam_self_sdb", pa.bool_()),
+        ("sam_self_woman_owned", pa.bool_()), ("sam_self_veteran_owned", pa.bool_()),
+        ("sam_self_codes", pa.string()),             # retained codes, audit (asserted ∩ adjudicated = ∅)
+        ("sam_registration_active", pa.bool_()),     # from sam_master_entities.is_active (self-cert-independent)
+        ("sam_present", pa.bool_()),
+        # decoupled contact payload (DSBS native; profiles POC fallback)
+        ("email", pa.string()), ("phone", pa.string()), ("contact_person", pa.string()),
+        ("website", pa.string()),
+        ("poc_full_name", pa.string()), ("poc_title", pa.string()),
+        ("contact_source", pa.string()),             # dsbs | subaward_poc | none
+        # geo / firmographic (denormalized for filtering)
+        ("state", pa.string()), ("city", pa.string()), ("county", pa.string()),
+        ("zipcode", pa.string()), ("naics_primary", pa.string()),
+        ("geo_source", pa.string()),                 # dsbs | subaward
+        # subaward footprint
+        ("has_subaward_history", pa.bool_()),
+        ("n_subawards", pa.int32()), ("n_targeting_edges", pa.int32()),
+        ("total_subaward_amount", pa.float64()),
+        ("top_subaward_description", pa.string()),
+        # provenance
+        ("dsbs_snapshot", pa.string()),
+        ("built_at", pa.timestamp("us", tz="UTC")),
+    ])
+
+
 # name → (uri, schema factory). The single registry every ensure/assert path iterates.
 FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_award_requirements": (REQUIREMENTS_URI, requirements_schema),
@@ -378,6 +451,7 @@ FROZEN: dict[str, tuple[str, callable]] = {
     "govcon_sub_capability_vectors": (SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema),
     "govcon_subawardee_profiles": (SUB_CAPABILITY_PROFILES_URI,
                                               subawardee_capability_profiles_schema),
+    "govcon_sub_certifications_mv": (SUB_CERTIFICATIONS_MV_URI, sub_certifications_mv_schema),
 }
 
 

@@ -294,7 +294,7 @@ def _publish_parquet(urls: list[str], so: dict) -> str:
 
 
 def _record_run(stats: dict, r2_key: str | None, status: str, error: str | None,
-                started_at: dt.datetime, completed_at: dt.datetime) -> None:
+                started_at: dt.datetime, completed_at: dt.datetime) -> bool:
     try:
         conn = _open_conn(_hqx_dsn())
         try:
@@ -315,8 +315,12 @@ def _record_run(stats: dict, r2_key: str | None, status: str, error: str | None,
             )
         finally:
             conn.close()
-    except Exception as exc:  # noqa: BLE001 — audit must not mask the build outcome
-        print(f"WARN: ops.enrichment_cohort_runs write failed: {exc}")
+        return True
+    except Exception as exc:  # noqa: BLE001 — audit must not mask the build; surface LOUDLY (stderr)
+        import sys
+        print(f"ERROR: ops.enrichment_cohort_runs write FAILED (cohort published to R2 but "
+              f"UNJOURNALED): {exc}", file=sys.stderr)
+        return False
 
 
 def _post_callback(url: str | None, payload: dict, attempts: int = 3) -> None:
@@ -363,9 +367,11 @@ def _run(write: bool, run_id: str | None, trigger_callback_url: str | None) -> d
         print(f"[{run_root}] FAILED: {error}")
     finally:
         if write:
-            _record_run(stats, r2_key, status, error, started_at, dt.datetime.now(dt.timezone.utc))
+            ledger_written = _record_run(stats, r2_key, status, error, started_at,
+                                         dt.datetime.now(dt.timezone.utc))
             _post_callback(trigger_callback_url, {
                 "status": status, "feed": FEED, "cohort_name": COHORT_NAME,
+                "ledger_written": ledger_written,
                 "r2_key": r2_key, "column": COHORT_COLUMN if r2_key else None,
                 "distinct_urls": len(stats.get("urls", [])),
                 "firms_total": stats.get("firms_total", 0),
