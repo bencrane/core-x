@@ -1,6 +1,7 @@
 # DSBS × SAM.gov Hybrid Certification MV — Implementation Plan
 
 **Status:** AWAITING AUTHORIZATION. No builds, DDL, indexes, or datasets created. Read-only probes only.
+**Rev 2 (2026-06-20):** amended per adversarial red-team ([DSBS_SAM_HYBRID_CERTIFICATION_MV_PLAN_ADVERSARIAL_REVIEW.md](DSBS_SAM_HYBRID_CERTIFICATION_MV_PLAN_ADVERSARIAL_REVIEW.md), verdict SHIP-WITH-AMENDMENTS, all findings verified live). Folded: **F1** certs-SQL spelling (`CAST(certs AS JSON[])`), **F2** `sam_registration_active` re-wiring, **F4** executable integrity assertion, **F3** gap-builder index-DDL parity, **F5/F6** index trims, **F8/F9** pins.
 **Target:** `s3://data-sink/active/govcon_sub_certifications_mv/` (Lance v2.1, serving tier).
 **Author basis:** live probes of `sba_dsbs_certified_firms`, `sam_master_entities`, `govcon_subawardee_profiles`, `govcon_sub_targeting`, `sam_business_type_code_dict`, the serving-MV code idiom, and the HQX `ops.enrichment_cohort_runs` ledger — 2026-06-20.
 
@@ -83,7 +84,7 @@ WITH dsbs_exploded AS (
     json_extract_string(c, '$.status')                     AS prog_status,
     TRY_CAST(json_extract_string(c, '$.exitDate') AS DATE) AS exit_date
   FROM dsbs d,
-       UNNEST(from_json(d.certs, 'JSON[]')) AS t(c)
+       UNNEST(CAST(d.certs AS JSON[])) AS t(c)   -- F1: CAST to JSON[]; from_json(...,'JSON[]') is REJECTED by DuckDB (verified live). certs is 0-null/0-empty/0-uncastable.
 ),
 dsbs_active AS (                          -- D2 gate: Active + not expired
   SELECT uei, prog_name, exit_date
@@ -128,8 +129,7 @@ WITH sam_selfcert AS (
     bool_or(dk.designation_key = 'self_certified_small_disadvantaged_business')   AS sam_self_sdb,
     bool_or(dk.designation_key = 'woman_owned_business')                          AS sam_self_woman_owned,
     bool_or(dk.designation_key = 'veteran_owned_business')                        AS sam_self_veteran_owned,
-    string_agg(DISTINCT dk.code, '|' ORDER BY 1)                                  AS sam_self_codes,
-    bool_or(e.is_active)                                                          AS sam_registration_active
+    string_agg(DISTINCT dk.code, '|' ORDER BY 1)                                  AS sam_self_codes
   FROM sam_master_entities e,
        UNNEST(e.business_types) AS t(bt)
   JOIN sam_business_type_code_dict dk
@@ -141,21 +141,25 @@ WITH sam_selfcert AS (
   GROUP BY e.uei
 )
 ```
-`sam_self_any = minority OR sdb OR woman OR veteran`. `e.is_active` collapses to one value per UEI (entities is 1-row-per-UEI), so `bool_or` is a safe grain-preserver. `sam_present` (uei in `sam_master_entities` at all) is computed from a separate `LEFT JOIN` flag, independent of self-cert.
+`sam_self_any = minority OR sdb OR woman OR veteran`. **`sam_registration_active` and `sam_present` are deliberately NOT computed in this CTE (F2).** It inner-joins the dict, so it contains only self-certifying UEIs — sourcing registration status here would coalesce every adjudicated-only firm (e.g. an 8(a)-only firm with no retained self-cert code) to `false` while it is truly SAM-active, silently understating deliverability for exactly the certified firms the MV targets. Both flags are sourced in §2.1 from a self-cert-independent LEFT JOIN on `sam_master_entities` (`is_active`, 1-row-per-UEI).
 
 ### 1.5 No-double-count guarantee (assert in `verify`)
 
 By construction `cert_*` and `sam_self_*` share **zero** designations. The `verify` step asserts the invariant so a future dict edit cannot silently reintroduce conflation:
 
 ```sql
--- must return 0 rows: no firm may carry an adjudicated program in its self-cert namespace
+-- must return 0 rows: no RETAINED self-cert code may be an adjudicated/SBA-administered code (F4).
+-- This is the load-bearing anti-conflation gate — it breaks the build on any future dict edit
+-- that reintroduces overlap between the namespaces.
 SELECT count(*) AS conflation_violations
-FROM govcon_sub_certifications_mv
-WHERE (sam_self_woman_owned   AND cert_wosb)      -- only flagged if A2/general were ever mismapped to WOSB
-   OR (sam_self_veteran_owned AND cert_vosb AND false);  -- intentionally inert; template for stricter checks
--- Primary integrity check: assert sam_self_codes ∩ {8W,8C,QF,A9,A6,XX,A0,JT} = ∅ for every row.
+FROM (
+  SELECT uei, unnest(string_split(sam_self_codes, '|')) AS code
+  FROM govcon_sub_certifications_mv
+  WHERE sam_self_codes IS NOT NULL
+)
+WHERE code IN ('8W','8C','QF','A9','A6','XX','A0','JT');
 ```
-The load-bearing assertion is the second comment: **no retained `sam_self_codes` value may be an adjudicated code**. That proves the namespaces never overlap.
+This proves the namespaces never overlap: every value in `sam_self_codes` must be one of the retained self-cert codes `{23,27,A2,A5}` and never an adjudicated/SBA-administered code. The build fails on any violation. (Verified live: the §1.4 filter already yields exactly `{23,27,A2,A5}` with zero fan-out.)
 
 ---
 
@@ -194,7 +198,7 @@ SELECT
   coalesce(dp.cert_8a,false) AS cert_8a, dp.cert_8a_exit_date, /* … all cert_* … */
   -- self-cert namespace (from §1.4)
   coalesce(sc.sam_self_minority_owned,false) AS sam_self_minority_owned, /* … */
-  coalesce(sc.sam_registration_active,false) AS sam_registration_active,
+  coalesce(sm.sam_is_active,false)                  AS sam_registration_active,  -- F2: from sam entity, NOT the self-cert CTE
   (sm.uei IS NOT NULL)                              AS sam_present,
   -- decoupled contact payload (D5): DSBS native, POC fallback
   d.email, d.phone, d.contact_person, d.website,
@@ -216,8 +220,9 @@ LEFT JOIN dsbs_pivot         dp ON dp.uei = s.uei            -- 1:1 (active cert
 LEFT JOIN (SELECT DISTINCT uei FROM dsbs) dc ON dc.uei = s.uei
 LEFT JOIN subawardee_profiles p ON p.sub_uei = s.uei        -- 1:1 (clean PK)
 LEFT JOIN t_agg              t  ON t.uei  = s.uei            -- 1:1 (pre-aggregated)
-LEFT JOIN sam_selfcert       sc ON sc.uei = s.uei           -- 1:1 (pre-aggregated)
-LEFT JOIN (SELECT DISTINCT uei FROM sam_master_entities) sm ON sm.uei = s.uei
+LEFT JOIN sam_selfcert       sc ON sc.uei = s.uei           -- 1:1 (pre-aggregated; self-cert flags only)
+LEFT JOIN (SELECT uei, bool_or(is_active) AS sam_is_active  -- F2: registration status, self-cert-independent
+           FROM sam_master_entities GROUP BY uei) sm ON sm.uei = s.uei   -- 1:1 (entities already 1/UEI)
 ```
 
 **Join-condition invariants (all verified against live grain):**
@@ -247,9 +252,9 @@ Greenfield SAM resolvability: 99.2% present in SAM, 97.1% self-certify, **74.7% 
 | `in_dsbs` `is_subawardee` `is_targeting_candidate` `is_greenfield` | bool | BITMAP | membership |
 | `cert_any` | bool | BITMAP | §1.3 |
 | `cert_count` | int32 | — | §1.3 |
-| `cert_programs` | string | BITMAP | §1.3 (pipe list) |
+| `cert_programs` | string | — (audit-only, F5) | §1.3 (pipe list) |
 | `cert_8a` `cert_hubzone` `cert_wosb` `cert_edwosb` `cert_vosb` `cert_sdvosb` `cert_8a_jv` | bool | BITMAP | §1.3 |
-| `cert_8a_exit_date` `cert_hubzone_exit_date` `cert_wosb_exit_date` `cert_edwosb_exit_date` `cert_vosb_exit_date` `cert_sdvosb_exit_date` | date32 | **BTREE** | §1.3 |
+| `cert_8a_exit_date` `cert_hubzone_exit_date` `cert_wosb_exit_date` `cert_edwosb_exit_date` `cert_vosb_exit_date` `cert_sdvosb_exit_date` | date32 | BTREE (deferred — O4, F6) | §1.3 |
 | `next_cert_expiration_date` | date32 | **BTREE** | §1.3 (min future exit) |
 | `cert_lifecycle` | string | BITMAP | derived: `expiring_90d` / `active` / `none` |
 | `sam_self_any` `sam_self_minority_owned` `sam_self_sdb` `sam_self_woman_owned` `sam_self_veteran_owned` | bool | BITMAP | §1.4 |
@@ -270,11 +275,13 @@ Greenfield SAM resolvability: 99.2% present in SAM, 97.1% self-certify, **74.7% 
 | `dsbs_snapshot` | string | — | provenance (DSBS source_version) |
 | `built_at` | timestamp[us,tz=UTC] | — | run stamp |
 
-**Indexing strategy (zero-join frontend filtering).** Rule, consistent with the fleet: resolution keys + every range-filterable date → **BTREE**; every boolean / enum / state / low-cardinality category → **BITMAP**; lists/free-text → unindexed.
-- **BTREE (≈11):** `uei`, `naics_primary`, `zipcode`, `next_cert_expiration_date`, and the 6 `cert_<prog>_exit_date` columns (drives "expires before X" range scans), optionally `total_subaward_amount`.
-- **BITMAP (≈26):** `state`, `universe_tier`, `cert_programs`, `cert_lifecycle`, `contact_source`, `geo_source`, the 4 membership flags, `cert_any` + 7 `cert_<prog>` bools, the 5 `sam_self_*` bools, `sam_registration_active`, `sam_present`, `has_subaward_history`. This lets the frontend AND/OR-compose any set-aside × geo × NAICS × lifecycle filter with bitmap intersection and **no join**.
+**`cert_lifecycle` definition (F8):** `none` when `next_cert_expiration_date IS NULL` (no currently-active adjudicated cert); `expiring_90d` when `next_cert_expiration_date <= CURRENT_DATE + INTERVAL 90 DAY`; else `active`. Multi-program firms collapse on the soonest expiry (min wins), so a firm with one cert lapsing in 30d is `expiring_90d` regardless of any longer-dated certs.
 
-`cert_programs` cardinality is the distinct pipe-combinations (~hundreds, per the DSBS `cert_programs` distribution) — well within BITMAP's sweet spot.
+**Indexing strategy (zero-join frontend filtering).** Rule, consistent with the fleet: resolution keys + every range-filterable date → **BTREE**; every boolean / enum / state / low-cardinality category → **BITMAP**; lists/free-text → unindexed.
+- **BTREE (4 core):** `uei`, `naics_primary`, `zipcode`, `next_cert_expiration_date` — the last is the workhorse for "expires before X" range scans and the recert-outreach motion (§5.1). **Deferred (O4, F6):** the 6 per-program `cert_<prog>_exit_date` BTREEs (program-specific expiry filtering) and `total_subaward_amount` (amount-range filtering) — each adds an index build to every overwrite; build only on a real frontend requirement.
+- **BITMAP (≈24):** `state`, `universe_tier`, `cert_lifecycle`, `contact_source`, `geo_source`, the 4 membership flags, `cert_any` + 7 `cert_<prog>` bools, the 5 `sam_self_*` bools, `sam_registration_active`, `sam_present`, `has_subaward_history`. This lets the frontend AND/OR-compose any set-aside × geo × NAICS × lifecycle filter with bitmap intersection and **no join**.
+
+`cert_programs` is carried for display/audit but left **unindexed** (F5): the frontend composes set-aside filters from the atomic `cert_<prog>` BITMAPs, not the composite combo string.
 
 ---
 
@@ -324,7 +331,7 @@ VALUES
    'normalized_domain', 'success', NULL,
    TIMESTAMPTZ '2026-06-20 10:10:38+00', TIMESTAMPTZ '2026-06-20 10:10:38+00');
 ```
-`firms_pdl_matched=28422` is the firms-with-a-PDL-hit count (DDL semantics), mirroring the live `equipment_rental_firms_cascade_domains` precedent (`firms_pdl_matched=3322`, `firms_with_linkedin=0`, `distinct_urls=1654`). `firms_gap` has **no column** — it is not persisted.
+`firms_pdl_matched=28422` is the firms-with-a-PDL-hit count (DDL semantics), mirroring the live `equipment_rental_firms_cascade_domains` precedent (`firms_pdl_matched=3322`, `firms_with_linkedin=0`, `distinct_urls=1654`). `firms_gap` has **no column** — it is not persisted. **Note (F9):** the Parquet row counts (26,502 / 23,973) are verified live; `firms_with_domain=52698` and `firms_pdl_matched=28422` are operator-supplied funnel intermediates not re-derivable read-only — a point-in-time estimate, not a reproduced measurement.
 
 ### 4.2 Code hardening (so a silent failure can't recur)
 
@@ -347,6 +354,8 @@ def _record_run(...) -> bool:
         return False
 # … in _run finally: ledger_written = _record_run(...); include "ledger_written": ledger_written in callback
 ```
+
+While applying this patch, also align the gap builder's inline `OPS_DDL` (`cohort_sba_dsbs_certified_gap_domains.py:103-122`) with the non-gap builder: it **omits the three `CREATE INDEX IF NOT EXISTS`** statements (`feed`, `cohort_name`, `recorded_at DESC`) that the non-gap builder and the `.sql` sibling include. Idempotent and low-risk, but a real divergence — fold it into the same commit (F3).
 
 ### 4.3 Latent bug fix (independent of the silent failure)
 
@@ -387,7 +396,7 @@ Live: 12 rows, 11 cols, **3 BTREE** (`code`, `namespace`, `designation_key`), 4 
 - **O1 — SAM self-cert breadth.** Retain `woman_owned`(A2)/`veteran_owned`(A5) as distinct general-ownership self-reps (this plan's default, D3), or restrict the SAM namespace to only `minority_owned`(23)/`self_cert_sdb`(27) per the directive's two examples? One-line exclusion-set change.
 - **O2 — Dataset name.** Keep `govcon_sub_certifications_mv` (directive) or rename to `govcon_sub_certifications` for `_mv`-less convention parity.
 - **O3 — `mv_disposition` column.** Add to the dict (data-driven, auditable namespace boundary) or keep the boundary as an inline `NOT IN` list in the build SQL.
-- **O4 — `total_subaward_amount` BTREE.** Index for range filtering ("subs > $X"), or leave unindexed if the frontend only filters on certs/geo/NAICS.
+- **O4 — Deferred indexes (F6).** Build the 6 per-program `cert_<prog>_exit_date` BTREEs (program-specific "WOSB expiring before X") and/or `total_subaward_amount` BTREE ("subs > $X")? Plan default: skip both — `next_cert_expiration_date` covers the recert motion and the frontend filters certs/geo/NAICS. Add only if a per-program expiry or amount-range filter is a real requirement.
 
 ---
 
