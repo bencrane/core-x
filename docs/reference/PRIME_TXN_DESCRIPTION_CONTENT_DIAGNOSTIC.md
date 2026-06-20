@@ -75,3 +75,25 @@ Do **not** architect sub-need extraction as global text-mining over this field: 
 **Column choice:** use `prime_award_base_transaction_description`, base actions only, collapsed to one row/award on latest `last_modified_date` (award-grain scope, constant per `contract_award_unique_key`, dodges the 20% mod admin text).
 
 **Correction to prior recon:** `usaspending_90day_diagnostic.md` §3.6 lists `description` among omitted columns — that is the bulk `award_search.description` *name*; the narrative IS carried in the download projection under these two columns (verified here).
+
+---
+
+## 7. Active-subset intersection (`govcon_active_awards`)
+
+Probe: `/tmp/active_awards_desc_intersect.py`. Joins the base-description substance tiers to `s3://data-sink/active/govcon_active_awards/` (v13, **189,274 live awards** = 15.2% of the 1,247,391 prime-award universe; membership = `GREATEST(current_end, potential_end) >= as_of OR both NULL`). $ = award-grain `current_total_value_of_award` (CTV).
+
+**Composition:** active_current 75.2% · future-dated end (current OR potential ≥ today) **148,791 (78.6%)** · pop_unknown 21.4% · option_tail 14.3%.
+
+| cut | awards | subst % | dir % | med words | $ total | subst $% | dir $% |
+|---|---|---|---|---|---|---|---|
+| ALL awards (baseline) | 1,247,391 | **11.9%** | 11.1% | 4 | $2,188.9B | 24.1% | 47.9% |
+| ACTIVE — all members | 189,274 | **15.0%** | **25.4%** | 6 | $1,589.7B | **29.1%** | **58.5%** |
+| ACTIVE — future-dated end | 148,791 | 15.1% | 24.1% | 7 | $1,589.7B | 29.1% | 58.5% |
+| ACTIVE — active_current only | 142,295 | 15.2% | 23.5% | 7 | $1,517.7B | 27.5% | 57.8% |
+
+*(substantive = ≥120c & ≥15w & non-junk · directional = ≥8w & ≥1 scope term)*
+
+- Restricting to active **lifts the substantive rate only modestly (11.9% → 15.0%)** but **more than doubles the directional rate (11.1% → 25.4%)** and **concentrates dollars hard** (directional $ share 47.9% → **58.5%**; active holds 72.6% of all live CTV).
+- **Working set:** active ∩ substantive = **28,323 awards / $462.9B**; active ∩ directional = **~48,100 awards / $930.6B** (recommended envelope). Concentration: P(active|substantive) 19.1% vs P(active|any) 15.2% (1.26×).
+
+**Operational gap:** `govcon_active_awards` carries **no description column** (`materialize_active_awards.py` `_SRC_COLS` is scalar-only) — this intersection requires a re-join to `contract_prime_txn`. To make the active substrate directly sub-mineable, add `prime_award_base_transaction_description` (+ a precomputed `scope_words` / `has_substantive_scope` flag) to `_SRC_COLS` and rebuild.
