@@ -21,6 +21,12 @@ SIDES (all reliable; NO FSRS subaward-propensity dependency)
           (~8,431 geocodable firms; HQ/yard zip)
   GEO     zcta_zip_centroids (primary, full coverage) + geocode_xwalk zip5-rollup (fallback)
 
+DESIGNATIONS: each pair carries the rental firm's socioeconomic designation flags (sub_sdvosb,
+  sub_wosb, sub_hubzone, sub_8a, …, sub_any_designation), decoded from the firm's SAM Reps & Certs
+  via the validated crosswalk in sam_business_type_code_dict — SAM current-registry lineage, NOT the
+  FPDS award-stamped flags. Lets the frontend filter "SDVOSB rental firms within 50mi of this award"
+  zero-join. 8(a)/HUBZone/EDWOSB are floors (SBA-cert string ~13% populated, ~68% recall).
+
 DISTANCE  centroid-to-centroid haversine × 1.3 road-circuity factor. Tier:
           local ≤50mi · regional ≤150mi · (pairs >150mi road are dropped).
 
@@ -62,10 +68,21 @@ HQ_CHAINS = ["UNITED RENTAL", "SUNBELT RENTAL", "SUNBELT", "HERC RENTAL", "HERC 
              "BLUE LINE RENTAL", "NES RENTAL", "BIGRENTZ", "RING POWER", "CAT RENTAL",
              "CATERPILLAR", "HOME DEPOT", "UNITED SITE SERVICES", "WILLSCOT", "MOBILE MINI"]
 
-BTREE_COLS = ["sub_uei", "contract_award_unique_key", "prime_uei", "road_miles", "award_value"]
-BITMAP_COLS = ["tier", "supply_addr_is_hq_pin", "sub_state", "pop_state_code",
-               "supply_centroid_source", "demand_centroid_source",
-               "business_size", "has_subcontracting_plan"]
+# Rental-firm socioeconomic designations, decoded from the firm's SAM Reps & Certs via the
+# validated crosswalk in sam_business_type_code_dict (SAM current-registry lineage — distinct
+# from the FPDS award-stamped flags on govcon_active_awards). 8(a)/HUBZone/EDWOSB are floors
+# (SBA-cert string ~13% populated); the business_types self-certs have no recall ceiling.
+SUB_DESIG = ["sub_sdvosb", "sub_veteran_owned", "sub_wosb", "sub_edwosb", "sub_woman_owned",
+             "sub_hubzone", "sub_8a", "sub_self_cert_sdb", "sub_minority_owned", "sub_jv_wosb",
+             "sub_any_designation"]
+
+# contract_award_unique_key is a long ~40-char string with only ~5,415 distinct values repeated
+# ~232×/row across 1.26M rows — a BITMAP profile (equality pushdown for "firms for this award"),
+# not BTREE. A BTREE external-sort over 1.26M long strings exhausts Lance's index-sorter pool.
+BTREE_COLS = ["sub_uei", "prime_uei", "road_miles", "award_value"]
+BITMAP_COLS = ["contract_award_unique_key", "tier", "supply_addr_is_hq_pin", "sub_state",
+               "pop_state_code", "supply_centroid_source", "demand_centroid_source",
+               "business_size", "has_subcontracting_plan"] + SUB_DESIG
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -123,17 +140,41 @@ def build() -> dict:
           AND g.pop_zip IS NOT NULL AND length(trim(g.pop_zip)) >= 5
     """)
 
-    # ── SUPPLY: US-active equip-rental firms, geocoded ──
+    # ── SUPPLY: US-active equip-rental firms, geocoded, + SAM Reps & Certs designation flags ──
+    # bt = self-cert business_types list; sbap = 2-char SBA-cert prefixes (date-suffix stripped).
+    bt, sbap = "coalesce(m.business_types, [])", (
+        "list_filter(list_transform(string_split(coalesce(m.sba_business_types_string,''),'~'),"
+        "x -> substr(trim(x),1,2)), e -> e <> '')")
     con.execute(f"""
         CREATE TEMP TABLE supply AS
-        SELECT m.uei AS sub_uei, m.legal_business_name AS sub_name, m.primary_naics AS sub_primary_naics,
-               m.physical_address_city AS sub_city, m.physical_address_province_or_state AS sub_state,
-               m.physical_address_zip_postal_code AS sub_zip5,
-               ({hq}) AS supply_addr_is_hq_pin,
-               c.lat AS s_lat, c.lon AS s_lon, c.src AS supply_centroid_source
-        FROM sme m JOIN cent c ON m.physical_address_zip_postal_code = c.zip5
-        WHERE (m.primary_naics IN {inb} OR len(list_filter(coalesce(m.naics_codes,[]), x -> x IN {inb})) > 0)
-          AND m.is_active AND m.physical_address_country_code = 'USA'
+        WITH s0 AS (
+          SELECT m.uei AS sub_uei, m.legal_business_name AS sub_name, m.primary_naics AS sub_primary_naics,
+                 m.physical_address_city AS sub_city, m.physical_address_province_or_state AS sub_state,
+                 m.physical_address_zip_postal_code AS sub_zip5,
+                 ({hq}) AS supply_addr_is_hq_pin,
+                 c.lat AS s_lat, c.lon AS s_lon, c.src AS supply_centroid_source,
+                 {bt} AS bt, {sbap} AS sbap
+          FROM sme m JOIN cent c ON m.physical_address_zip_postal_code = c.zip5
+          WHERE (m.primary_naics IN {inb} OR len(list_filter(coalesce(m.naics_codes,[]), x -> x IN {inb})) > 0)
+            AND m.is_active AND m.physical_address_country_code = 'USA'
+        )
+        SELECT * EXCLUDE (bt, sbap),
+          list_contains(bt,'QF')                                                       AS sub_sdvosb,
+          (list_contains(bt,'A5') OR list_contains(bt,'QF'))                           AS sub_veteran_owned,
+          (list_contains(bt,'8W') OR list_contains(sbap,'A9') OR list_contains(sbap,'A0')) AS sub_wosb,
+          list_contains(sbap,'A0')                                                     AS sub_edwosb,
+          (list_contains(bt,'A2') OR list_contains(bt,'8W')
+             OR list_contains(sbap,'A9') OR list_contains(sbap,'A0'))                  AS sub_woman_owned,
+          list_contains(sbap,'XX')                                                     AS sub_hubzone,
+          list_contains(sbap,'A6')                                                     AS sub_8a,
+          list_contains(bt,'27')                                                       AS sub_self_cert_sdb,
+          list_contains(bt,'23')                                                       AS sub_minority_owned,
+          list_contains(bt,'8C')                                                       AS sub_jv_wosb,
+          (list_contains(bt,'QF') OR list_contains(bt,'A5') OR list_contains(bt,'8W')
+             OR list_contains(bt,'A2') OR list_contains(bt,'27') OR list_contains(bt,'23')
+             OR list_contains(bt,'8C') OR list_contains(sbap,'A6') OR list_contains(sbap,'XX')
+             OR list_contains(sbap,'A9') OR list_contains(sbap,'A0'))                  AS sub_any_designation
+        FROM s0
     """)
 
     nd = con.execute("SELECT count(*) FROM demand").fetchone()[0]
@@ -141,6 +182,7 @@ def build() -> dict:
     print(f"geocoded demand={nd}  supply={ns}")
 
     # ── MATCH: haversine × road factor, ≤ regional cutoff ──
+    sub_desig_sel = ", ".join("s." + c for c in SUB_DESIG)
     hav = ("3958.8*2*asin(sqrt(pow(sin(radians(s.s_lat-d.d_lat)/2),2)"
            "+cos(radians(d.d_lat))*cos(radians(s.s_lat))*pow(sin(radians(s.s_lon-d.d_lon)/2),2)))")
     con.execute(f"""
@@ -151,6 +193,7 @@ def build() -> dict:
                d.pop_city, d.pop_state_code, d.pop_zip5, d.demand_centroid_source,
                s.sub_uei, s.sub_name, s.sub_primary_naics, s.sub_city, s.sub_state, s.sub_zip5,
                s.supply_addr_is_hq_pin, s.supply_centroid_source,
+               {sub_desig_sel},
                round({hav}, 1) AS straight_miles,
                round({hav} * {ROAD_FACTOR}, 1) AS road_miles,
                CASE WHEN {hav} * {ROAD_FACTOR} <= {LOCAL_MI} THEN 'local'
@@ -166,6 +209,10 @@ def build() -> dict:
 
     lance.write_dataset(tbl, SERVING_URI, mode="overwrite",
                         data_storage_version=DATA_STORAGE_VERSION, storage_options=so)
+    # Free the in-memory Arrow table + DuckDB pool before indexing — Lance's index sorter has its
+    # own bounded pool and a 1.26M-row table held in memory starves the high-cardinality BTREE build.
+    del tbl
+    con.close()
     ds = lance.dataset(SERVING_URI, storage_options=so)
     present = set(ds.schema.names)
     for c in BTREE_COLS:
