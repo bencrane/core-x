@@ -73,7 +73,7 @@ SOCIO_FLAGS = [
     "other_minority_owned_business",
 ]
 
-BTREE_INDEXES = ["contract_award_unique_key", "recipient_uei", "naics_code",
+BTREE_INDEXES = ["contract_award_unique_key", "recipient_uei", "naics_code", "psc_code",
                  "pop_current_end", "pop_potential_end", "solicitation_identifier",
                  "scope_words", "scope_chars", "total_dollars_obligated",
                  "base_and_exercised_options_value", "number_of_offers_received"]
@@ -81,6 +81,7 @@ BITMAP_INDEXES = [
     "business_size", "type_of_set_aside", "award_or_idv_flag",
     "active_current", "active_potential", "has_option_tail", "pop_unknown",
     "has_subcontracting_plan", "subcontracting_plan_code", "has_substantive_scope", "has_directional_scope",
+    "psc_category", "psc_fsg", "psc_is_service",
     "extent_competed", "type_of_contract_pricing", "contract_bundling",
     "performance_based_service_acquisition", "construction_wage_rate_requirements", "labor_standards",
     "commercial_item_acquisition_procedures", "solicitation_procedures", "consolidated_contract",
@@ -281,6 +282,9 @@ def _assemble(so: dict) -> tuple:
             naics_code, naics_description,
             product_or_service_code             AS psc_code,
             product_or_service_code_description AS psc_description,
+            nullif(upper(substr(trim(product_or_service_code), 1, 1)), '') AS psc_category,
+            nullif(upper(substr(trim(product_or_service_code), 1, 2)), '') AS psc_fsg,
+            COALESCE(regexp_matches(upper(substr(trim(product_or_service_code), 1, 1)), '[A-Z]'), FALSE) AS psc_is_service,
             TRY_CAST(federal_action_obligation        AS DOUBLE) AS federal_action_obligation,
             TRY_CAST(current_total_value_of_award     AS DOUBLE) AS current_total_value_of_award,
             TRY_CAST(base_and_all_options_value       AS DOUBLE) AS base_and_all_options_value,
@@ -472,6 +476,7 @@ def verify() -> dict:
         "has_substantive_scope": ds.count_rows(filter="has_substantive_scope = true"),
         "has_directional_scope": ds.count_rows(filter="has_directional_scope = true"),
         "has_subcontracting_plan": ds.count_rows(filter="has_subcontracting_plan = true"),
+        "psc_is_service": ds.count_rows(filter="psc_is_service = true"),
         "sdvosb": ds.count_rows(filter="service_disabled_veteran_owned_business = true"),
         "wosb": ds.count_rows(filter="women_owned_small_business = true"),
         "hubzone": ds.count_rows(filter="historically_underutilized_business_zone_hubzone_firm = true"),
