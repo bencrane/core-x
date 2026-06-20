@@ -5,7 +5,7 @@
 | dataset | SoR | grain | shape | builder |
 |---|---|---|---|---|
 | `zcta_zip_centroids` | `s3://data-sink/active/zcta_zip_centroids/` | 1 / zcta5 | 33,780 × 5 · 1 BTREE | `pipelines/serving/ingest_zcta_zip_centroids.py` |
-| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 1,258,662 × 24 · 5 BTREE + 8 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
+| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 1,258,662 × 35 · 4 BTREE + 20 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
 
 Both Lance v2.1, idempotent snapshot-overwrite.
 
@@ -37,9 +37,19 @@ One row per (construction award × rental firm) within road-radius.
 
 **Coverage (measured):** 1,258,662 pairs · 5,415 awards · 8,321 firms · **497,701 local pairs** (5,226 awards / 8,118 firms). Demand size mix (filterable): SMALL BUSINESS 4,629 awards · OTHER THAN SMALL 785 awards; with-subcontracting-plan 346 awards.
 
-**Schema (24):** `contract_award_unique_key`, `prime_uei`, `prime_name`, `award_naics_code`, `award_naics_desc`, `award_value`, `business_size`, `has_subcontracting_plan`, `awarding_agency_name`, `pop_city`, `pop_state_code`, `pop_zip5`, `demand_centroid_source` · `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `supply_addr_is_hq_pin`, `supply_centroid_source` · `straight_miles`, `road_miles`, `tier`.
+**Schema (35):**
+- *Demand:* `contract_award_unique_key`, `prime_uei`, `prime_name`, `award_naics_code`, `award_naics_desc`, `award_value`, `business_size`, `has_subcontracting_plan`, `awarding_agency_name`, `pop_city`, `pop_state_code`, `pop_zip5`, `demand_centroid_source`.
+- *Supply:* `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `supply_addr_is_hq_pin`, `supply_centroid_source`.
+- *Distance:* `straight_miles`, `road_miles`, `tier`.
+- *Rental-firm designations (11, bool — SAM Reps & Certs lineage, see §4.1):* `sub_sdvosb`, `sub_veteran_owned`, `sub_wosb`, `sub_edwosb`, `sub_woman_owned`, `sub_hubzone`, `sub_8a`, `sub_self_cert_sdb`, `sub_minority_owned`, `sub_jv_wosb`, `sub_any_designation`.
 
-**Indexes (13):** BTREE `sub_uei`, `contract_award_unique_key`, `prime_uei`, `road_miles`, `award_value`; BITMAP `tier`, `supply_addr_is_hq_pin`, `sub_state`, `pop_state_code`, `supply_centroid_source`, `demand_centroid_source`, `business_size`, `has_subcontracting_plan`.
+**Indexes (24):** BTREE `sub_uei`, `prime_uei`, `road_miles`, `award_value`; BITMAP `contract_award_unique_key` (5,415 distinct, long key → BITMAP not BTREE), `tier`, `supply_addr_is_hq_pin`, `sub_state`, `pop_state_code`, `supply_centroid_source`, `demand_centroid_source`, `business_size`, `has_subcontracting_plan`, and all 11 `sub_*` designation flags.
+
+### 4.1 Rental-firm designation flags (the diverse-vendor cross-filter)
+
+Each pair carries the **rental firm's** socioeconomic designations, decoded from the firm's SAM Reps & Certs (`business_types` + `sba_business_types_string`) via the validated crosswalk in `sam_business_type_code_dict`. This is the **SAM current-registry lineage** — the firm's live self-cert — NOT the FPDS award-stamped flags on `govcon_active_awards` (those are prime-keyed, and rental firms are mostly not primes). `8(a)`/`HUBZone`/`EDWOSB` are **floors** (SBA-cert string ~13% populated, ~68% recall); the `business_types` self-certs (SDVOSB/veteran/WOSB/woman/minority/SDB) have no ceiling.
+
+Of the 8,321 matched firms: **5,400 carry ≥1 designation** — SDVOSB 1,134 · WOSB 1,642 · woman-owned 1,835 · veteran 1,465 · minority 2,492 · HUBZone ≥212 · 8(a) ≥209. A designated rental firm local to a construction award is a **double-value target**: equipment capability **and** small-business/socioeconomic subcontracting credit for the prime.
 
 ## 5. Caveats that ship with the data
 
@@ -56,6 +66,13 @@ SELECT sub_name, sub_city, sub_state, road_miles, supply_addr_is_hq_pin
 FROM govcon_equipment_rental_construction_match
 WHERE contract_award_unique_key = :award AND tier='local'
 ORDER BY supply_addr_is_hq_pin, road_miles;
+
+-- Diverse-vendor cross-filter: SDVOSB rental firms within 50mi of a construction award (zero-join)
+-- (1,119 distinct firms across 4,214 awards in the live table)
+SELECT contract_award_unique_key, prime_name, sub_name, sub_city, sub_state, road_miles
+FROM govcon_equipment_rental_construction_match
+WHERE sub_sdvosb AND tier='local'
+ORDER BY award_value DESC;
 
 -- For one rental firm: every construction award it can reach, biggest demand first
 SELECT prime_name, award_value, pop_city, pop_state_code, road_miles, tier
