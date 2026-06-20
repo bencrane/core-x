@@ -4,12 +4,19 @@ SoR  s3://data-sink/active/govcon_equipment_rental_construction_match/  (Lance v
 
 WHAT THIS IS
 One row per (construction-prime award × equipment-rental firm) pair within drive-radius — the
-operational target list behind the GTM inference: active large construction primes WITH
-subcontracting plans, matched to the equipment-rental firms physically able to serve them.
+operational target list behind the GTM inference: active construction primes matched to the
+equipment-rental firms physically able to serve them.
+
+DEMAND IS UNGATED. Every active construction job needs equipment rental regardless of prime size
+or whether it filed a subcontracting plan, so the match does NOT filter on business_size or
+has_subcontracting_plan — those are CARRIED COLUMNS for optional filter-on-top, never gates.
+(Gating on them would shrink demand from ~5,987 active construction awards to ~376 — a compliance
+artifact, not rental demand.)
 
 SIDES (all reliable; NO FSRS subaward-propensity dependency)
-  DEMAND  govcon_active_awards   naics LIKE '23%' · large · has_subcontracting_plan · active_potential
-          (~376 awards / 164 primes / $57B; PoP worksite zip)
+  DEMAND  govcon_active_awards   naics LIKE '23%' · active_potential  — ALL active construction primes,
+          any size, plan or not. business_size + has_subcontracting_plan carried as columns, not gates.
+          (~5,987 active construction awards / 2,759 primes / $91B; PoP worksite zip)
   SUPPLY  sam_master_entities    equip-rental NAICS bundle · is_active · USA
           (~8,431 geocodable firms; HQ/yard zip)
   GEO     zcta_zip_centroids (primary, full coverage) + geocode_xwalk zip5-rollup (fallback)
@@ -57,7 +64,8 @@ HQ_CHAINS = ["UNITED RENTAL", "SUNBELT RENTAL", "SUNBELT", "HERC RENTAL", "HERC 
 
 BTREE_COLS = ["sub_uei", "contract_award_unique_key", "prime_uei", "road_miles", "award_value"]
 BITMAP_COLS = ["tier", "supply_addr_is_hq_pin", "sub_state", "pop_state_code",
-               "supply_centroid_source", "demand_centroid_source"]
+               "supply_centroid_source", "demand_centroid_source",
+               "business_size", "has_subcontracting_plan"]
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -107,11 +115,11 @@ def build() -> dict:
         SELECT g.contract_award_unique_key, g.recipient_uei AS prime_uei, g.recipient_name AS prime_name,
                g.naics_code AS award_naics_code, g.naics_description AS award_naics_desc,
                g.current_total_value_of_award AS award_value,
+               g.business_size, g.has_subcontracting_plan,
                g.awarding_agency_name, g.pop_city, g.pop_state_code, left(g.pop_zip,5) AS pop_zip5,
                c.lat AS d_lat, c.lon AS d_lon, c.src AS demand_centroid_source
         FROM gaa g JOIN cent c ON left(g.pop_zip,5) = c.zip5
-        WHERE g.naics_code LIKE '23%' AND g.business_size NOT LIKE 'SMALL%'
-          AND g.has_subcontracting_plan AND g.active_potential
+        WHERE g.naics_code LIKE '23%' AND g.active_potential
           AND g.pop_zip IS NOT NULL AND length(trim(g.pop_zip)) >= 5
     """)
 
@@ -138,7 +146,8 @@ def build() -> dict:
     con.execute(f"""
         CREATE TEMP TABLE m AS
         SELECT d.contract_award_unique_key, d.prime_uei, d.prime_name, d.award_naics_code,
-               d.award_naics_desc, d.award_value, d.awarding_agency_name,
+               d.award_naics_desc, d.award_value, d.business_size, d.has_subcontracting_plan,
+               d.awarding_agency_name,
                d.pop_city, d.pop_state_code, d.pop_zip5, d.demand_centroid_source,
                s.sub_uei, s.sub_name, s.sub_primary_naics, s.sub_city, s.sub_state, s.sub_zip5,
                s.supply_addr_is_hq_pin, s.supply_centroid_source,
