@@ -205,27 +205,59 @@ def _mime_match(claimed: str | None, sniffed: str | None) -> bool:
 
 
 def _ledger_schema():
+    """FROZEN ledger schema — field set, ORDER, and types are the law and must match the live
+    Lance SoR at ``LEDGER_URI`` byte-for-byte. Lance rejects any append whose schema differs
+    (extra/missing field, reordering, or type change), so the first ``flush()`` against the
+    existing dataset would be rejected on drift. ``_assert_ledger_schema`` enforces this on open;
+    verify with ``schema.equals(lance.dataset(LEDGER_URI).schema)``."""
     import pyarrow as pa
 
     return pa.schema([
         ("resource_id", pa.string()),
-        ("status", pa.string()),
-        ("http_status", pa.int32()),
-        ("sha256", pa.string()),
-        ("size_expected", pa.int64()),
-        ("size_downloaded", pa.int64()),
-        ("size_match", pa.bool_()),
-        ("mime_claimed", pa.string()),
+        ("file_name", pa.string()),
+        ("mime_declared", pa.string()),
         ("mime_sniffed", pa.string()),
         ("mime_match", pa.bool_()),
+        ("access_level", pa.string()),
+        ("size_declared", pa.int64()),
+        ("content_length", pa.int64()),
+        ("size_downloaded", pa.int64()),
+        ("size_match", pa.bool_()),
+        ("sha256", pa.string()),
+        ("http_status", pa.int32()),
+        ("status", pa.string()),
         ("stored_uri", pa.string()),
         ("attempts", pa.int32()),
+        ("notice_id", pa.string()),
+        ("solicitation_number", pa.string()),
+        ("naics_code", pa.string()),
         ("first_attempt_at", pa.timestamp("us", tz="UTC")),
         ("completed_at", pa.timestamp("us", tz="UTC")),
         ("error", pa.string()),
         ("run_id", pa.string()),
-        ("worklist_tier", pa.string()),
     ])
+
+
+def _assert_ledger_schema(uri: str, schema, so: dict) -> None:
+    """Fail fast on ANY drift between the frozen ``_ledger_schema()`` and the live ledger (field
+    set, order, types, nullability; metadata ignored) BEFORE the first append. The attachment
+    ledger has no ``ensure_all`` guard, so without this a silently-evolved sink poisons the very
+    first checkpoint flush with a cryptic Lance append error after a full download pass. Mirrors
+    ``govcon_gtm_schemas.assert_schema``."""
+    import lance
+
+    ds = lance.dataset(uri, storage_options=so)
+    if not ds.schema.equals(schema, check_metadata=False):
+        live = {f.name: str(f.type) for f in ds.schema}
+        frozen = {f.name: str(f.type) for f in schema}
+        missing = sorted(set(frozen) - set(live))
+        extra = sorted(set(live) - set(frozen))
+        retyped = sorted(n for n in set(live) & set(frozen) if live[n] != frozen[n])
+        raise RuntimeError(
+            f"SCHEMA DRIFT on ledger {uri}: missing={missing} extra={extra} "
+            f"retyped={[(n, live[n], '!=', frozen[n]) for n in retyped]} "
+            f"(or field-order/nullability drift). _ledger_schema() must match the live SoR "
+            f"exactly — reconcile the code, never bend the live dataset.")
 
 
 OPS_DDL = """
@@ -317,7 +349,10 @@ def _download_one(session, url: str, notice_id: str | None, *,
                   connect_timeout: float = 15.0, read_timeout: float = 60.0,
                   max_bytes: int = 50_000_000, wallclock: float = 240.0):
     """Single file fetch with the exact status map, a REAL-size guard, and a
-    wall-clock backstop. Returns ``(status_label, http_status, body|None, attempts, error|None)``.
+    wall-clock backstop. Returns
+    ``(status_label, http_status, body|None, attempts, error|None, content_length|None)``
+    where ``content_length`` is the POST-redirect HTTP Content-Length (parsed int) when a 200
+    response carried one, else None — recorded to the ledger alongside the real ``size_downloaded``.
 
     The download endpoint 303-redirects to S3; the manifest's declared ``size_bytes``
     is corrupted for >=10 MB files (verified 2026-06-06): SAM reports
@@ -354,45 +389,46 @@ def _download_one(session, url: str, notice_id: str | None, *,
         if sc == 200:
             clen = resp.headers.get("Content-Length")
             try:
-                if clen is not None and int(clen) >= max_bytes:   # real size over cap
-                    resp.close()
-                    return ("oversize", sc, None, attempt + 1, f"content_length={clen}")
+                clen_int = int(clen) if clen is not None else None
             except ValueError:
-                pass
+                clen_int = None
+            if clen_int is not None and clen_int >= max_bytes:   # real size over cap
+                resp.close()
+                return ("oversize", sc, None, attempt + 1, f"content_length={clen}", clen_int)
             buf = bytearray()
             try:
                 for chunk in resp.iter_content(262144):
                     buf += chunk
                     if len(buf) >= max_bytes:                     # lying/absent Content-Length
                         resp.close()
-                        return ("oversize", sc, None, attempt + 1, f"streamed>={max_bytes}")
+                        return ("oversize", sc, None, attempt + 1, f"streamed>={max_bytes}", clen_int)
                     if time.time() - t0 > wallclock:              # slow-roll backstop, no retry
                         resp.close()
-                        return ("failed", sc, None, attempt + 1, f"wallclock>{wallclock:.0f}s@{len(buf)}B")
+                        return ("failed", sc, None, attempt + 1, f"wallclock>{wallclock:.0f}s@{len(buf)}B", clen_int)
             except requests.RequestException as exc:
                 last_err = f"stream:{type(exc).__name__}"
                 wait = min(60, 2 ** attempt)
                 print(f"  stream {last_err} attempt{attempt} backoff {wait}s", flush=True)
                 time.sleep(wait)
                 continue
-            return ("downloaded", sc, bytes(buf), attempt + 1, None)
+            return ("downloaded", sc, bytes(buf), attempt + 1, None, clen_int)
         if sc == 401:
-            return ("restricted", sc, None, attempt + 1, _short_body(resp))
+            return ("restricted", sc, None, attempt + 1, _short_body(resp), None)
         if sc == 403:                                   # never auto-retry an auth refusal
             body = _short_body(resp) or ""
             if "UNAUTHORIZED" in body.upper():
-                return ("restricted", sc, None, attempt + 1, body)
-            return ("failed", sc, None, attempt + 1, f"403:{body}")
+                return ("restricted", sc, None, attempt + 1, body, None)
+            return ("failed", sc, None, attempt + 1, f"403:{body}", None)
         if sc in (400, 410):                            # removed/dead resource
-            return ("gone", sc, None, attempt + 1, _short_body(resp))
+            return ("gone", sc, None, attempt + 1, _short_body(resp), None)
         if sc in (429, 503) or sc >= 500:               # throttle / transient -> back off
             wait = min(120, 5 * 2 ** attempt)
             last_err = f"http{sc}"
             print(f"  {sc} backoff {wait}s", flush=True)
             time.sleep(wait)
             continue
-        return ("failed", sc, None, attempt + 1, _short_body(resp))   # other hard 4xx
-    return ("failed", 0, None, 6, last_err or "retries exhausted")
+        return ("failed", sc, None, attempt + 1, _short_body(resp), None)   # other hard 4xx
+    return ("failed", 0, None, 6, last_err or "retries exhausted", None)
 
 
 def _record_run(stats: dict, dsn: str | None) -> None:
@@ -472,6 +508,8 @@ def run_download(
             return
         at = pa.Table.from_pylist(buf, schema=schema)
         mode = "append" if _dataset_exists(ledger_uri, storage_options) else "create"
+        if mode == "append":                       # fail fast on drift BEFORE Lance rejects it
+            _assert_ledger_schema(ledger_uri, schema, storage_options)
         lance.write_dataset(at, ledger_uri, mode=mode,
                             data_storage_version="2.1", storage_options=storage_options)
         print(f"[{tag}] +{len(buf)} ledger rows (dl={c['downloaded']} fail={c['failed']} "
@@ -505,19 +543,26 @@ def run_download(
             if t_dl_start is None:
                 t_dl_start = time.time()
             first_at = dt.datetime.now(dt.timezone.utc)
-            label, sc, body, attempts, err = _download_one(
+            label, sc, body, attempts, err, content_length = _download_one(
                 session, f["download_url"], f.get("notice_id"),
                 connect_timeout=connect_timeout, read_timeout=read_timeout,
                 max_bytes=max_bytes, wallclock=wallclock)
             c["attempted"] += 1
             row = {
-                "resource_id": rid, "status": label, "http_status": int(sc),
-                "sha256": None, "size_expected": int(f["size_bytes"] or 0),
+                "resource_id": rid,
+                "file_name": f.get("file_name"),
+                "mime_declared": f.get("mime_type"), "mime_sniffed": None, "mime_match": None,
+                "access_level": f.get("access_level"),
+                "size_declared": int(f["size_bytes"] or 0),
+                "content_length": int(content_length) if content_length is not None else None,
                 "size_downloaded": None, "size_match": None,
-                "mime_claimed": f.get("mime_type"), "mime_sniffed": None, "mime_match": None,
+                "sha256": None, "http_status": int(sc), "status": label,
                 "stored_uri": None, "attempts": int(attempts),
+                "notice_id": f.get("notice_id"),
+                "solicitation_number": f.get("solicitation_number"),
+                "naics_code": f.get("naics_code"),
                 "first_attempt_at": first_at, "completed_at": dt.datetime.now(dt.timezone.utc),
-                "error": err, "run_id": run_id, "worklist_tier": tier,
+                "error": err, "run_id": run_id,
             }
             if label == "downloaded" and body is not None:
                 size_dl = len(body)
@@ -572,7 +617,7 @@ def run_download(
         try:
             lds = lance.dataset(ledger_uri, storage_options=storage_options)
             for col, it in [("resource_id", "BTREE"), ("sha256", "BTREE"),
-                            ("status", "BITMAP"), ("worklist_tier", "BITMAP")]:
+                            ("status", "BITMAP")]:
                 try:
                     lds.create_scalar_index(col, index_type=it, replace=True)
                 except Exception as ie:  # noqa: BLE001
