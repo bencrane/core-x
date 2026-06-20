@@ -49,12 +49,46 @@ PRIMETXN_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 FEED = "active_awards"
 DATA_STORAGE_VERSION = "2.1"
 
-BTREE_INDEXES = ["contract_award_unique_key", "recipient_uei", "naics_code",
-                 "pop_current_end", "pop_potential_end"]
-BITMAP_INDEXES = ["business_size", "type_of_set_aside", "award_or_idv_flag",
-                  "active_current", "active_potential", "has_option_tail", "pop_unknown"]
+# Scope lexicon + substance thresholds — VERBATIM from PRIME_TXN_DESCRIPTION_CONTENT_DIAGNOSTIC.md
+# (probe active_awards_desc_intersect.py). has_directional_scope = >=8 words & >=1 scope term;
+# has_substantive_scope = >=120 chars & >=15 words & non-junk.
+SCOPE_TERMS = ["PROVIDE", "SERVICE", "MAINTENANCE", "SUPPORT", "INSTALL", "FURNISH", "DELIVER",
+               "REPAIR", "CONSTRUCT", "SOFTWARE", "SYSTEM", "TRAINING", "ENGINEER", "EQUIPMENT",
+               "SUPPLY", "SUPPLIES", "MANAGEMENT", "OPERATION", "TECHNICAL", "DESIGN", "DEVELOP",
+               "INSPECT", "TEST", "UPGRADE", "MATERIAL", "LABOR", "STUDY", "ANALYSIS", "RESEARCH"]
+SCOPE_JUNK = ("'NONE'", "'N/A'", "'NOT APPLICABLE'", "'SEE SCHEDULE'")
 
-DUCK_MEM = os.environ.get("ACTIVE_AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
+# Recipient (prime) self-certified socioeconomic + demographic ownership flags (FPDS, stored 't'/'f').
+# Cast to BOOLEAN at build. Curated SBA/set-aside (12) + demographic ownership markers (11, GTM outreach).
+SOCIO_FLAGS = [
+    "service_disabled_veteran_owned_business", "veteran_owned_business", "women_owned_small_business",
+    "economically_disadvantaged_women_owned_small_business", "woman_owned_business",
+    "historically_underutilized_business_zone_hubzone_firm", "c8a_program_participant",
+    "small_disadvantaged_business", "self_certified_small_disadvantaged_business",
+    "sba_certified_8a_joint_venture", "joint_venture_women_owned_small_business", "emerging_small_business",
+    "black_american_owned_business", "hispanic_american_owned_business", "native_american_owned_business",
+    "asian_pacific_american_owned_business", "subcontinent_asian_asian_indian_american_owned_business",
+    "american_indian_owned_business", "alaskan_native_corporation_owned_firm",
+    "native_hawaiian_organization_owned_firm", "tribally_owned_firm", "minority_owned_business",
+    "other_minority_owned_business",
+]
+
+BTREE_INDEXES = ["contract_award_unique_key", "recipient_uei", "naics_code",
+                 "pop_current_end", "pop_potential_end", "solicitation_identifier",
+                 "scope_words", "scope_chars", "total_dollars_obligated",
+                 "base_and_exercised_options_value", "number_of_offers_received"]
+BITMAP_INDEXES = [
+    "business_size", "type_of_set_aside", "award_or_idv_flag",
+    "active_current", "active_potential", "has_option_tail", "pop_unknown",
+    "has_subcontracting_plan", "subcontracting_plan_code", "has_substantive_scope", "has_directional_scope",
+    "extent_competed", "type_of_contract_pricing", "contract_bundling",
+    "performance_based_service_acquisition", "construction_wage_rate_requirements", "labor_standards",
+    "commercial_item_acquisition_procedures", "solicitation_procedures", "consolidated_contract",
+    "multi_year_contract", "undefinitized_action", "fair_opportunity_limited_sources",
+    "other_than_full_and_open_competition", "domestic_or_foreign_entity", "organizational_type",
+] + SOCIO_FLAGS
+
+DUCK_MEM = os.environ.get("ACTIVE_AWARDS_DUCKDB_MEMORY_LIMIT", "10GB")
 DUCK_TMP = os.environ.get("ACTIVE_AWARDS_DUCKDB_TEMP_DIR", "/tmp/active_awards_duckdb")
 
 # Raw transaction columns pulled from contract_prime_txn (scalar-only projection).
@@ -63,18 +97,49 @@ _SRC_COLS = [
     "award_or_idv_flag", "award_type", "award_type_code", "idv_type",
     "period_of_performance_start_date", "period_of_performance_current_end_date",
     "period_of_performance_potential_end_date", "ordering_period_end_date", "action_date",
+    "action_date_fiscal_year", "last_modified_date",
     "recipient_uei", "recipient_name", "recipient_parent_uei", "recipient_parent_name", "cage_code",
     "contracting_officers_determination_of_business_size",
     "contracting_officers_determination_of_business_size_code",
     "type_of_set_aside", "type_of_set_aside_code",
     "naics_code", "naics_description", "product_or_service_code", "product_or_service_code_description",
     "federal_action_obligation", "current_total_value_of_award", "base_and_all_options_value",
-    "potential_total_value_of_award",
+    "potential_total_value_of_award", "total_dollars_obligated", "base_and_exercised_options_value",
     "awarding_agency_name", "awarding_sub_agency_name", "funding_agency_name",
+    "funding_sub_agency_name", "funding_office_name",
     "primary_place_of_performance_state_code", "primary_place_of_performance_state_name",
     "primary_place_of_performance_city_name", "primary_place_of_performance_zip_4",
-    "primary_place_of_performance_country_code",
-]
+    "primary_place_of_performance_country_code", "primary_place_of_performance_county_name",
+    # scope narrative
+    "prime_award_base_transaction_description", "transaction_description",
+    # subcontracting plan (the structured demand signal)
+    "subcontracting_plan", "subcontracting_plan_code",
+    # solicitation linkage
+    "solicitation_identifier", "solicitation_date",
+    "solicitation_procedures", "solicitation_procedures_code",
+    # competition
+    "extent_competed", "extent_competed_code", "number_of_offers_received",
+    "commercial_item_acquisition_procedures", "commercial_item_acquisition_procedures_code",
+    "fair_opportunity_limited_sources", "fair_opportunity_limited_sources_code",
+    "other_than_full_and_open_competition", "other_than_full_and_open_competition_code",
+    # contract structure
+    "type_of_contract_pricing", "type_of_contract_pricing_code",
+    "contract_bundling", "contract_bundling_code",
+    "consolidated_contract", "consolidated_contract_code",
+    "multi_year_contract", "multi_year_contract_code",
+    "undefinitized_action", "undefinitized_action_code",
+    # work-character / compliance
+    "performance_based_service_acquisition", "performance_based_service_acquisition_code",
+    "construction_wage_rate_requirements", "construction_wage_rate_requirements_code",
+    "labor_standards", "labor_standards_code",
+    "place_of_manufacture", "place_of_manufacture_code",
+    "domestic_or_foreign_entity", "domestic_or_foreign_entity_code",
+    "organizational_type",
+    # links / recipient (prime) location + raw contact (UI layer)
+    "usaspending_permalink",
+    "recipient_state_code", "recipient_city_name", "recipient_zip_4_code",
+    "recipient_phone_number", "recipient_fax_number", "recipient_address_line_1", "recipient_address_line_2",
+] + SOCIO_FLAGS
 
 # --------------------------------------------------------------------------- #
 # ops.active_awards_serving_runs — terminal-state ledger (idempotent DDL, self-bootstrapping).
@@ -164,6 +229,7 @@ def _assemble(so: dict) -> tuple:
                    row_number() OVER (
                        PARTITION BY contract_award_unique_key
                        ORDER BY TRY_CAST(action_date AS DATE) DESC NULLS LAST,
+                                TRY_CAST(last_modified_date AS TIMESTAMP) DESC NULLS LAST,
                                 contract_transaction_unique_key DESC) AS rn
             FROM txn
             WHERE contract_award_unique_key IS NOT NULL
@@ -174,7 +240,10 @@ def _assemble(so: dict) -> tuple:
     distinct_awards = con.execute("SELECT count(*) FROM latest").fetchone()[0]
     log(f"distinct awards in feed: {distinct_awards:,}")
 
-    log(f"applying membership boundary (as_of={as_of}) + deriving objective flags …")
+    log(f"applying membership boundary (as_of={as_of}) + deriving scope/requirement flags …")
+    scope_or = " OR ".join(f"contains(upper(base_d),'{term}')" for term in SCOPE_TERMS)
+    socio_sel = ",\n            ".join(
+        f"COALESCE(lower(trim({c})) IN ('t','true','y','yes','1'), FALSE) AS {c}" for c in SOCIO_FLAGS)
     final = con.execute(f"""
         WITH t AS (
             SELECT *,
@@ -182,13 +251,24 @@ def _assemble(so: dict) -> tuple:
                 TRY_CAST(period_of_performance_current_end_date   AS DATE) AS pop_current_end,
                 TRY_CAST(period_of_performance_potential_end_date AS DATE) AS pop_potential_end,
                 TRY_CAST(ordering_period_end_date                 AS DATE) AS ordering_period_end,
-                TRY_CAST(action_date                             AS DATE) AS latest_action_date
+                TRY_CAST(action_date                             AS DATE) AS latest_action_date,
+                nullif(trim(prime_award_base_transaction_description), '') AS base_d
             FROM latest
+        ),
+        s AS (
+            SELECT *,
+                coalesce(length(base_d), 0) AS scope_chars,
+                CASE WHEN base_d IS NULL THEN 0
+                     ELSE len(string_split_regex(base_d, '[[:space:]]+')) END AS scope_words,
+                ({scope_or}) AS scope_hit
+            FROM t
         )
         SELECT
             contract_award_unique_key, award_id_piid, parent_award_id_piid,
             award_or_idv_flag, award_type, award_type_code, idv_type,
             pop_start, pop_current_end, pop_potential_end, ordering_period_end, latest_action_date,
+            TRY_CAST(action_date_fiscal_year AS INTEGER) AS action_date_fiscal_year,
+            last_modified_date,
             (pop_current_end   >= DATE '{as_of}')                                          AS active_current,
             (pop_potential_end >= DATE '{as_of}')                                          AS active_potential,
             (pop_potential_end IS NOT NULL AND pop_current_end IS NOT NULL
@@ -201,18 +281,53 @@ def _assemble(so: dict) -> tuple:
             naics_code, naics_description,
             product_or_service_code             AS psc_code,
             product_or_service_code_description AS psc_description,
-            TRY_CAST(federal_action_obligation       AS DOUBLE) AS federal_action_obligation,
-            TRY_CAST(current_total_value_of_award    AS DOUBLE) AS current_total_value_of_award,
-            TRY_CAST(base_and_all_options_value      AS DOUBLE) AS base_and_all_options_value,
-            TRY_CAST(potential_total_value_of_award  AS DOUBLE) AS potential_total_value_of_award,
-            awarding_agency_name, awarding_sub_agency_name, funding_agency_name,
-            primary_place_of_performance_state_code  AS pop_state_code,
-            primary_place_of_performance_state_name  AS pop_state_name,
-            primary_place_of_performance_city_name   AS pop_city,
-            primary_place_of_performance_zip_4       AS pop_zip,
+            TRY_CAST(federal_action_obligation        AS DOUBLE) AS federal_action_obligation,
+            TRY_CAST(current_total_value_of_award     AS DOUBLE) AS current_total_value_of_award,
+            TRY_CAST(base_and_all_options_value       AS DOUBLE) AS base_and_all_options_value,
+            TRY_CAST(potential_total_value_of_award   AS DOUBLE) AS potential_total_value_of_award,
+            TRY_CAST(total_dollars_obligated          AS DOUBLE) AS total_dollars_obligated,
+            TRY_CAST(base_and_exercised_options_value AS DOUBLE) AS base_and_exercised_options_value,
+            awarding_agency_name, awarding_sub_agency_name,
+            funding_agency_name, funding_sub_agency_name, funding_office_name,
+            primary_place_of_performance_state_code   AS pop_state_code,
+            primary_place_of_performance_state_name   AS pop_state_name,
+            primary_place_of_performance_city_name    AS pop_city,
+            primary_place_of_performance_zip_4        AS pop_zip,
             primary_place_of_performance_country_code AS pop_country_code,
+            primary_place_of_performance_county_name  AS pop_county,
+            base_d AS prime_award_base_transaction_description,
+            transaction_description,
+            scope_chars, scope_words,
+            (base_d IS NOT NULL AND scope_chars >= 120 AND scope_words >= 15
+                 AND upper(base_d) NOT IN ({", ".join(SCOPE_JUNK)}))                       AS has_substantive_scope,
+            (base_d IS NOT NULL AND scope_words >= 8 AND scope_hit)                        AS has_directional_scope,
+            subcontracting_plan, subcontracting_plan_code,
+            COALESCE(upper(trim(subcontracting_plan_code)) IN ('C','D','E','F','G','H'), FALSE) AS has_subcontracting_plan,
+            solicitation_identifier, TRY_CAST(solicitation_date AS DATE) AS solicitation_date,
+            solicitation_procedures, solicitation_procedures_code,
+            extent_competed, extent_competed_code,
+            TRY_CAST(number_of_offers_received AS INTEGER) AS number_of_offers_received,
+            commercial_item_acquisition_procedures, commercial_item_acquisition_procedures_code,
+            fair_opportunity_limited_sources, fair_opportunity_limited_sources_code,
+            other_than_full_and_open_competition, other_than_full_and_open_competition_code,
+            type_of_contract_pricing, type_of_contract_pricing_code,
+            contract_bundling, contract_bundling_code,
+            consolidated_contract, consolidated_contract_code,
+            multi_year_contract, multi_year_contract_code,
+            undefinitized_action, undefinitized_action_code,
+            performance_based_service_acquisition, performance_based_service_acquisition_code,
+            construction_wage_rate_requirements, construction_wage_rate_requirements_code,
+            labor_standards, labor_standards_code,
+            place_of_manufacture, place_of_manufacture_code,
+            domestic_or_foreign_entity, domestic_or_foreign_entity_code,
+            organizational_type,
+            usaspending_permalink,
+            recipient_state_code, recipient_city_name, recipient_zip_4_code,
+            recipient_phone_number, recipient_fax_number,
+            recipient_address_line_1, recipient_address_line_2,
+            {socio_sel},
             CAST(DATE '{as_of}' AS DATE) AS as_of_date
-        FROM t
+        FROM s
         WHERE (pop_current_end   >= DATE '{as_of}')
            OR (pop_potential_end >= DATE '{as_of}')
            OR (pop_current_end IS NULL AND pop_potential_end IS NULL)
@@ -349,10 +464,17 @@ def verify() -> dict:
         idx = []
     out = {
         "uri": SERVING_URI, "rows": ds.count_rows(), "columns": len(ds.schema.names),
+        "indices_n": len(idx),
         "active_current": ds.count_rows(filter="active_current = true"),
         "active_potential": ds.count_rows(filter="active_potential = true"),
         "has_option_tail": ds.count_rows(filter="has_option_tail = true"),
         "pop_unknown": ds.count_rows(filter="pop_unknown = true"),
+        "has_substantive_scope": ds.count_rows(filter="has_substantive_scope = true"),
+        "has_directional_scope": ds.count_rows(filter="has_directional_scope = true"),
+        "has_subcontracting_plan": ds.count_rows(filter="has_subcontracting_plan = true"),
+        "sdvosb": ds.count_rows(filter="service_disabled_veteran_owned_business = true"),
+        "wosb": ds.count_rows(filter="women_owned_small_business = true"),
+        "hubzone": ds.count_rows(filter="historically_underutilized_business_zone_hubzone_firm = true"),
         "indices": idx,
     }
     print(json.dumps(out, indent=2, default=str))
