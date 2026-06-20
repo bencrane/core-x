@@ -5,7 +5,7 @@
 | dataset | SoR | grain | shape | builder |
 |---|---|---|---|---|
 | `zcta_zip_centroids` | `s3://data-sink/active/zcta_zip_centroids/` | 1 / zcta5 | 33,780 × 5 · 1 BTREE | `pipelines/serving/ingest_zcta_zip_centroids.py` |
-| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 80,596 × 22 · 5 BTREE + 6 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
+| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 1,258,662 × 24 · 5 BTREE + 8 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
 
 Both Lance v2.1, idempotent snapshot-overwrite.
 
@@ -13,7 +13,9 @@ Both Lance v2.1, idempotent snapshot-overwrite.
 
 ## 1. Why — and what's reliable
 
-The thesis: **active large construction primes carrying subcontracting plans** (mandated demand) can be served by **equipment-rental firms physically near the worksite**. Both sides come from reliable sources — FPDS prime data (`govcon_active_awards`) and the SAM registry (`sam_master_entities`). **No FSRS subaward-propensity signal is used** — subaward reporting is sparse/non-compliant, so it is neither a denominator nor a disqualifier here. The rental firm is qualified by being a *real, active, geographically-proximate* firm — **not** by any federal-award history (no prime-win gate).
+The thesis: **active construction primes** can be served by **equipment-rental firms physically near the worksite**. Both sides come from reliable sources — FPDS prime data (`govcon_active_awards`) and the SAM registry (`sam_master_entities`). **No FSRS subaward-propensity signal is used** — subaward reporting is sparse/non-compliant, so it is neither a denominator nor a disqualifier here. The rental firm is qualified by being a *real, active, geographically-proximate* firm — **not** by any federal-award history (no prime-win gate).
+
+**Demand is ungated.** Every active construction job needs equipment rental regardless of prime size or whether it filed a subcontracting plan. The match therefore does **not** filter on `business_size` or `has_subcontracting_plan` — both are **carried columns** for optional filter-on-top (e.g. recover the socioeconomic-compliance subset with `WHERE has_subcontracting_plan AND business_size <> 'SMALL BUSINESS'`). Gating on them would collapse demand from ~5,987 active construction awards to ~376 (a compliance artifact, not rental demand).
 
 ## 2. Why radius, not metro
 
@@ -28,22 +30,22 @@ Census 2023 Gazetteer ZCTA internal-point centroids, **33,780 zip-area centroids
 One row per (construction award × rental firm) within road-radius.
 
 **Sides:**
-- **Demand** — `govcon_active_awards`: `naics_code LIKE '23%'` · large · `has_subcontracting_plan` · `active_potential`. 345 of 376 awards geocode (the ~31 unresolved are overseas/military APO worksite zips — correctly out of scope for a US rental match). Join key `LEFT(pop_zip,5)` (**never int-cast** — preserves leading-zero zips).
+- **Demand** — `govcon_active_awards`: `naics_code LIKE '23%'` · `active_potential` (ALL active construction, any size, plan or not). 5,421 of 5,987 awards geocode (the ~566 unresolved are overseas/military APO + zip-less worksites — out of scope for a US rental match). Join key `LEFT(pop_zip,5)` (**never int-cast** — preserves leading-zero zips).
 - **Supply** — `sam_master_entities`: equip-rental NAICS bundle `('532412','532490','532310','532120')` · `is_active` · `country='USA'`. 8,340 firms geocode.
 
 **Distance:** centroid haversine × **1.3** road-circuity factor. Tiers: `local ≤50mi`, `regional ≤150mi`; pairs >150 road-mi dropped. Raw `straight_miles` and `road_miles` are columns so thresholds are query-time.
 
-**Coverage (measured):** 80,596 pairs · 345 awards · 7,765 firms · **31,058 local pairs** (330 awards / 5,127 firms).
+**Coverage (measured):** 1,258,662 pairs · 5,415 awards · 8,321 firms · **497,701 local pairs** (5,226 awards / 8,118 firms). Demand size mix (filterable): SMALL BUSINESS 4,629 awards · OTHER THAN SMALL 785 awards; with-subcontracting-plan 346 awards.
 
-**Schema (22):** `contract_award_unique_key`, `prime_uei`, `prime_name`, `award_naics_code`, `award_naics_desc`, `award_value`, `awarding_agency_name`, `pop_city`, `pop_state_code`, `pop_zip5`, `demand_centroid_source` · `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `supply_addr_is_hq_pin`, `supply_centroid_source` · `straight_miles`, `road_miles`, `tier`.
+**Schema (24):** `contract_award_unique_key`, `prime_uei`, `prime_name`, `award_naics_code`, `award_naics_desc`, `award_value`, `business_size`, `has_subcontracting_plan`, `awarding_agency_name`, `pop_city`, `pop_state_code`, `pop_zip5`, `demand_centroid_source` · `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `supply_addr_is_hq_pin`, `supply_centroid_source` · `straight_miles`, `road_miles`, `tier`.
 
-**Indexes (11):** BTREE `sub_uei`, `contract_award_unique_key`, `prime_uei`, `road_miles`, `award_value`; BITMAP `tier`, `supply_addr_is_hq_pin`, `sub_state`, `pop_state_code`, `supply_centroid_source`, `demand_centroid_source`.
+**Indexes (13):** BTREE `sub_uei`, `contract_award_unique_key`, `prime_uei`, `road_miles`, `award_value`; BITMAP `tier`, `supply_addr_is_hq_pin`, `sub_state`, `pop_state_code`, `supply_centroid_source`, `demand_centroid_source`, `business_size`, `has_subcontracting_plan`.
 
 ## 5. Caveats that ship with the data
 
-1. **`supply_addr_is_hq_pin` (systematic):** SAM carries ONE registered HQ. National chains (United Rentals, Sunbelt, Herc, …) register a corporate HQ, not their branch yards — flagged rows (432 pairs) are **advisory**; the match is reliable for single-location/regional firms. True fix needs a branch/yard dataset.
+1. **`supply_addr_is_hq_pin` (systematic):** SAM carries ONE registered HQ. National chains (United Rentals, Sunbelt, Herc, …) register a corporate HQ, not their branch yards — flagged rows (6,501 pairs) are **advisory**; the match is reliable for single-location/regional firms. True fix needs a branch/yard dataset.
 2. **Worksite-grade, not parcel-grade:** construction PoP zip can be a base/installation centroid → radius is metro-accurate, not drive-time-precise. The ×1.3 factor approximates roads; it is not a routing engine. Don't market sub-25mi tiers as exact.
-3. **Geo-resolvable population:** 345/376 demand (US worksites), 8,340/8,431 US-active supply. Overseas/military and zip-less rows are excluded; report match rates against the resolvable base.
+3. **Geo-resolvable population:** 5,421/5,987 demand (US worksites), 8,340/8,431 US-active supply. Overseas/military and zip-less rows are excluded; report match rates against the resolvable base.
 4. **`centroid_source`** flags `zcta` vs `geocode_xwalk` so coverage is visible, not silent.
 
 ## 6. Query patterns
