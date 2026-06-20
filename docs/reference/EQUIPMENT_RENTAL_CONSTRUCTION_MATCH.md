@@ -5,7 +5,7 @@
 | dataset | SoR | grain | shape | builder |
 |---|---|---|---|---|
 | `zcta_zip_centroids` | `s3://data-sink/active/zcta_zip_centroids/` | 1 / zcta5 | 33,780 × 5 · 1 BTREE | `pipelines/serving/ingest_zcta_zip_centroids.py` |
-| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 1,258,662 × 35 · 4 BTREE + 20 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
+| `govcon_equipment_rental_construction_match` | `s3://data-sink/active/govcon_equipment_rental_construction_match/` | 1 / (award × firm) | 1,258,662 × 36 · 4 BTREE + 20 BITMAP | `pipelines/serving/materialize_equipment_rental_construction_match.py` |
 
 Both Lance v2.1, idempotent snapshot-overwrite.
 
@@ -39,7 +39,7 @@ One row per (construction award × rental firm) within road-radius.
 
 **Schema (35):**
 - *Demand:* `contract_award_unique_key`, `prime_uei`, `prime_name`, `award_naics_code`, `award_naics_desc`, `award_value`, `business_size`, `has_subcontracting_plan`, `awarding_agency_name`, `pop_city`, `pop_state_code`, `pop_zip5`, `demand_centroid_source`.
-- *Supply:* `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `supply_addr_is_hq_pin`, `supply_centroid_source`.
+- *Supply:* `sub_uei`, `sub_name`, `sub_primary_naics`, `sub_city`, `sub_state`, `sub_zip5`, `sub_website` (normalized domain from `sam_master_domains` — blocklist-filtered; ~59.5% of firms; unindexed display/outreach field), `supply_addr_is_hq_pin`, `supply_centroid_source`.
 - *Distance:* `straight_miles`, `road_miles`, `tier`.
 - *Rental-firm designations (11, bool — SAM Reps & Certs lineage, see §4.1):* `sub_sdvosb`, `sub_veteran_owned`, `sub_wosb`, `sub_edwosb`, `sub_woman_owned`, `sub_hubzone`, `sub_8a`, `sub_self_cert_sdb`, `sub_minority_owned`, `sub_jv_wosb`, `sub_any_designation`.
 
