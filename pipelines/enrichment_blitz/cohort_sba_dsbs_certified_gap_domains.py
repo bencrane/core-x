@@ -248,6 +248,36 @@ def _assemble(so: dict) -> dict[str, Any]:
     }
 
 
+def _publish_chunks(domains: list[str], n_chunks: int, so: dict) -> list[str]:
+    """Split the gap domains into ``n_chunks`` size-balanced Parquets under
+    cohorts/enrichment_blitz/<COHORT_NAME>/chunk_NN.parquet — one transport file per Workflow A
+    enrollment. Chunking keeps each enrollment under the task's 1h-waitpoint × 3-attempt ceiling
+    at LOW-priority gateway throughput (a 24k single-shot cohort cannot finish in that window)."""
+    import math
+
+    import boto3
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from botocore.config import Config
+
+    s3 = boto3.client(
+        "s3", endpoint_url=so["endpoint"],
+        aws_access_key_id=so["aws_access_key_id"], aws_secret_access_key=so["aws_secret_access_key"],
+        region_name="auto", config=Config(retries={"max_attempts": 5, "mode": "standard"}))
+    size = math.ceil(len(domains) / n_chunks)
+    keys: list[str] = []
+    for i in range(n_chunks):
+        part = domains[i * size:(i + 1) * size]
+        if not part:
+            break
+        local = f"/tmp/{COHORT_NAME}_chunk_{i:02d}.parquet"
+        pq.write_table(pa.table({COHORT_COLUMN: pa.array(part, type=pa.string())}), local)
+        key = f"cohorts/enrichment_blitz/{COHORT_NAME}/chunk_{i:02d}.parquet"
+        s3.upload_file(local, SINK_BUCKET, key)
+        keys.append(key)
+    return keys
+
+
 def _publish_parquet(domains: list[str], so: dict) -> str:
     import boto3
     import pyarrow as pa
