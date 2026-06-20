@@ -1,7 +1,22 @@
 """SBA DSBS certified-firm registry ingest — R2 raw land + Lance product table.
 
-SoR  s3://data-sink/active/sba_dsbs_certified_firms/   (Lance v2.1; one row / UEI; BTREE on uei)
+SoR  s3://data-sink/active/sba_dsbs_certified_firms/   (Lance v2.1; one row / UEI; FULL-FIDELITY —
+     every upstream field captured, only the per-query _rankingScore dropped; BTREE on uei/cage_code/
+     entity_detail_id/meili_primary_key/naics_primary/zipcode/county, BITMAP on state/county_code/CD/
+     cert_programs/msa + the active/prev/self_* program+ownership flags)
 Raw  s3://data-sink/active/sba_dsbs_raw/<program>.json  (full upstream bulk response per program)
+
+SCHEMA NOTES
+- alt_cage_codes / alt_entity_detail_ids / alt_meili_primary_keys: ~300 UEIs carry >1 DSBS profile;
+  the scalar key holds the deterministic primary, the alt_* pipe column preserves the rest (no loss).
+- 'certs' (JSON) is the AUTHORITATIVE cert overlay — carries entranceDate/exitDate/status/caseNumber/
+  servicingOffice/suspended/pending per program (ISO dates). The flat certStatus_*/certDateStart_*/
+  certDateExit_* columns are a normalized-to-ISO convenience subset (exit only present for 8a/VOSB/SDVOSB).
+- int64: last_update_date (Unix epoch s), construction/service_bonding_* (dollar amounts). All else VARCHAR.
+- Structurally-null on this source (kept for forward-compat, not missing data): annual_revenue,
+  business_size, certStatus_VOSBJV/SDVOSBJV, certDateStart_VOSBJV/SDVOSBJV, size_determination_description.
+- Opaque codes left raw (decode is Phase-2, cross-source): business_type_codes, legal_structure,
+  exporter_status, sam_extract_code, naics_exception_codes.
 
 WHY THIS EXISTS
 The factory already carries small-business *designation booleans*, but every existing source is
@@ -47,9 +62,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -219,142 +234,180 @@ def _pipe(values) -> str | None:
     return "|".join(out) if out else None
 
 
-def _active_programs(rec: dict) -> list[str]:
-    return [slug for slug, flags in ACTIVE_FLAGS.items() if any(rec.get(f) for f in flags)]
+# Full-fidelity capture: land EVERY upstream field. Only drop is _rankingScore — a per-query
+# Meilisearch relevance score (an artifact of the filter call, not a firm attribute).
+_DROP_KEYS = frozenset({"_rankingScore"})
+
+# Derived/provenance columns added on top of the native fields (all VARCHAR except where noted).
+# alt_* preserve every distinct resolution key a multi-profile UEI carried across its source rows
+# (the scalar column holds the deterministic primary; the alt_* pipe column holds the rest — no loss).
+_DERIVED_STR = ("cert_programs", "alt_cage_codes", "alt_entity_detail_ids", "alt_meili_primary_keys",
+                "source_query_programs", "raw_keys", "scrape_run_id", "source_version")
+# Preferred lead-column order for readability; every remaining native field follows alphabetically.
+_LEAD = ("uei", "cage_code", "alt_cage_codes", "entity_detail_id", "meili_primary_key",
+         "legal_business_name", "dba_name", "contact_person", "current_principals",
+         "cert_programs", "email", "phone", "fax", "website", "additional_website",
+         "address_1", "address_2", "city", "state", "zipcode", "county", "naics_primary")
+_PA_TYPE = {"bool": "bool_", "list": "string", "json": "string", "str": "string", "int": "int64"}
+# Precedence on mixed/null types. 'null' is below everything so a later real type always wins over a
+# null-seeded default (else a field first seen as null, then bool — e.g. certPending_* — stays text).
+_PREC = {"json": 4, "list": 3, "str": 2, "bool": 1, "null": 0}
+# Native integer fields pinned to int64 (clean ints used in magnitude compares/sort; VARCHAR would
+# sort lexicographically — '9' > '10000000'). last_update_date is Unix epoch seconds.
+NUMERIC_INT64 = frozenset({"last_update_date", "construction_bonding_aggregate",
+                           "construction_bonding_per_contract", "service_bonding_aggregate",
+                           "service_bonding_contract"})
+_DATE_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
 
 
-def _row_from_record(rec: dict, query_slug: str, raw_key: str) -> dict:
-    """Project one upstream record to the product-table shape (pre-dedup)."""
-    return {
-        "uei": _s(rec.get("uei")),
-        "cage_code": _s(rec.get("cage_code")),
-        "entity_detail_id": _s(rec.get("entity_detail_id")),
-        "legal_business_name": _s(rec.get("legal_business_name")),
-        "dba_name": _s(rec.get("dba_name")),
-        # active designation booleans (canonical program membership)
-        "active_8a": bool(rec.get("active_8a_boolean")),
-        "active_8a_jv": bool(rec.get("active_8a_jv_boolean")),
-        "active_hubzone": bool(rec.get("active_hz_boolean")),
-        "active_wosb": bool(rec.get("active_wosb_boolean")),
-        "active_edwosb": bool(rec.get("active_edwosb_boolean")),
-        "active_vosb": bool(rec.get("active_vosb_boolean")),
-        "active_vosb_jv": bool(rec.get("active_vosb_jv_boolean")),
-        "active_sdvosb": bool(rec.get("active_sdvosb_boolean")),
-        "active_sdvosb_jv": bool(rec.get("active_sdvosb_jv_boolean")),
-        "prev_8a": bool(rec.get("prev_8a_boolean")),
-        "prev_hubzone": bool(rec.get("prev_hz_boolean")),
-        "prev_wosb": bool(rec.get("prev_wosb_boolean")),
-        "prev_edwosb": bool(rec.get("prev_edwosb_boolean")),
-        "prev_vosb": bool(rec.get("prev_vosb_boolean")),
-        "prev_sdvosb": bool(rec.get("prev_sdvosb_boolean")),
-        # flat cert overlay (the net-new signal)
-        "cert_status_8a": _s(rec.get("certStatus_8a")),
-        "cert_status_hubzone": _s(rec.get("certStatus_HZ")),
-        "cert_status_wosb": _s(rec.get("certStatus_WOSB")),
-        "cert_status_edwosb": _s(rec.get("certStatus_EDWOSB")),
-        "cert_status_vosb": _s(rec.get("certStatus_VOSB")),
-        "cert_status_sdvosb": _s(rec.get("certStatus_SDVOSB")),
-        "cert_start_8a": _s(rec.get("certDateStart_8a")),
-        "cert_start_hubzone": _s(rec.get("certDateStart_HZ")),
-        "cert_start_wosb": _s(rec.get("certDateStart_WOSB")),
-        "cert_start_edwosb": _s(rec.get("certDateStart_EDWOSB")),
-        "cert_start_vosb": _s(rec.get("certDateStart_VOSB")),
-        "cert_start_sdvosb": _s(rec.get("certDateStart_SDVOSB")),
-        "cert_exit_8a": _s(rec.get("certDateExit_8a")),
-        "cert_exit_vosb": _s(rec.get("certDateExit_VOSB")),
-        "cert_exit_sdvosb": _s(rec.get("certDateExit_SDVOSB")),
-        # full structured cert overlay (entrance/exit/status/caseNumber/servicingOffice per program)
-        "certs_json": json.dumps(rec.get("certs"), separators=(",", ":")) if rec.get("certs") else None,
-        # firmographics
-        "naics_primary": _s(rec.get("naics_primary")),
-        "naics_all_codes": _pipe(rec.get("naics_all_codes")),
-        "address_1": _s(rec.get("address_1")),
-        "city": _s(rec.get("city")),
-        "state": _s(rec.get("state")),
-        "zipcode": _s(rec.get("zipcode")),
-        "county": _s(rec.get("county")),
-        "congressional_district": _s(rec.get("concat_state_congressional_district")),
-        "phone": _s(rec.get("phone")),
-        "email": _s(rec.get("email")),
-        "website": _s(rec.get("website")),
-        "year_established": _s(rec.get("year_established")),
-        "legal_structure": _s(rec.get("legal_structure")),
-        "capabilities_narrative": _s(rec.get("capabilities_narrative")),
-        "last_update_date": int(rec["last_update_date"]) if rec.get("last_update_date") else None,
-        # provenance (per-record; merged at dedup)
-        "_query_slug": query_slug,
-        "_raw_key": raw_key,
-    }
+def _is_designation(key: str) -> bool:
+    return key.startswith("active_") or key.startswith("prev_")
 
 
-_BOOL_COLS = ("active_8a", "active_8a_jv", "active_hubzone", "active_wosb", "active_edwosb",
-              "active_vosb", "active_vosb_jv", "active_sdvosb", "active_sdvosb_jv",
-              "prev_8a", "prev_hubzone", "prev_wosb", "prev_edwosb", "prev_vosb", "prev_sdvosb")
-_STR_COLS = ("uei", "cage_code", "entity_detail_id", "legal_business_name", "dba_name",
-             "cert_status_8a", "cert_status_hubzone", "cert_status_wosb", "cert_status_edwosb",
-             "cert_status_vosb", "cert_status_sdvosb",
-             "cert_start_8a", "cert_start_hubzone", "cert_start_wosb", "cert_start_edwosb",
-             "cert_start_vosb", "cert_start_sdvosb", "cert_exit_8a", "cert_exit_vosb", "cert_exit_sdvosb",
-             "certs_json", "cert_programs",
-             "naics_primary", "naics_all_codes", "address_1", "city", "state", "zipcode", "county",
-             "congressional_district", "phone", "email", "website", "year_established",
-             "legal_structure", "capabilities_narrative",
-             "source_query_programs", "raw_keys", "scrape_run_id", "source_version")
+def classify_fields(records: list[dict]) -> dict[str, str]:
+    """Assign each native key a stable kind from the data: 'bool' | 'int' | 'list' | 'json' | 'str'.
+    Precedence (json > list > str > bool > null): a key is 'bool' only if every non-null value is
+    bool; any nested value forces JSON; a list whose scalar elements can contain the pipe delimiter
+    is escalated to JSON (else the pipe-join is irreversible — e.g. keywords like 'C | C++'); a key
+    seen only as null defaults to VARCHAR (forward-compatible) but a later real type still wins.
+    Numbers/strings -> VARCHAR per L9, except the NUMERIC_INT64 fields which are pinned to int64."""
+    kinds: dict[str, str] = {}
+    for r in records:
+        for k, v in r.items():
+            if k in _DROP_KEYS:
+                continue
+            if v is None:
+                kinds.setdefault(k, "null")
+                continue
+            if isinstance(v, bool):
+                kk = "bool"
+            elif isinstance(v, list):
+                pipe_unsafe = any("|" in x for x in v if isinstance(x, str))
+                nested = any(isinstance(x, (dict, list)) for x in v)
+                kk = "json" if (nested or pipe_unsafe) else "list"
+            elif isinstance(v, dict):
+                kk = "json"
+            else:                       # int / float / str -> VARCHAR per L9 (TRY_CAST downstream, L29)
+                kk = "str"
+            cur = kinds.get(k)
+            if cur is None or _PREC[kk] > _PREC[cur]:
+                kinds[k] = kk
+    kinds = {k: ("str" if kind == "null" else kind) for k, kind in kinds.items()}
+    for k in NUMERIC_INT64:
+        if k in kinds:
+            kinds[k] = "int"
+    return kinds
+
+
+def _iso_date(v):
+    """MM/DD/YYYY -> YYYY-MM-DD (so the flat cert dates match the ISO dates inside certs and sort as
+    text). Pass through anything that isn't that exact shape."""
+    if not isinstance(v, str):
+        return v
+    m = _DATE_RE.match(v)
+    return f"{m.group(3)}-{m.group(1)}-{m.group(2)}" if m else v
+
+
+def _cast(v, kind: str):
+    if kind == "bool":
+        return None if v is None else bool(v)
+    if kind == "int":
+        if v is None or v == "":
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+    if kind == "list":
+        return _pipe(v)
+    if kind == "json":
+        return json.dumps(v, separators=(",", ":")) if v else None
+    return _s(v)
+
+
+def project(rec: dict, kinds: dict, query_slug: str, raw_key: str) -> dict:
+    """Full-fidelity per-record projection: every native key cast per its kind + transient provenance."""
+    row = {k: _cast(rec.get(k), kind) for k, kind in kinds.items()}
+    for k in row:                       # normalize the flat cert dates to ISO for sort + consistency
+        if k.startswith("certDateStart_") or k.startswith("certDateExit_"):
+            row[k] = _iso_date(row[k])
+    row["_query_slug"] = query_slug
+    row["_raw_key"] = raw_key
+    row["_lud"] = rec["last_update_date"] if isinstance(rec.get("last_update_date"), int) else 0
+    return row
 
 
 def _active_count(row: dict) -> int:
-    return sum(1 for c in _BOOL_COLS if c.startswith("active_") and row.get(c))
+    return sum(1 for k, v in row.items() if k.startswith("active_") and v)
 
 
-def dedup(rows: list[dict]) -> list[dict]:
-    """Collapse to one row per UEI: OR the boolean flags, take scalars from the 'best' record
-    (most active certs, then most-recent last_update_date), union provenance. Most UEIs collapse
-    multiple program-query rows; a small tail (~300) carry >1 DSBS profile (distinct entity_detail_id)."""
+def _active_programs_from_native(row: dict) -> list[str]:
+    slugs = []
+    if row.get("active_8a_boolean") or row.get("active_8a_jv_boolean"):
+        slugs.append("8a")
+    if row.get("active_hz_boolean"):
+        slugs.append("hubzone")
+    if row.get("active_wosb_boolean"):
+        slugs.append("wosb")
+    if row.get("active_edwosb_boolean"):
+        slugs.append("edwosb")
+    if row.get("active_vosb_boolean") or row.get("active_vosb_jv_boolean"):
+        slugs.append("vosb")
+    if row.get("active_sdvosb_boolean") or row.get("active_sdvosb_jv_boolean"):
+        slugs.append("sdvosb")
+    return slugs
+
+
+def dedup(rows: list[dict], kinds: dict) -> list[dict]:
+    """Collapse to one row per UEI: OR the designation flags (active_*/prev_*) across the UEI's
+    source rows, take all other fields from the 'best' record (most active certs, then most-recent
+    last_update_date), union provenance. Most UEIs collapse multiple program-query rows; a small
+    tail (~300) carry >1 DSBS profile (distinct entity_detail_id)."""
+    desig = [k for k, kind in kinds.items() if _is_designation(k) and kind == "bool"]
     by_uei: dict[str, list[dict]] = {}
     for r in rows:
         if r.get("uei"):
             by_uei.setdefault(r["uei"], []).append(r)
     out: list[dict] = []
     for uei, recs in by_uei.items():
-        best = max(recs, key=lambda r: (_active_count(r), r.get("last_update_date") or 0))
+        # deterministic winner (reproducible across re-runs): most active certs, then most-recent
+        # update, then entity_detail_id / cage_code as stable tiebreakers.
+        best = max(recs, key=lambda r: (_active_count(r), r.get("_lud") or 0,
+                                        r.get("entity_detail_id") or "", r.get("cage_code") or ""))
         merged = dict(best)
-        for col in _BOOL_COLS:
+        for col in desig:
             merged[col] = any(r.get(col) for r in recs)
-        merged["cert_programs"] = _pipe(_active_programs_from_row(merged))
+        merged["cert_programs"] = _pipe(_active_programs_from_native(merged))
+        # preserve EVERY distinct resolution key across the UEI's source profiles (no silent loss).
+        merged["alt_cage_codes"] = _pipe(sorted({r.get("cage_code") for r in recs if r.get("cage_code")}))
+        merged["alt_entity_detail_ids"] = _pipe(sorted({r.get("entity_detail_id") for r in recs if r.get("entity_detail_id")}))
+        merged["alt_meili_primary_keys"] = _pipe(sorted({r.get("meili_primary_key") for r in recs if r.get("meili_primary_key")}))
         merged["source_query_programs"] = _pipe(sorted({r["_query_slug"] for r in recs}))
         merged["raw_keys"] = _pipe(sorted({r["_raw_key"] for r in recs}))
         merged["n_source_records"] = len(recs)
-        merged.pop("_query_slug", None)
-        merged.pop("_raw_key", None)
+        for k in ("_query_slug", "_raw_key", "_lud"):
+            merged.pop(k, None)
         out.append(merged)
     return out
 
 
-def _active_programs_from_row(row: dict) -> list[str]:
-    slugs = []
-    if row.get("active_8a") or row.get("active_8a_jv"):
-        slugs.append("8a")
-    if row.get("active_hubzone"):
-        slugs.append("hubzone")
-    if row.get("active_wosb"):
-        slugs.append("wosb")
-    if row.get("active_edwosb"):
-        slugs.append("edwosb")
-    if row.get("active_vosb") or row.get("active_vosb_jv"):
-        slugs.append("vosb")
-    if row.get("active_sdvosb") or row.get("active_sdvosb_jv"):
-        slugs.append("sdvosb")
-    return slugs
+def _ordered_columns(kinds: dict) -> list[str]:
+    lead = [k for k in _LEAD if k in kinds or k in _DERIVED_STR]
+    placed = set(lead)
+    rest_native = sorted(k for k in kinds if k not in placed)
+    rest_derived = [k for k in _DERIVED_STR if k not in placed]
+    return lead + rest_native + rest_derived
 
 
-def _arrow_schema():
+def _arrow_schema(kinds: dict):
     import pyarrow as pa
 
-    fields = [(c, pa.string()) for c in _STR_COLS]
-    fields += [(c, pa.bool_()) for c in _BOOL_COLS]
-    fields += [("last_update_date", pa.int64()), ("n_source_records", pa.int32()),
-               ("fetched_at", pa.timestamp("us", tz="UTC"))]
-    # stable column order: identity/str, bool, numeric, ts
+    def pa_type(name: str):
+        kind = kinds.get(name) or ("str" if name in _DERIVED_STR else "str")
+        return getattr(pa, _PA_TYPE[kind])()
+
+    fields = [(c, pa_type(c)) for c in _ordered_columns(kinds)]
+    fields += [("n_source_records", pa.int32()), ("fetched_at", pa.timestamp("us", tz="UTC"))]
     return pa.schema(fields)
 
 
@@ -371,33 +424,58 @@ def build(programs: list[str], *, sleep: float, skip_fetch: bool, smoke: str | N
     raw = fetch(sel, sleep=sleep, skip_fetch=skip_fetch)
     raw_keys = land_raw(raw)
 
-    rows: list[dict] = []
+    # parse all program responses, keeping the raw upstream records (full fidelity).
+    parsed: list[tuple[dict, str, str]] = []
     for slug, content in raw.items():
-        d = json.loads(content)
-        results = d.get("results", [])
+        results = json.loads(content).get("results", [])
         seen = set()
         for rec in results:
             if not rec.get("uei"):
                 continue
-            rows.append(_row_from_record(rec, slug, raw_keys[slug]))
+            parsed.append((rec, slug, raw_keys[slug]))
             seen.add(rec["uei"])
         floor = EXPECTED_MIN.get(slug, 0)
         assert len(seen) >= floor, f"floor gate [{slug}]: {len(seen)} distinct UEI < expected {floor}"
         print(f"  [{slug}] distinct UEI in query = {len(seen):,} (floor {floor:,})", flush=True)
 
-    deduped = dedup(rows)
+    # classify every native field once, then project full-fidelity rows.
+    kinds = classify_fields([rec for rec, _, _ in parsed])
+    print(f"native fields captured = {len(kinds)} (+ derived/provenance)", flush=True)
+    rows = [project(rec, kinds, slug, rk) for rec, slug, rk in parsed]
+
+    deduped = dedup(rows, kinds)
     for r in deduped:
         r["scrape_run_id"] = run_id
         r["source_version"] = SOURCE_VERSION
         r["fetched_at"] = fetched_at
     n = len(deduped)
     assert n > 0, "no rows produced"
-    # n_source_records = how many source rows collapsed onto this UEI (mostly multi-program
-    # query appearances; a small tail are true multi-profile UEIs with >1 entity_detail_id).
     multi = sum(1 for r in deduped if r["n_source_records"] > 1)
     print(f"distinct UEIs = {n:,}  (UEIs collapsing >1 source row = {multi:,})", flush=True)
 
-    schema = _arrow_schema()
+    # CAGE-preservation gate: every distinct source CAGE survives in cage_code ∪ alt_cage_codes.
+    raw_cages = {rec.get("cage_code") for rec, _, _ in parsed if rec.get("cage_code")}
+    landed_cages: set = set()
+    for r in deduped:
+        if r.get("cage_code"):
+            landed_cages.add(r["cage_code"])
+        if r.get("alt_cage_codes"):
+            landed_cages.update(r["alt_cage_codes"].split("|"))
+    dropped = raw_cages - landed_cages
+    assert not dropped, f"cage-preservation gate: {len(dropped)} source CAGE codes dropped"
+    print(f"CAGE preserved: raw_distinct={len(raw_cages):,} landed(primary+alt)={len(landed_cages):,}", flush=True)
+
+    # warn (not fatal): multi-profile UEIs whose certs diverge across source rows — the 'best record'
+    # pick keeps one; today these are pure dupes (0), but flag if a future snapshot diverges.
+    certs_by_uei: dict[str, set] = {}
+    for rec, _, _ in parsed:
+        sig = json.dumps(rec.get("certs"), separators=(",", ":")) if rec.get("certs") else ""
+        certs_by_uei.setdefault(rec["uei"], set()).add(sig)
+    divergent = sum(1 for sigs in certs_by_uei.values() if len(sigs) > 1)
+    if divergent:
+        print(f"WARN: {divergent} UEIs have divergent certs across source profiles (best-record kept)", flush=True)
+
+    schema = _arrow_schema(kinds)
     tbl = pa.Table.from_pylist([{f.name: r.get(f.name) for f in schema} for r in deduped], schema=schema)
     assert tbl.num_rows == n
 
@@ -406,8 +484,33 @@ def build(programs: list[str], *, sleep: float, skip_fetch: bool, smoke: str | N
     lance.write_dataset(tbl, target, mode="overwrite",
                         data_storage_version=DATA_STORAGE_VERSION, storage_options=so)
     ds = lance.dataset(target, storage_options=so)
-    ds.create_scalar_index("uei", index_type="BTREE")
-    print("  BTREE ✓ uei", flush=True)
+
+    # index generously — storage is cheap. BTREE on resolution/join + high-cardinality geo keys;
+    # BITMAP on low-cardinality filter/facet columns (program, geo, ownership, win-back).
+    btree = [c for c in ("uei", "cage_code", "entity_detail_id", "meili_primary_key",
+                         "naics_primary", "zipcode", "county")
+             if c in schema.names]
+    bitmap = [c for c in (
+        # geo + program faceting
+        "state", "county_code", "concat_state_congressional_district", "cert_programs", "msa",
+        # active program membership (vosb_jv/sdvosb_jv are 100% false on this source -> omitted)
+        "active_8a_boolean", "active_8a_jv_boolean", "active_hz_boolean", "active_wosb_boolean",
+        "active_edwosb_boolean", "active_vosb_boolean", "active_sdvosb_boolean",
+        # previously-certified (win-back segment) + distinct self-cert ownership flags
+        "prev_8a_boolean", "prev_hz_boolean", "prev_wosb_boolean", "prev_edwosb_boolean",
+        "prev_vosb_boolean", "prev_sdvosb_boolean",
+        "self_native_owned_boolean", "self_american_indian_owned_boolean", "self_tribal_owned_boolean",
+        "self_anc_owned_boolean", "self_nho_boolean", "self_hubzone_jv_boolean", "self_cdc_boolean")
+        if c in schema.names]
+    for col in btree:
+        ds.create_scalar_index(col, index_type="BTREE")
+        print(f"  BTREE  ✓ {col}", flush=True)
+    for col in bitmap:
+        try:
+            ds.create_scalar_index(col, index_type="BITMAP")
+            print(f"  BITMAP ✓ {col}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — bitmap optional; don't fail the run
+            print(f"  BITMAP skip {col}: {exc}", flush=True)
 
     back = ds.count_rows()
     assert back == n, f"write-integrity gate: {back} != {n}"
@@ -416,6 +519,9 @@ def build(programs: list[str], *, sleep: float, skip_fetch: bool, smoke: str | N
     con.register("f", ds.to_table())
     distinct = con.execute("SELECT count(DISTINCT uei) FROM f").fetchone()[0]
     assert distinct == back, f"grain gate: {distinct} distinct uei != {back} rows"
+    # completeness gate: every captured native field is a column in the written dataset.
+    missing = [k for k in kinds if k not in schema.names]
+    assert not missing, f"completeness gate: native fields dropped from schema: {missing}"
     print(f"WROTE {target}  rows={back:,}  distinct_uei={distinct:,}  cols={len(ds.schema)}", flush=True)
     return {"uri": target, "rows": back, "run_id": run_id, "raw_keys": raw_keys}
 
@@ -434,28 +540,29 @@ def verify() -> None:
     con.register("f", ds.to_table())
     print("\n-- distinct uei == rows --")
     print(con.execute("SELECT count(*) AS n_rows, count(DISTINCT uei) AS distinct_uei FROM f").df().to_string(index=False))
+    print(f"columns ({len(ds.schema.names)}):", ds.schema.names)
     print("\n-- active firms per program (distinct UEI) --")
     print(con.execute("""
         SELECT
-          sum((active_8a OR active_8a_jv)::int)        AS p_8a,
-          sum(active_hubzone::int)                     AS p_hubzone,
-          sum(active_wosb::int)                        AS p_wosb,
-          sum(active_edwosb::int)                      AS p_edwosb,
-          sum((active_vosb OR active_vosb_jv)::int)    AS p_vosb,
-          sum((active_sdvosb OR active_sdvosb_jv)::int) AS p_sdvosb
+          sum((active_8a_boolean OR active_8a_jv_boolean)::int)        AS p_8a,
+          sum(active_hz_boolean::int)                                  AS p_hubzone,
+          sum(active_wosb_boolean::int)                                AS p_wosb,
+          sum(active_edwosb_boolean::int)                              AS p_edwosb,
+          sum((active_vosb_boolean OR active_vosb_jv_boolean)::int)    AS p_vosb,
+          sum((active_sdvosb_boolean OR active_sdvosb_jv_boolean)::int) AS p_sdvosb
         FROM f""").df().to_string(index=False))
-    print("\n-- cert overlay coverage (non-null status) --")
+    print("\n-- coverage of high-value fields (non-null) --")
     print(con.execute("""
         SELECT
-          count(*) FILTER (WHERE cert_status_hubzone IS NOT NULL) hubzone_status,
-          count(*) FILTER (WHERE cert_status_8a IS NOT NULL)      a8a_status,
-          count(*) FILTER (WHERE certs_json IS NOT NULL)          has_certs_json,
-          count(*) FILTER (WHERE cert_programs IS NOT NULL)       has_cert_programs
+          count(email) email, count(phone) phone, count(website) website,
+          count(contact_person) contact_person, count(current_principals) principals,
+          count(capabilities_narrative) cap_narr, count(keywords) keywords,
+          count(certStatus_HZ) hz_status, count(certs) certs_json, count(cert_programs) cert_programs
         FROM f""").df().to_string(index=False))
     print("\n-- sample rows --")
     print(con.execute("""
-        SELECT uei, legal_business_name, cert_programs, cert_status_hubzone, cert_start_hubzone, state
-        FROM f WHERE active_hubzone ORDER BY uei LIMIT 5""").df().to_string(index=False))
+        SELECT uei, legal_business_name, cert_programs, contact_person, email, certStatus_HZ, state
+        FROM f WHERE active_hz_boolean ORDER BY uei LIMIT 5""").df().to_string(index=False))
 
 
 if __name__ == "__main__":
