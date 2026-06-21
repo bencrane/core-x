@@ -8,8 +8,13 @@ Strip ONLY by name pattern: government filers, filing agents, obvious banks, obv
 credit unions. KEEP everything else — equipment/specialty/fintech/solar finance AND
 medical-provider liens (operator wants those). No filing_type filter.
 
-Lean columns: company_name (modal raw spelling), normalized_name, states, appearances_24mo,
-appearances_all_time. Sorted by 24mo volume desc. Read-only; writes one CSV.
+filing_type is a per-FILING attribute (not on the secured-party row), and a lender spans
+many filings — so it is carried as a DISTRIBUTION per lender: dominant_filing_type +
+filing_type_mix (type:count over the 24mo window). CA/CO vocab lightly harmonized
+(lowercase, spaces→underscores; CA 'UCC' folds onto CO 'ucc'). lien_hosp = CO medical lien.
+
+Columns: company_name (modal raw spelling), normalized_name, states, appearances_24mo,
+appearances_all_time, dominant_filing_type, filing_type_mix. Sorted by 24mo volume desc.
 
     doppler run -p core-x -c prd -- \
       uv run --no-project --with boto3 --with pylance --with duckdb \
@@ -29,6 +34,8 @@ NAME_NORM = r"""
 CREATE OR REPLACE MACRO nn(x) AS
   nullif(trim(regexp_replace(regexp_replace(upper(CAST(x AS VARCHAR)),
          '[^A-Z0-9 ]+', '', 'g'), '\s+', ' ', 'g')), '');
+CREATE OR REPLACE MACRO ftn(x) AS
+  coalesce(lower(replace(trim(CAST(x AS VARCHAR)), ' ', '_')), 'unknown');
 """
 # Strip buckets (whole-word, space-normalized UPPER names) — deliberately conservative:
 # over-stripping loses a real alt-lender, so each pattern targets unambiguous tokens.
@@ -69,23 +76,35 @@ def main() -> int:
     con.execute("SET memory_limit='24GB'; SET temp_directory='/tmp/duck_spill_csv'; PRAGMA threads=8;")
     con.execute(NAME_NORM)
 
-    con.register("ca_f", rdr("ca_ucc/filings", ["ucc1_num", "ucc3_num", "filing_date"], opts))
-    con.execute("CREATE TEMP TABLE fd_ca AS SELECT ucc1_num, ucc3_num, min(filing_date) AS fd FROM ca_f GROUP BY 1,2")
+    # CA: one row per (ucc1,ucc3) → min filing_date + its filing_type (consistent per event).
+    con.register("ca_f", rdr("ca_ucc/filings", ["ucc1_num", "ucc3_num", "filing_date", "filing_type"], opts))
+    con.execute("""
+        CREATE TEMP TABLE fd_ca AS
+        SELECT ucc1_num, ucc3_num, min(filing_date) AS fd, ftn(any_value(filing_type)) AS ft
+        FROM ca_f GROUP BY 1,2
+    """)
     con.register("ca_sp", rdr("ca_ucc/secured_parties",
                               ["org_name", "secured_party_type", "ucc1_num", "ucc3_num"], opts,
                               "secured_party_type = 'Organization'"))
     con.execute("""
         CREATE TEMP TABLE app AS
-        SELECT nn(s.org_name) AS nln, s.org_name AS raw, 'CA' AS st, CAST(f.fd AS DATE) AS fd
+        SELECT nn(s.org_name) AS nln, s.org_name AS raw, 'CA' AS st,
+               CAST(f.fd AS DATE) AS fd, coalesce(f.ft, 'unknown') AS ft
         FROM ca_sp s LEFT JOIN fd_ca f ON s.ucc1_num = f.ucc1_num AND s.ucc3_num = f.ucc3_num
         WHERE s.org_name IS NOT NULL
     """)
-    con.register("co_t", rdr("co_ucc_transactions", ["file_id", "filing_date"], opts))
-    con.execute("CREATE TEMP TABLE fd_co AS SELECT file_id, min(filing_date) AS fd FROM co_t GROUP BY 1")
+    # CO: one row per file_id → min filing_date + its filing_type (consistent per statement).
+    con.register("co_t", rdr("co_ucc_transactions", ["file_id", "filing_date", "filing_type"], opts))
+    con.execute("""
+        CREATE TEMP TABLE fd_co AS
+        SELECT file_id, min(filing_date) AS fd, ftn(any_value(filing_type)) AS ft
+        FROM co_t GROUP BY 1
+    """)
     con.register("co_sp", rdr("ucc_co_secured_parties", ["organization_name", "file_id"], opts))
     con.execute("""
         INSERT INTO app
-        SELECT nn(s.organization_name) AS nln, s.organization_name AS raw, 'CO' AS st, CAST(f.fd AS DATE) AS fd
+        SELECT nn(s.organization_name) AS nln, s.organization_name AS raw, 'CO' AS st,
+               CAST(f.fd AS DATE) AS fd, coalesce(f.ft, 'unknown') AS ft
         FROM co_sp s LEFT JOIN fd_co f ON s.file_id = f.file_id
         WHERE s.organization_name IS NOT NULL
     """)
@@ -104,11 +123,24 @@ def main() -> int:
         FROM (SELECT nln, raw, count(*) AS c FROM app WHERE nln IS NOT NULL GROUP BY 1,2)
         GROUP BY 1
     """)
+    # filing_type distribution per lender over the 24mo window.
+    con.execute(f"""
+        CREATE TEMP TABLE ftagg AS
+        SELECT nln,
+            arg_max(ft, c) AS dominant_filing_type,
+            string_agg(ft || ':' || c, ';' ORDER BY c DESC) AS filing_type_mix
+        FROM (SELECT nln, ft, count(*) AS c FROM app
+              WHERE nln IS NOT NULL AND fd >= DATE '{CUT_24}' GROUP BY 1,2)
+        GROUP BY 1
+    """)
     con.execute(f"""
         CREATE TEMP TABLE target AS
         SELECT d.company_name, a.nln AS normalized_name, a.states,
-               a.app_24 AS appearances_24mo, a.app_all AS appearances_all_time
-        FROM agg a JOIN disp d USING (nln)
+               a.app_24 AS appearances_24mo, a.app_all AS appearances_all_time,
+               t.dominant_filing_type, t.filing_type_mix
+        FROM agg a
+        JOIN disp d USING (nln)
+        LEFT JOIN ftagg t USING (nln)
         WHERE a.app_24 > 5
           AND NOT regexp_matches(a.nln, '{BANK_PAT}')
           AND NOT regexp_matches(a.nln, '{CU_PAT}')
@@ -116,16 +148,18 @@ def main() -> int:
           AND NOT regexp_matches(a.nln, '{AGENT_PAT}')
     """)
 
-    # reporting counts
-    base = con.execute(f"SELECT count(*) FROM agg WHERE app_24 > 5").fetchone()[0]
+    base = con.execute("SELECT count(*) FROM agg WHERE app_24 > 5").fetchone()[0]
     kept = con.execute("SELECT count(*) FROM target").fetchone()[0]
     strip = {}
     for nm, pat in [("bank", BANK_PAT), ("credit_union", CU_PAT), ("gov", GOV_PAT), ("agent", AGENT_PAT)]:
         strip[nm] = con.execute(
             f"SELECT count(*) FROM agg WHERE app_24 > 5 AND regexp_matches(nln, '{pat}')").fetchone()[0]
+    medical = con.execute(
+        "SELECT count(*) FROM target WHERE dominant_filing_type = 'lien_hosp'").fetchone()[0]
     print(f"[csv] base(>5 in 24mo)={base:,}  kept={kept:,}  "
           f"stripped: bank={strip['bank']:,} cu={strip['credit_union']:,} "
-          f"gov={strip['gov']:,} agent={strip['agent']:,}", file=sys.stderr, flush=True)
+          f"gov={strip['gov']:,} agent={strip['agent']:,}  | lien_hosp-dominant kept={medical:,}",
+          file=sys.stderr, flush=True)
 
     con.execute(f"""
         COPY (SELECT * FROM target ORDER BY appearances_24mo DESC, company_name)
