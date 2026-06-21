@@ -40,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     SUB_CERTIFICATIONS_MV_URI, sub_certifications_mv_schema, assert_schema)
+from core.web_norm import _bare_host, normalized_domain, is_generic_domain  # noqa: E402
 
 try:
     import modal  # noqa: F401
@@ -59,7 +60,7 @@ FEED = "sub_certifications_mv"
 DATA_STORAGE_VERSION = "2.1"
 
 # zero-join frontend filter surface (plan §2.3, F5/F6 trims applied)
-BTREE_INDEXES = ["uei", "naics_primary", "zipcode", "next_cert_expiration_date"]
+BTREE_INDEXES = ["uei", "naics_primary", "zipcode", "next_cert_expiration_date", "normalized_domain"]
 BITMAP_INDEXES = [
     "state", "universe_tier", "cert_lifecycle", "contact_source", "geo_source",
     "in_dsbs", "is_subawardee", "is_targeting_candidate", "is_greenfield",
@@ -67,6 +68,7 @@ BITMAP_INDEXES = [
     "cert_sdvosb", "cert_8a_jv",
     "sam_self_any", "sam_self_minority_owned", "sam_self_sdb", "sam_self_woman_owned",
     "sam_self_veteran_owned", "sam_registration_active", "sam_present", "has_subaward_history",
+    "domain_is_generic",
 ]
 
 # SAM self-cert namespace = sba_administered=false MINUS the 3 designations a DSBS program adjudicates.
@@ -134,6 +136,9 @@ def _duck():
 
 def _assembly_sql() -> str:
     excl = ", ".join("'" + k + "'" for k in ADJUDICATED_DESIGNATION_KEYS)
+    nd_web = normalized_domain(_bare_host("website"))             # core.web_norm canonical normalizer
+    nd_addl = normalized_domain(_bare_host("additional_website"))
+    gen = is_generic_domain("dw.normalized_domain")
     return f"""
     WITH dsbs_exploded AS (
         -- F1: CAST to JSON[]; from_json(...,'JSON[]') is rejected by DuckDB. certs is 100% castable.
@@ -192,6 +197,11 @@ def _assembly_sql() -> str:
         FROM targeting WHERE candidate_sub_uei IS NOT NULL AND length(trim(candidate_sub_uei)) > 0
         GROUP BY candidate_sub_uei
     ),
+    dsbs_web AS (  -- canonical normalized domains (core.web_norm); normalized_domain = best-of the two
+        SELECT uei, nw AS normalized_website, na AS normalized_additional_website,
+               coalesce(nw, na) AS normalized_domain
+        FROM (SELECT uei, {nd_web} AS nw, {nd_addl} AS na FROM dsbs) z
+    ),
     spine AS (
         SELECT uei FROM dsbs WHERE uei IS NOT NULL AND length(trim(uei)) > 0
         UNION
@@ -235,7 +245,10 @@ def _assembly_sql() -> str:
         sc.sam_self_codes,
         coalesce(sr.sam_is_active, false)            AS sam_registration_active,
         (sr.uei IS NOT NULL)                         AS sam_present,
-        d.email, d.phone, d.contact_person, d.website,
+        d.email, d.phone, d.contact_person,
+        d.website, dw.normalized_website,
+        d.additional_website, dw.normalized_additional_website,
+        dw.normalized_domain, {gen} AS domain_is_generic,
         p.poc_full_name, p.poc_title,
         CASE WHEN (d.email IS NOT NULL AND trim(d.email) <> '')
                 OR (d.phone IS NOT NULL AND trim(d.phone) <> '')
@@ -257,6 +270,7 @@ def _assembly_sql() -> str:
     FROM spine s
     LEFT JOIN dsbs               d  ON d.uei = s.uei
     LEFT JOIN dsbs_pivot         dp ON dp.uei = s.uei
+    LEFT JOIN dsbs_web           dw ON dw.uei = s.uei
     LEFT JOIN profiles           p  ON p.sub_uei = s.uei
     LEFT JOIN t_agg              t  ON t.uei = s.uei
     LEFT JOIN sam_selfcert       sc ON sc.uei = s.uei
@@ -270,7 +284,8 @@ def _assemble(so) -> tuple:
     import lance
     con = _duck()
     con.register("dsbs", lance.dataset(DSBS_URI, storage_options=so).scanner(columns=[
-        "uei", "legal_business_name", "certs", "email", "phone", "contact_person", "website",
+        "uei", "legal_business_name", "certs", "email", "phone", "contact_person",
+        "website", "additional_website",
         "state", "city", "county", "zipcode", "naics_primary", "source_version"]).to_table())
     con.register("profiles", lance.dataset(PROFILES_URI, storage_options=so).scanner(columns=[
         "sub_uei", "sub_name", "hq_state", "hq_city", "poc_full_name", "poc_title",
@@ -320,7 +335,11 @@ def _assemble(so) -> tuple:
             count(*) FILTER (WHERE contact_source='subaward_poc') AS contact_poc,
             count(*) FILTER (WHERE contact_source='none')        AS contact_none,
             count(*) FILTER (WHERE email IS NOT NULL AND trim(email)<>'') AS email_cov,
-            count(*) FILTER (WHERE has_subaward_history)    AS has_subaward
+            count(*) FILTER (WHERE has_subaward_history)    AS has_subaward,
+            count(*) FILTER (WHERE normalized_website IS NOT NULL)            AS norm_website_cov,
+            count(*) FILTER (WHERE normalized_additional_website IS NOT NULL) AS norm_addl_cov,
+            count(*) FILTER (WHERE normalized_domain IS NOT NULL)             AS norm_domain_cov,
+            count(*) FILTER (WHERE domain_is_generic)                         AS domain_generic
         FROM mv
     """).fetchdf().iloc[0].to_dict()
     # the load-bearing anti-conflation gate (F4): retained self-cert codes ∩ adjudicated = ∅
@@ -399,6 +418,8 @@ def dry_run() -> dict:
         f"reg_active={stats['sam_reg_active']:,} present={stats['sam_present']:,}")
     log(f"contact: dsbs={stats['contact_dsbs']:,} poc={stats['contact_poc']:,} none={stats['contact_none']:,} "
         f"email_cov={stats['email_cov']:,} | CONFLATION_VIOLATIONS={stats['conflation_violations']}")
+    log(f"web: normalized_website={stats['norm_website_cov']:,} normalized_additional={stats['norm_addl_cov']:,} "
+        f"normalized_domain={stats['norm_domain_cov']:,} domain_is_generic={stats['domain_generic']:,}")
     print(json.dumps(stats, indent=2, default=str))
     return stats
 
@@ -477,6 +498,9 @@ def verify() -> dict:
         "cert_by_program": {p: con.execute(f"SELECT count(*) FROM t WHERE cert_{p}").fetchone()[0]
                             for p in ("8a", "hubzone", "wosb", "edwosb", "vosb", "sdvosb", "8a_jv")},
         "sam_self_any": con.execute("SELECT count(*) FROM t WHERE sam_self_any").fetchone()[0],
+        "normalized_domain_cov": con.execute(
+            "SELECT count(*) FROM t WHERE normalized_domain IS NOT NULL").fetchone()[0],
+        "domain_is_generic": con.execute("SELECT count(*) FROM t WHERE domain_is_generic").fetchone()[0],
         "conflation_violations": con.execute(
             f"SELECT count(*) FROM (SELECT unnest(string_split(sam_self_codes,'|')) AS code FROM t "
             f"WHERE sam_self_codes IS NOT NULL) WHERE code IN ({codes_in})").fetchone()[0],

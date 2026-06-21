@@ -2,6 +2,7 @@
 
 **Status:** AWAITING AUTHORIZATION. No builds, DDL, indexes, or datasets created. Read-only probes only.
 **Rev 2 (2026-06-20):** amended per adversarial red-team ([DSBS_SAM_HYBRID_CERTIFICATION_MV_PLAN_ADVERSARIAL_REVIEW.md](DSBS_SAM_HYBRID_CERTIFICATION_MV_PLAN_ADVERSARIAL_REVIEW.md), verdict SHIP-WITH-AMENDMENTS, all findings verified live). Folded: **F1** certs-SQL spelling (`CAST(certs AS JSON[])`), **F2** `sam_registration_active` re-wiring, **F4** executable integrity assertion, **F3** gap-builder index-DDL parity, **F5/F6** index trims, **F8/F9** pins.
+**Rev 3 (2026-06-21):** added web-identity columns via `core.web_norm` — `normalized_website`, `additional_website`, `normalized_additional_website`, `normalized_domain` (coalesced best-of, **BTREE**), `domain_is_generic` (**BITMAP**). Lifts certified-firm domain coverage 62.0%→**65.6%** (44,127 firms; +2,482 rescued by `additional_website`); **92.4%** of non-generic normalized domains exact-join `sam_master_domains`. MV now **58 cols / 31 indices**.
 **Target:** `s3://data-sink/active/govcon_sub_certifications_mv/` (Lance v2.1, serving tier).
 **Author basis:** live probes of `sba_dsbs_certified_firms`, `sam_master_entities`, `govcon_subawardee_profiles`, `govcon_sub_targeting`, `sam_business_type_code_dict`, the serving-MV code idiom, and the HQX `ops.enrichment_cohort_runs` ledger — 2026-06-20.
 
@@ -260,7 +261,11 @@ Greenfield SAM resolvability: 99.2% present in SAM, 97.1% self-certify, **74.7% 
 | `sam_self_any` `sam_self_minority_owned` `sam_self_sdb` `sam_self_woman_owned` `sam_self_veteran_owned` | bool | BITMAP | §1.4 |
 | `sam_self_codes` | string | — | §1.4 (audit) |
 | `sam_registration_active` `sam_present` | bool | BITMAP | SAM |
-| `email` `phone` `contact_person` `website` | string | — | **DSBS native** (D5) |
+| `email` `phone` `contact_person` | string | — | **DSBS native** (D5) |
+| `website` `additional_website` | string | — | DSBS native (raw, display) |
+| `normalized_website` `normalized_additional_website` | string | — | `core.web_norm` bare host |
+| `normalized_domain` | string | **BTREE** | coalesce(the two) — canonical domain join key |
+| `domain_is_generic` | bool | BITMAP | wix/godaddy/webmail flag (keeps the key 1:1) |
 | `poc_full_name` `poc_title` | string | — | P fallback |
 | `contact_source` | string | BITMAP | derived |
 | `state` | string | BITMAP | DSBS ▸ P.hq_state |
@@ -278,8 +283,8 @@ Greenfield SAM resolvability: 99.2% present in SAM, 97.1% self-certify, **74.7% 
 **`cert_lifecycle` definition (F8):** `none` when `next_cert_expiration_date IS NULL` (no currently-active adjudicated cert); `expiring_90d` when `next_cert_expiration_date <= CURRENT_DATE + INTERVAL 90 DAY`; else `active`. Multi-program firms collapse on the soonest expiry (min wins), so a firm with one cert lapsing in 30d is `expiring_90d` regardless of any longer-dated certs.
 
 **Indexing strategy (zero-join frontend filtering).** Rule, consistent with the fleet: resolution keys + every range-filterable date → **BTREE**; every boolean / enum / state / low-cardinality category → **BITMAP**; lists/free-text → unindexed.
-- **BTREE (4 core):** `uei`, `naics_primary`, `zipcode`, `next_cert_expiration_date` — the last is the workhorse for "expires before X" range scans and the recert-outreach motion (§5.1). **Deferred (O4, F6):** the 6 per-program `cert_<prog>_exit_date` BTREEs (program-specific expiry filtering) and `total_subaward_amount` (amount-range filtering) — each adds an index build to every overwrite; build only on a real frontend requirement.
-- **BITMAP (≈24):** `state`, `universe_tier`, `cert_lifecycle`, `contact_source`, `geo_source`, the 4 membership flags, `cert_any` + 7 `cert_<prog>` bools, the 5 `sam_self_*` bools, `sam_registration_active`, `sam_present`, `has_subaward_history`. This lets the frontend AND/OR-compose any set-aside × geo × NAICS × lifecycle filter with bitmap intersection and **no join**.
+- **BTREE (5 core):** `uei`, `naics_primary`, `zipcode`, `next_cert_expiration_date` (workhorse for "expires before X" + the recert-outreach motion §5.1), `normalized_domain` (the canonical domain join key → `sam_master_domains` / `pdl_normalized_companies`). **Deferred (O4, F6):** the 6 per-program `cert_<prog>_exit_date` BTREEs (program-specific expiry filtering) and `total_subaward_amount` (amount-range filtering) — each adds an index build to every overwrite; build only on a real frontend requirement.
+- **BITMAP (≈25):** `state`, `universe_tier`, `cert_lifecycle`, `contact_source`, `geo_source`, `domain_is_generic`, the 4 membership flags, `cert_any` + 7 `cert_<prog>` bools, the 5 `sam_self_*` bools, `sam_registration_active`, `sam_present`, `has_subaward_history`. This lets the frontend AND/OR-compose any set-aside × geo × NAICS × lifecycle filter with bitmap intersection and **no join**.
 
 `cert_programs` is carried for display/audit but left **unindexed** (F5): the frontend composes set-aside filters from the atomic `cert_<prog>` BITMAPs, not the composite combo string.
 
