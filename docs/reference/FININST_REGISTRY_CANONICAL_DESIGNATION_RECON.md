@@ -214,3 +214,65 @@ only the third is the GTM target:
 genuine equipment/alt-lender classification target is a **few thousand high-frequency names**,
 heavily variant-fragmented (SNAP-ON ×3, SOLAR MOSAIC ×2, JOHN DEERE ×2) — canonicalization collapses
 it further. A hand-curatable / single-LLM-pass set, not a 142k-name problem.
+
+---
+
+## 7. Do the unmatched "look like banks"? — FDIC / NCUA-ingest ROI
+
+Decision: ingest the full FDIC (BankFind) + NCUA charter directories, or have SBA+HMDA
+already captured the depository universe deductively? Harnesses:
+[`scripts/ucc_unmatched_bank_signal_probe.py`](../../scripts/ucc_unmatched_bank_signal_probe.py)
+(lexical depository signal × match status) ·
+[`scripts/ucc_bank_canon_recovery_probe.py`](../../scripts/ucc_bank_canon_recovery_probe.py)
+(variant-vs-novel split).
+
+**Answer: by and large, no — the unmatched residual is NOT banks.** Of 6,693,736 org
+secured-party appearances (CA+CO), only **24.5% (1,642,889) name a depository-looking entity**
+at all (bank/CU name tokens); the other **75.5% are non-depository** — captive equipment finance,
+fintech/solar, government, agents, private parties. And SBA+HMDA already captured most of the
+depository slice:
+
+| Lexical class | Total appx | **% already matched (SBA+HMDA)** | Unmatched appx |
+|---|--:|--:|--:|
+| BANK-looking | 1,423,051 | **66.7%** | 474,001 |
+| CREDIT_UNION-looking | 219,838 | **85.2%** | 32,524 |
+| NEITHER (non-depository) | 5,050,847 | 5.0% | 4,797,585 |
+
+The unmatched depository residual (506,525 appx = **7.6% of all org-lender appearances**) is the
+*entire* prize an FDIC/NCUA ingest could chase — and most of it isn't novel:
+
+| Unmatched depository | Recovered by canonicalization alone | **Still novel (registry headroom)** |
+|---|--:|--:|
+| BANK (474,001 appx) | ≥138,751 (29.3%) — *floor* | ≤335,250 (70.7%) |
+| CREDIT_UNION (32,524 appx) | 319 (1.0%) | 32,205 (99.0%) |
+
+The 29.3% bank recovery is a **conservative floor** (a literal `NA↔NATIONAL ASSOCIATION` +
+agent/division tail-strip). Inspection of the "still-novel" head shows most of it is *also*
+variants of institutions already in the data, just under messier strings — `US BANK EQUIPMENT
+FINANCE A DIVISION OF US BANK` (US Bank), `HSBC BANK NEVADA NA` (HSBC), `US BANCORP`, `NORWEST
+BANK COLORADO`, `CALIFORNIA BANK & TRUST` (Zions), `SHEFFIELD FINANCIAL A DIVISION OF TRUIST BANK`,
+`TCF EQUIPMENT FINANCE`, `BANC OF AMERICA LEASING`. A fuzzy/core-token match absorbs most of these.
+The genuinely-absent-from-all-registries tail is a thin set of community/regional banks (`COLORADO
+BUSINESS BANK`, `VECTRA BANK`, `MIDFIRST BANK`, `STEARNS BANK`, `MARLIN BUSINESS BANK`, `FIRST
+NATIONAL BANK OF FT COLLINS`) — and **those are HMDA reporters anyway**, so better canonicalization
+against the existing HMDA panel catches them without a new ingest.
+
+### Verdict
+
+- **FDIC bulk ingest — low coverage ROI.** You've already captured 2/3 of bank appearances; the
+  unmatched bank residual is overwhelmingly *variants of banks you already have* (a canonicalization
+  problem), not banks missing from your data. FDIC's real value is as an **authoritative canonical
+  name + cert-number spine that strengthens the alias fold** — a nice-to-have reference, not a
+  match-coverage unlock. **Build canonicalization first; ingest FDIC only to stamp hard cert IDs.**
+- **NCUA ingest — marginally higher ROI, but tiny volume.** Credit unions are the one depository
+  class with a genuinely-novel tail (99% of the unmatched CU residual is net-new — CUs underreport
+  HMDA: San Diego Metropolitan, Mountain America, Ent, Warren, Clean Energy FCU). But that's only
+  **32,205 appx ≈ 0.5%** of all org-lender appearances. Cheap to ingest, won't move the needle.
+- **The 75.5% non-depository majority is the actual GTM target** (the equipment financiers) and **no
+  government bank registry touches it** — it needs name canonicalization + LLM/heuristic
+  classification regardless of any FDIC/NCUA decision.
+
+**Net:** the bank/CU universe is essentially already captured deductively via SBA+HMDA; spend the
+effort on the alias-canonicalization layer (recovers the variant residual *and* sharpens the
+non-depository classification), and treat FDIC/NCUA ingest as an optional authoritative-ID reference,
+not a coverage play.
