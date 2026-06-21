@@ -30,6 +30,7 @@ MANIFESTS = [
     f"{A}/sam_opps_attachment_manifest_winners/",
     f"{A}/sam_opps_attachment_manifest_remediation/shard_000/",
     f"{A}/sam_opps_attachment_manifest_equipment_rental/shard_000/",
+    f"{A}/sam_opps_attachment_manifest_sb500k/",
 ] + [f"{A}/sam_opps_attachment_manifest_play1/shard_00{i}/" for i in range(6)]
 SOLN = "nullif(upper(regexp_replace(trim({c}), '[^A-Za-z0-9]', '', 'g')), '')"
 
