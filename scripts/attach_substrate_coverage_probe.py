@@ -33,6 +33,7 @@ MANIFESTS = [
     ("m_winners", f"{A}/sam_opps_attachment_manifest_winners/"),
     ("m_remediation", f"{A}/sam_opps_attachment_manifest_remediation/shard_000/"),
     ("m_equip", f"{A}/sam_opps_attachment_manifest_equipment_rental/shard_000/"),
+    ("m_sb500k", f"{A}/sam_opps_attachment_manifest_sb500k/"),
 ] + [(f"m_play1_{i}", f"{A}/sam_opps_attachment_manifest_play1/shard_00{i}/") for i in range(6)]
 
 NORM = "nullif(upper(regexp_replace(trim({c}), '[^A-Za-z0-9]', '', 'g')), '')"
