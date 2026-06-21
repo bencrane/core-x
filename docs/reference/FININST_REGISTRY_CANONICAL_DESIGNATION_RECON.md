@@ -276,3 +276,50 @@ against the existing HMDA panel catches them without a new ingest.
 effort on the alias-canonicalization layer (recovers the variant residual *and* sharpens the
 non-depository classification), and treat FDIC/NCUA ingest as an optional authoritative-ID reference,
 not a coverage play.
+
+---
+
+## 8. Recency — the bands above are ALL-TIME; the active universe is ~5× smaller
+
+The secured-party tables are **dateless**, so §2/§6 appearance counts are **all-time** — they span
+the full filing history (**CA 1965, CO 1966 → May 2026**). A high all-time count can be a long-dead
+lender (GE Money Bank, Norwest, First Republic). Attaching `filing_date` by join (CA
+`secured_parties→filings` on `ucc1_num/ucc3_num`; CO `→co_ucc_transactions` on `file_id`, min date
+per key; **100% join coverage, no fan-out — 6,693,736 appearances preserved exactly**) recasts the
+heads on trailing windows. Harness:
+[`scripts/ucc_lender_recency_bands_probe.py`](../../scripts/ucc_lender_recency_bands_probe.py).
+
+**Most of the volume is old:** only **5.3%** of appearances fall in the last 12 months, **10.9%** in
+the last 24, **17.2%** in the last 36 (ref date 2026-06-01).
+
+**Distinct lender names with ≥N appearances — all-time vs trailing windows:**
+
+| ≥ N | All-time | Last 36mo | Last 24mo | Last 12mo | Last-24mo matched / unmatched |
+|---|--:|--:|--:|--:|--:|
+| ≥5 | 25,101 | 6,478 | 5,021 | 3,210 | 812 / 4,209 |
+| **≥10** | **15,559** | 4,140 | **3,191** | 2,002 | **608 / 2,583** |
+| ≥15 | 11,891 | 3,173 | 2,426 | 1,530 | 501 / 1,925 |
+| ≥25 | 8,581 | 2,319 | 1,751 | 1,058 | 405 / 1,346 |
+| ≥50 | 5,459 | 1,465 | 1,083 | 619 | 278 / 805 |
+
+**Recency shrinks the target ~5×.** "≥10 appearances all-time" = 15,559 names; require those 10 to
+fall in the **last 24 months** and it's **3,191** (608 already-classifiable + 2,583 unmatched);
+last 12 months, **2,002**. The *active* lender universe worth targeting is low single-digit thousands.
+
+**Recency also reshuffles the head** — it is a different list, not a subset:
+
+- **Surging (recent ≫ historical share):** ENFIN CORP (11,099 of 12,673 all-time — a near-brand-new
+  solar lender), EVERBRIGHT LLC (13,824 of 35,017), WEBBANK ITS SUCCESSORS AND ASSIGNEES (3,215 of
+  4,748 — fintech BaaS charter; FDIC-insured, match breaks on the suffix), MIDDESK INC AS
+  REPRESENTATIVE (a new fintech filing agent), DLL FINANCE.
+- **Still dominant & active:** SNAP-ON CREDIT (28,879 in 24mo), KUBOTA CREDIT (8,545), CATERPILLAR
+  FINANCIAL (6,482), DEERE (4,744+2,875), DE LAGE LANDEN (2,780), CNH INDUSTRIAL (2,511), MATCO
+  TOOLS, FARM CREDIT SERVICES.
+- **New contaminant visible at the top:** CO **medical-provider liens** (Movement Dynamics PT,
+  Injury Care Network, Synergy Chiropractic, Mountain View Pain Center — ~2,000 each in 24mo) ride
+  up the recent list; strip with `filing_type` (CO `lien_hosp`) alongside the gov/agent filters.
+
+**Consequence for the GTM:** band on a **trailing 12–24-month `filing_date`** (via the join), not
+all-time, to get the *active* lender set — a few thousand names — then apply the `filing_type='UCC'`
++ agent/medical-lien filters and the canonical join. The deliverable target list is small, current,
+and dominated by exactly the equipment/solar/specialty financiers the campaign is after.
