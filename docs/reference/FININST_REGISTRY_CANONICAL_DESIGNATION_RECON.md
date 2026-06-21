@@ -150,3 +150,67 @@ Mirror the established crosswalk pattern (UCC↔SoS bridge; `crosswalk_sam_usasp
 4. **LLM only on the unmatched residual** (the distinct-name long tail) — and even there, seed it
    with the canonical names as few-shot anchors. The government-sourced head stays hard truth,
    cleanly separable from any inferred label.
+
+---
+
+## 6. The unmatched residual — frequency-band distribution (CA+CO combined)
+
+Sizing the LLM/manual workload after the canonical join. Appearances summed across both
+states (same normalized name → one row, per operator framing). Harness:
+[`scripts/ucc_unmatched_lender_bands_probe.py`](../../scripts/ucc_unmatched_lender_bands_probe.py).
+
+Combined distinct org-lender names **145,826** · matched **3,966** (2.7%) · **unmatched 141,860**
+(97.3%) carrying **5,304,470** appearances.
+
+| Appearances (combined) | Unmatched names | % names | Appearances | % appx |
+|---|--:|--:|--:|--:|
+| = 1 | 86,248 | 60.8% | 86,248 | 1.6% |
+| 2–4 | 32,756 | 23.1% | 82,647 | 1.6% |
+| 5–9 | 9,036 | 6.4% | 58,733 | 1.1% |
+| 10–14 | 3,398 | 2.4% | 39,696 | 0.7% |
+| 15–24 | 3,051 | 2.2% | 57,271 | 1.1% |
+| 25–49 | 2,824 | 2.0% | 97,899 | 1.8% |
+| 50–99 | 1,797 | 1.3% | 125,340 | 2.4% |
+| 100–249 | 1,375 | 1.0% | 213,257 | 4.0% |
+| 250–999 | 951 | 0.7% | 447,864 | 8.4% |
+| **1000+** | **424** | **0.3%** | **4,095,515** | **77.2%** |
+
+**Cumulative — cut the tail at ≥N appearances:**
+
+| ≥ N | Names to classify | % of unmatched names | Appearances covered | % of unmatched appx |
+|---|--:|--:|--:|--:|
+| ≥2 | 55,612 | 39.2% | 5,218,222 | 98.4% |
+| **≥5** | **22,856** | 16.1% | 5,135,575 | **96.8%** |
+| **≥10** | **13,820** | 9.7% | 5,076,842 | **95.7%** |
+| **≥15** | **10,422** | 7.3% | 5,037,146 | **95.0%** |
+| ≥25 | 7,371 | 5.2% | 4,979,875 | 93.9% |
+| ≥50 | 4,547 | 3.2% | 4,881,976 | 92.0% |
+| ≥100 | 2,750 | 1.9% | 4,756,636 | 89.7% |
+| ≥250 | 1,375 | 1.0% | 4,543,379 | 85.7% |
+
+**Read:** the tail is extreme — **84% of unmatched names (119,004) appear ≤4 times** and are
+worth only 3.2% of unmatched volume. Cutting at **≥10 collapses the workload from 141,860 to
+13,820 names (−90%) while retaining 95.7%** of unclassified filings; the **424 names at ≥1000
+alone cover 77.2%**.
+
+**But the unmatched head is not all lenders** — the highest-volume names are three buckets, and
+only the third is the GTM target:
+
+1. **Government statutory-lien filers** (strip via `filing_type='UCC'`): EMPLOYMENT DEVELOPMENT
+   DEPARTMENT (887k), US SMALL BUSINESS ADMINISTRATION (430k, EIDL direct), CA DEPT OF TAX & FEE
+   ADMIN (212k), IRS / IRSOHIO (166k+93k), BOARD OF EQUALIZATION (78k), FRANCHISE TAX BOARD.
+2. **Filing agents** (flag `lender_unknown`): CORPORATION SERVICE COMPANY (110k), C T CORPORATION
+   SYSTEM (86k), FIRST CORPORATE SOLUTIONS (28k), CHTD COMPANY (22k).
+3. **The prize — captive equipment / specialty / clean-energy finance** (unmatched because captive
+   arms carry no FDIC cert / don't report HMDA / aren't SBA banks): SNAP-ON CREDIT (190k+27k+16k,
+   3 variants), KUBOTA CREDIT (60k), JOHN DEERE (56k+20k), CATERPILLAR FINANCIAL (44k), DE LAGE
+   LANDEN (20k), CNH INDUSTRIAL CAPITAL (15k), WELLS FARGO EQUIPMENT/VENDOR FINANCE (17k+14k),
+   NEXTGEAR CAPITAL (14k), TOYOTA COMMERCIAL FINANCE (12k), AGCO FINANCE (12k), US BANK EQUIPMENT
+   FINANCE (14k); solar — SOLAR MOSAIC (58k+54k), EVERBRIGHT (35k), LOANPAL/PARAMOUNT EQUITY (27k),
+   ENFIN (13k); FARM CREDIT SERVICES OF AMERICA (16k — FCA-regulated, a 4th regulator beyond
+   OCC/FDIC/NCUA).
+
+**Consequence:** after a `filing_type='UCC'` pre-filter and an `AS REPRESENTATIVE` agent flag, the
+genuine equipment/alt-lender classification target is a **few thousand high-frequency names**,
+heavily variant-fragmented (SNAP-ON ×3, SOLAR MOSAIC ×2, JOHN DEERE ×2) — canonicalization collapses
+it further. A hand-curatable / single-LLM-pass set, not a 142k-name problem.
