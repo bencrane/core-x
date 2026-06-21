@@ -119,3 +119,33 @@ Cross-referenced to `govcon_equipment_rental_construction_match` on `contract_aw
 2. **Dollar figures are M&O-skewed** (DOE 62% of civilian $). Count is the rental-demand proxy.
 3. **MV bonus coverage = NAICS-23 ∩ active_potential** (75.5% of the civilian cohort); supply counts read against that subset.
 4. **`supply_addr_is_hq_pin`**: national chains (United/Sunbelt/Herc) register one corporate HQ, not branch yards — their radius match is advisory (per the MV reference doc).
+
+---
+
+# PSC decomposition — the 2,781 Parachute cohort
+
+**Harness:** [`scripts/parachute_psc_probe.py`](../../scripts/parachute_psc_probe.py). Reconciled: parachute = 2,781 (0 null PSC), golden-civilian = 282; macro categories sum to 2,781.
+
+## Macro (Build vs. Fix)
+
+| PSC cat | Meaning | Awards | % | Current value |
+|---|---|--:|--:|--:|
+| **Z** | Maintenance/Repair/Alteration of real property | **1,260** | 45.3% | $8.57B |
+| **Y** | Construction of structures & facilities | **682** | 24.5% | $54.89B |
+| F | Environmental / natural-resources (remediation) | 220 | 7.9% | $10.47B |
+| N / J | Equipment install / equipment maint | 107 / 109 | 7.8% | $0.65B |
+| C | Construction A&E | 77 | 2.8% | $0.73B |
+| 6 | FSC supply (6350 security systems) | 69 | 2.5% | $0.44B |
+| M / R | Facility M&O / mgmt support (dollar-skew, not rental) | 29 / 58 | 3.1% | $57.6B |
+
+**Fix (Z) > Build (Y) 1.85 : 1 by count.** Y+Z = 69.8%; +F = 77.7% "physical work on real property."
+
+## Top-20 exact PSC (62.2% of cohort)
+
+Office repair **Z2AA (286)** leads; environmental remediation **F108 (174)** is #2; the hospital triplet (Y1DA 90 + Z2DA 115 + Z1DA 84 = **289**) is the largest single theme; heavy-civil roadwork **Y1LB (72)**. Y1PZ ($16.1B/75) and F999 ($9.1B/34) are mega-contract value outliers — size the fleet by count.
+
+## Golden 282 — brief premise corrected
+
+Top-5 PSC: **6350 security systems (58)**, Z2AA office repair (20), N059 electrical install (20), Y1JZ misc buildings (16), Y1PZ non-building facilities (12).
+
+**Golden is DOT-led, not GSA/VA — and VA is absent.** By agency: **DOT 100** (6350 security 58 / N059 20 / Y1LB highways 11), DHS 41 (Y1PZ/Y1JZ border facilities), GSA 34 (Z2AA office repair 15 / Y1AA 4), Interior 22 (Y1NE water / Z2KA dams), EPA 19 (F108 remediation). VA leads the civilian cohort by count (907) but its SDVOSB/small-business set-asides are exempt from subcontracting plans, so VA drops out of the plan-gated Golden set. **GTM:** DOT's 6350/N059 (78 awards) are low rental-intensity — prioritize DHS Y1PZ/Y1JZ, Interior Y1NE/Z2KA, GSA Y1AA/Z2AA, DOT Y1LB instead.
