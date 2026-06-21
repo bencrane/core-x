@@ -56,6 +56,40 @@ Scoped by *vertical/entity footprint* (A&D `play1`, remediation, equipment-renta
 
 3. **⭐ The cheapest win is downstream, not the crawl:** ~**17,322 SB awards already have their attachment links harvested**, but only ~**7,051** have been downloaded + extracted. That is **~10,000 SB awards whose links are already in hand (Stage 2 done) but bytes/extraction are not (Stage 3 pending).** Closing that gap needs **no crawling at all** — just run download + extract over links we already hold. This is the first lever to pull.
 
+## "Gettable" reframing — coverage vs the ADDRESSABLE denominator (not all awards)
+
+The 24% figure is diluted by the un-gettable floor. Removing it (denominator = awards that
+carry, or can recover, a Sol#) roughly **doubles** the real coverage rate. Probe:
+[`scripts/attach_gettable_coverage_probe.py`](scripts/attach_gettable_coverage_probe.py).
+"Gettable" also folds in a SAM-universe recovery (FPDS-blank Sol# recovered via `award_id_piid`
+→ universe `award_number` → `solicitation_number`) — but that recovers only **+944** of ~80K
+floor awards, so **the no-Sol# floor is effectively fixed; the PIID bridge does not rescue it.**
+
+| cohort | awards | gettable (addressable) | floor (un-gettable) | **HAVE links (% of gettable)** | **DON'T have (crawlable)** |
+|---|---:|---:|---:|---:|---:|
+| all active | 148,789 | 68,822 (46.3%) | 79,967 (53.7%) | **36,236 (52.7%)** | 32,586 (47.3%) |
+| small business | 83,400 | 38,635 (46.3%) | 44,765 (53.7%) | **17,461 (45.2%)** | 21,174 (54.8%) |
+
+So for SB: of the *addressable* market we hold links for **~45%**, not the diluted "21% of all SB."
+
+## Dollar sizing — by `current_total_value_of_award` band
+
+Two opposing gradients, both material:
+1. **Gettability RISES with value** (bigger awards carry a Sol# more often) — the floor shrinks where the money is.
+2. **Coverage-of-gettable FALLS with value** (the past harvest skewed to construction/verticals & lower value) — so the **high-value band is the least-harvested**, i.e. the richest crawlable backlog.
+
+**Small Business:**
+| band | awards | gettable | %get | HAVE links (% of gettable) | DON'T have | crawlable value |
+|---|---:|---:|---:|---:|---:|---:|
+| all | 83,400 | 38,635 | 46.3% | 17,461 (45.2%) | 21,174 | $48.6B |
+| **> $500K** | 15,952 | 8,443 | 52.9% | 3,109 (36.8%) | **5,334** | **$47.6B** |
+| > $1M | 11,500 | 6,278 | 54.6% | 2,164 (34.5%) | 4,114 | $46.7B |
+| > $5M | 4,177 | 2,395 | 57.3% | 815 (34.0%) | 1,580 | $40.5B |
+
+**All active (reference):** > $500K → 14,423 gettable, 5,324 covered (36.9%), **9,099 crawlable / $585.8B**. (The > $500K cut holds $1,599.8B of the $1,607.5B total active value — the sub-$500K tail is value-negligible, so > $500K *is* the market.)
+
+**Read:** at the > $500K SB cut, **~5,334 addressable awards ($47.6B current value) have attachment links we don't yet hold but could harvest** — we already know their Sol#/notice; it's a crawl, not a discovery. Coverage-of-gettable drops from 45% (all) to ~34% in the > $5M band, so the biggest-dollar lending targets are the *most* under-harvested relative to their reachability.
+
 ## Bottom line
 - **Notice substrate: done.** We know what exists; no re-discovery.
 - **Attachment-link substrate: ~24% of active awards (~21% of SB).** Not "by and large" — the manifests are vertical-scoped.
