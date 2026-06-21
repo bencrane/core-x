@@ -1171,10 +1171,10 @@ def phase_index(args, so: dict) -> dict:
 # ║ text NEVER enters any staged task file (hard-asserted at staging). ZERO marginal spend: the
 # ║ pilot engine is session agents reading staged task files; the harness never calls an API.
 # ╚═══════════════════════════════════════════════════════════════════════════════════════════════
-LLM_PROMPT_VERSION = "v1"
+LLM_PROMPT_VERSION = "v2-freeform-labor"
 LLM_ENGINE_DEFAULT = "session-fable"
 LLM_ARTIFACT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "reference", "govcon_llm_lane_v1")
+                                "reference", "govcon_llm_lane_v2")
 LLM_STAGING_DIR = os.environ.get("GOVCON_LLM_STAGING_DIR", "/tmp/govcon_llm_stage")
 LLM_BRACKET_REPORT = os.environ.get("GOVCON_LLM_BRACKET_REPORT", "/tmp/govcon_llm_bracket_report.json")
 LLM_CENSUS_REPORT = os.environ.get("GOVCON_LLM_CENSUS_REPORT", "/tmp/govcon_llm_census.json")
@@ -1190,6 +1190,12 @@ LLM_INGEST_REPORT = os.environ.get("GOVCON_LLM_INGEST_REPORT", "/tmp/govcon_llm_
 CHARS_PER_TOKEN = 4
 DOC_TOKEN_BUDGET = int(os.environ.get("GOVCON_LLM_DOC_TOKEN_BUDGET", "8000"))
 N_OPENING_CHUNKS = int(os.environ.get("GOVCON_LLM_OPENING_CHUNKS", "6"))
+# v2 free-form labor (prompt v2-freeform-labor): when on, the validator accepts labor_category
+# rows whose value is NOT a member of vocabulary.labor_categories — raw job titles land as-is
+# (still lowercased/ws-collapsed + still subject to the verbatim evidence_quote citation check).
+# Default OFF preserves the strict v1 controlled-vocab behavior; set GOVCON_LLM_FREEFORM_LABOR=1
+# for the v2 run. Pair with LLM_PROMPT_VERSION='v2-freeform-labor' + the v2 artifact dir.
+LLM_FREEFORM_LABOR = os.environ.get("GOVCON_LLM_FREEFORM_LABOR", "0") == "1"
 LLM_SLICE_FETCH_MAX = 500          # ≤ this many ids per sink → filtered reads; else full stream
 LLM_FETCH_SLICE = 200              # ids per filtered read
 LLM_INGEST_FLUSH = 200             # resources per ingest commit batch
@@ -1827,7 +1833,7 @@ def validate_result(result: dict, task: dict, vocab: dict, engine_tag: str,
             reject("missing_requirement_value")
             continue
         value_norm = _ws_collapse(rval).lower()
-        if rtype == "labor_category" and value_norm not in labor_set:
+        if rtype == "labor_category" and value_norm not in labor_set and not LLM_FREEFORM_LABOR:
             reject(f"labor_category_out_of_vocab:{value_norm}")
             continue
         clr = rr.get("clearance_level")
