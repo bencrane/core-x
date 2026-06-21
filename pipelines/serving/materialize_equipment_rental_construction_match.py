@@ -19,7 +19,8 @@ SIDES (all reliable; NO FSRS subaward-propensity dependency)
           (~5,987 active construction awards / 2,759 primes / $91B; PoP worksite zip)
   SUPPLY  sam_master_entities    equip-rental NAICS bundle · is_active · USA
           (~8,431 geocodable firms; HQ/yard zip)
-  GEO     zcta_zip_centroids (primary, full coverage) + geocode_xwalk zip5-rollup (fallback)
+  GEO     zcta_zip_centroids (primary) + geocode_xwalk zip5-rollup (fallback) + ZIP3-prefix
+          centroid (last-resort, closes military/point-zip gaps e.g. 35898 Redstone Arsenal)
 
 DESIGNATIONS: each pair carries the rental firm's socioeconomic designation flags (sub_sdvosb,
   sub_wosb, sub_hubzone, sub_8a, …, sub_any_designation), decoded from the firm's SAM Reps & Certs
@@ -36,7 +37,9 @@ KNOWN LIMITS (ship with the data)
     reliable for single-location/regional firms.
   - PoP zip is worksite-grade (can be a base/installation centroid), so radius is metro-accurate,
     not parcel/drive-time-precise. The ×1.3 factor approximates roads; not a routing engine.
-  - centroid_source flags zcta vs geocode_xwalk so coverage is visible.
+  - centroid_source flags zcta vs geocode_xwalk vs zip3 so coverage + precision is visible.
+    'zip3' rows resolved via the 3-digit-prefix (SCF/metro) centroid because the exact zip5 is
+    a point/military zip absent from both ZCTA and the rooftop cache — metro-grade, not zip5-grade.
 
 Grain: 1 row / (contract_award_unique_key, sub_uei). Idempotent snapshot-overwrite.
 
@@ -127,6 +130,12 @@ def build() -> dict:
         UNION ALL
         SELECT zip5, lat, lon, 'geocode_xwalk' AS src FROM gxr WHERE zip5 NOT IN (SELECT zcta5 FROM zcta)
     """)
+    # ── tier-3 fallback: ZIP3-prefix centroid (avg of all ZCTAs sharing the 3-digit prefix) ──
+    # Closes military/point-zip gaps (e.g. 35898 Redstone Arsenal — its 14 active MILCON awards) that
+    # are absent from BOTH ZCTA and the rooftop cache. SCF/metro-grade, consistent with the existing
+    # centroid-to-centroid radius precision. Consumers coalesce(exact, zip3) and tag src='zip3'.
+    con.execute("CREATE TEMP TABLE zip3 AS "
+                "SELECT substr(zcta5, 1, 3) AS z3, avg(lat) AS lat, avg(lon) AS lon FROM zcta GROUP BY 1")
 
     # ── DEMAND: construction primes w/ plan, geocoded ──
     con.execute(f"""
@@ -136,10 +145,14 @@ def build() -> dict:
                g.current_total_value_of_award AS award_value,
                g.business_size, g.has_subcontracting_plan,
                g.awarding_agency_name, g.pop_city, g.pop_state_code, left(g.pop_zip,5) AS pop_zip5,
-               c.lat AS d_lat, c.lon AS d_lon, c.src AS demand_centroid_source
-        FROM gaa g JOIN cent c ON left(g.pop_zip,5) = c.zip5
+               coalesce(c.lat, z3.lat) AS d_lat, coalesce(c.lon, z3.lon) AS d_lon,
+               coalesce(c.src, 'zip3') AS demand_centroid_source
+        FROM gaa g
+        LEFT JOIN cent c ON left(g.pop_zip,5) = c.zip5
+        LEFT JOIN zip3 z3 ON substr(left(g.pop_zip,5), 1, 3) = z3.z3
         WHERE g.naics_code LIKE '23%' AND g.active_potential
           AND g.pop_zip IS NOT NULL AND length(trim(g.pop_zip)) >= 5
+          AND coalesce(c.lat, z3.lat) IS NOT NULL
     """)
 
     # one normalized domain per uei (sam_master_domains is the canonical, blocklist-filtered
@@ -159,11 +172,15 @@ def build() -> dict:
                  m.physical_address_city AS sub_city, m.physical_address_province_or_state AS sub_state,
                  m.physical_address_zip_postal_code AS sub_zip5,
                  ({hq}) AS supply_addr_is_hq_pin,
-                 c.lat AS s_lat, c.lon AS s_lon, c.src AS supply_centroid_source,
+                 coalesce(c.lat, z3.lat) AS s_lat, coalesce(c.lon, z3.lon) AS s_lon,
+                 coalesce(c.src, 'zip3') AS supply_centroid_source,
                  {bt} AS bt, {sbap} AS sbap
-          FROM sme m JOIN cent c ON m.physical_address_zip_postal_code = c.zip5
+          FROM sme m
+          LEFT JOIN cent c ON m.physical_address_zip_postal_code = c.zip5
+          LEFT JOIN zip3 z3 ON substr(m.physical_address_zip_postal_code, 1, 3) = z3.z3
           WHERE (m.primary_naics IN {inb} OR len(list_filter(coalesce(m.naics_codes,[]), x -> x IN {inb})) > 0)
             AND m.is_active AND m.physical_address_country_code = 'USA'
+            AND coalesce(c.lat, z3.lat) IS NOT NULL
         )
         SELECT s0.* EXCLUDE (bt, sbap), dom.sub_website,
           list_contains(bt,'QF')                                                       AS sub_sdvosb,
