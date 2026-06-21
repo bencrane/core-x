@@ -421,7 +421,12 @@ def sub_certifications_mv_schema():
         ("sam_present", pa.bool_()),
         # decoupled contact payload (DSBS native; profiles POC fallback)
         ("email", pa.string()), ("phone", pa.string()), ("contact_person", pa.string()),
-        ("website", pa.string()),
+        # web identity — raw (display) + canonical normalized domains (core.web_norm; join keys to
+        # sam_master_domains / pdl_normalized_companies). normalized_domain = best-of the two; NULL if
+        # neither yields a plausible registrable host. domain_is_generic flags wix/godaddy/webmail.
+        ("website", pa.string()), ("normalized_website", pa.string()),
+        ("additional_website", pa.string()), ("normalized_additional_website", pa.string()),
+        ("normalized_domain", pa.string()), ("domain_is_generic", pa.bool_()),
         ("poc_full_name", pa.string()), ("poc_title", pa.string()),
         ("contact_source", pa.string()),             # dsbs | subaward_poc | none
         # geo / firmographic (denormalized for filtering)
