@@ -263,6 +263,48 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.post("/check", dependencies=[Depends(require_service_token)])
+async def check(body: dict[str, Any]) -> dict[str, Any]:
+    """Has the equipment-catalog enrichment been done for this domain? POST body:
+    ``{"company_domain": "..."}``. Returns ``enriched`` (bool) plus the record count,
+    most-recent ``landed_at``, latest ``payload_kind`` / ``confidence`` / counts. Domain
+    normalized identically to /land so both endpoints agree."""
+    company_domain = body.get("company_domain")
+    if not isinstance(company_domain, str) or not company_domain.strip():
+        raise HTTPException(status_code=422, detail="company_domain is required (non-empty string)")
+    domain_norm = _normalize_domain(company_domain)
+    if not domain_norm:
+        raise HTTPException(status_code=422, detail="company_domain did not normalize to a usable bridge key")
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                WITH mr AS (
+                    SELECT max(landed_at) AS t FROM gtm.equipment_catalog WHERE domain_norm = %s
+                )
+                SELECT count(*) AS n,
+                       (SELECT t FROM mr) AS most_recent_at,
+                       max(payload_kind)         FILTER (WHERE landed_at = (SELECT t FROM mr)) AS latest_payload_kind,
+                       max(confidence)           FILTER (WHERE landed_at = (SELECT t FROM mr)) AS latest_confidence,
+                       max(equipment_item_count) FILTER (WHERE landed_at = (SELECT t FROM mr)) AS latest_equipment_item_count
+                FROM gtm.equipment_catalog
+                WHERE domain_norm = %s
+                """,
+                (domain_norm, domain_norm),
+            )
+            r = await cur.fetchone()
+    return {
+        "company_domain": company_domain,
+        "domain_norm": domain_norm,
+        "enriched": r[0] > 0,
+        "record_count": r[0],
+        "most_recent_at": r[1].isoformat() if r[1] else None,
+        "latest_payload_kind": r[2],
+        "latest_confidence": r[3],
+        "latest_equipment_item_count": r[4],
+    }
+
+
 @router.get("/stats", dependencies=[Depends(require_service_token)])
 async def stats() -> dict[str, Any]:
     async with get_db_connection() as conn:
