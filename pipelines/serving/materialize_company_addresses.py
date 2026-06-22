@@ -3,12 +3,20 @@
 SoR  s3://data-sink/active/company_addresses/  (Lance v2.1; derived, snapshot-overwrite)
 
 WHAT THIS IS
-One row per UEI in sam_master_entities (~1.5M). Each row carries the WINNING mailing address —
+UNION universe across SAM + Prospeo + Blitz. Grain is one row per firm identified by either a SAM
+UEI or (when not in SAM) a normalized domain. Each row carries the WINNING mailing address —
 selected by source precedence SAM physical > SAM mailing > Prospeo > Blitz — plus every per-source
 raw address kept side-by-side so consumers can override the winner. Bridges via `domain_norm` (the
 canonical key everything else joins on: firmographics_blitz, equipment_catalog, industries_served,
 equipment_provider, prospeo_company_export). Built so any downstream answering "where is this firm
 physically located" can hit one Lance instead of coalescing across three.
+
+UNIVERSE (3 record sources, deduped by domain_norm)
+  1. Every UEI in sam_master_entities                                          (~1.54M rows; uei + maybe domain_norm)
+  2. Every Prospeo domain NOT already mapped to a SAM UEI                       (non-SAM-Prospeo orphans; uei=NULL)
+  3. Every Blitz domain NOT in SAM AND NOT in Prospeo                            (non-SAM-non-Prospeo Blitz orphans; uei=NULL)
+
+PRIMARY KEY  `entity_key` = uei when SAM-resolved, else 'dom:' + domain_norm. SAM rows carry both.
 
 PRECEDENCE (operator standard — do not reorder without sign-off)
   1. SAM physical address (street + line2 + city + state + zip + country + congressional district)
@@ -46,8 +54,8 @@ DATA_STORAGE_VERSION = "2.1"
 DUCK_MEM = os.environ.get("DUCK_MEM", "12GB")
 
 # Resolution keys + categorical accelerators. `address_source` and state are low-cardinality;
-# uei is the PK, domain_norm is the bridge to every other domain-keyed serving table.
-BTREE_COLS = ["uei", "domain_norm", "primary_naics", "legal_business_name"]
+# entity_key is the PK, uei + domain_norm are bridges (either or both may be NULL per row).
+BTREE_COLS = ["entity_key", "uei", "domain_norm", "primary_naics", "legal_business_name"]
 BITMAP_COLS = ["address_source", "winner_state", "winner_country_code",
                "had_sam_physical", "had_sam_mailing", "had_prospeo", "had_blitz"]
 
@@ -107,9 +115,9 @@ def build() -> dict:
     """)
 
     # ── per-source projections off sam_master_entities. Empty-string → NULL on every leaf so the
-    # coalesce that picks the winning whole-address ignores blanks. ──
+    # coalesce that picks the winning whole-address ignores blanks. SAM-anchored rows: 1 per UEI. ──
     con.execute("""
-        CREATE TEMP TABLE base AS
+        CREATE TEMP TABLE base_sam AS
         SELECT s.uei,
                nullif(trim(s.legal_business_name), '') AS legal_business_name,
                nullif(trim(s.primary_naics), '')       AS primary_naics,
@@ -135,6 +143,66 @@ def build() -> dict:
                nullif(trim(s.mailing_address_country), '')            AS sam_mailing_country
         FROM sme s
         LEFT JOIN smd1 d ON s.uei = d.uei
+    """)
+
+    # ── SAM-known domain universe (every domain that maps to a SAM UEI). Used to filter the
+    # Prospeo + Blitz orphan sets so the universe stays grain-coherent (no double-counting). ──
+    con.execute("""
+        CREATE TEMP TABLE sam_domains AS
+        SELECT DISTINCT domain_norm AS d FROM base_sam WHERE domain_norm IS NOT NULL
+    """)
+
+    # ── Prospeo orphans: domains in Prospeo that DO NOT resolve to a SAM UEI. uei=NULL.
+    # Every per-source raw column from SAM stays NULL on these rows; winner picks from Prospeo. ──
+    con.execute("""
+        CREATE TEMP TABLE base_prospeo_orphan AS
+        SELECT
+          CAST(NULL AS VARCHAR) AS uei,
+          CAST(NULL AS VARCHAR) AS legal_business_name,
+          CAST(NULL AS VARCHAR) AS primary_naics,
+          pr.domain_norm,
+          CAST(NULL AS VARCHAR) AS sam_physical_line_1, CAST(NULL AS VARCHAR) AS sam_physical_line_2,
+          CAST(NULL AS VARCHAR) AS sam_physical_city,   CAST(NULL AS VARCHAR) AS sam_physical_state,
+          CAST(NULL AS VARCHAR) AS sam_physical_postal_code, CAST(NULL AS VARCHAR) AS sam_physical_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_physical_country_code, CAST(NULL AS VARCHAR) AS sam_physical_congressional_district,
+          CAST(NULL AS VARCHAR) AS sam_mailing_line_1,  CAST(NULL AS VARCHAR) AS sam_mailing_line_2,
+          CAST(NULL AS VARCHAR) AS sam_mailing_city,    CAST(NULL AS VARCHAR) AS sam_mailing_state,
+          CAST(NULL AS VARCHAR) AS sam_mailing_postal_code, CAST(NULL AS VARCHAR) AS sam_mailing_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_mailing_country
+        FROM pro1 pr
+        WHERE pr.domain_norm NOT IN (SELECT d FROM sam_domains)
+    """)
+
+    # ── Blitz orphans: domains in firmographics_blitz that map to NEITHER a SAM UEI NOR a Prospeo
+    # row. uei=NULL; winner picks from Blitz HQ (city/state only — no street/postal). ──
+    con.execute("""
+        CREATE TEMP TABLE base_blitz_orphan AS
+        SELECT
+          CAST(NULL AS VARCHAR) AS uei,
+          CAST(NULL AS VARCHAR) AS legal_business_name,
+          CAST(NULL AS VARCHAR) AS primary_naics,
+          bz.domain_norm,
+          CAST(NULL AS VARCHAR) AS sam_physical_line_1, CAST(NULL AS VARCHAR) AS sam_physical_line_2,
+          CAST(NULL AS VARCHAR) AS sam_physical_city,   CAST(NULL AS VARCHAR) AS sam_physical_state,
+          CAST(NULL AS VARCHAR) AS sam_physical_postal_code, CAST(NULL AS VARCHAR) AS sam_physical_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_physical_country_code, CAST(NULL AS VARCHAR) AS sam_physical_congressional_district,
+          CAST(NULL AS VARCHAR) AS sam_mailing_line_1,  CAST(NULL AS VARCHAR) AS sam_mailing_line_2,
+          CAST(NULL AS VARCHAR) AS sam_mailing_city,    CAST(NULL AS VARCHAR) AS sam_mailing_state,
+          CAST(NULL AS VARCHAR) AS sam_mailing_postal_code, CAST(NULL AS VARCHAR) AS sam_mailing_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_mailing_country
+        FROM blz1 bz
+        WHERE bz.domain_norm NOT IN (SELECT d FROM sam_domains)
+          AND bz.domain_norm NOT IN (SELECT domain_norm FROM base_prospeo_orphan)
+    """)
+
+    # ── UNION the three universes. Grain: SAM UEI (when present) else domain_norm. ──
+    con.execute("""
+        CREATE TEMP TABLE base AS
+        SELECT * FROM base_sam
+        UNION ALL
+        SELECT * FROM base_prospeo_orphan
+        UNION ALL
+        SELECT * FROM base_blitz_orphan
     """)
 
     # ── presence flags + winner selection. `address_source` is the rank tag; the winner_* columns
@@ -225,6 +293,7 @@ def build() -> dict:
 
     tbl = con.execute("""
         SELECT
+          coalesce(uei, 'dom:' || domain_norm) AS entity_key,
           uei, domain_norm, legal_business_name, primary_naics,
           address_source,
           winner_line_1, winner_line_2, winner_city, winner_state,
