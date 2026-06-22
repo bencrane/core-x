@@ -53,6 +53,7 @@ from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
+from .src.routers.industries_served_v1 import router as industries_served_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
@@ -168,6 +169,11 @@ app.include_router(clay_find_companies_router)
 # discriminated by payload_kind). Bridges to firmographics_blitz via domain_norm. Service-token gated.
 app.include_router(equipment_catalog_router)
 
+# industries-served: raw, append-only landing of company-industries research payloads into
+# gtm.industries_served (verbatim raw_payload + flat projection of industriesServed[] + confidence
+# + reasoning + sources/stepsTaken). Bridges to firmographics_blitz via domain_norm. Service-token gated.
+app.include_router(industries_served_router)
+
 # Pipeline: the post-payment GTM pipeline /run-step surface, vendored from hq-x.
 # Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
 # /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
@@ -258,6 +264,7 @@ def _info() -> dict:
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
+            "industries_served": True,    # /api/v1/industries-served/{land,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
