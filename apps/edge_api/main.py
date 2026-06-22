@@ -56,6 +56,7 @@ from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
 from .src.routers.industries_served_v1 import router as industries_served_router
 from .src.routers.equipment_provider_v1 import router as equipment_provider_router
 from .src.routers.equipment_finance_candidates_v1 import router as equipment_finance_candidates_router
+from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
@@ -186,6 +187,11 @@ app.include_router(equipment_provider_router)
 # candidates (name + domain + linkedin_url + verdict). Bridges via domain_norm AND linkedin_url_norm.
 app.include_router(equipment_finance_candidates_router)
 
+# epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
+# gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
+# + reasoning + stepsTaken). Bridges to firmographics_blitz via domain_norm. Service-token gated.
+app.include_router(epd_lec_status_router)
+
 # Pipeline: the post-payment GTM pipeline /run-step surface, vendored from hq-x.
 # Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
 # /internal/gtm/initiatives/{id}/run-step — mounted with the same /internal prefix.
@@ -279,6 +285,7 @@ def _info() -> dict:
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
+            "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
