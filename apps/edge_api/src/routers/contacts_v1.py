@@ -2,14 +2,14 @@
 
 Endpoints (mounted at ``/api/v1/contacts``, service-token gated):
   POST /land   → land ONE contact (one row per request), idempotent on byte-identical resends
-  POST /check  → has this work_email (optionally at this company) been landed?
+  POST /check  → has this contact been landed? (by work_email, or by full_name + company)
   GET  /stats  → row / distinct-person / distinct-company counts + main-contact rollup
 
 WIRE CONTRACT. ONE contact per request, FLAT singular fields (no nested raw_payload on the wire)::
 
     {
       "full_name":            "Jane A. Smith",                         // required (middle name/initial optional)
-      "work_email":           "jane.smith@auxcap.com",                 // required — person identity key
+      "work_email":           "jane.smith@auxcap.com",                 // OPTIONAL (validated if present)
       "job_title":            "VP, Asset Based Lending",               // optional
       "is_main_contact":      "true",                                  // optional — "true"/"false" (also 1/0, yes/no)
       "city":                 "Wayne",                                 // optional
@@ -28,11 +28,13 @@ STORAGE. Stored TWO ways, both faithful to source:
      computed server-side. full_name is split into first/middle/last; the verbatim full_name is kept.
      job_title is verbatim — semantic normalization (→ job_level enum) is a SEPARATE downstream stage.
 
-IDENTITY / GRAIN. (person × company), APPEND-ONLY HISTORY.
-    person_id   = sha256(work_email_norm)                  — stable cross-company person key (email-rail)
-    contact_key = sha256(work_email_norm | domain_norm)    — stable (person × company) key; reader takes latest by landed_at
-    record_id   = sha256(identity | every mutable field)   — PK; identical resend = no-op (ON CONFLICT DO NOTHING),
-                                                              any change lands a NEW historical row. No in-place mutation.
+IDENTITY / GRAIN. (person × company), APPEND-ONLY HISTORY. work_email is OPTIONAL — identity degrades:
+    person_disc = "email:"+work_email_norm  (if present)  else  "name:"+name_norm
+    person_id   = sha256(work_email_norm)                 — email-rail key; NULL when no work_email
+    contact_key = sha256(person_disc | company_bridge)    — stable (person × company) key; ALWAYS set;
+                  company_bridge = domain_norm or company_linkedin_url_norm or "". Reader takes latest by landed_at.
+    record_id   = sha256(person_disc | every mutable field) — PK; identical resend = no-op (ON CONFLICT
+                  DO NOTHING), any change lands a NEW historical row. No in-place mutation.
 """
 from __future__ import annotations
 
@@ -102,6 +104,11 @@ def _normalize_email(raw: Any) -> str | None:
     return s if _EMAIL_RE.match(s) else None
 
 
+def _email_present(raw: Any) -> bool:
+    """True if a non-empty work_email string was supplied (valid or not)."""
+    return isinstance(raw, str) and bool(raw.strip())
+
+
 # ── is_main_contact coercion — "true"/"false" (also 1/0, yes/no, bool). NULL if absent/unparseable ──
 _TRUE = {"true", "t", "1", "yes", "y"}
 _FALSE = {"false", "f", "0", "no", "n"}
@@ -125,6 +132,14 @@ def _s(v: Any) -> str | None:
     return v.strip() if isinstance(v, str) and v.strip() else None
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _name_norm(full_name: str) -> str:
+    """lower + whitespace-collapsed full name — the person discriminant when no work_email exists."""
+    return _WS_RE.sub(" ", full_name.strip().lower())
+
+
 def _split_name(full: str) -> tuple[str | None, str | None, str | None]:
     """first / middle / last from a verbatim full name. Single token → first only;
     two → first+last; three+ → middle captures everything between (incl. a middle initial)."""
@@ -139,6 +154,28 @@ def _split_name(full: str) -> tuple[str | None, str | None, str | None]:
 
 def _sha(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+# ── shared identity-key derivation (used by /land AND /check so lookups always match writes) ──
+def _person_disc(work_email_norm: str | None, full_name: str | None) -> str | None:
+    """Person discriminant: the work_email when present, else the normalized full name. None if neither."""
+    if work_email_norm:
+        return "email:" + work_email_norm
+    if full_name:
+        return "name:" + _name_norm(full_name)
+    return None
+
+
+def _company_bridge(domain_norm: str | None, linkedin_url_norm: str | None) -> str:
+    return domain_norm or linkedin_url_norm or ""
+
+
+def _person_id(work_email_norm: str | None) -> str | None:
+    return _sha(work_email_norm) if work_email_norm else None
+
+
+def _contact_key(person_disc: str, domain_norm: str | None, linkedin_url_norm: str | None) -> str:
+    return _sha(f"{person_disc}|{_company_bridge(domain_norm, linkedin_url_norm)}")
 
 
 # Column order is the single source of truth for the INSERT placeholders below.
@@ -162,6 +199,7 @@ _STATS_SQL = """
            count(DISTINCT person_id)                         AS distinct_persons,
            count(DISTINCT contact_key)                       AS distinct_contacts,
            count(DISTINCT domain_norm)                       AS distinct_domains,
+           count(*) FILTER (WHERE work_email_norm IS NOT NULL) AS with_work_email,
            count(*) FILTER (WHERE is_main_contact IS TRUE)   AS main_contact_rows,
            count(*) FILTER (WHERE domain_norm IS NOT NULL)   AS with_domain,
            count(*) FILTER (WHERE company_linkedin_url_norm IS NOT NULL) AS with_linkedin
@@ -173,29 +211,34 @@ _SOURCE = "contacts"
 
 def _to_row(rec: dict[str, Any]) -> tuple | None:
     """Project one flat contact body → the full column tuple. None if a hard requirement fails:
-    work_email must be a valid address, full_name + company_name must be present, and at least one
-    of company_domain / company_linkedin_url must normalize to a usable bridge key."""
-    work_email_norm = _normalize_email(rec.get("work_email"))
+    full_name + company_name must be present, at least one of company_domain / company_linkedin_url
+    must normalize to a usable bridge key, and — IF a work_email is supplied — it must be valid.
+    work_email itself is OPTIONAL (identity degrades to the normalized full name when absent)."""
     full_name = _s(rec.get("full_name"))
     company_name = _s(rec.get("company_name"))
-    if not work_email_norm or not full_name or not company_name:
+    if not full_name or not company_name:
         return None
+
+    work_email_norm = _normalize_email(rec.get("work_email"))
+    if _email_present(rec.get("work_email")) and not work_email_norm:
+        return None  # supplied but malformed → reject (surface the data error)
 
     domain_norm = _normalize_domain(rec.get("company_domain"))
     linkedin_url_norm = _normalize_linkedin(rec.get("company_linkedin_url"))
     if not domain_norm and not linkedin_url_norm:
         return None
 
+    person_disc = _person_disc(work_email_norm, full_name)  # full_name is guaranteed → never None
     first_name, middle_name, last_name = _split_name(full_name)
     job_title = _s(rec.get("job_title"))
     is_main_contact = _to_bool(rec.get("is_main_contact"))
     city, state, country = _s(rec.get("city")), _s(rec.get("state")), _s(rec.get("country"))
 
-    person_id = _sha(work_email_norm)
-    contact_key = _sha(f"{work_email_norm}|{domain_norm or ''}")
-    # Append-only history key: identity + every mutable field. Identical resend → no-op; any change → new row.
+    person_id = _person_id(work_email_norm)
+    contact_key = _contact_key(person_disc, domain_norm, linkedin_url_norm)
+    # Append-only history key: person discriminant + every mutable field. Identical resend → no-op; any change → new row.
     record_id = _sha("|".join([
-        work_email_norm,
+        person_disc,
         domain_norm or "",
         linkedin_url_norm or "",
         full_name,
@@ -218,17 +261,18 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
 
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: dict[str, Any]) -> dict[str, Any]:
-    """Land ONE contact. Required: full_name, work_email (valid), company_name, and at least one of
-    company_domain / company_linkedin_url. Optional: job_title, is_main_contact, city, state, country."""
+    """Land ONE contact. Required: full_name, company_name, and at least one of company_domain /
+    company_linkedin_url. Optional: work_email (validated if present), job_title, is_main_contact,
+    city, state, country."""
     row = _to_row(body)
     if row is None:
         # Precise 422 so a bulk loader can reconcile drops (a 4xx is not retried by the caller).
-        if not _normalize_email(body.get("work_email")):
-            raise HTTPException(status_code=422, detail="work_email is required and must be a valid email address")
         if not _s(body.get("full_name")):
             raise HTTPException(status_code=422, detail="full_name is required (non-empty string)")
         if not _s(body.get("company_name")):
             raise HTTPException(status_code=422, detail="company_name is required (non-empty string)")
+        if _email_present(body.get("work_email")) and not _normalize_email(body.get("work_email")):
+            raise HTTPException(status_code=422, detail="work_email, when provided, must be a valid email address")
         raise HTTPException(
             status_code=422,
             detail="need at least one of company_domain or company_linkedin_url that normalizes to a usable bridge key",
@@ -245,8 +289,8 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
         "already_present": not landed,
         "record_id": row[0],
         "contact_key": row[1],
-        "person_id": row[2],
-        "work_email_norm": row[8],
+        "person_id": row[2],              # None when no work_email was supplied
+        "work_email_norm": row[8],        # None when no work_email was supplied
         "domain_norm": row[16],
         "is_main_contact": row[10],
     }
@@ -254,18 +298,30 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/check", dependencies=[Depends(require_service_token)])
 async def check(body: dict[str, Any]) -> dict[str, Any]:
-    """Has this contact been landed? Send `work_email` (required); optionally scope by `company_domain`.
-    Returns the count of historical rows and the LATEST observed state for the contact."""
-    work_email_norm = _normalize_email(body.get("work_email"))
-    if not work_email_norm:
-        raise HTTPException(status_code=422, detail="work_email is required and must be a valid email address")
-    domain_norm = _normalize_domain(body.get("company_domain"))
+    """Has this contact been landed? Send EITHER `work_email`, OR `full_name` + a company bridge
+    (`company_domain` / `company_linkedin_url`). Returns the count of historical rows + LATEST state.
 
-    # contact_key when a domain is supplied (person×company), else person-wide (across companies).
-    if domain_norm:
-        key_col, key_val = "contact_key", _sha(f"{work_email_norm}|{domain_norm}")
+    Scope: a bare `work_email` matches the person across ALL companies (person_id); add a company
+    bridge — or use the name path — to scope to one (person × company) via contact_key."""
+    work_email_norm = _normalize_email(body.get("work_email"))
+    if _email_present(body.get("work_email")) and not work_email_norm:
+        raise HTTPException(status_code=422, detail="work_email, when provided, must be a valid email address")
+    domain_norm = _normalize_domain(body.get("company_domain"))
+    linkedin_url_norm = _normalize_linkedin(body.get("company_linkedin_url"))
+    full_name = _s(body.get("full_name"))
+    has_bridge = bool(domain_norm or linkedin_url_norm)
+
+    if work_email_norm and not has_bridge:
+        key_col, key_val, scope = "person_id", _person_id(work_email_norm), "person_id"
     else:
-        key_col, key_val = "person_id", _sha(work_email_norm)
+        # contact_key scope — need a person discriminant (email or name) AND a company bridge.
+        person_disc = _person_disc(work_email_norm, full_name)
+        if person_disc is None or not has_bridge:
+            raise HTTPException(
+                status_code=422,
+                detail="send work_email, or full_name + (company_domain | company_linkedin_url)",
+            )
+        key_col, key_val, scope = "contact_key", _contact_key(person_disc, domain_norm, linkedin_url_norm), "contact_key"
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -283,9 +339,9 @@ async def check(body: dict[str, Any]) -> dict[str, Any]:
             )
             r = await cur.fetchone()
     return {
+        "scope": scope,
         "work_email_norm": work_email_norm,
         "domain_norm": domain_norm,
-        "scope": "contact_key" if domain_norm else "person_id",
         "found": r[0] > 0,
         "record_count": r[0],
         "most_recent_at": r[1].isoformat() if r[1] else None,
@@ -307,7 +363,8 @@ async def stats() -> dict[str, Any]:
         "distinct_persons": r[1],
         "distinct_contacts": r[2],
         "distinct_domains": r[3],
-        "main_contact_rows": r[4],
-        "with_domain": r[5],
-        "with_linkedin": r[6],
+        "with_work_email": r[4],
+        "main_contact_rows": r[5],
+        "with_domain": r[6],
+        "with_linkedin": r[7],
     }
