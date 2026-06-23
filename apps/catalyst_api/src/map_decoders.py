@@ -279,12 +279,12 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v2",
+    version="awards.v3",
     geometry=("longitude", "latitude"),
     properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
                 "action_date", "naics2", "naics_code", "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
-                "set_aside"),
+                "set_aside", "is_active", "pop_end"),
     fields={
         # The single action's obligation — NEVER a lifetime or window rollup. The build
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
@@ -304,9 +304,14 @@ AWARDS = Decoder(
                                        enum=_SET_ASIDE_CODES, index="BITMAP"),
         "winner_type":       FieldSpec("winner_type", "string", ("=", "in"),
                                        enum=("prime_recipient", "subawardee"), index="BITMAP"),
+        # Contract currently within its period of performance (pop_end >= today, build-time);
+        # prime-only — NULL on subawards, so is_active=true excludes them honestly.
+        "is_active":         FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
     },
     synonyms={
         "construction":   {"field": "naics2", "op": "=", "value": "23"},
+        "active":         {"field": "is_active", "op": "=", "value": True},
+        "active contracts": {"field": "is_active", "op": "=", "value": True},
         "this week":      {"field": "days_since_action", "op": "<=", "value": 7},
         "this month":     {"field": "days_since_action", "op": "<=", "value": 30},
         "won recently":   {"field": "days_since_action", "op": "<=", "value": 30},

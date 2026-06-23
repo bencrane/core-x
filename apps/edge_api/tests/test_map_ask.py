@@ -119,6 +119,19 @@ def test_no_stale_90day_window_claim_in_any_prompt():
         assert "rolling window" not in p
 
 
+def test_awards_has_active_period_of_performance_axis_both_sides():
+    # The active/PoP axis: prime contract actions whose period of performance covers today.
+    assert "is_active" in cat.DECODERS["awards"].fields
+    assert cat.DECODERS["awards"].fields["is_active"].type == "bool"
+    assert cat.DECODERS["awards"].fields["is_active"].index == "BITMAP"
+    assert "is_active" in edge.DECODERS["awards"]["fields"]
+    assert edge.DECODERS["awards"]["fields"]["is_active"]["type"] == "bool"
+    # emitted as properties (so the boot contract covers the new columns) + an "active" synonym
+    assert {"is_active", "pop_end"} <= set(cat.DECODERS["awards"].properties)
+    assert cat.DECODERS["awards"].synonyms["active"]["field"] == "is_active"
+    assert edge.DECODERS["awards"]["synonyms"]["active"]["field"] == "is_active"
+
+
 # ── dataset routing (the AUTO surface) ────────────────────────────────────────
 def test_router_tool_dataset_enum_and_union_fields():
     tool = edge.build_router_tool()
