@@ -8,22 +8,6 @@
       "plain": "styles/plain.css",
       "branded": "styles/branded.css"
     },
-    "plain": true,
-    "token_bearing": true,
-    "merge_tokens": [
-      "effective_date",
-      "participant_name",
-      "integration_fee_amount",
-      "success_fee_percentage",
-      "payment_window_days",
-      "participant_signer_name",
-      "participant_title"
-    ],
-    "signing_anchors": [
-      "[[PROVIDER_SIGNATURE]]",
-      "[[PROVIDER_DATE]]",
-      "[[PARTICIPANT_SIGNATURE]]",
-      "[[PARTICIPANT_DATE]]"
-    ]
+    "plain": true
   }
 }

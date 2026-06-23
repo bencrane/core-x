@@ -2,9 +2,10 @@
 
 Render-ready HTML for the Rare Structure Strategic Origination Agreement — the capital/lending
 origination variant (capital providers, lenders, financing events). DocRaptor renders this file
-directly to a PDF, and that PDF is the source document for a Documenso **template**. The wordmark,
-full legal body, and the execution/signature block are **held inline**: the document is complete as
-written, not assembled by appending a signature block at render time.
+directly to a PDF, and that PDF is the source document for a Documenso **template** — the signature,
+date, and value fields are affixed onto it in the Documenso editor. The wordmark, full legal body,
+and the execution/signature block are **held inline**: the document is complete as written, not
+assembled by appending a signature block at render time.
 
 This is the Rare Structure sibling of `content/active-operators/.../term-only/v1`. Pure Rare
 Structure — **no `doing business as Active Operators` d/b/a**, and **no Master Terms incorporation**.
@@ -17,7 +18,7 @@ global_engagement_content/
   styles/
     plain.css                                 # white page / black text          (sent today)
     branded.css                               # dark Rare Structure identity      (alternate)
-  manifest.json                               # per-document metadata, style flag, tokens, anchors
+  manifest.json                               # per-document metadata + the style flag
 ```
 
 ## Two style options, one body
@@ -33,35 +34,32 @@ so the legal content has a single source of truth and never drifts between style
 
 Send **plain** right now (`"plain": true`). Flip the flag to switch — no change to the body.
 
-## Token-bearing (differs from the active-operators sibling)
+## Fields
 
-The active-operators sibling is a static body with blank slots — every field is dropped on in the
-Documenso editor. **This document is token-bearing**, matching the `render_ao_preview` /
-`template_render` convention:
+The HTML is a **static PDF body** — **no merge tokens, no `[[anchors]]`**. Every dynamic value is
+reserved space that a field is dropped onto in the Documenso template editor; nothing is filled into
+the HTML before render.
 
-- **`{{merge_tokens}}`** are substituted at use-time (before/at template instantiation):
-  - `{{effective_date}}` — opening clause
-  - `{{participant_name}}` — opening clause + Participant signature block entity
-  - `{{integration_fee_amount}}` — §3.1 Systems Integration Fee
-  - `{{success_fee_percentage}}` — §3.2 Success Fee (% of funded amount)
-  - `{{payment_window_days}}` — §3.2 payment window
-  - `{{participant_signer_name}}` — Participant **By:**
-  - `{{participant_title}}` — Participant **Title:**
-- **`[[FINDTEXT_ANCHORS]]`** on the signature/date lines are resolved by Documenso's `findText` at
-  sign-time, then whited out: `[[PROVIDER_SIGNATURE]]`, `[[PROVIDER_DATE]]`,
-  `[[PARTICIPANT_SIGNATURE]]`, `[[PARTICIPANT_DATE]]`. They are **real selectable text** — never set
-  `display:none`, zero-size, or a script font, or the PDF text layer loses them.
-
-The `{{...}}` merge grammar and the `[[...]]` anchor grammar are deliberately distinct, so token
-substitution never touches the anchors and they survive verbatim into the PDF.
+- **Inline blanks** — fixed-width underscore runs placed in the prose so a dropped field sits clear
+  of the surrounding text:
+  - Effective Date — opening clause (`as of ____`)
+  - Participant name — opening clause (`by and between … and ____`)
+  - Systems Integration Fee — §3.1 (`$____`)
+  - Success Fee percentage — §3.2 (`____%`)
+  - Success Fee payment window — §3.2 (`within ____ days`)
+- **Signature block** — the Participant column is empty rows ready for fields: entity, signature
+  line, **By:**, **Title:**, **Date:**. The Provider column is pre-set (Rare Structure LLC /
+  Benjamin J. Crane / Managing Director) with an empty signature line and **Date:**.
 
 ## capital_origination
 
 The capital-origination archetype's financial architecture:
 
 - **§3.1 Systems Integration & Enrichment Fee** — one-time, non-refundable, due on execution.
-- **§3.2 Marketing Referral & Success Fee** — percentage of the total funded amount / max facility
-  limit of each Financing Event (credit facility, equipment loan, factoring, capital deployment).
+- **§3.2 Marketing Referral & Success Fee** — percentage of the total approved facility limit / total
+  committed capital of each Financing Event (credit facility, equipment loan, factoring, capital
+  deployment); calculated on the maximum approved credit limit at closing regardless of drawdown;
+  absolute and non-refundable once remitted (no clawback / offset / refund).
 - **§3.3 Rolling Client Ownership** — Success Fee applies to all subsequent Financing Events,
   renewals, and line increases with a Provider-introduced entity for **24 months** from introduction.
 - **§5.2 Survival & Tail Protection** — Success-Fee obligations survive termination for the 24-month

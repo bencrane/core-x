@@ -7,10 +7,9 @@
   with ONE of two options (manifest.json -> "plain"):
       plain   -> styles/plain.css     white page / black text (Documenso layers its own branding) [CURRENT]
       branded -> styles/branded.css   dark Rare Structure identity
-  TOKEN-BEARING (unlike the active-operators sibling, which uses blank slots): the {{merge_tokens}}
-  are substituted at use-time and the [[FINDTEXT_ANCHORS]] on the signature/date lines are resolved
-  by Documenso's findText at sign-time (then whited out). Anchors are REAL selectable text — never
-  hide them (no display:none / zero-size / script font) or the PDF text layer loses them.
+  No merge tokens: this is the STATIC PDF body. Dynamic values are reserved blank space (inline
+  underscore runs) or cleared signature-block rows — every field is affixed in the Documenso editor,
+  not rendered here.
   CAPITAL ORIGINATION: one-time Systems Integration Fee (3.1) + percentage Success Fee on Financing
   Events (3.2) + 24-month Rolling Client Ownership (3.3) + Tail Protection (5.2). No d/b/a — pure
   Rare Structure. No Master Terms incorporation.
@@ -27,8 +26,8 @@
   <hr class="rule" />
 
   <p class="lead">This Strategic Origination Agreement (the "Agreement") is entered into as of
-  {{effective_date}} (the "Effective Date"), by and between Rare Structure LLC (the "Provider"), and
-  {{participant_name}} (the "Participant").</p>
+  ________________ (the "Effective Date"), by and between Rare Structure LLC (the "Provider"), and
+  __________________________ (the "Participant").</p>
 
   <h2>1. Purpose &amp; Scope of Mandate</h2>
   <p><strong>1.1 System Architecture.</strong> Provider has created, operates, and deploys
@@ -89,22 +88,21 @@
   <p>As consideration for the infrastructure deployment and strategic routing resources provided under
   this Agreement, Participant shall remit payments according to the following structures.</p>
   <p><strong>3.1 Systems Integration &amp; Enrichment Fee.</strong> Participant shall pay a one-time,
-  non-refundable Systems Integration Fee of {{integration_fee_amount}}, due in full upon execution of
-  this Agreement. Participant acknowledges this is a singular infrastructure allocation and data
-  enrichment fee, not a recurring fee-for-service, and Provider assumes no ongoing operational
-  obligation to execute bespoke or dedicated labor on Participant's behalf.</p>
+  non-refundable Systems Integration Fee of ______________, due in full upon execution of this
+  Agreement. Participant acknowledges this is a singular infrastructure allocation and data enrichment
+  fee, not a recurring fee-for-service, and Provider assumes no ongoing operational obligation to
+  execute bespoke or dedicated labor on Participant's behalf.</p>
   <p><strong>3.2 Marketing Referral &amp; Success Fee.</strong> Upon the successful closing and
   initial funding of any credit facility, equipment loan, factoring arrangement, or other capital
   deployment (a "Financing Event") between Participant and an entity routed by Provider, Participant
-  shall pay Provider a Success Fee equal to {{success_fee_percentage}}% of the total approved facility
-  limit or total committed capital of such Financing Event. For the avoidance of doubt, the Success Fee
-  is calculated and owed based on the maximum approved credit limit established at closing, regardless
-  of whether the capital is drawn down or disbursed in scheduled tranches over time. This fee is
-  payable within {{payment_window_days}} days following the execution and initial funding of the
-  Financing Event. Once earned and remitted, the Success Fee is absolute and non-refundable. Provider
-  assumes no liability for the subsequent performance, default, early payoff, or termination of the
-  Financing Event, and under no circumstances shall Participant be entitled to any clawback, offset, or
-  refund of the Success Fee.</p>
+  shall pay Provider a Success Fee equal to _____% of the total approved facility limit or total
+  committed capital of such Financing Event. For the avoidance of doubt, the Success Fee is calculated
+  and owed based on the maximum approved credit limit established at closing, regardless of whether the
+  capital is drawn down or disbursed in scheduled tranches over time. This fee is payable within
+  _______ days following the execution and initial funding of the Financing Event. Once earned and
+  remitted, the Success Fee is absolute and non-refundable. Provider assumes no liability for the
+  subsequent performance, default, early payoff, or termination of the Financing Event, and under no
+  circumstances shall Participant be entitled to any clawback, offset, or refund of the Success Fee.</p>
   <p><strong>3.3 Rolling Client Ownership.</strong> Participant explicitly agrees that Provider's
   Success Fee shall apply not only to the initial Financing Event, but to any and all subsequent
   Financing Events, renewals, line increases, or additional capital deployments executed between
@@ -185,27 +183,26 @@
   agreement between the parties and supersedes all prior agreements, understandings, and negotiations.
   It may be amended only by a written agreement signed by both parties.</p>
 
-  <!-- Execution block — HELD INLINE (not appended at render). Token-bearing: the Participant entity,
-       signer name, and title are {{merge_tokens}}; the signature + date lines carry the
-       [[...]] findText anchors Documenso resolves and whites out at sign-time. Provider entity/By/Title
-       are pre-set (Rare Structure LLC / Benjamin J. Crane / Managing Director). -->
+  <!-- Execution block — HELD INLINE (not appended at render). No tokens: the Participant entity,
+       signatures, dates, By:, and Title: are affixed as fields in the Documenso editor. Provider
+       entity/By/Title are pre-set (Rare Structure LLC / Benjamin J. Crane / Managing Director). -->
   <div class="sig-wrap">
     <table class="sig-grid"><tr>
       <td>
         <div class="sig-party">Provider</div>
         <div class="sig-entity">Rare Structure LLC</div>
-        <div class="sig-line"><span class="sig-anchor">[[PROVIDER_SIGNATURE]]</span></div>
+        <div class="sig-line"></div>
         <div class="sig-field"><span class="lab">By:</span> <span class="val">Benjamin J. Crane</span></div>
         <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
-        <div class="sig-field"><span class="lab">Date:</span> <span class="sig-anchor">[[PROVIDER_DATE]]</span></div>
+        <div class="sig-field"><span class="lab">Date:</span></div>
       </td>
       <td>
         <div class="sig-party">Participant</div>
-        <div class="sig-entity">{{participant_name}}</div>
-        <div class="sig-line"><span class="sig-anchor">[[PARTICIPANT_SIGNATURE]]</span></div>
-        <div class="sig-field"><span class="lab">By:</span> <span class="val">{{participant_signer_name}}</span></div>
-        <div class="sig-field"><span class="lab">Title:</span> <span class="val">{{participant_title}}</span></div>
-        <div class="sig-field"><span class="lab">Date:</span> <span class="sig-anchor">[[PARTICIPANT_DATE]]</span></div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">By:</span></div>
+        <div class="sig-field"><span class="lab">Title:</span></div>
+        <div class="sig-field"><span class="lab">Date:</span></div>
       </td>
     </tr></table>
   </div>

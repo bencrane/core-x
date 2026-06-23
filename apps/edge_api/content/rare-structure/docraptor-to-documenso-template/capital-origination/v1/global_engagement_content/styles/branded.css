@@ -45,6 +45,3 @@ p { margin: 0 0 8pt; text-align: justify; }
 .sig-field { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 10pt; color: #e4e4e7; margin: 0 0 2pt; }
 .sig-field .lab { display: inline-block; width: 44pt; color: #82828c; }
 .sig-field .val { color: #e4e4e7; }
-/* findText anchor — REAL selectable text, whited out by Documenso at sign-time. Never hide it
-   (no display:none / zero-size / script font) or the PDF text layer loses it. */
-.sig-anchor { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; letter-spacing: 0.06em; color: #5b6373; }
