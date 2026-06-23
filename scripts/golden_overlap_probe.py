@@ -43,6 +43,11 @@ PSC_NAME = {
     "P400": "Demolition of Buildings",
     "F108": "Environmental Remediation",
     "F014": "Tree Thinning",
+    # Building-codes expansion (Gap B, #633)
+    "Z1AA": "Maintenance of Office Buildings",
+    "Y1AA": "Construction of Office Buildings",
+    "Y1JZ": "Construction of Miscellaneous Buildings",
+    "Z2JZ": "Repair/Alteration of Miscellaneous Buildings",
 }
 MAPPED15 = set(PSC_NAME)
 

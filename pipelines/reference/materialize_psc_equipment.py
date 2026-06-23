@@ -134,6 +134,31 @@ SEED_DATA: list[dict] = [
         "work_description_plain_english": "clearing paths for power lines, border perimeters, or large-scale wildfire mitigation",
         "required_equipment": ["Forestry Mulchers", "Heavy Bulldozers", "Track Loaders"],
     },
+    # ── Building-codes expansion (Gap B, golden-overlap recon #633) — the top uncovered demand ──
+    {
+        "psc_code": "Z1AA",
+        "psc_name": "Maintenance of Office Buildings",
+        "work_description_plain_english": "preventative upkeep of office-building envelopes and core mechanical/HVAC/electrical systems",
+        "required_equipment": ["Scissor Lifts", "Boom Lifts", "Telehandlers", "Towable Generators", "Temporary Chiller Units", "Light Towers"],
+    },
+    {
+        "psc_code": "Y1AA",
+        "psc_name": "Construction of Office Buildings",
+        "work_description_plain_english": "ground-up vertical construction of office buildings, from foundation excavation through structural steel and envelope",
+        "required_equipment": ["Excavators", "Rough-Terrain Cranes", "Crawler Cranes", "High-Reach Telehandlers", "Boom Lifts", "Wheel Loaders", "Skid Steers"],
+    },
+    {
+        "psc_code": "Y1JZ",
+        "psc_name": "Construction of Miscellaneous Buildings",
+        "work_description_plain_english": "ground-up construction of warehouses, garages, and miscellaneous light-commercial structures",
+        "required_equipment": ["Excavators", "Rough-Terrain Cranes", "Telehandlers", "Wheel Loaders", "Skid Steers", "Boom Lifts", "Scissor Lifts"],
+    },
+    {
+        "psc_code": "Z2JZ",
+        "psc_name": "Repair or Alteration of Miscellaneous Buildings",
+        "work_description_plain_english": "renovation and tenant-improvement of warehouses and miscellaneous commercial structures",
+        "required_equipment": ["Scissor Lifts", "Boom Lifts", "Telehandlers", "Skid Steers", "Portable Generators", "Light Towers"],
+    },
 ]
 
 

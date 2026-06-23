@@ -18,6 +18,11 @@ construction PSC codes** each yard can credibly serve. For every yard it records
   rate **0.06%** (7 strings out of ~11k dropped).
 - Shipped in PR [#629](https://github.com/bencrane/core-x/pull/629) (merged, commit `f006f62`).
 
+> **Update 2026-06-23:** the PSC dictionary was expanded **15 → 19 codes** (added Z1AA, Y1AA, Y1JZ, Z2JZ —
+> office + misc-building work) and the engine re-run. Current state: **1,467 matched** domains;
+> `matched_psc_count` now ranges 0–19. Mechanics below are unchanged — only the dictionary grew. See
+> `docs/reference/GOVCON_EQUIPMENT_RENTAL_GOLDEN_OVERLAP.md §8` for the uplift.
+
 **Is it good?** The bouncer makes sharp, defensible calls (see §5–6). The one judgment knob you
 might disagree with is **how inclusive a "match" is** — the agents follow the literal rule
 ("yard stocks ≥1 signature machine for the PSC"), which is broader than a hand-tuned analyst would

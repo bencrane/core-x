@@ -56,6 +56,8 @@ MAX_BYTES_PER_FILE = 90 * 1024**3
 VALID_PSC = {
     "Z2AA", "Y1DA", "Z1DA", "Z2DA", "Y1LB", "Z1LB", "Y1PC", "Y1NE",
     "Y1KD", "Y1PZ", "Z2KA", "Z1KF", "P400", "F108", "F014",
+    # Building-codes expansion (Gap B, #633)
+    "Z1AA", "Y1AA", "Y1JZ", "Z2JZ",
 }
 
 INDEXES: dict[str, list[str]] = {
