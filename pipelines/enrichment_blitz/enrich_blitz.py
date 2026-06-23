@@ -542,7 +542,7 @@ def run_resolve_domains(cohort: Any, priority: str = "low", batch_label: str | N
                 trigger_callback_url)
 
 
-@app.function(secrets=SECRETS, timeout=60 * 60, memory=2048, cpu=1.0)
+@app.function(secrets=SECRETS, timeout=60 * 60 * 2, memory=2048, cpu=1.0)
 def run_enrich_linkedin(cohort: Any, priority: str = "high", batch_label: str | None = None,
                         run_id: str | None = None, firmo_ttl_days: int = DEFAULT_FIRMO_TTL_DAYS,
                         neg_ttl_days: int = DEFAULT_NEG_TTL_DAYS,
