@@ -162,10 +162,10 @@ def _assemble(so: dict) -> dict[str, Any]:
     conn = _open_conn(_hqx_dsn())
     try:
         cur = conn.cursor()
-        cur.execute(f"SELECT count(DISTINCT domain_norm) FROM hqx.{SOURCE_TABLE} "
+        cur.execute(f"SELECT count(DISTINCT domain_norm) FROM {SOURCE_TABLE} "
                     "WHERE domain_norm IS NOT NULL")
         firms_total = cur.fetchone()[0]
-        cur.execute(f"SELECT DISTINCT domain_norm FROM hqx.{SOURCE_TABLE} "
+        cur.execute(f"SELECT DISTINCT domain_norm FROM {SOURCE_TABLE} "
                     "WHERE domain_norm IS NOT NULL "
                     "ORDER BY domain_norm")
         domains = [r[0] for r in cur.fetchall()]
