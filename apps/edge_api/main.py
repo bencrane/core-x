@@ -175,10 +175,10 @@ app.include_router(clay_find_companies_router)
 # append as history. Distinct from clay-find-companies (the discovery grain). Service-token gated.
 app.include_router(clay_enrich_companies_router)
 
-# contacts: curated GTM contact intake — flat singular fields (full_name, work_email, job_title,
-# is_main_contact, city/state/country, company_name/domain/linkedin_url) → gtm.contacts. Append-only
-# history keyed on identity+mutable fields; bridges via domain_norm AND company_linkedin_url_norm.
-# work_email is the person identity key. Service-token gated.
+# contacts: curated GTM contact intake — flat singular fields (full_name, work_email[optional],
+# job_title, is_main_contact, city/state/country, company_name/domain/linkedin_url) → gtm.contacts.
+# Append-only history keyed on person-discriminant+mutable fields; bridges via domain_norm AND
+# company_linkedin_url_norm. Identity degrades email→name when work_email is absent. Service-token gated.
 app.include_router(contacts_router)
 
 # equipment-catalog: raw, append-only landing of company-offerings research payloads into
