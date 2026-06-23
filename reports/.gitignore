@@ -1,0 +1,3 @@
+# regenerable matchmaking scratch (shard inputs + raw per-shard agent outputs)
+mm_shards/
+mm_out/
