@@ -59,5 +59,6 @@ CREATE INDEX IF NOT EXISTS ao_engagement_mandates_created_idx ON business.ao_eng
 -- only fires on a fresh DB).
 ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS documenso_envelope_id     text;
 ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS documenso_document_id     integer;
+ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS documenso_status          text;
 ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS participant_signing_token text;
 ALTER TABLE business.ao_engagement_mandates ADD COLUMN IF NOT EXISTS provider_signing_token    text;

@@ -57,6 +57,7 @@ from .src.routers.proposal_templates_v1 import router as proposal_templates_rout
 from .src.routers.proposals_v1 import router as proposals_router
 from .src.routers.payments_v1 import router as payments_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
+from .src.routers.webhooks_documenso_v1 import router as webhooks_documenso_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.service_token import require_service_token
 
@@ -227,6 +228,10 @@ app.include_router(payments_router)
 # Signature-gated (Stripe-Signature / STRIPE_WEBHOOK_SECRET). NOT under /api/v1 — Stripe posts /webhooks/stripe.
 app.include_router(webhooks_stripe_router)
 
+# documenso webhook: document status lifecycle for engagement mandates (business.ao_engagement_mandates).
+# Signature-gated (X-Documenso-Secret / DOCUMENSO_WEBHOOK_SECRET). NOT under /api/v1 — Documenso posts /webhooks/documenso.
+app.include_router(webhooks_documenso_router)
+
 
 def _info() -> dict:
     return {
@@ -246,6 +251,7 @@ def _info() -> dict:
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "payments": True,          # /api/v1/proposals/{ref}/{payment-intent,payment} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
+            "documenso_webhook": True, # /webhooks/documenso (document status lifecycle → engagement_mandates)
         },
     }
 

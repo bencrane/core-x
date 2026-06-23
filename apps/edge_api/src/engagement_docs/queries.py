@@ -133,3 +133,30 @@ async def get_by_opportunity(conn, opportunity_id: str) -> dict[str, Any] | None
             (opportunity_id,),
         )
         return await cur.fetchone()
+
+
+async def update_documenso_status_by_envelope(
+    conn,
+    *,
+    envelope_id: str,
+    documenso_status: str,
+) -> dict[str, Any] | None:
+    """UPDATE the documenso_status by envelope_id (webhook-driven). Does NOT commit."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            UPDATE business.ao_engagement_mandates SET
+                documenso_status = %(documenso_status)s,
+                updated_at       = now()
+            WHERE documenso_envelope_id = %(envelope_id)s
+            RETURNING id, opportunity_id::text AS opportunity_id, package_key, term_fee_cents,
+                      duration_months, document_slug, style, status, pdf_r2_key, pdf_bytes,
+                      trigger_run_id, error, documenso_envelope_id, documenso_document_id,
+                      participant_signing_token, provider_signing_token, documenso_status, created_at, updated_at
+            """,
+            {
+                "envelope_id": envelope_id,
+                "documenso_status": documenso_status,
+            },
+        )
+        return await cur.fetchone()
