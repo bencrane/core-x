@@ -197,7 +197,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v2",
+        "version": "awards.v3",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
@@ -215,9 +215,12 @@ DECODERS: dict[str, dict] = {
             "set_aside":         {"type": "string", "ops": ("=", "in"), "enum": _SET_ASIDE_CODES,
                                   "desc": "set-aside code: 8A/8AN = 8(a); SDVOSBC/SDVOSBS = service-disabled-veteran-owned; WOSB/WOSBSS/EDWOSB/EDWOSBSS = woman-owned; HZC/HZS = HUBZone; SBA/SBP = small-business; 'NONE' = explicitly no set-aside. Partial coverage: many actions carry no signal"},
             "winner_type":       {"type": "string", "ops": ("=", "in"), "enum": ("prime_recipient", "subawardee")},
+            "is_active":         {"type": "bool", "ops": ("=",), "desc": "true = the contract is currently within its period of performance (active). Prime actions only — subawards carry no PoP and are excluded. 'active contracts' / 'currently active' → is_active = true"},
         },
         "synonyms": {
             "construction":   {"field": "naics2", "op": "=", "value": "23"},
+            "active":         {"field": "is_active", "op": "=", "value": True},
+            "active contracts": {"field": "is_active", "op": "=", "value": True},
             "this week":      {"field": "days_since_action", "op": "<=", "value": 7},
             "this month":     {"field": "days_since_action", "op": "<=", "value": 30},
             "won recently":   {"field": "days_since_action", "op": "<=", "value": 30},

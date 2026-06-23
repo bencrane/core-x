@@ -39,6 +39,12 @@ def test_company_bool_literal_is_unquoted():
     assert pred == "has_federal_awards = true"
 
 
+def test_awards_is_active_compiles_unquoted_bool():
+    # The active/PoP filter compiles to the unquoted Arrow boolean on the awards table.
+    pred = _compile(AWARDS, [{"field": "is_active", "op": "=", "value": True}])
+    assert pred == "is_active = true"
+
+
 def test_in_clause():
     pred = _compile(WINNERS, [{"field": "naics2", "op": "in", "value": ["23", "11"]}])
     assert pred == "naics2 IN ('23', '11')"
