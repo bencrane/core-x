@@ -31,6 +31,7 @@ from datetime import date
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.gzip import GZipMiddleware
 
 from .src import config, dossier, lance_store
 from .src.map_decoders import DECODERS
@@ -133,6 +134,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="catalyst_api", version="1.0.0", lifespan=lifespan)
+# Gzip responses >1 KB. The map GeoJSON FeatureCollection is highly repetitive JSON
+# (~85-90% smaller gzipped); edge_api's httpx client auto-decodes. Internal hop, but free.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────

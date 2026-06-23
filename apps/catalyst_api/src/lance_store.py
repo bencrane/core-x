@@ -142,6 +142,70 @@ def _warm_handle(uri: str, ds) -> None:
         log.warning("handle warm failed for %s: %s", uri, exc)
 
 
+# ── Map FILTER-index warming (the hot map-query path) ────────────────────────
+# The point-lookup warm above pages a handle's key BTREE; map QUERIES instead hit the scalar
+# FILTER indices (naics2/state/is_active BITMAP, action_date/award_amount BTREE). Those pages
+# must be resident too, or the first map filter query after a deploy/refresh pays a cold-index
+# cost. The warm set is DERIVED from the decoders (single source of truth) so it never drifts
+# from the live allowlist, warmed in the BACKGROUND at boot (never blocks) and re-warmed on
+# every SWR refresh.
+def _warm_probe_predicate(col: str, type_: str) -> "str | None":
+    """A no-match predicate that pages COL's scalar index without materializing rows. Returns
+    None for bool — there is no no-match bool value, so the caller pages the BITMAP with a cheap
+    count_rows(col = true) instead."""
+    if type_ == "string":
+        return f"{col} = '__warm__'"
+    if type_ == "int":
+        return f"{col} = -987654321"
+    if type_ == "float":
+        return f"{col} = -987654321.0"
+    if type_ == "days_ago":            # underlying DATE column; literal coerces date32 + ISO-string
+        return f"{col} = DATE '2999-12-31'"
+    return None                        # bool (and anything unexpected) → count_rows path
+
+
+def _map_filter_probes() -> "dict[str, list[tuple[str, str]]]":
+    """{map dataset URI -> [(column, type)]} for every scalar-indexed FILTER column, derived
+    from the map decoders (list/array_has columns carry no scalar index and are excluded)."""
+    from . import map_decoders   # local import — avoid import-time coupling (mirrors
+    out: "dict[str, list[tuple[str, str]]]" = {}   # the local import in check_decoder_contracts)
+    for dec in map_decoders.DECODERS.values():
+        uri = config.MAP_DATASET_URIS.get(dec.dataset_key)
+        if uri is None:
+            continue
+        seen: set[str] = set()
+        probes: list[tuple[str, str]] = []
+        for spec in dec.fields.values():
+            if spec.index in ("BTREE", "BITMAP") and spec.type != "list" and spec.column not in seen:
+                probes.append((spec.column, spec.type))
+                seen.add(spec.column)
+        out[uri] = probes
+    return out
+
+
+def _warm_map_filters(uri: str, ds) -> None:
+    """Page every scalar FILTER index for a map handle into residency. Per-column try/except —
+    one bad column never aborts the rest (warming must never break serving)."""
+    for col, type_ in _map_filter_probes().get(uri, ()):
+        try:
+            pred = _warm_probe_predicate(col, type_)
+            if pred is None:                              # bool → page the BITMAP via a count
+                ds.count_rows(filter=f"{col} = true")
+            else:
+                ds.scanner(columns=[col], filter=pred).to_table()
+        except Exception as exc:  # noqa: BLE001 — warming must never break serving
+            log.warning("map filter warm failed for %s.%s: %s", uri, col, exc)
+
+
+def _warm_map_filters_open(uri: str) -> None:
+    """Background boot warm: open (or reuse the cached) map handle and page its filter indices,
+    so the handle converges to warm shortly after boot without ever blocking it."""
+    try:
+        _warm_map_filters(uri, _dataset(uri))
+    except Exception as exc:  # noqa: BLE001 — background warm is best-effort
+        log.warning("background map filter warm failed for %s: %s", uri, exc)
+
+
 def _refresh_handle(uri: str) -> None:
     """Single-flight background refresh: open a fresh handle, warm its key index,
     THEN swap it into the cache — readers keep the stale-but-warm handle until the
@@ -149,6 +213,7 @@ def _refresh_handle(uri: str) -> None:
     try:
         ds = _open_uri(uri)
         _warm_handle(uri, ds)
+        _warm_map_filters(uri, ds)         # keep map filter indices warm across SWR refreshes
         with _handle_lock:
             _handle_cache[uri] = (_now() + _HANDLE_TTL_S, ds)
         log.info("refreshed lance handle %s (version %s)", uri, getattr(ds, "version", "?"))
@@ -199,6 +264,14 @@ def prewarm_dossier_surfaces() -> dict[str, float]:
         except Exception as exc:  # noqa: BLE001
             log.warning("prewarm failed for %s: %s", uri, exc)
         timings[uri.rstrip("/").rsplit("/", 1)[-1]] = round(_now() - t0, 3)
+    # Map FILTER indices (~30 probes across 3 datasets) warm in the BACKGROUND — never on the
+    # boot thread, so they can't extend boot or trip a deploy health check. They converge to warm
+    # within seconds; the SWR refresh keeps them warm thereafter.
+    for uri in config.MAP_DATASET_URIS.values():
+        try:
+            _REFRESH_POOL.submit(_warm_map_filters_open, uri)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("background map filter prewarm submit failed for %s: %s", uri, exc)
     return timings
 
 

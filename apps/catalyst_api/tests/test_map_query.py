@@ -13,7 +13,7 @@ from datetime import date
 
 import pytest
 
-from apps.catalyst_api.src import lance_store
+from apps.catalyst_api.src import config, lance_store
 from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, DECODERS, WINNERS, OPS
 
 # Frozen anchor for days_ago clauses — injected so the expected DATE literals are stable.
@@ -43,6 +43,39 @@ def test_awards_is_active_compiles_unquoted_bool():
     # The active/PoP filter compiles to the unquoted Arrow boolean on the awards table.
     pred = _compile(AWARDS, [{"field": "is_active", "op": "=", "value": True}])
     assert pred == "is_active = true"
+
+
+# ── handle-warm probes (map filter-index prewarm) ────────────────────────────
+def test_warm_probe_predicate_by_type():
+    # Type-aware no-match predicates page each scalar index without materializing rows.
+    assert lance_store._warm_probe_predicate("naics2", "string") == "naics2 = '__warm__'"
+    assert lance_store._warm_probe_predicate("award_count", "int") == "award_count = -987654321"
+    assert lance_store._warm_probe_predicate("award_amount", "float") == "award_amount = -987654321.0"
+    assert lance_store._warm_probe_predicate("action_date", "days_ago") == "action_date = DATE '2999-12-31'"
+    # bool has no no-match value → None signals the caller to page the BITMAP via count_rows.
+    assert lance_store._warm_probe_predicate("is_active", "bool") is None
+
+
+def test_map_filter_probes_cover_every_indexed_scalar_column():
+    probes = lance_store._map_filter_probes()
+    # all three map datasets present, keyed by serving URI
+    for ds in ("awards", "winners", "company"):
+        assert config.MAP_DATASET_URIS[ds] in probes
+    awards = dict(probes[config.MAP_DATASET_URIS["awards"]])
+    # the operator's hot filter columns are warmed, with correct types
+    assert awards.get("is_active") == "bool"
+    assert awards.get("naics2") == "string"
+    assert awards.get("action_date") == "days_ago"
+    assert awards.get("award_amount") == "float"
+    # list/array_has columns (no scalar index) are never warmed
+    for cols in probes.values():
+        assert all(t != "list" for _, t in cols)
+    # parity with the decoder: every BTREE/BITMAP non-list field is in the warm set
+    for dec in DECODERS.values():
+        expected = {s.column for s in dec.fields.values()
+                    if s.index in ("BTREE", "BITMAP") and s.type != "list"}
+        got = {c for c, _ in probes[config.MAP_DATASET_URIS[dec.dataset_key]]}
+        assert expected <= got, f"{dec.dataset_key}: unwarmed indexed columns {expected - got}"
 
 
 def test_in_clause():
