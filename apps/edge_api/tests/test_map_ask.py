@@ -97,12 +97,26 @@ def test_render_prompt_mentions_fields_and_synonyms_but_no_columns():
     assert "latest_award_action_date" not in p
 
 
-def test_awards_prompt_carries_geo_disambiguation_and_window_note():
+def test_awards_prompt_carries_geo_disambiguation_and_no_window_clamp():
     p = edge.render_decoder_prompt("awards")
     assert "award_amount" in p and "days_since_action" in p
     assert "pop_state" in p and "WORK IS PERFORMED" in p
-    # The per-dataset notes (geo disambiguation + 90d window honesty) must render.
-    assert "Geo disambiguation" in p and "last 90 days" in p
+    # The geo-disambiguation note must render; the stale ~90-day window claim must NOT —
+    # the serving tables span full history, so a long window is applied, never flagged unmapped.
+    assert "Geo disambiguation" in p
+    assert "90 days" not in p
+
+
+def test_no_stale_90day_window_claim_in_any_prompt():
+    # The serving tables span full history now — no prompt may tell the model the data is
+    # ~90-day-bounded or instruct it to push a longer window to unmapped (that produced the
+    # misleading "window limited to last 90 days" NOT-APPLIED chip on e.g. "last 180 days").
+    prompts = [edge.render_decoder_prompt(ds) for ds in edge.DECODERS]
+    prompts.append(edge.render_router_prompt())
+    for p in prompts:
+        assert "90 days" not in p, "stale 90-day window claim still in a prompt"
+        assert "window limited" not in p
+        assert "rolling window" not in p
 
 
 # ── dataset routing (the AUTO surface) ────────────────────────────────────────

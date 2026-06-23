@@ -94,8 +94,8 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v6",
-        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward in the rolling window. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
+        "version": "winners.v7",
+        "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
@@ -197,12 +197,12 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v1",
-        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action from roughly the last 90 days. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
+        "version": "awards.v2",
+        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
             "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
-                                  "desc": "whole days since the award action (integer; 0 = today). 'won in the last N days' / 'this week' → days_since_action <= N. Data covers roughly the last 90 days"},
+                                  "desc": "whole days since the award action (integer; 0 = today). 'won in the last N days' / 'this week' → days_since_action <= N"},
             "naics2":            {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "naics_code":        {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
             "state":             {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ/registration state, 2-letter — use for 'companies in <state>'"},
@@ -237,9 +237,6 @@ DECODERS: dict[str, dict] = {
             "Geo disambiguation: 'companies/winners in <place>' → state/city/county (the"
             " winner's HQ). 'performing work in / projects in / work located in <place>' →"
             " pop_state/pop_city.",
-            "The data window is roughly the last 90 days. For a longer asked window, still"
-            " emit the days_since_action filter but ALSO add a phrase like 'window limited"
-            " to last 90 days' to unmapped.",
         ),
     },
 }
@@ -343,7 +340,7 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v1"
+ROUTER_VERSION = "router.v2"
 
 # Routing cues rendered into the router system block, per dataset.
 _ROUTING_CUES = {
@@ -353,8 +350,8 @@ _ROUTING_CUES = {
     "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",
-    "winners": "PER-WINNER ROLLUPS of the last 90 days: 'entities whose total won in the"
-               " window exceeds $X', aggregate award_count over the window. ALSO the SUBAWARDEE"
+    "winners": "PER-WINNER ROLLUPS: 'entities whose total won exceeds $X', aggregate"
+               " award_count. ALSO the SUBAWARDEE"
                " TEAMING axis: 'subs that have teamed with <prime>', '$X+ teaming', 'subs that"
                " teamed with N+ primes'. ALSO the SUBAWARDEE SELF-REPORTED axis: 'subs that"
                " self-report <capability>', 'subs with an ISO 9001 / CMMC / AS9100 certification'.",
