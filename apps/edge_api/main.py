@@ -34,7 +34,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
-from starlette.middleware.gzip import GZipMiddleware
 
 from .src import config
 from .src.db import close_pool, init_pool
@@ -50,6 +49,7 @@ from .src.routers.engagement_mappings_v1 import router as engagement_mappings_ro
 from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
+from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_enrich_companies_v1 import router as clay_enrich_companies_router
@@ -148,9 +148,6 @@ async def lifespan(app_: FastAPI):
 
 
 app = FastAPI(title="edge_api", version="0.4.0", lifespan=lifespan)
-# Gzip responses >1 KB — the map /ask GeoJSON envelope is large, repetitive JSON; the BFF's
-# fetch auto-decodes. Compresses the edge_api → BFF hop.
-app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Mount the MCP servers. Managed agents authenticate via
 # Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
@@ -263,10 +260,17 @@ app.include_router(operator_settings_router)
 app.include_router(documenso_template_fields_router)
 
 # engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
-# engagement-doc pathway. Lists selectable (path, archetype, version) from the repo-resident content
-# tree and renders one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned URL.
-# Does NOT touch Documenso (the operator affixes fields in the editor by hand). Service-token gated.
+# engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident
+# content tree and renders one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned
+# URL. Does NOT touch Documenso (the operator affixes fields in the editor by hand). Service-token gated.
 app.include_router(engagement_templates_router)
+
+# engagement-templates (internal): the render+PUSH lane. The engagement-template-push Trigger.dev task
+# calls /internal/engagement-templates/render-push to resolve a content source (a
+# business.global_input_content registry row, or an explicit brand/path/archetype/version), render it
+# via DocRaptor, and create the Documenso TEMPLATE — recording a terminal row in
+# ops.engagement_template_push_runs. Trigger-secret gated, same /internal contract as the others.
+app.include_router(internal_engagement_templates_router, prefix="/internal")
 
 # company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
 # (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator

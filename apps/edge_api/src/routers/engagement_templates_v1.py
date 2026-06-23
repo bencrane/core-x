@@ -32,6 +32,7 @@ def list_templates() -> list[TemplateRef]:
     """Selectable templates for the Settings dropdowns (path -> archetype -> version)."""
     return [
         TemplateRef(
+            brand=e.brand,
             path=e.path,
             archetype=e.archetype,
             version=e.version,
@@ -48,7 +49,7 @@ async def render_template(body: RenderRequest) -> RenderResult:
     """Render the selected template to a clean PDF (plain style by default) and return a presigned URL.
     Does NOT create anything in Documenso."""
     try:
-        content_dir = catalog.resolve(body.path, body.archetype, body.version)
+        content_dir = catalog.resolve(body.path, body.archetype, body.version, brand=body.brand)
     except catalog.CatalogError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -60,7 +61,7 @@ async def render_template(body: RenderRequest) -> RenderResult:
     except render.RenderError as e:
         raise HTTPException(status_code=502, detail=f"render: {e}") from e
 
-    name = f"{body.path}-{body.archetype}-{body.version}-{style}.pdf"
+    name = f"{body.brand}-{body.path}-{body.archetype}-{body.version}-{style}.pdf"
     try:
         pdf = await render.render_pdf(html, name=name)
     except render.RenderConfigError as e:
@@ -68,7 +69,7 @@ async def render_template(body: RenderRequest) -> RenderResult:
     except render.RenderError as e:
         raise HTTPException(status_code=502, detail=f"render: {e}") from e
 
-    key = f"{store.PREFIX}{body.path}/{body.archetype}/{body.version}/{style}-{secrets.token_hex(8)}.pdf"
+    key = f"{store.PREFIX}{body.brand}/{body.path}/{body.archetype}/{body.version}/{style}-{secrets.token_hex(8)}.pdf"
     try:
         await store.put_pdf(key, pdf)
         url = await store.presigned_get_url(key, expires_seconds=_PDF_TTL_SECONDS)
@@ -78,12 +79,13 @@ async def render_template(body: RenderRequest) -> RenderResult:
         raise HTTPException(status_code=502, detail=f"store: {e}") from e
 
     logger.info(
-        "engagement-template render ok: %s/%s/%s style=%s bytes=%d",
-        body.path, body.archetype, body.version, style, len(pdf),
+        "engagement-template render ok: %s/%s/%s/%s style=%s bytes=%d",
+        body.brand, body.path, body.archetype, body.version, style, len(pdf),
     )
     return RenderResult(
         pdf_url=url,
         expires_seconds=_PDF_TTL_SECONDS,
+        brand=body.brand,
         path=body.path,
         archetype=body.archetype,
         version=body.version,
