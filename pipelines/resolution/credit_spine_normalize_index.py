@@ -1,11 +1,11 @@
 """Compute worker — Credit Spine Pre-Computation & Indexing (Task E).
 
 A MAINTENANCE worker (not a feed): it materializes the canonical resolution
-blocking keys ``normalized_legal_name`` + ``zip_code`` ON the already-committed
-SBA credit Lance datasets (PPP, 7(a), 504) IN PLACE, then builds a ``BTREE``
-scalar index on each new column. Additive-only — no re-ingest, no wipe, no
-duplication: the borrower name/zip are read, the canonical macros applied, the
-two columns appended via ``LanceDataset.add_columns`` (positional zip in _rowid
+blocking keys ``normalized_legal_name`` + ``zip_code`` + ``legal_name_base`` ON the
+already-committed SBA credit Lance datasets (PPP, 7(a), 504) IN PLACE, then builds a
+``BTREE`` scalar index on each new column. Additive-only — no re-ingest, no wipe, no
+duplication: the borrower name/zip are read, the canonical macros applied, the new
+columns appended via ``LanceDataset.add_columns`` (positional zip in _rowid
 order), and the indices committed straight to R2 with ``create_scalar_index``.
 
 WHY THIS EXISTS (docs/reference/uspto_sba_ppp_mapping_blueprint.md §Finding-2):
@@ -13,8 +13,10 @@ name normalization mutates the string ("Smith & Co., LLC" → "SMITH AND CO LLC"
 the credit spines' *existing raw-name* BTREE (``borr_name`` / nothing on PPP
 borrower) CANNOT serve a normalized-owner equality join. The cross-layer match
 (USPTO owners, SoS entities, the ``crosswalk_*`` Pattern-B outputs) blocks on the
-canonical ``normalized_legal_name`` + ``zip_code`` pair — so each credit spine
-must carry those two columns natively, each with its own ``BTREE``. This worker
+canonical ``normalized_legal_name`` + ``zip_code`` pair AND, for the suffix-tolerant
+recall tier, on ``legal_name_base`` (the superset key crosswalk_sos_sam actually joins:
+equal-normalized ⟹ equal-base) — so each credit spine must carry all three columns
+natively, each with its own ``BTREE``. This worker
 is the credit-spine counterpart to ``federal_spine_index_campaign`` (which only
 indexes EXISTING columns); it ADDS the columns first, then indexes them.
 
@@ -69,7 +71,7 @@ import modal
 # worker's first cut, so a hand-copied rule here produced "JOHNSON JOHNSON" where the SoS
 # spine now produces "JOHNSON AND JOHNSON" — breaking the credit↔SoS block-join for every
 # borrower name containing "&" or a dash. Importing guarantees byte-identity with the spine.
-from core.name_norm import name_norm as _name_norm
+from core.name_norm import legal_name_base as _legal_name_base, name_norm as _name_norm
 
 # ── System-of-record (R2). The three SBA credit datasets under data-sink/active/. ──
 BUCKET = "data-sink"
@@ -95,11 +97,12 @@ DATASETS: dict[str, dict[str, str]] = {
     },
 }
 
-# The two canonical resolution blocking keys this worker materializes + indexes.
+# The three canonical resolution blocking keys this worker materializes + indexes.
 # Names are IDENTICAL to sos_normalized/normalize.py::MASTER_BTREE_INDEXES.
 NORM_NAME_COL = "normalized_legal_name"
 NORM_ZIP_COL = "zip_code"
-NEW_COLS = (NORM_NAME_COL, NORM_ZIP_COL)
+NORM_BASE_COL = "legal_name_base"
+NEW_COLS = (NORM_NAME_COL, NORM_ZIP_COL, NORM_BASE_COL)
 
 
 # ── Canonical normalization (DuckDB SQL fragments) ───────────────────────────
@@ -118,15 +121,25 @@ def _q(ident: str) -> str:
 
 
 def _norm_block_projection(name_col: str, zip_col: str, cols: tuple[str, ...]) -> str:
-    """SELECT-list that derives the requested subset of {normalized_legal_name, zip_code}
-    from the source columns via the canonical macros. Emitted in a fixed order so the
-    add_columns positional zip is deterministic. `cols` is the set still MISSING from the
-    schema (so a partial prior run only re-adds what it lacks)."""
+    """SELECT-list that derives the requested subset of {normalized_legal_name, zip_code,
+    legal_name_base} from the source columns via the canonical macros. Emitted in a fixed
+    order so the add_columns positional zip is deterministic. `cols` is the set still MISSING
+    from the schema (so a partial prior run only re-adds what it lacks).
+
+    legal_name_base is peeled from the SAME canonical name expression that defines
+    normalized_legal_name — legal_name_base(name_norm(name_col)), NOT re-derived from the
+    stored column — so it is byte-identical to legal_name_base(normalized_legal_name) for
+    every row (the stored norm IS name_norm(name_col), enforced by the integrity gate),
+    preserving the equal-normalized ⟹ equal-base superset invariant the crosswalk_sos_sam
+    base-join relies on. No dependency on the stored norm column → order-independent under
+    --recompute (both name-derived keys drop and re-materialize from source together)."""
     parts: list[str] = []
     if NORM_NAME_COL in cols:
         parts.append(f"{_name_norm(_q(name_col))} AS {NORM_NAME_COL}")
     if NORM_ZIP_COL in cols:
         parts.append(f"{_zip5(_q(zip_col))} AS {NORM_ZIP_COL}")
+    if NORM_BASE_COL in cols:
+        parts.append(f"{_legal_name_base(_name_norm(_q(name_col)))} AS {NORM_BASE_COL}")
     return ",\n    ".join(parts)
 
 
@@ -311,15 +324,19 @@ def probe_all() -> list[dict]:
             "source_zip_col_present": spec["zip_col"] in present,
             "normalized_legal_name_present": NORM_NAME_COL in present,
             "zip_code_present": NORM_ZIP_COL in present,
+            "legal_name_base_present": NORM_BASE_COL in present,
             "normalized_legal_name_indexed": f"{NORM_NAME_COL}_idx" in idx_names,
             "zip_code_indexed": f"{NORM_ZIP_COL}_idx" in idx_names,
+            "legal_name_base_indexed": f"{NORM_BASE_COL}_idx" in idx_names,
             "committed_indices": committed,
         })
         print(f"✓ {name}: {row['rows']:,} rows v{ds.version} | "
               f"src({spec['name_col']}={row['source_name_col_present']},"
               f"{spec['zip_col']}={row['source_zip_col_present']}) | "
-              f"norm_present({row['normalized_legal_name_present']},{row['zip_code_present']}) "
-              f"norm_indexed({row['normalized_legal_name_indexed']},{row['zip_code_indexed']})")
+              f"norm_present({row['normalized_legal_name_present']},{row['zip_code_present']},"
+              f"{row['legal_name_base_present']}) "
+              f"norm_indexed({row['normalized_legal_name_indexed']},{row['zip_code_indexed']},"
+              f"{row['legal_name_base_indexed']})")
         report.append(row)
     return report
 
@@ -350,24 +367,25 @@ def probe() -> None:
 )
 def patch_dataset(name: str, trigger_callback_url: str | None = None,
                   recompute: bool = False) -> dict:
-    """ADDITIVE IN-PLACE: materialize normalized_legal_name + zip_code on one credit
-    dataset and BTREE-index both, WITHOUT recreating it.
+    """ADDITIVE IN-PLACE: materialize normalized_legal_name + zip_code + legal_name_base on
+    one credit dataset and BTREE-index each, WITHOUT recreating it.
 
       1. read the borrower name/zip columns (with _rowid) via the Lance scanner;
-      2. DuckDB applies the canonical _name_norm / _zip5 macros → the missing key(s),
-         ordered by _rowid; add_columns zips them on POSITIONALLY (_rowid order);
+      2. DuckDB applies the canonical _name_norm / _zip5 / _legal_name_base macros → the
+         missing key(s), ordered by _rowid; add_columns zips them on POSITIONALLY (_rowid order);
       3. create_scalar_index builds a BTREE on each key (direct-R2, replace=True);
-      4. integrity gate: RECOMPUTE both keys from source and assert they equal the
+      4. integrity gate: RECOMPUTE all keys from source and assert they equal the
          stored values for every row (proves the positional add aligned), row count
-         unchanged, and both indices committed — else restore() to the pre-patch
+         unchanged, and all three indices committed — else restore() to the pre-patch
          version and fail.
     Idempotent: a key already in the schema is not re-added; the indices are always
     (re)built. A source column absent from the schema is fatal (misconfiguration).
-    ``recompute=True`` first DROPS an existing ``normalized_legal_name`` (+ its BTREE) so it
-    is re-materialized with the CURRENT canonical macro — required whenever that macro changes
-    (e.g. #70's ``&``→AND / dash→space): add_columns only fills MISSING keys, so a stale
-    old-rule column would otherwise be skipped and then fail the gate. ``zip_code``'s rule is
-    unchanged, so it is never dropped (its BTREE is still rebuilt, like every run)."""
+    ``recompute=True`` first DROPS the existing name-macro-derived keys ``normalized_legal_name``
+    and ``legal_name_base`` (+ their BTREEs) so they are re-materialized with the CURRENT
+    canonical macro — required whenever that macro changes (e.g. #70's ``&``→AND / dash→space):
+    add_columns only fills MISSING keys, so a stale old-rule column would otherwise be skipped
+    and then fail the gate. ``zip_code``'s rule is unchanged, so it is never dropped (its BTREE
+    is still rebuilt, like every run)."""
     import datetime as dt
 
     import duckdb
@@ -400,14 +418,19 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
         # FAIL the integrity gate (stored old-rule value != new-rule recompute). Drop the stale
         # key (+ its BTREE) so the additive step rebuilds it canonically. zip_code's rule is
         # unchanged → never dropped. Safe no-op when the key is absent (first/fresh materialize).
-        if recompute and NORM_NAME_COL in present:
-            stale_idx = f"{NORM_NAME_COL}_idx"
-            if stale_idx in _index_names(ds):
-                ds.drop_index(stale_idx)
-            ds.drop_columns([NORM_NAME_COL])
-            ds = lance.dataset(uri, storage_options=so)
-            present = set(ds.schema.names)
-            print(f"recompute ✓ {name}: dropped stale {NORM_NAME_COL} (+{stale_idx}) → re-materializing")
+        if recompute:
+            idx_now = _index_names(ds)
+            # Both name-macro-derived keys move together under a macro change; zip_code's rule
+            # is unchanged so it is never dropped. Drop indices before columns. No-op when absent.
+            drop_cols = [c for c in (NORM_NAME_COL, NORM_BASE_COL) if c in present]
+            for c in drop_cols:
+                if f"{c}_idx" in idx_now:
+                    ds.drop_index(f"{c}_idx")
+            if drop_cols:
+                ds.drop_columns(drop_cols)
+                ds = lance.dataset(uri, storage_options=so)
+                present = set(ds.schema.names)
+                print(f"recompute ✓ {name}: dropped stale {drop_cols} (+indices) → re-materializing under current macro")
 
         # 1+2. Add only the keys not already present (positional zip in _rowid order).
         to_add = tuple(c for c in NEW_COLS if c not in present)
@@ -445,7 +468,7 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
         con.execute("SET memory_limit='20GB';")
         con.execute("SET temp_directory='/tmp/credit_spine_spill';")
         con.register("rdr", ds.scanner(
-            columns=[name_col, zip_col, NORM_NAME_COL, NORM_ZIP_COL]).to_reader())
+            columns=[name_col, zip_col, NORM_NAME_COL, NORM_ZIP_COL, NORM_BASE_COL]).to_reader())
         con.execute("CREATE TABLE v AS SELECT * FROM rdr")
         con.unregister("rdr")
         bad_name = con.execute(
@@ -454,27 +477,36 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
         bad_zip = con.execute(
             f"SELECT count(*) FROM v WHERE {NORM_ZIP_COL} IS DISTINCT FROM {_zip5(_q(zip_col))}"
         ).fetchone()[0]
-        n1, n_name_nonnull, n_zip_nonnull = con.execute(
-            f"SELECT count(*), count({NORM_NAME_COL}), count({NORM_ZIP_COL}) FROM v"
+        # base recomputed from the SAME source name expression — legal_name_base(name_norm(name)).
+        # bad_base==0 together with bad_name==0 transitively proves stored legal_name_base ==
+        # legal_name_base(stored normalized_legal_name), i.e. the crosswalk superset invariant.
+        bad_base = con.execute(
+            f"SELECT count(*) FROM v WHERE {NORM_BASE_COL} IS DISTINCT FROM {_legal_name_base(_name_norm(_q(name_col)))}"
+        ).fetchone()[0]
+        n1, n_name_nonnull, n_zip_nonnull, n_base_nonnull = con.execute(
+            f"SELECT count(*), count({NORM_NAME_COL}), count({NORM_ZIP_COL}), count({NORM_BASE_COL}) FROM v"
         ).fetchone()
         con.close()
 
         idx = _index_names(ds)
-        ok = (bad_name == 0 and bad_zip == 0 and n1 == n0
-              and f"{NORM_NAME_COL}_idx" in idx and f"{NORM_ZIP_COL}_idx" in idx)
+        ok = (bad_name == 0 and bad_zip == 0 and bad_base == 0 and n1 == n0
+              and f"{NORM_NAME_COL}_idx" in idx and f"{NORM_ZIP_COL}_idx" in idx
+              and f"{NORM_BASE_COL}_idx" in idx)
         if not ok:
             lance.dataset(uri, storage_options=so, version=v_before).restore()
             raise RuntimeError(
                 f"integrity gate failed (rolled back to v{v_before}): "
-                f"name_mismatch={bad_name} zip_mismatch={bad_zip} rows={n1}/{n0} "
-                f"indices={sorted(c for c in idx if c)}")
+                f"name_mismatch={bad_name} zip_mismatch={bad_zip} base_mismatch={bad_base} "
+                f"rows={n1}/{n0} indices={sorted(c for c in idx if c)}")
 
         result = {
             "rows": n1,
             "normalized_legal_name_nonnull": n_name_nonnull,
             "zip_code_nonnull": n_zip_nonnull,
+            "legal_name_base_nonnull": n_base_nonnull,
             "name_recompute_mismatches": bad_name,
             "zip_recompute_mismatches": bad_zip,
+            "base_recompute_mismatches": bad_base,
             "indices": sorted(c for c in idx if c),
         }
         status = "success"
@@ -486,7 +518,7 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
         _record_patch(
             uri, f"add_norm_block:{name}",
             ",".join(added_cols) or None,
-            f"{NORM_NAME_COL}_idx,{NORM_ZIP_COL}_idx" if status == "success" else None,
+            f"{NORM_NAME_COL}_idx,{NORM_ZIP_COL}_idx,{NORM_BASE_COL}_idx" if status == "success" else None,
             result.get("rows"), v_before, v_after, status, error, started, completed)
         _post_callback(trigger_callback_url, {
             "status": status, "dataset": name, "dataset_uri": uri,
@@ -571,11 +603,15 @@ def verify_dataset(name: str, runs: int = 5) -> dict:
         "committed_indices": _list_committed_indices(ds),
         NORM_NAME_COL: _probe_col(NORM_NAME_COL),
         NORM_ZIP_COL: _probe_col(NORM_ZIP_COL),
+        NORM_BASE_COL: _probe_col(NORM_BASE_COL),
     }
     nl = out[NORM_NAME_COL]
-    out["deliverable_pass"] = bool(nl.get("uses_scalar_index") and nl.get("under_50ms"))
+    nb = out[NORM_BASE_COL]
+    out["deliverable_pass"] = bool(nl.get("uses_scalar_index") and nl.get("under_50ms")
+                                   and nb.get("uses_scalar_index") and nb.get("under_50ms"))
     print(f"{name}: {NORM_NAME_COL} ScalarIndexQuery={nl.get('uses_scalar_index')} "
-          f"median={nl.get('median_ms')}ms under_50ms={nl.get('under_50ms')} "
+          f"median={nl.get('median_ms')}ms | {NORM_BASE_COL} "
+          f"ScalarIndexQuery={nb.get('uses_scalar_index')} median={nb.get('median_ms')}ms "
           f"→ deliverable_pass={out['deliverable_pass']}")
     return out
 
