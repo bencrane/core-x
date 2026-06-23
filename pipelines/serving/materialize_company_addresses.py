@@ -26,17 +26,27 @@ domain stay NULL — there's no bridge to LinkedIn for them.
 PRECEDENCE (operator standard — do not reorder without sign-off)
   1. SAM physical address (street + line2 + city + state + zip + country + congressional district)
   2. SAM mailing address  (when physical is empty)
-  3. Prospeo               (city/state/country + free-text company_raw_address)
-  4. Blitz                 (city/state — no street, no postal; floor of last resort)
+  3. Prospeo WITH postal   (postal extracted from company_raw_address, validated against a real ZCTA5)
+  4. Overture (domain-join) (street + ZCTA postal + lat/lon, recovered from overture_places by domain)
+  5. Prospeo city/state     (free-text company_raw_address, no usable postal)
+  6. Blitz                  (city/state — no street, no postal; floor of last resort)
 
 The winner is selected as a WHOLE address — no field-level mixing across sources. If SAM physical
 city is present then every winner field comes from SAM physical, never a Prospeo state grafted onto
 a SAM city. Source provenance is stamped in `address_source` so downstream can pick differently.
 
+POSTAL RECOVERY (why tiers 3-4 exist). Prospeo ships no postal column, but ~83% of rows carry a ZIP
+inside the free-text `company_raw_address`; we extract the trailing 5-digit token and keep it only
+if it is a member of zcta_zip_centroids (rejects street numbers / PO-box ZIPs / garbage). For the
+residual that has no usable text ZIP, we domain-join overture_places (16.3M rows, BTREE on domain)
+to recover a real street + ZCTA postal + lat/lon. Both paths exist purely to populate
+`winner_postal_code` so the firm becomes placeable in the downstream proximity matrix.
+
 SIDES
   IDENTITY  sam_master_entities       grain (~1.5M UEIs); legal_business_name + primary_naics
   DOMAIN    sam_master_domains        canonical normalized entity_url → domain (1 row / uei after rollup)
-  PROSPEO   prospeo_company_export    domain-keyed; ~49 rows in the current export (very sparse coverage)
+  PROSPEO   prospeo_company_export    domain-keyed; ~10.7k rows; postal extracted from raw_address (ZCTA-validated)
+  OVERTURE  overture_places           domain-keyed; best place per domain (highest confidence); street+postal+lat/lon
   BLITZ     firmographics_blitz       domain_norm → hq_city/hq_state/hq_region (no street/postal)
 
 GRAIN: 1 row / uei. Idempotent snapshot-overwrite.
@@ -54,6 +64,8 @@ SME = f"{A}/sam_master_entities/"
 SMD = f"{A}/sam_master_domains/"
 PRO = f"{A}/prospeo_company_export/"
 BLZ = f"{A}/firmographics_blitz/"
+OVT = f"{A}/overture_places/"
+ZCTA = f"{A}/zcta_zip_centroids/"
 SERVING_URI = os.environ.get("COMPANY_ADDRESSES_URI", f"{A}/company_addresses/")
 DATA_STORAGE_VERSION = "2.1"
 DUCK_MEM = os.environ.get("DUCK_MEM", "12GB")
@@ -63,7 +75,7 @@ DUCK_MEM = os.environ.get("DUCK_MEM", "12GB")
 BTREE_COLS = ["entity_key", "uei", "domain_norm", "company_linkedin_url",
               "primary_naics", "legal_business_name"]
 BITMAP_COLS = ["address_source", "winner_state", "winner_country_code",
-               "had_sam_physical", "had_sam_mailing", "had_prospeo", "had_blitz"]
+               "had_sam_physical", "had_sam_mailing", "had_prospeo", "had_overture", "had_blitz"]
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -90,6 +102,12 @@ def build() -> dict:
     con.register("smd", lance.dataset(SMD, storage_options=so))
     con.register("pro", lance.dataset(PRO, storage_options=so))
     con.register("blz", lance.dataset(BLZ, storage_options=so))
+    con.register("ovt", lance.dataset(OVT, storage_options=so))
+    con.register("zcta", lance.dataset(ZCTA, storage_options=so))
+
+    # ZCTA5 membership set — gates every recovered postal so only real, joinable ZIPs land
+    # in winner_postal_code (rejects street numbers, PO-box ZIPs, and Overture non-US codes).
+    con.execute("CREATE TEMP TABLE zcta5 AS SELECT DISTINCT zcta5 AS z FROM zcta WHERE zcta5 IS NOT NULL")
 
     # ── 1 row/uei from sam_master_domains (collapse multi-domain ueis to deterministic-min) ──
     con.execute("CREATE TEMP TABLE smd1 AS "
@@ -108,8 +126,9 @@ def build() -> dict:
         WHERE domain_norm IS NOT NULL
     """)
 
-    # ── prospeo (already 1 row/domain_norm by builder contract) ──
-    con.execute("""
+    # ── prospeo (already 1 row/domain_norm by builder contract). prospeo_postal_code is the
+    # trailing 5-digit token in company_raw_address, kept only if it is a real ZCTA5 (else NULL). ──
+    con.execute(r"""
         CREATE TEMP TABLE pro1 AS
         SELECT domain_norm,
                nullif(trim(company_city), '')          AS prospeo_city,
@@ -117,9 +136,55 @@ def build() -> dict:
                nullif(trim(company_country), '')       AS prospeo_country,
                nullif(trim(company_country_code), '')  AS prospeo_country_code,
                nullif(trim(company_raw_address), '')   AS prospeo_raw_address,
-               nullif(trim(company_linkedin_url), '')  AS prospeo_linkedin_url
+               nullif(trim(company_linkedin_url), '')  AS prospeo_linkedin_url,
+               (SELECT max(tok) FROM (
+                   SELECT unnest(regexp_extract_all(coalesce(company_raw_address,''), '\d{5}')) AS tok
+                ) s WHERE s.tok IN (SELECT z FROM zcta5))   AS prospeo_postal_code
         FROM pro
         WHERE domain_norm IS NOT NULL
+    """)
+
+    # ── Universe of domains we actually care about (SAM ∪ Prospeo ∪ Blitz) — used to prune the
+    # 16.3M-row Overture scan down to a windowable set before ranking best-place-per-domain. ──
+    con.execute("""
+        CREATE TEMP TABLE universe_domains AS
+        SELECT DISTINCT domain_norm AS d FROM (
+            SELECT domain_norm FROM smd1 WHERE domain_norm IS NOT NULL
+            UNION SELECT domain_norm FROM pro1
+            UNION SELECT domain_norm FROM blz1
+        )
+    """)
+
+    # ── Overture recovery: best place per domain (highest confidence). domain is normalized to
+    # match domain_norm; postcode kept only if ZCTA-valid. Carries lat/lon for future precise use. ──
+    con.execute(r"""
+        CREATE TEMP TABLE ovt1 AS
+        WITH ov_norm AS (
+            SELECT
+              regexp_replace(regexp_replace(regexp_replace(lower(domain), '^https?://', ''),
+                             '^www\.', ''), '/.*$', '')        AS domain_norm,
+              substring(postcode, 1, 5)        AS pc5,
+              latitude, longitude,
+              nullif(trim(street), '')         AS overture_street,
+              nullif(trim(locality), '')       AS overture_city,
+              nullif(trim(region), '')         AS overture_region,
+              confidence
+            FROM ovt
+            WHERE domain IS NOT NULL AND latitude IS NOT NULL
+        ),
+        ranked AS (
+            SELECT o.*,
+                   ROW_NUMBER() OVER (PARTITION BY o.domain_norm ORDER BY o.confidence DESC NULLS LAST) AS rn
+            FROM ov_norm o
+            WHERE o.domain_norm IN (SELECT d FROM universe_domains)
+        )
+        SELECT
+          domain_norm,
+          CASE WHEN pc5 IN (SELECT z FROM zcta5) THEN pc5 ELSE NULL END AS overture_postcode,
+          latitude  AS overture_lat,
+          longitude AS overture_lon,
+          overture_street, overture_city, overture_region
+        FROM ranked WHERE rn = 1
     """)
 
     # ── per-source projections off sam_master_entities. Empty-string → NULL on every leaf so the
@@ -220,11 +285,14 @@ def build() -> dict:
         CREATE TEMP TABLE joined AS
         SELECT b.*,
                pr.prospeo_city, pr.prospeo_state, pr.prospeo_country, pr.prospeo_country_code,
-               pr.prospeo_raw_address, pr.prospeo_linkedin_url,
-               bz.blitz_hq_city, bz.blitz_hq_state, bz.blitz_hq_region, bz.blitz_linkedin_url
+               pr.prospeo_raw_address, pr.prospeo_linkedin_url, pr.prospeo_postal_code,
+               bz.blitz_hq_city, bz.blitz_hq_state, bz.blitz_hq_region, bz.blitz_linkedin_url,
+               ov.overture_postcode, ov.overture_lat, ov.overture_lon,
+               ov.overture_street, ov.overture_city, ov.overture_region
         FROM base b
-        LEFT JOIN pro1 pr ON b.domain_norm = pr.domain_norm
-        LEFT JOIN blz1 bz ON b.domain_norm = bz.domain_norm
+        LEFT JOIN pro1 pr  ON b.domain_norm = pr.domain_norm
+        LEFT JOIN blz1 bz  ON b.domain_norm = bz.domain_norm
+        LEFT JOIN ovt1 ov  ON b.domain_norm = ov.domain_norm
     """)
 
     con.execute("""
@@ -237,14 +305,18 @@ def build() -> dict:
                   OR j.sam_mailing_line_1  IS NOT NULL OR j.sam_mailing_postal_code  IS NOT NULL) AS had_sam_mailing,
                (j.prospeo_city IS NOT NULL OR j.prospeo_state IS NOT NULL
                   OR j.prospeo_raw_address IS NOT NULL)                                            AS had_prospeo,
+               (j.overture_postcode IS NOT NULL OR j.overture_lat IS NOT NULL)                     AS had_overture,
                (j.blitz_hq_city IS NOT NULL OR j.blitz_hq_state IS NOT NULL)                       AS had_blitz,
 
-               -- winner source: precedence SAM physical > SAM mailing > Prospeo > Blitz > 'none'
+               -- winner source precedence (postal-completeness aware for the spatial goal):
+               --   sam_physical > sam_mailing > prospeo(WITH postal) > overture > prospeo(city only) > blitz
                CASE
                  WHEN j.sam_physical_city IS NOT NULL OR j.sam_physical_state IS NOT NULL
                    OR j.sam_physical_line_1 IS NOT NULL OR j.sam_physical_postal_code IS NOT NULL THEN 'sam_physical'
                  WHEN j.sam_mailing_city IS NOT NULL OR j.sam_mailing_state IS NOT NULL
                    OR j.sam_mailing_line_1 IS NOT NULL OR j.sam_mailing_postal_code IS NOT NULL  THEN 'sam_mailing'
+                 WHEN j.prospeo_postal_code IS NOT NULL                                          THEN 'prospeo'
+                 WHEN j.overture_postcode IS NOT NULL OR j.overture_lat IS NOT NULL              THEN 'overture'
                  WHEN j.prospeo_city IS NOT NULL OR j.prospeo_state IS NOT NULL
                    OR j.prospeo_raw_address IS NOT NULL                                          THEN 'prospeo'
                  WHEN j.blitz_hq_city IS NOT NULL OR j.blitz_hq_state IS NOT NULL                 THEN 'blitz'
@@ -260,8 +332,9 @@ def build() -> dict:
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_line_1
                  WHEN 'sam_mailing'  THEN sam_mailing_line_1
-                 WHEN 'prospeo'      THEN NULL                    -- Prospeo has no street
-                 WHEN 'blitz'        THEN NULL                    -- Blitz has no street
+                 WHEN 'overture'     THEN overture_street       -- Overture carries a street
+                 WHEN 'prospeo'      THEN NULL                  -- Prospeo has no street
+                 WHEN 'blitz'        THEN NULL                  -- Blitz has no street
                  ELSE NULL END AS winner_line_1,
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_line_2
@@ -271,17 +344,21 @@ def build() -> dict:
                  WHEN 'sam_physical' THEN sam_physical_city
                  WHEN 'sam_mailing'  THEN sam_mailing_city
                  WHEN 'prospeo'      THEN prospeo_city
+                 WHEN 'overture'     THEN overture_city
                  WHEN 'blitz'        THEN blitz_hq_city
                  ELSE NULL END AS winner_city,
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_state
                  WHEN 'sam_mailing'  THEN sam_mailing_state
                  WHEN 'prospeo'      THEN prospeo_state
+                 WHEN 'overture'     THEN overture_region
                  WHEN 'blitz'        THEN blitz_hq_state
                  ELSE NULL END AS winner_state,
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_postal_code
                  WHEN 'sam_mailing'  THEN sam_mailing_postal_code
+                 WHEN 'prospeo'      THEN prospeo_postal_code    -- extracted, ZCTA-validated
+                 WHEN 'overture'     THEN overture_postcode      -- domain-join, ZCTA-validated
                  ELSE NULL END AS winner_postal_code,
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_zip_plus_4
@@ -291,6 +368,7 @@ def build() -> dict:
                  WHEN 'sam_physical' THEN sam_physical_country_code
                  WHEN 'sam_mailing'  THEN nullif(trim(sam_mailing_country), '')
                  WHEN 'prospeo'      THEN coalesce(prospeo_country_code, prospeo_country)
+                 WHEN 'overture'     THEN 'US'                   -- ZCTA-valid postal ⇒ US
                  ELSE NULL END AS winner_country_code,
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_congressional_district
@@ -312,14 +390,16 @@ def build() -> dict:
           winner_line_1, winner_line_2, winner_city, winner_state,
           winner_postal_code, winner_zip_plus_4, winner_country_code,
           winner_congressional_district,
-          had_sam_physical, had_sam_mailing, had_prospeo, had_blitz,
+          had_sam_physical, had_sam_mailing, had_prospeo, had_overture, had_blitz,
           sam_physical_line_1, sam_physical_line_2, sam_physical_city, sam_physical_state,
           sam_physical_postal_code, sam_physical_zip_plus_4, sam_physical_country_code,
           sam_physical_congressional_district,
           sam_mailing_line_1, sam_mailing_line_2, sam_mailing_city, sam_mailing_state,
           sam_mailing_postal_code, sam_mailing_zip_plus_4, sam_mailing_country,
           prospeo_city, prospeo_state, prospeo_country, prospeo_country_code, prospeo_raw_address,
-          prospeo_linkedin_url,
+          prospeo_postal_code, prospeo_linkedin_url,
+          overture_street, overture_city, overture_region, overture_postcode,
+          overture_lat, overture_lon,
           blitz_hq_city, blitz_hq_state, blitz_hq_region, blitz_linkedin_url,
           materialized_at
         FROM final
@@ -382,6 +462,18 @@ def verify() -> None:
     print(con.execute("""SELECT count(*) total,
         count(*) FILTER (WHERE domain_norm IS NOT NULL) with_domain_norm,
         round(100.0*count(*) FILTER (WHERE domain_norm IS NOT NULL)/count(*),2) pct
+        FROM d""").df().to_string(index=False))
+    print("\n=== winner_postal_code coverage (placeable in proximity) by source ===")
+    print(con.execute("""SELECT address_source,
+        count(*) firms,
+        count(winner_postal_code) with_postal,
+        round(100.0*count(winner_postal_code)/count(*),1) pct
+        FROM d GROUP BY 1 ORDER BY firms DESC""").df().to_string(index=False))
+    print("\n=== Overture recovery (firms placed only because of the domain join) ===")
+    print(con.execute("""SELECT
+        count(*) FILTER (WHERE had_overture) firms_with_overture_match,
+        count(*) FILTER (WHERE address_source='overture') firms_won_by_overture,
+        count(*) FILTER (WHERE address_source='overture' AND winner_postal_code IS NOT NULL) overture_winners_with_postal
         FROM d""").df().to_string(index=False))
 
 
