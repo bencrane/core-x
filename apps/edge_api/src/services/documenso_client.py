@@ -13,6 +13,7 @@ confirmed and stable.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -391,6 +392,67 @@ async def create_document_from_template(
         envelope_id=str(envelope_id),
         document_id=int(numeric_id) if numeric_id is not None and str(numeric_id).isdigit() else None,
         client_token=token,
+    )
+
+
+# ── Template CREATE (render+push lane) ────────────────────────────────────────────────────────────
+# Placeholder recipients stamped onto a freshly-created TEMPLATE. They are PLACEHOLDERS — overridden
+# with the real signers per-deal at /template/use (or /envelope/use) instantiation, so neutral
+# example.com addresses are correct here (no real PII persisted on the template). Override via the
+# ``recipients`` arg. Both SIGNER — Participant first so a single-signer flow picks it up.
+_DEFAULT_TEMPLATE_RECIPIENTS: tuple[dict[str, str], ...] = (
+    {"name": "Participant", "email": "participant@example.com", "role": "SIGNER"},
+    {"name": "Provider", "email": "provider@example.com", "role": "SIGNER"},
+)
+
+
+@dataclass(frozen=True)
+class TemplateCreateResult:
+    """The result of creating a Documenso TEMPLATE from a rendered PDF. ``template_id`` is the v2
+    envelope/template handle; ``numeric_id`` is the legacy secondary id; ``recipients`` is the
+    template's placeholder recipients read back (id/email/role) for downstream field placement."""
+
+    template_id: str
+    numeric_id: int | None
+    recipients: tuple[dict[str, Any], ...]
+
+
+async def create_template_from_pdf(
+    *,
+    title: str,
+    pdf: bytes,
+    recipients: list[dict[str, str]] | tuple[dict[str, str], ...] | None = None,
+    filename: str | None = None,
+) -> TemplateCreateResult:
+    """Create a Documenso TEMPLATE from rendered PDF bytes (the render+push lane terminal step).
+
+    POST /api/v2/envelope/create (multipart: ``payload`` JSON + the PDF file) with ``type=TEMPLATE``,
+    then GET /api/v2/envelope/{id} to read the placeholder recipients back. Field placement is NOT
+    done here — the engagement-template HTML is a static, blank body, so signature/value fields are
+    affixed in the Documenso editor afterward (or, for an anchor-bearing body, via a follow-up
+    field/create-many). Raises ``DocumensoError`` on a non-2xx response or an unconfigured client.
+    """
+    recips = list(recipients) if recipients is not None else list(_DEFAULT_TEMPLATE_RECIPIENTS)
+    fname = filename or f"{title}.pdf"
+    payload = {"type": "TEMPLATE", "title": title, "recipients": recips}
+    async with _client() as client:
+        created = await client.post(
+            "/api/v2/envelope/create",
+            data={"payload": json.dumps(payload)},
+            files={"files": (fname, pdf, "application/pdf")},
+        )
+        _raise_for_status(created, "envelope/create[TEMPLATE]")
+        body = created.json()
+        env_id = _str_or_none(_dig(body, "id", "envelopeId"))
+        if not env_id:
+            raise DocumensoError(f"documenso envelope/create[TEMPLATE]: no id in response: {str(body)[:300]}")
+        env = (await client.get(f"/api/v2/envelope/{env_id}")).json()
+
+    recips_back = _dig(env, "recipients", "Recipient") or []
+    return TemplateCreateResult(
+        template_id=str(env_id),
+        numeric_id=_numeric_document_id(env if isinstance(env, dict) else {}),
+        recipients=tuple(r for r in recips_back if isinstance(r, dict)),
     )
 
 
