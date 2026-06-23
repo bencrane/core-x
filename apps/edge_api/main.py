@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
+from starlette.middleware.gzip import GZipMiddleware
 
 from .src import config
 from .src.db import close_pool, init_pool
@@ -147,6 +148,9 @@ async def lifespan(app_: FastAPI):
 
 
 app = FastAPI(title="edge_api", version="0.4.0", lifespan=lifespan)
+# Gzip responses >1 KB — the map /ask GeoJSON envelope is large, repetitive JSON; the BFF's
+# fetch auto-decodes. Compresses the edge_api → BFF hop.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Mount the MCP servers. Managed agents authenticate via
 # Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
