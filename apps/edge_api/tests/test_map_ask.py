@@ -177,7 +177,7 @@ def test_no_chunk_derived_text_in_either_decoder():
 def test_capability_axis_present_and_gated_winners_only():
     # The winners capability axis exists on both sides, and EXECUTE marks the right fields gated.
     cap = {"requires_clearance", "req_clearance_level_max", "requires_cmmc",
-           "capability_tag", "labor_category", "has_extracted_scope"}
+           "solicitation_scope_tag", "labor_category", "has_extracted_scope"}
     assert cap <= set(cat.DECODERS["winners"].fields)
     assert cap <= set(edge.DECODERS["winners"]["fields"])
     gated = {n for n, s in cat.DECODERS["winners"].fields.items() if s.gated}
@@ -213,7 +213,7 @@ def test_teaming_prime_synonym_values_match_catalyst():
 
 # ── SUB-only SELF-REPORTED axis: present both sides, UNGATED, enum reused, cert synonyms in sync ──
 def test_self_reported_axis_present_both_sides_and_ungated():
-    sr = {"self_reported_capability_tag", "req_cert_tag"}
+    sr = {"subaward_description_tag", "req_cert_tag"}
     assert sr <= set(cat.DECODERS["winners"].fields)
     assert sr <= set(edge.DECODERS["winners"]["fields"])
     # Must NOT be gated — gating would clip the 13,792-sub long tail to the scope-extracted slice.
@@ -222,10 +222,10 @@ def test_self_reported_axis_present_both_sides_and_ungated():
 
 
 def test_self_reported_capability_reuses_controlled_capability_enum_both_sides():
-    # Same 77-tag controlled vocab as the gated capability_tag axis — on both sides.
-    cap_enum = set(cat.DECODERS["winners"].fields["capability_tag"].enum)
-    assert set(cat.DECODERS["winners"].fields["self_reported_capability_tag"].enum) == cap_enum
-    assert set(edge.DECODERS["winners"]["fields"]["self_reported_capability_tag"]["enum"]) == cap_enum
+    # Same 77-tag controlled vocab as the gated solicitation_scope_tag axis — on both sides.
+    cap_enum = set(cat.DECODERS["winners"].fields["solicitation_scope_tag"].enum)
+    assert set(cat.DECODERS["winners"].fields["subaward_description_tag"].enum) == cap_enum
+    assert set(edge.DECODERS["winners"]["fields"]["subaward_description_tag"]["enum"]) == cap_enum
     # req_cert_tag is OPEN-valued on both sides (no enum) — the 172-distinct cert vocab is too granular.
     assert cat.DECODERS["winners"].fields["req_cert_tag"].enum is None
     assert edge.DECODERS["winners"]["fields"]["req_cert_tag"].get("enum") is None
@@ -242,8 +242,8 @@ def test_self_reported_and_cert_synonym_values_match_catalyst():
                  "as9100", "faa part 145", "cissp", "pmp", "osha 30"):
         assert term in cat_syn and term in edge_syn, f"self-reported/cert synonym {term!r} missing a side"
         assert cat_syn[term] == edge_syn[term], f"synonym {term!r} drift edge vs catalyst"
-    # Self-report cues route to the UNGATED self_reported field, not the gated capability_tag.
-    assert cat_syn["self-report software development"]["field"] == "self_reported_capability_tag"
+    # Self-report cues route to the UNGATED self_reported field, not the gated solicitation_scope_tag.
+    assert cat_syn["self-report software development"]["field"] == "subaward_description_tag"
     # Cert cues route to req_cert_tag via has_any over exact tokens.
     assert cat_syn["iso 9001"]["field"] == "req_cert_tag"
     assert cat_syn["iso 9001"]["op"] == "has_any"
