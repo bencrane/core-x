@@ -49,6 +49,8 @@ BASE_URL = os.environ.get("BLITZAPI_API_BASE", "https://api.blitz-api.ai").rstri
 ENDPOINTS = {
     "resolve": "/v2/enrichment/domain-to-linkedin",  # A: {domain} → {found, company_linkedin_url}
     "company": "/v2/enrichment/company",             # B: {company_linkedin_url} → {found, company{}}
+    "email": "/v2/enrichment/email",                 # {person_linkedin_url} → {found, email}
+    "phone": "/v2/enrichment/phone",                 # {person_linkedin_url} → {found, phone} (US-only)
     "key_info": "/v2/account/key-info",              # GET; health gate (max_requests_per_seconds)
 }
 
