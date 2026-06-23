@@ -18,6 +18,11 @@ UNIVERSE (3 record sources, deduped by domain_norm)
 
 PRIMARY KEY  `entity_key` = uei when SAM-resolved, else 'dom:' + domain_norm. SAM rows carry both.
 
+OPTIONAL BRIDGE  `company_linkedin_url` (Prospeo > Blitz coalesce; NULL if neither source has it).
+SAM is silent on LinkedIn, so this populates for: every Blitz orphan, every Prospeo orphan, and
+every SAM-with-domain row whose domain matches a Blitz or Prospeo record. SAM-only rows with no
+domain stay NULL — there's no bridge to LinkedIn for them.
+
 PRECEDENCE (operator standard — do not reorder without sign-off)
   1. SAM physical address (street + line2 + city + state + zip + country + congressional district)
   2. SAM mailing address  (when physical is empty)
@@ -54,8 +59,9 @@ DATA_STORAGE_VERSION = "2.1"
 DUCK_MEM = os.environ.get("DUCK_MEM", "12GB")
 
 # Resolution keys + categorical accelerators. `address_source` and state are low-cardinality;
-# entity_key is the PK, uei + domain_norm are bridges (either or both may be NULL per row).
-BTREE_COLS = ["entity_key", "uei", "domain_norm", "primary_naics", "legal_business_name"]
+# entity_key is the PK, uei + domain_norm + company_linkedin_url are bridges (any may be NULL).
+BTREE_COLS = ["entity_key", "uei", "domain_norm", "company_linkedin_url",
+              "primary_naics", "legal_business_name"]
 BITMAP_COLS = ["address_source", "winner_state", "winner_country_code",
                "had_sam_physical", "had_sam_mailing", "had_prospeo", "had_blitz"]
 
@@ -94,9 +100,10 @@ def build() -> dict:
     con.execute("""
         CREATE TEMP TABLE blz1 AS
         SELECT domain_norm,
-               nullif(trim(hq_city), '')   AS blitz_hq_city,
-               nullif(trim(hq_state), '')  AS blitz_hq_state,
-               nullif(trim(hq_region), '') AS blitz_hq_region
+               nullif(trim(hq_city), '')     AS blitz_hq_city,
+               nullif(trim(hq_state), '')    AS blitz_hq_state,
+               nullif(trim(hq_region), '')   AS blitz_hq_region,
+               nullif(trim(linkedin_url), '') AS blitz_linkedin_url
         FROM blz
         WHERE domain_norm IS NOT NULL
     """)
@@ -105,11 +112,12 @@ def build() -> dict:
     con.execute("""
         CREATE TEMP TABLE pro1 AS
         SELECT domain_norm,
-               nullif(trim(company_city), '')         AS prospeo_city,
-               nullif(trim(company_state), '')        AS prospeo_state,
-               nullif(trim(company_country), '')      AS prospeo_country,
-               nullif(trim(company_country_code), '') AS prospeo_country_code,
-               nullif(trim(company_raw_address), '')  AS prospeo_raw_address
+               nullif(trim(company_city), '')          AS prospeo_city,
+               nullif(trim(company_state), '')         AS prospeo_state,
+               nullif(trim(company_country), '')       AS prospeo_country,
+               nullif(trim(company_country_code), '')  AS prospeo_country_code,
+               nullif(trim(company_raw_address), '')   AS prospeo_raw_address,
+               nullif(trim(company_linkedin_url), '')  AS prospeo_linkedin_url
         FROM pro
         WHERE domain_norm IS NOT NULL
     """)
@@ -212,8 +220,8 @@ def build() -> dict:
         CREATE TEMP TABLE joined AS
         SELECT b.*,
                pr.prospeo_city, pr.prospeo_state, pr.prospeo_country, pr.prospeo_country_code,
-               pr.prospeo_raw_address,
-               bz.blitz_hq_city, bz.blitz_hq_state, bz.blitz_hq_region
+               pr.prospeo_raw_address, pr.prospeo_linkedin_url,
+               bz.blitz_hq_city, bz.blitz_hq_state, bz.blitz_hq_region, bz.blitz_linkedin_url
         FROM base b
         LEFT JOIN pro1 pr ON b.domain_norm = pr.domain_norm
         LEFT JOIN blz1 bz ON b.domain_norm = bz.domain_norm
@@ -287,6 +295,10 @@ def build() -> dict:
                CASE address_source
                  WHEN 'sam_physical' THEN sam_physical_congressional_district
                  ELSE NULL END AS winner_congressional_district,
+               -- LinkedIn URL — Prospeo (authoritative, sourced) > Blitz (fallback); NULL if neither.
+               -- Independent of address_source: a SAM row with no Prospeo address can still pick
+               -- up a LinkedIn URL from Blitz via the domain_norm bridge.
+               COALESCE(prospeo_linkedin_url, blitz_linkedin_url) AS company_linkedin_url,
                now() AS materialized_at
         FROM m
     """)
@@ -295,6 +307,7 @@ def build() -> dict:
         SELECT
           coalesce(uei, 'dom:' || domain_norm) AS entity_key,
           uei, domain_norm, legal_business_name, primary_naics,
+          company_linkedin_url,
           address_source,
           winner_line_1, winner_line_2, winner_city, winner_state,
           winner_postal_code, winner_zip_plus_4, winner_country_code,
@@ -306,10 +319,11 @@ def build() -> dict:
           sam_mailing_line_1, sam_mailing_line_2, sam_mailing_city, sam_mailing_state,
           sam_mailing_postal_code, sam_mailing_zip_plus_4, sam_mailing_country,
           prospeo_city, prospeo_state, prospeo_country, prospeo_country_code, prospeo_raw_address,
-          blitz_hq_city, blitz_hq_state, blitz_hq_region,
+          prospeo_linkedin_url,
+          blitz_hq_city, blitz_hq_state, blitz_hq_region, blitz_linkedin_url,
           materialized_at
         FROM final
-    """).fetch_arrow_table()
+    """).to_arrow_table()
     rows = tbl.num_rows
     src_mix = con.execute(
         "SELECT address_source, count(*) n FROM final GROUP BY 1 ORDER BY 2 DESC").fetchall()
