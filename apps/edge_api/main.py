@@ -52,6 +52,7 @@ from .src.routers.engagement_templates_v1 import router as engagement_templates_
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
+from .src.routers.contacts_v1 import router as contacts_router
 from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
 from .src.routers.industries_served_v1 import router as industries_served_router
 from .src.routers.equipment_provider_v1 import router as equipment_provider_router
@@ -167,6 +168,12 @@ app.include_router(clay_find_people_router)
 # gtm.clay_find_companies (verbatim raw_payload + lossless identity keys). Service-token gated.
 app.include_router(clay_find_companies_router)
 
+# contacts: curated GTM contact intake — flat singular fields (full_name, work_email, job_title,
+# is_main_contact, city/state/country, company_name/domain/linkedin_url) → gtm.contacts. Append-only
+# history keyed on identity+mutable fields; bridges via domain_norm AND company_linkedin_url_norm.
+# work_email is the person identity key. Service-token gated.
+app.include_router(contacts_router)
+
 # equipment-catalog: raw, append-only landing of company-offerings research payloads into
 # gtm.equipment_catalog (verbatim raw_payload + sparse flat projection, two payload shapes
 # discriminated by payload_kind). Bridges to firmographics_blitz via domain_norm. Service-token gated.
@@ -281,6 +288,7 @@ def _info() -> dict:
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
+            "contacts": True,          # /api/v1/contacts/{land,check,stats}
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
