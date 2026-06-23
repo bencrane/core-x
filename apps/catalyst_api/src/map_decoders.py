@@ -126,7 +126,7 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v6",   # v4→v5: SUB-only self-reported axis (capability tags + cert tags, UNGATED)
+    version="winners.v7",   # v6→v7: drop stale ~90-day window claim from prompt-facing copy (data spans full history)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date",
@@ -279,7 +279,7 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v1",
+    version="awards.v2",
     geometry=("longitude", "latitude"),
     properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
                 "action_date", "naics2", "naics_code", "state", "city", "county",
