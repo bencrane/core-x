@@ -7,7 +7,9 @@
 >
 > - **Source of truth:** live BlitzAPI docs + OpenAPI v2 spec, retrieved via the
 >   official `blitz-api` docs MCP and `https://docs.blitz-api.ai/llms.txt`.
-> - **Verified:** 2026-06-02.
+> - **Verified:** 2026-06-23 (re-confirmed via docs MCP; all enums match live —
+>   no drift since 2026-06-02. Added the funding filters + 23-value funding-type
+>   enum, which were missing from the company filter table and the appendix).
 > - **Spec:** "Blitz API Reference", OpenAPI v2. Upstream version labels are
 >   inconsistent (the served `v2.openapi.json` reports `2.0.0`; the
 >   `find-companies` page embeds `2.1.0`) — content, not the label, is canonical.
@@ -31,7 +33,7 @@
 9. [Enrichment](#enrichment) — email, phone, reverse lookups, company, domain↔linkedin
 10. [Utilities](#utilities) — current date, employment distribution
 11. [Shared objects](#shared-objects) — Person, Experience, Education, Certification, Company
-12. [Enum appendix](#enum-appendix) — job level, job function, company type, employee range, continent, sales region, country code, **industry (534)**
+12. [Enum appendix](#enum-appendix) — job level, job function, company type, employee range, **funding type (23)**, continent, sales region, country code, **industry (534)**
 
 ---
 
@@ -395,6 +397,11 @@ Used by `company` in both Company Search and Find People.
 | `web_traffic.min` / `.max` | number | Monthly visits; 0 = unset |
 | `ad_spend.min` / `.max` | number | Monthly Google ad spend USD; 0 = unset |
 | `founded_year.min` / `.max` | number | 0 = unset |
+| `total_funding.min` / `.max` | number | USD across all rounds; 0 = unset |
+| `last_funding_amount.min` / `.max` | number | USD, most recent round; 0 = unset |
+| `last_funding_year.min` / `.max` | number | Calendar year of most recent round; 0 = unset |
+| `last_funding_type.include` / `.exclude` | string[] | [Funding type enum](#funding-type-23) |
+| `lead_investors.include` / `.exclude` | string[] | Keyword search on lead investor names (e.g. `"Sequoia"`) |
 | `hq.city.include` / `.exclude` | string[] | Keyword search on HQ city |
 | `hq.country_code` | string[] | ISO alpha-2 |
 | `hq.continent` | string[] | [enum](#continent-7) |
@@ -580,6 +587,17 @@ Returned by Company Enrichment (full) and Company Search (subset). Fields:
 ### Employee range (8)
 `1-10`, `11-50`, `51-200`, `201-500`, `501-1000`, `1001-5000`, `5001-10000`,
 `10001+`
+
+### Funding type (23)
+Most-recent-round type for `last_funding_type.include` / `.exclude`
+(Company Search, Find People). Exact, case-sensitive.
+
+`Series unknown`, `Pre seed`, `Seed`, `Series A`, `Series B`, `Series C`,
+`Series D`, `Series E-J`, `Grant`, `Angel`, `Private equity`,
+`Debt financing`, `Non equity assistance`, `Post IPO equity`, `Undisclosed`,
+`Post IPO debt`, `Product crowdfunding`, `Equity crowdfunding`,
+`Corporate round`, `Convertible note`, `Secondary market`,
+`Initial coin offering`, `Post IPO secondary`
 
 ### Continent (7)
 `Africa`, `Antarctica`, `Asia`, `Europe`, `North America`, `Oceania`,
