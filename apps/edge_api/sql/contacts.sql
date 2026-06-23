@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS gtm.contacts (
     first_name             text,                               -- parsed from full_name
     middle_name            text,                               -- parsed (middle name / initial; may be NULL)
     last_name              text,                               -- parsed (NULL for single-token names)
+    person_linkedin_url       text,                            -- the PERSON's LinkedIn URL (verbatim; feeds blitz /v2/enrichment/email). NULLABLE
+    person_linkedin_url_norm  text,                            -- normalized person LinkedIn (lower, strip scheme/www/locale/trailing slash) — bridge/dedup key. NULLABLE
     work_email             text,                               -- verbatim as sent (OPTIONAL — may be NULL)
     work_email_norm        text,                               -- lower(trim(work_email)) — email-rail key (NULL when absent)
     job_title              text,                               -- verbatim (NOT normalized; job_level enum is a downstream stage)
@@ -62,10 +64,16 @@ ALTER TABLE gtm.contacts ALTER COLUMN work_email      DROP NOT NULL;
 ALTER TABLE gtm.contacts ALTER COLUMN work_email_norm DROP NOT NULL;
 ALTER TABLE gtm.contacts ALTER COLUMN person_id       DROP NOT NULL;
 
+-- Person LinkedIn URL (added post-deploy; no-op on fresh create, idempotent on re-run). The person
+-- LinkedIn URL is the single input blitz /v2/enrichment/email requires, so the *_norm form is indexed.
+ALTER TABLE gtm.contacts ADD COLUMN IF NOT EXISTS person_linkedin_url      text;
+ALTER TABLE gtm.contacts ADD COLUMN IF NOT EXISTS person_linkedin_url_norm text;
+
 CREATE INDEX IF NOT EXISTS contacts_contact_key_idx     ON gtm.contacts (contact_key);
 CREATE INDEX IF NOT EXISTS contacts_person_id_idx       ON gtm.contacts (person_id);
 CREATE INDEX IF NOT EXISTS contacts_work_email_norm_idx ON gtm.contacts (work_email_norm);
 CREATE INDEX IF NOT EXISTS contacts_domain_norm_idx     ON gtm.contacts (domain_norm);
 CREATE INDEX IF NOT EXISTS contacts_company_li_norm_idx ON gtm.contacts (company_linkedin_url_norm);
+CREATE INDEX IF NOT EXISTS contacts_person_li_norm_idx  ON gtm.contacts (person_linkedin_url_norm);
 CREATE INDEX IF NOT EXISTS contacts_company_name_idx    ON gtm.contacts (company_name);
 CREATE INDEX IF NOT EXISTS contacts_landed_at_idx       ON gtm.contacts (landed_at DESC);
