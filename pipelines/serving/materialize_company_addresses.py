@@ -3,7 +3,7 @@
 SoR  s3://data-sink/active/company_addresses/  (Lance v2.1; derived, snapshot-overwrite)
 
 WHAT THIS IS
-UNION universe across SAM + Prospeo + Blitz. Grain is one row per firm identified by either a SAM
+UNION universe across SAM + Prospeo + Blitz + GTM companies. Grain is one row per firm identified by either a SAM
 UEI or (when not in SAM) a normalized domain. Each row carries the WINNING mailing address —
 selected by source precedence SAM physical > SAM mailing > Prospeo > Blitz — plus every per-source
 raw address kept side-by-side so consumers can override the winner. Bridges via `domain_norm` (the
@@ -11,10 +11,11 @@ canonical key everything else joins on: firmographics_blitz, equipment_catalog, 
 equipment_provider, prospeo_company_export). Built so any downstream answering "where is this firm
 physically located" can hit one Lance instead of coalescing across three.
 
-UNIVERSE (3 record sources, deduped by domain_norm)
+UNIVERSE (4 record sources, deduped by domain_norm)
   1. Every UEI in sam_master_entities                                          (~1.54M rows; uei + maybe domain_norm)
   2. Every Prospeo domain NOT already mapped to a SAM UEI                       (non-SAM-Prospeo orphans; uei=NULL)
   3. Every Blitz domain NOT in SAM AND NOT in Prospeo                            (non-SAM-non-Prospeo Blitz orphans; uei=NULL)
+  4. Every GTM companies domain NOT in SAM/Prospeo/Blitz                         (enrichment candidate orphans; uei=NULL)
 
 PRIMARY KEY  `entity_key` = uei when SAM-resolved, else 'dom:' + domain_norm. SAM rows carry both.
 
@@ -48,6 +49,7 @@ SIDES
   PROSPEO   prospeo_company_export    domain-keyed; ~10.7k rows; postal extracted from raw_address (ZCTA-validated)
   OVERTURE  overture_places           domain-keyed; best place per domain (highest confidence); street+postal+lat/lon
   BLITZ     firmographics_blitz       domain_norm → hq_city/hq_state/hq_region (no street/postal)
+  COMPANIES companies                 domain-keyed GTM candidate firms; carries name only — address recovered via Overture
 
 GRAIN: 1 row / uei. Idempotent snapshot-overwrite.
 
@@ -66,6 +68,7 @@ PRO = f"{A}/prospeo_company_export/"
 BLZ = f"{A}/firmographics_blitz/"
 OVT = f"{A}/overture_places/"
 ZCTA = f"{A}/zcta_zip_centroids/"
+CO = f"{A}/companies/"
 SERVING_URI = os.environ.get("COMPANY_ADDRESSES_URI", f"{A}/company_addresses/")
 DATA_STORAGE_VERSION = "2.1"
 DUCK_MEM = os.environ.get("DUCK_MEM", "12GB")
@@ -104,6 +107,7 @@ def build() -> dict:
     con.register("blz", lance.dataset(BLZ, storage_options=so))
     con.register("ovt", lance.dataset(OVT, storage_options=so))
     con.register("zcta", lance.dataset(ZCTA, storage_options=so))
+    con.register("co", lance.dataset(CO, storage_options=so))
 
     # ZCTA5 membership set — gates every recovered postal so only real, joinable ZIPs land
     # in winner_postal_code (rejects street numbers, PO-box ZIPs, and Overture non-US codes).
@@ -144,14 +148,29 @@ def build() -> dict:
         WHERE domain_norm IS NOT NULL
     """)
 
-    # ── Universe of domains we actually care about (SAM ∪ Prospeo ∪ Blitz) — used to prune the
-    # 16.3M-row Overture scan down to a windowable set before ranking best-place-per-domain. ──
+    # ── GTM companies (active/companies) — 1 row/domain_norm. Enrichment-sourced candidate firms
+    # (epd_lec_status, equipment_rental, …) that frequently sit OUTSIDE SAM/Prospeo/Blitz entirely.
+    # Without this tier they get neither an Overture lookup nor an output row, so they stay
+    # unplaceable in the downstream proximity matrix. legal_business_name carried from company_name. ──
+    con.execute("""
+        CREATE TEMP TABLE co1 AS
+        SELECT nullif(trim(normalized_domain), '')        AS domain_norm,
+               min(nullif(trim(company_name), ''))        AS company_name
+        FROM co
+        WHERE nullif(trim(normalized_domain), '') IS NOT NULL
+        GROUP BY 1
+    """)
+
+    # ── Universe of domains we actually care about (SAM ∪ Prospeo ∪ Blitz ∪ GTM companies) — used
+    # to prune the 16.3M-row Overture scan down to a windowable set before ranking best-place-per-
+    # domain. GTM companies added so candidate-only domains are eligible for Overture recovery. ──
     con.execute("""
         CREATE TEMP TABLE universe_domains AS
         SELECT DISTINCT domain_norm AS d FROM (
             SELECT domain_norm FROM smd1 WHERE domain_norm IS NOT NULL
             UNION SELECT domain_norm FROM pro1
             UNION SELECT domain_norm FROM blz1
+            UNION SELECT domain_norm FROM co1
         )
     """)
 
@@ -268,7 +287,31 @@ def build() -> dict:
           AND bz.domain_norm NOT IN (SELECT domain_norm FROM base_prospeo_orphan)
     """)
 
-    # ── UNION the three universes. Grain: SAM UEI (when present) else domain_norm. ──
+    # ── GTM-companies orphans: domains in active/companies mapping to NEITHER a SAM UEI NOR a
+    # Prospeo row NOR a Blitz row. uei=NULL; legal_business_name from companies.company_name; winner
+    # picks from the Overture domain-join (street + ZCTA postal + lat/lon) when present, else 'none'. ──
+    con.execute("""
+        CREATE TEMP TABLE base_companies_orphan AS
+        SELECT
+          CAST(NULL AS VARCHAR) AS uei,
+          co.company_name       AS legal_business_name,
+          CAST(NULL AS VARCHAR) AS primary_naics,
+          co.domain_norm,
+          CAST(NULL AS VARCHAR) AS sam_physical_line_1, CAST(NULL AS VARCHAR) AS sam_physical_line_2,
+          CAST(NULL AS VARCHAR) AS sam_physical_city,   CAST(NULL AS VARCHAR) AS sam_physical_state,
+          CAST(NULL AS VARCHAR) AS sam_physical_postal_code, CAST(NULL AS VARCHAR) AS sam_physical_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_physical_country_code, CAST(NULL AS VARCHAR) AS sam_physical_congressional_district,
+          CAST(NULL AS VARCHAR) AS sam_mailing_line_1,  CAST(NULL AS VARCHAR) AS sam_mailing_line_2,
+          CAST(NULL AS VARCHAR) AS sam_mailing_city,    CAST(NULL AS VARCHAR) AS sam_mailing_state,
+          CAST(NULL AS VARCHAR) AS sam_mailing_postal_code, CAST(NULL AS VARCHAR) AS sam_mailing_zip_plus_4,
+          CAST(NULL AS VARCHAR) AS sam_mailing_country
+        FROM co1 co
+        WHERE co.domain_norm NOT IN (SELECT d FROM sam_domains)
+          AND co.domain_norm NOT IN (SELECT domain_norm FROM base_prospeo_orphan)
+          AND co.domain_norm NOT IN (SELECT domain_norm FROM base_blitz_orphan)
+    """)
+
+    # ── UNION the four universes. Grain: SAM UEI (when present) else domain_norm. ──
     con.execute("""
         CREATE TEMP TABLE base AS
         SELECT * FROM base_sam
@@ -276,6 +319,8 @@ def build() -> dict:
         SELECT * FROM base_prospeo_orphan
         UNION ALL
         SELECT * FROM base_blitz_orphan
+        UNION ALL
+        SELECT * FROM base_companies_orphan
     """)
 
     # ── presence flags + winner selection. `address_source` is the rank tag; the winner_* columns
