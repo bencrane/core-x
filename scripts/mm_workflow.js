@@ -38,6 +38,10 @@ Z1KF | Maintenance or Repair of Dredging Facilities | Long-Reach Excavators, Amp
 P400 | Demolition of Buildings | Excavators, Crusher Attachments, Shear Attachments, Heavy Wheel Loaders, Skid Steers
 F108 | Environmental Remediation | Bulldozers, Articulated Off-Road Dump Trucks, Excavators
 F014 | Tree Thinning | Forestry Mulchers, Heavy Bulldozers, Track Loaders
+Z1AA | Maintenance of Office Buildings | Scissor Lifts, Boom Lifts, Telehandlers, Towable Generators, Temporary Chiller Units, Light Towers
+Y1AA | Construction of Office Buildings | Excavators, Rough-Terrain Cranes, Crawler Cranes, High-Reach Telehandlers, Boom Lifts, Wheel Loaders, Skid Steers
+Y1JZ | Construction of Miscellaneous Buildings | Excavators, Rough-Terrain Cranes, Telehandlers, Wheel Loaders, Skid Steers, Boom Lifts, Scissor Lifts
+Z2JZ | Repair or Alteration of Miscellaneous Buildings | Scissor Lifts, Boom Lifts, Telehandlers, Skid Steers, Portable Generators, Light Towers
 `.trim()
 
 const ACK_SCHEMA = {
