@@ -278,8 +278,8 @@ def test_decoders_are_internally_consistent():
 # ── PHASE 3: capability list axis (array_has) ────────────────────────────────
 def test_capability_tag_has_compiles_with_scope_gate():
     # "winners that do electrical work" → array_has + the deterministic scope gate.
-    pred = _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "electrical_systems"}])
-    assert pred == ("array_has(capability_tags, 'electrical_systems') "
+    pred = _compile(WINNERS, [{"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"}])
+    assert pred == ("array_has(solicitation_scope_tags, 'electrical_systems') "
                     "AND has_extracted_scope = true")
 
 
@@ -293,18 +293,18 @@ def test_labor_category_has_any_compiles():
 
 def test_capability_tag_enum_violation_rejected():
     with pytest.raises(lance_store.MapCompileError):
-        _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "not_a_tag"}])
+        _compile(WINNERS, [{"field": "solicitation_scope_tag", "op": "has", "value": "not_a_tag"}])
 
 
 def test_capability_list_has_requires_string_value():
     with pytest.raises(lance_store.MapCompileError):
-        _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": ["electrical_systems"]}])
+        _compile(WINNERS, [{"field": "solicitation_scope_tag", "op": "has", "value": ["electrical_systems"]}])
 
 
 def test_capability_list_rejects_scalar_op():
     # '=' is not in a list field's ops (has/has_any only).
     with pytest.raises(lance_store.MapCompileError):
-        _compile(WINNERS, [{"field": "capability_tag", "op": "=", "value": "electrical_systems"}])
+        _compile(WINNERS, [{"field": "solicitation_scope_tag", "op": "=", "value": "electrical_systems"}])
 
 
 def test_capability_value_is_escaped_not_executed():
@@ -426,33 +426,33 @@ def test_teaming_fields_are_not_gated():
 def test_self_reported_capability_has_compiles_no_scope_gate():
     # "subs that self-report software development" → array_has on the self-reported column with
     # NO has_extracted_scope gate (the whole point: it must reach the 13,792-sub long tail, not
-    # the ~4,220 scope-extracted slice the gated capability_tag axis would clip to).
+    # the ~4,220 scope-extracted slice the gated solicitation_scope_tag axis would clip to).
     pred = _compile(WINNERS, [
-        {"field": "self_reported_capability_tag", "op": "has", "value": "software_development"}])
-    assert pred == "array_has(self_reported_capability_tags, 'software_development')"
+        {"field": "subaward_description_tag", "op": "has", "value": "software_development"}])
+    assert pred == "array_has(subaward_description_tags, 'software_development')"
     assert "has_extracted_scope" not in pred
 
 
 def test_self_reported_capability_distinct_from_gated_capability_tag():
-    # The gated capability_tag axis DOES acquire the scope gate; the self-reported axis does not —
+    # The gated solicitation_scope_tag axis DOES acquire the scope gate; the self-reported axis does not —
     # proving they are distinct fields with opposite gating, never collapsed.
-    gated_pred = _compile(WINNERS, [{"field": "capability_tag", "op": "has", "value": "software_development"}])
-    assert gated_pred == ("array_has(capability_tags, 'software_development') "
+    gated_pred = _compile(WINNERS, [{"field": "solicitation_scope_tag", "op": "has", "value": "software_development"}])
+    assert gated_pred == ("array_has(solicitation_scope_tags, 'software_development') "
                           "AND has_extracted_scope = true")
-    sr_pred = _compile(WINNERS, [{"field": "self_reported_capability_tag", "op": "has", "value": "software_development"}])
+    sr_pred = _compile(WINNERS, [{"field": "subaward_description_tag", "op": "has", "value": "software_development"}])
     assert "has_extracted_scope" not in sr_pred
 
 
 def test_self_reported_capability_reuses_controlled_vocab_enum():
-    # Same 77-tag enum as capability_tag → an off-vocab value is rejected (→ 422), never reaches Lance.
+    # Same 77-tag enum as solicitation_scope_tag → an off-vocab value is rejected (→ 422), never reaches Lance.
     with pytest.raises(lance_store.MapCompileError):
-        _compile(WINNERS, [{"field": "self_reported_capability_tag", "op": "has", "value": "not_a_tag"}])
+        _compile(WINNERS, [{"field": "subaward_description_tag", "op": "has", "value": "not_a_tag"}])
 
 
 def test_self_reported_capability_via_synonym_compiles_ungated():
     syn = WINNERS.synonyms["self-reported aircraft maintenance"]
     pred = _compile(WINNERS, [syn])
-    assert pred == "array_has(self_reported_capability_tags, 'aircraft_maintenance')"
+    assert pred == "array_has(subaward_description_tags, 'aircraft_maintenance')"
     assert "has_extracted_scope" not in pred
 
 
@@ -480,10 +480,10 @@ def test_req_cert_tag_is_open_valued_and_escaped():
 
 
 def test_self_reported_and_cert_fields_are_not_gated():
-    for name in ("self_reported_capability_tag", "req_cert_tag"):
+    for name in ("subaward_description_tag", "req_cert_tag"):
         assert WINNERS.fields[name].gated is False, f"{name} must not be gated"
-    # And the self-reported enum is the SAME object/value-set as the gated capability_tag enum.
-    assert WINNERS.fields["self_reported_capability_tag"].enum == WINNERS.fields["capability_tag"].enum
+    # And the self-reported enum is the SAME object/value-set as the gated solicitation_scope_tag enum.
+    assert WINNERS.fields["subaward_description_tag"].enum == WINNERS.fields["solicitation_scope_tag"].enum
 
 
 # ── PHASE 3: CUI egress invariant — chunk-derived text never in any decoder ───
