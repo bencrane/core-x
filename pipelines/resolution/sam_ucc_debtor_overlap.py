@@ -1,0 +1,539 @@
+"""Compute worker — sam_ucc_debtor_overlap: SAM.gov entities that are CA/CO UCC debtors.
+
+The ``resolution-sam-ucc-overlap-pipelines`` Modal app — the CAPSTONE of the SAM⟷UCC
+resolution. Composes the two canonical bridges through the SoS hub:
+
+    crosswalk_ucc_sos (UCC debtor → SoS, is_canonical)  ⋈  crosswalk_sos_sam (SoS → UEI,
+    is_canonical)   ON sos_entity_key
+
+→ one row per SAM entity (uei) that resolves to a CA/CO UCC debtor, enriched with:
+  · UCC ACTIVITY (debtor → ca_ucc_filings / co_ucc_transactions): n_ucc_financing,
+    n_active_ucc_liens, has_active_lien, has_tax_lien. "Taking $" = VOLUNTARY secured
+    financing only — CA filing_type='UCC'; CO filing_type IN ('ucc','efs'). Involuntary
+    liens (CA 'Notice of … Tax Lien'/'Judgment Lien'; CO 'lien_*') are EXCLUDED from
+    "taking $" but surfaced as has_tax_lien (a distinct, useful segment). Active lien =
+    secured financing with max(lapse_date) >= today and not terminated (CA action_type
+    'Termination'; CO termination_flag).
+  · OFFICER CORROBORATION (inline): SAM POC person-names (sam_pocs) vs SoS officer names
+    (ca_sos_principals; co_sos registered agent), both normalized by the SHARED
+    core.name_norm macro → officer_match_count / officer_confirms. Breaks the 1-vs-N name
+    ambiguity; CA-strong (full principal roster), CO thin (agent only).
+  · COMPOSITE confidence from the two name-match tiers × officer corroboration.
+
+Grain: one row per (uei, sos_entity_key) — since crosswalk_sos_sam is 1 canonical uei per
+SoS entity and crosswalk_ucc_sos is 1 canonical SoS per UCC debtor, this is the SAM-entity
+grain, aggregating the UCC debtor backing (one SoS entity can absorb several debtor
+name-variants).
+
+COVERAGE EXPECTATION (not a defect): SAM registration is for federal contractors/grant
+recipients; most small private UCC debtors never registered. This dataset is the
+high-value INTERSECTION — federally-registered companies carrying secured debt.
+
+Source-of-truth inputs (read-only; never mutated):
+  active/crosswalk_ucc_sos/   active/crosswalk_sos_sam/
+  active/ca_ucc/debtors/ + active/ca_ucc/filings/      (CA activity, join on ucc1_num)
+  active/ucc_co_debtors/ + active/co_ucc_transactions/ (CO activity, join on file_id)
+  active/sam_pocs/  active/ca_sos_principals/  active/co_sos/   (officer corroboration)
+
+Data plane (clean-room — DuckDB does 100% of the transform):
+  Lance(8) → DuckDB compose+activity+officer+score → Arrow → [pre-write gates] →
+  lance.write_dataset(R2 active, v2.1, overwrite) → BTREE(uei, sos_entity_key,
+  sam_legal_business_name) + BITMAP(overlap_confidence, has_active_lien, officer_confirms,
+  ucc_states) → [post-write gates; restore-to-v_before on failure].
+
+    modal run    pipelines/resolution/sam_ucc_debtor_overlap.py::init_ops
+    modal run    pipelines/resolution/sam_ucc_debtor_overlap.py --dry-run   # gates, no write
+    modal run    pipelines/resolution/sam_ucc_debtor_overlap.py             # build + verify
+    modal deploy pipelines/resolution/sam_ucc_debtor_overlap.py
+"""
+
+from __future__ import annotations
+
+import os
+
+import modal
+
+from core.name_norm import name_norm as _name_norm
+
+BUCKET = "data-sink"
+CROSSWALK_UCC_SOS_URI = os.environ.get("CROSSWALK_UCC_SOS_URI", "s3://data-sink/active/crosswalk_ucc_sos/")
+CROSSWALK_SOS_SAM_URI = os.environ.get("CROSSWALK_SOS_SAM_URI", "s3://data-sink/active/crosswalk_sos_sam/")
+CA_DEBTORS_URI = os.environ.get("CA_UCC_DEBTORS_URI", "s3://data-sink/active/ca_ucc/debtors/")
+CA_FILINGS_URI = os.environ.get("CA_UCC_FILINGS_URI", "s3://data-sink/active/ca_ucc/filings/")
+CO_DEBTORS_URI = os.environ.get("UCC_CO_DEBTORS_URI", "s3://data-sink/active/ucc_co_debtors/")
+CO_TXN_URI = os.environ.get("CO_UCC_TRANSACTIONS_LANCE_URI", "s3://data-sink/active/co_ucc_transactions/")
+SAM_POCS_URI = os.environ.get("SAM_POCS_URI", "s3://data-sink/active/sam_pocs/")
+CA_PRINCIPALS_URI = os.environ.get("CA_SOS_PRINCIPALS_LANCE_URI", "s3://data-sink/active/ca_sos_principals/")
+CO_SOS_URI = os.environ.get("CO_SOS_LANCE_URI", "s3://data-sink/active/co_sos/")
+DATASET_URI = os.environ.get("SAM_UCC_DEBTOR_OVERLAP_URI", "s3://data-sink/active/sam_ucc_debtor_overlap/")
+FEED = "sam_ucc_debtor_overlap"
+
+DATA_STORAGE_VERSION = "2.1"
+MAX_ROWS_PER_FILE = 1048576
+
+BTREE_INDEXES = ["uei", "sos_entity_key", "sam_legal_business_name"]
+BITMAP_INDEXES = ["overlap_confidence", "has_active_lien", "officer_confirms", "ucc_states"]
+
+DUCKDB_MEMORY_LIMIT = "40GB"
+DUCKDB_THREADS = 8
+SPILL_DIR = "/tmp/duckdb_spill"
+
+ROW_FLOOR = 1_000  # the intersection is a high-value sliver; conservative floor
+
+OPS_DDL = """
+CREATE SCHEMA IF NOT EXISTS ops;
+
+CREATE TABLE IF NOT EXISTS ops.sam_ucc_debtor_overlap_runs (
+    id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    feed                text        NOT NULL,
+    dataset_uri         text        NOT NULL,
+    rows_written        bigint,
+    distinct_uei        bigint,
+    with_active_lien    bigint,
+    officer_confirmed   bigint,
+    ca_rows             bigint,
+    co_rows             bigint,
+    status              text        NOT NULL,
+    error               text,
+    started_at          timestamptz,
+    completed_at        timestamptz,
+    recorded_at         timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS sam_ucc_overlap_runs_feed_idx        ON ops.sam_ucc_debtor_overlap_runs (feed);
+CREATE INDEX IF NOT EXISTS sam_ucc_overlap_runs_status_idx      ON ops.sam_ucc_debtor_overlap_runs (status);
+CREATE INDEX IF NOT EXISTS sam_ucc_overlap_runs_recorded_at_idx ON ops.sam_ucc_debtor_overlap_runs (recorded_at DESC);
+"""
+
+image = modal.Image.debian_slim(python_version="3.12").pip_install(
+    "duckdb>=1.5,<2",
+    "lancedb>=0.15",
+    "pylance>=7",
+    "pyarrow>=17",
+    "requests>=2.32",
+    "psycopg[binary]>=3.2",
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.name_norm")
+
+app = modal.App("resolution-sam-ucc-overlap-pipelines", image=image)
+
+
+def _r2_storage_options() -> dict[str, str]:
+    endpoint = os.environ.get("R2_ENDPOINT")
+    account_id = os.environ.get("R2_ACCOUNT_ID")
+    if not endpoint and account_id:
+        endpoint = f"https://{account_id}.r2.cloudflarestorage.com"
+    if not endpoint:
+        raise RuntimeError("Set R2_ENDPOINT or R2_ACCOUNT_ID in the Modal secret.")
+    return {
+        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "endpoint": endpoint,
+        "region": "auto",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# DuckDB transform — pure SQL builder
+# --------------------------------------------------------------------------- #
+def build_overlap_sql() -> str:
+    """Compose the two canonical bridges through sos_entity_key, attach UCC activity +
+    officer corroboration, score composite confidence. Reads the scanned relations
+    cu_src, cs_src, ca_deb_src, ca_fil_src, co_deb_src, co_txn_src, sam_poc_src,
+    ca_prin_src, co_sos_src. Person-name key uses the shared core.name_norm macro."""
+    sam_pk = _name_norm("sam_poc_src.first_name || ' ' || sam_poc_src.last_name")
+    ca_pk = _name_norm("ca_prin_src.first_name || ' ' || ca_prin_src.last_name")
+    co_pk = _name_norm("co_sos_src.agent_first_name || ' ' || co_sos_src.agent_last_name")
+    return f"""
+    WITH cu AS (   -- canonical UCC debtor → SoS (one per debtor company)
+        SELECT ucc_debtor_key, ucc_state, ucc_normalized_legal_name, ucc_zip_code,
+               sos_entity_key, sos_source_entity_name, match_tier AS ucc_sos_tier
+        FROM cu_src WHERE is_canonical
+    ),
+    cs AS (        -- canonical SoS → UEI (one per SoS entity)
+        SELECT sos_entity_key, uei, sam_legal_business_name, sam_is_active, sam_primary_naics,
+               match_tier AS sos_sam_tier
+        FROM cs_src WHERE is_canonical AND uei IS NOT NULL
+    ),
+    base AS (      -- the overlap, per UCC debtor name-variant
+        SELECT cu.ucc_debtor_key, cu.ucc_state, cu.ucc_normalized_legal_name, cu.ucc_zip_code,
+               cu.sos_entity_key, cu.sos_source_entity_name, cu.ucc_sos_tier,
+               cs.uei, cs.sam_legal_business_name, cs.sam_is_active, cs.sam_primary_naics, cs.sos_sam_tier
+        FROM cu JOIN cs ON cs.sos_entity_key = cu.sos_entity_key
+    ),
+    -- ── UCC financing-statement status (CA: per ucc1_num; CO: per file_id) ──
+    ca_fil AS (
+        SELECT ucc1_num,
+               max(CASE WHEN filing_type = 'UCC' THEN 1 ELSE 0 END)                          AS is_ucc,
+               max(lapse_date)                                                               AS max_lapse,
+               max(CASE WHEN action_type = 'Termination' THEN 1 ELSE 0 END)                  AS terminated,
+               max(CASE WHEN filing_type LIKE '%Tax Lien' OR filing_type = 'Judgment Lien'
+                        THEN 1 ELSE 0 END)                                                   AS is_tax
+        FROM ca_fil_src WHERE ucc1_num IS NOT NULL GROUP BY ucc1_num
+    ),
+    co_fil AS (
+        SELECT file_id,
+               max(CASE WHEN filing_type IN ('ucc', 'efs') THEN 1 ELSE 0 END)               AS is_ucc,
+               max(lapse_date)                                                               AS max_lapse,
+               max(CASE WHEN termination_flag THEN 1 ELSE 0 END)                             AS terminated,
+               max(CASE WHEN filing_type LIKE 'lien_%' THEN 1 ELSE 0 END)                    AS is_tax
+        FROM co_txn_src WHERE file_id IS NOT NULL GROUP BY file_id
+    ),
+    -- ── UCC activity per ucc_debtor_key (recomputed from the keyed debtor tables) ──
+    ca_act AS (
+        SELECT 'CA:' || d.normalized_legal_name || '|' || coalesce(d.zip_code, '')          AS ucc_debtor_key,
+               count(DISTINCT CASE WHEN f.is_ucc = 1 THEN d.ucc1_num END)                    AS n_ucc_financing,
+               count(DISTINCT CASE WHEN f.is_ucc = 1 AND f.terminated = 0
+                                    AND f.max_lapse >= CURRENT_DATE THEN d.ucc1_num END)     AS n_active_ucc,
+               max(f.is_tax)                                                                 AS has_tax_lien
+        FROM ca_deb_src d JOIN ca_fil f ON f.ucc1_num = d.ucc1_num
+        WHERE d.normalized_legal_name IS NOT NULL GROUP BY 1
+    ),
+    co_act AS (
+        SELECT 'CO:' || d.normalized_legal_name || '|' || coalesce(d.zip_code, '')          AS ucc_debtor_key,
+               count(DISTINCT CASE WHEN f.is_ucc = 1 THEN d.file_id END)                     AS n_ucc_financing,
+               count(DISTINCT CASE WHEN f.is_ucc = 1 AND f.terminated = 0
+                                    AND f.max_lapse >= CURRENT_DATE THEN d.file_id END)      AS n_active_ucc,
+               max(f.is_tax)                                                                 AS has_tax_lien
+        FROM co_deb_src d JOIN co_fil f ON f.file_id = d.file_id
+        WHERE d.normalized_legal_name IS NOT NULL GROUP BY 1
+    ),
+    ucc_act AS (SELECT * FROM ca_act UNION ALL SELECT * FROM co_act),
+    base_act AS (
+        SELECT b.*, coalesce(a.n_ucc_financing, 0) AS n_ucc_financing,
+               coalesce(a.n_active_ucc, 0) AS n_active_ucc, coalesce(a.has_tax_lien, 0) AS has_tax_lien
+        FROM base b LEFT JOIN ucc_act a USING (ucc_debtor_key)
+    ),
+    -- ── officer person-name sets (shared core.name_norm macro both sides) ──
+    sam_nm AS (
+        SELECT DISTINCT uei, {sam_pk} AS pk FROM sam_poc_src
+        WHERE uei IS NOT NULL AND {sam_pk} IS NOT NULL AND {sam_pk} LIKE '% %' AND length({sam_pk}) >= 6
+    ),
+    sos_nm AS (
+        SELECT 'CA:' || entity_num AS sos_entity_key, {ca_pk} AS pk FROM ca_prin_src
+        WHERE entity_num IS NOT NULL AND {ca_pk} IS NOT NULL AND {ca_pk} LIKE '% %' AND length({ca_pk}) >= 6
+        UNION
+        SELECT 'CO:' || entity_id AS sos_entity_key, {co_pk} AS pk FROM co_sos_src
+        WHERE entity_id IS NOT NULL AND {co_pk} IS NOT NULL AND {co_pk} LIKE '% %' AND length({co_pk}) >= 6
+    ),
+    cand AS (SELECT DISTINCT uei, sos_entity_key FROM base_act),
+    officer AS (
+        SELECT c.uei, c.sos_entity_key, count(DISTINCT sn.pk) AS officer_match_count
+        FROM cand c
+        JOIN sam_nm sn ON sn.uei = c.uei
+        JOIN sos_nm so ON so.sos_entity_key = c.sos_entity_key AND so.pk = sn.pk
+        GROUP BY 1, 2
+    ),
+    -- ── aggregate to SAM-entity grain (uei, sos_entity_key) ──
+    agg AS (
+        SELECT
+            uei, sos_entity_key,
+            any_value(sam_legal_business_name)      AS sam_legal_business_name,
+            any_value(sam_is_active)                AS sam_is_active,
+            any_value(sam_primary_naics)            AS sam_primary_naics,
+            any_value(sos_source_entity_name)       AS sos_source_entity_name,
+            min(ucc_sos_tier)                       AS ucc_sos_tier,
+            min(sos_sam_tier)                        AS sos_sam_tier,
+            count(DISTINCT ucc_debtor_key)          AS n_ucc_debtor_names,
+            any_value(ucc_normalized_legal_name)    AS ucc_example_name,
+            sum(n_ucc_financing)                    AS n_ucc_financing,
+            sum(n_active_ucc)                       AS n_active_ucc_liens,
+            max(has_tax_lien)                       AS has_tax_lien_i,
+            CASE WHEN count(DISTINCT ucc_state) > 1 THEN 'CA+CO' ELSE any_value(ucc_state) END AS ucc_states
+        FROM base_act GROUP BY uei, sos_entity_key
+    )
+    SELECT
+        g.uei, g.sos_entity_key, g.sos_source_entity_name, g.sam_legal_business_name,
+        g.sam_is_active, g.sam_primary_naics, g.ucc_states, g.ucc_example_name,
+        g.n_ucc_debtor_names, g.ucc_sos_tier, g.sos_sam_tier,
+        g.n_ucc_financing, g.n_active_ucc_liens,
+        (g.n_active_ucc_liens > 0)                  AS has_active_lien,
+        (g.has_tax_lien_i = 1)                      AS has_tax_lien,
+        coalesce(o.officer_match_count, 0)          AS officer_match_count,
+        (coalesce(o.officer_match_count, 0) >= 1)   AS officer_confirms,
+        CASE
+            WHEN g.ucc_sos_tier = 1 AND g.sos_sam_tier = 1 AND coalesce(o.officer_match_count, 0) >= 1 THEN 'very_high'
+            WHEN g.ucc_sos_tier = 1 AND g.sos_sam_tier = 1 THEN 'high'
+            WHEN g.ucc_sos_tier <= 2 AND g.sos_sam_tier <= 2 THEN 'medium_high'
+            WHEN g.ucc_sos_tier <= 2 AND g.sos_sam_tier <= 3 THEN 'medium'
+            ELSE 'low'
+        END                                         AS overlap_confidence,
+        'sam_ucc_debtor_overlap'                    AS source_dataset
+    FROM agg g LEFT JOIN officer o USING (uei, sos_entity_key)
+    """
+
+
+def _new_con():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}'")
+    con.execute(f"SET threads TO {DUCKDB_THREADS}")
+    con.execute(f"SET temp_directory='{SPILL_DIR}'")
+    con.execute("SET preserve_insertion_order=false")
+    return con
+
+
+def _materialize(con):
+    import lance
+
+    so = _r2_storage_options()
+
+    def scan(uri, cols):
+        return lance.dataset(uri, storage_options=so).scanner(columns=cols).to_reader()
+
+    con.register("cu_src", scan(CROSSWALK_UCC_SOS_URI, [
+        "ucc_debtor_key", "ucc_state", "ucc_normalized_legal_name", "ucc_zip_code",
+        "sos_entity_key", "sos_source_entity_name", "match_tier", "is_canonical"]))
+    con.register("cs_src", scan(CROSSWALK_SOS_SAM_URI, [
+        "sos_entity_key", "uei", "sam_legal_business_name", "sam_is_active",
+        "sam_primary_naics", "match_tier", "is_canonical"]))
+    con.register("ca_deb_src", scan(CA_DEBTORS_URI, ["normalized_legal_name", "zip_code", "ucc1_num"]))
+    con.register("ca_fil_src", scan(CA_FILINGS_URI, ["ucc1_num", "filing_type", "lapse_date", "action_type"]))
+    con.register("co_deb_src", scan(CO_DEBTORS_URI, ["normalized_legal_name", "zip_code", "file_id"]))
+    con.register("co_txn_src", scan(CO_TXN_URI, ["file_id", "filing_type", "lapse_date", "termination_flag"]))
+    con.register("sam_poc_src", scan(SAM_POCS_URI, ["uei", "first_name", "last_name"]))
+    con.register("ca_prin_src", scan(CA_PRINCIPALS_URI, ["entity_num", "first_name", "last_name"]))
+    con.register("co_sos_src", scan(CO_SOS_URI, ["entity_id", "agent_first_name", "agent_last_name"]))
+    con.execute(f"CREATE TEMP TABLE overlap AS {build_overlap_sql()}")
+    for r in ("cu_src", "cs_src", "ca_deb_src", "ca_fil_src", "co_deb_src", "co_txn_src",
+              "sam_poc_src", "ca_prin_src", "co_sos_src"):
+        con.unregister(r)
+
+    row = con.execute("""
+        SELECT
+            count(*)                                                    AS rows,
+            count(DISTINCT uei)                                         AS distinct_uei,
+            count(*) FILTER (WHERE has_active_lien)                     AS with_active_lien,
+            count(*) FILTER (WHERE officer_confirms)                    AS officer_confirmed,
+            count(*) FILTER (WHERE ucc_states LIKE 'CA%')               AS ca_rows,
+            count(*) FILTER (WHERE ucc_states = 'CO')                   AS co_rows,
+            count(*) FILTER (WHERE has_tax_lien)                        AS with_tax_lien,
+            count(*) FILTER (WHERE uei IS NULL OR sos_entity_key IS NULL) AS orphans,
+            count(*) FILTER (WHERE overlap_confidence = 'very_high')    AS very_high,
+            count(*) FILTER (WHERE n_ucc_financing = 0)                 AS zero_financing
+        FROM overlap
+    """).fetchone()
+    keys = ["rows", "distinct_uei", "with_active_lien", "officer_confirmed", "ca_rows", "co_rows",
+            "with_tax_lien", "orphans", "very_high", "zero_financing"]
+    metrics = {k: int(v) for k, v in zip(keys, row)}
+    table = con.sql("SELECT * FROM overlap").to_arrow_table()
+    return table, metrics
+
+
+def assert_pre_write_gates(m: dict) -> list[str]:
+    checks: list[str] = []
+
+    def gate(ok: bool, label: str) -> None:
+        checks.append(f"{'PASS' if ok else 'FAIL'}  {label}")
+        if not ok:
+            raise RuntimeError(f"PRE-WRITE GATE FAILED → {label}\n" + "\n".join(checks))
+
+    gate(m["rows"] >= ROW_FLOOR, f"1 row floor: {m['rows']:,} >= {ROW_FLOOR:,}")
+    gate(m["orphans"] == 0, f"2 no orphan keys: {m['orphans']}")
+    gate(m["distinct_uei"] > 0, f"3 distinct uei: {m['distinct_uei']:,}")
+    gate(m["ca_rows"] > 0 and m["co_rows"] > 0, f"4 both states present: CA={m['ca_rows']:,} CO={m['co_rows']:,}")
+    return checks
+
+
+def _pg_connect():
+    import psycopg
+
+    dsn = os.environ.get("HQX_DB_URL_POOLED")
+    if not dsn:
+        print("WARN: HQX_DB_URL_POOLED not set; skipping ops.* write.")
+        return None
+    return psycopg.connect(dsn)
+
+
+def _record_run(*, metrics, status, error, started_at, completed_at) -> None:
+    conn = _pg_connect()
+    if conn is None:
+        return
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(OPS_DDL)
+            cur.execute(
+                """
+                INSERT INTO ops.sam_ucc_debtor_overlap_runs
+                    (feed, dataset_uri, rows_written, distinct_uei, with_active_lien,
+                     officer_confirmed, ca_rows, co_rows, status, error, started_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (FEED, DATASET_URI, metrics.get("rows"), metrics.get("distinct_uei"),
+                 metrics.get("with_active_lien"), metrics.get("officer_confirmed"),
+                 metrics.get("ca_rows"), metrics.get("co_rows"), status, error,
+                 started_at, completed_at),
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: ops.* write failed: {exc}")
+    finally:
+        conn.close()
+
+
+def _post_callback(url, payload, attempts: int = 3) -> None:
+    if not url:
+        print("No trigger_callback_url (manual run); skipping callback.")
+        return
+    import time
+
+    import requests
+
+    for i in range(attempts):
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code < 300:
+                print(f"Callback delivered: {payload}")
+                return
+        except Exception as exc:  # noqa: BLE001
+            print(f"Callback attempt {i + 1} failed: {exc}")
+        time.sleep(2 * (i + 1))
+    print(f"WARN: callback delivery failed after {attempts} attempts → {url}")
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 90,
+    memory=65536,
+    cpu=8.0,
+)
+def build_overlap(trigger_callback_url: str | None = None) -> dict:
+    import datetime as dt
+
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    so = _r2_storage_options()
+    status, error = "error", None
+    metrics = {"rows": 0, "distinct_uei": 0, "with_active_lien": 0, "officer_confirmed": 0,
+               "ca_rows": 0, "co_rows": 0}
+    try:
+        os.makedirs(SPILL_DIR, exist_ok=True)
+        con = _new_con()
+        try:
+            table, metrics = _materialize(con)
+        finally:
+            con.close()
+        print(f"materialized: {metrics}")
+        for line in assert_pre_write_gates(metrics):
+            print("  ", line)
+
+        try:
+            v_before = lance.dataset(DATASET_URI, storage_options=so).version
+        except Exception:
+            v_before = None
+        print(f"v_before = {v_before}")
+
+        lance.write_dataset(table, DATASET_URI, mode="overwrite",
+                            data_storage_version=DATA_STORAGE_VERSION,
+                            max_rows_per_file=MAX_ROWS_PER_FILE, storage_options=so)
+        print(f"wrote dataset (overwrite, v{DATA_STORAGE_VERSION}) → {DATASET_URI}")
+        ds = lance.dataset(DATASET_URI, storage_options=so)
+        for col in BTREE_INDEXES:
+            ds.create_scalar_index(col, index_type="BTREE")
+            print(f"  BTREE ✓ {col}")
+        for col in BITMAP_INDEXES:
+            ds.create_scalar_index(col, index_type="BITMAP")
+            print(f"  BITMAP ✓ {col}")
+
+        try:
+            ds = lance.dataset(DATASET_URI, storage_options=so)
+            committed = ds.count_rows()
+            idx_names = {(i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
+                         for i in ds.list_indices()}
+            expect_idx = {f"{c}_idx" for c in BTREE_INDEXES + BITMAP_INDEXES}
+            if not expect_idx.issubset(idx_names):
+                raise RuntimeError(f"gate indices: missing {sorted(expect_idx - idx_names)}")
+            if committed != metrics["rows"]:
+                raise RuntimeError(f"gate rowcount: committed {committed} != materialized {metrics['rows']}")
+            print(f"post-write gates PASS — committed={committed:,} indices={sorted(idx_names)}")
+        except Exception as gate_exc:  # noqa: BLE001
+            if v_before is not None:
+                lance.dataset(DATASET_URI, storage_options=so, version=v_before).restore()
+                raise RuntimeError(f"post-write gate failed → rolled back to v{v_before}: {gate_exc}")
+            raise RuntimeError(f"post-write gate failed on net-new dataset (inspect/drop {DATASET_URI}): {gate_exc}")
+
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run(metrics=metrics, status=status, error=error,
+                    started_at=started_at, completed_at=completed_at)
+        _post_callback(trigger_callback_url,
+                       {"status": status, "rows": metrics["rows"], "feed": FEED,
+                        "dataset_uri": DATASET_URI, "distinct_uei": metrics["distinct_uei"],
+                        "with_active_lien": metrics["with_active_lien"]})
+
+    if status != "success":
+        raise RuntimeError(f"sam_ucc_debtor_overlap build failed: {error}")
+    return {"feed": FEED, "dataset": DATASET_URI, **metrics}
+
+
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=900)
+def verify_overlap() -> dict:
+    import duckdb
+    import lance
+
+    so = _r2_storage_options()
+    ds = lance.dataset(DATASET_URI, storage_options=so)
+    idx = sorted((i.get("name") if isinstance(i, dict) else getattr(i, "name", str(i)))
+                 for i in ds.list_indices())
+    con = duckdb.connect()
+    con.register("d", ds.scanner(columns=[
+        "uei", "ucc_states", "overlap_confidence", "has_active_lien", "has_tax_lien",
+        "officer_confirms", "n_active_ucc_liens"]).to_reader())
+    con.execute("CREATE TEMP TABLE d2 AS SELECT * FROM d")
+    con.unregister("d")
+    rows, d_uei = con.execute("SELECT count(*), count(DISTINCT uei) FROM d2").fetchone()
+    by_conf = dict(con.execute("SELECT overlap_confidence, count(*) FROM d2 GROUP BY 1 ORDER BY 2 DESC").fetchall())
+    by_state = dict(con.execute("SELECT ucc_states, count(*) FROM d2 GROUP BY 1").fetchall())
+    active = con.execute("SELECT count(*) FILTER (WHERE has_active_lien), count(*) FILTER (WHERE officer_confirms), "
+                         "count(*) FILTER (WHERE has_tax_lien) FROM d2").fetchone()
+    con.close()
+    sample = ds.scanner(columns=[
+        "uei", "sam_legal_business_name", "ucc_example_name", "ucc_states", "n_ucc_financing",
+        "n_active_ucc_liens", "has_active_lien", "officer_confirms", "overlap_confidence"],
+        filter="overlap_confidence IN ('very_high','high') AND has_active_lien", limit=8).to_table().to_pylist()
+    return {"uri": DATASET_URI, "rows": rows, "distinct_uei": d_uei, "indices": idx,
+            "by_confidence": by_conf, "by_state": by_state,
+            "with_active_lien": active[0], "officer_confirmed": active[1], "with_tax_lien": active[2],
+            "schema": [f"{f.name}:{f.type}" for f in ds.schema], "sample": sample}
+
+
+@app.function(secrets=[modal.Secret.from_name("hqx-postgres")], timeout=120)
+def init_ops() -> dict:
+    conn = _pg_connect()
+    if conn is None:
+        raise RuntimeError("HQX_DB_URL_POOLED not set.")
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(OPS_DDL)
+    finally:
+        conn.close()
+    return {"status": "ok", "table": "ops.sam_ucc_debtor_overlap_runs"}
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60, memory=65536, cpu=8.0,
+)
+def plan_overlap() -> dict:
+    os.makedirs(SPILL_DIR, exist_ok=True)
+    con = _new_con()
+    try:
+        _table, metrics = _materialize(con)
+    finally:
+        con.close()
+    checks = assert_pre_write_gates(metrics)
+    return {"feed": FEED, "gates": checks, **metrics}
+
+
+@app.local_entrypoint()
+def build(dry_run: bool = False) -> None:
+    import json
+
+    if dry_run:
+        print(json.dumps(plan_overlap.remote(), indent=2, default=str))
+        return
+    print(json.dumps(build_overlap.remote(trigger_callback_url=None), indent=2, default=str))
+    print(json.dumps(verify_overlap.remote(), indent=2, default=str))
