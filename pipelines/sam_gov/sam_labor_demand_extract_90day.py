@@ -1795,6 +1795,7 @@ def validate_result(result: dict, task: dict, vocab: dict, engine_tag: str,
     meta = task["doc_meta"]
     chunks = {c["chunk_id"]: c for c in task["chunks"]}
     rejects: list[dict] = []
+    freeform_labor = task.get("prompt_version") == "v2-freeform-labor"
 
     def _quarantine(reason: str) -> dict:
         return {"status": "quarantined", "doc_row": None, "req_rows": [],
@@ -1833,7 +1834,8 @@ def validate_result(result: dict, task: dict, vocab: dict, engine_tag: str,
             reject("missing_requirement_value")
             continue
         value_norm = _ws_collapse(rval).lower()
-        if rtype == "labor_category" and value_norm not in labor_set and not LLM_FREEFORM_LABOR:
+        if (rtype == "labor_category" and value_norm not in labor_set
+                and not LLM_FREEFORM_LABOR and not freeform_labor):
             reject(f"labor_category_out_of_vocab:{value_norm}")
             continue
         clr = rr.get("clearance_level")
