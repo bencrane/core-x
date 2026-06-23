@@ -9,6 +9,7 @@ WIRE CONTRACT. ONE contact per request, FLAT singular fields (no nested raw_payl
 
     {
       "full_name":            "Jane A. Smith",                         // required (middle name/initial optional)
+      "person_linkedin_url":  "https://www.linkedin.com/in/jane-smith",// optional (the PERSON's LinkedIn)
       "work_email":           "jane.smith@auxcap.com",                 // OPTIONAL (validated if present)
       "job_title":            "VP, Asset Based Lending",               // optional
       "is_main_contact":      "true",                                  // optional — "true"/"false" (also 1/0, yes/no)
@@ -182,6 +183,7 @@ def _contact_key(person_disc: str, domain_norm: str | None, linkedin_url_norm: s
 _COLS = (
     "record_id", "contact_key", "person_id",
     "full_name", "first_name", "middle_name", "last_name",
+    "person_linkedin_url", "person_linkedin_url_norm",
     "work_email", "work_email_norm", "job_title", "is_main_contact",
     "city", "state", "country",
     "company_name", "company_domain", "domain_norm",
@@ -228,6 +230,7 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
     if not domain_norm and not linkedin_url_norm:
         return None
 
+    person_linkedin_url_norm = _normalize_linkedin(rec.get("person_linkedin_url"))  # optional; verbatim kept too
     person_disc = _person_disc(work_email_norm, full_name)  # full_name is guaranteed → never None
     first_name, middle_name, last_name = _split_name(full_name)
     job_title = _s(rec.get("job_title"))
@@ -242,6 +245,7 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
         domain_norm or "",
         linkedin_url_norm or "",
         full_name,
+        person_linkedin_url_norm or "",
         job_title or "",
         "" if is_main_contact is None else ("true" if is_main_contact else "false"),
         city or "", state or "", country or "",
@@ -251,6 +255,7 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
     return (
         record_id, contact_key, person_id,
         full_name, first_name, middle_name, last_name,
+        _s(rec.get("person_linkedin_url")), person_linkedin_url_norm,
         _s(rec.get("work_email")), work_email_norm, job_title, is_main_contact,
         city, state, country,
         company_name, _s(rec.get("company_domain")), domain_norm,
@@ -262,8 +267,8 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: dict[str, Any]) -> dict[str, Any]:
     """Land ONE contact. Required: full_name, company_name, and at least one of company_domain /
-    company_linkedin_url. Optional: work_email (validated if present), job_title, is_main_contact,
-    city, state, country."""
+    company_linkedin_url. Optional: person_linkedin_url, work_email (validated if present), job_title,
+    is_main_contact, city, state, country."""
     row = _to_row(body)
     if row is None:
         # Precise 422 so a bulk loader can reconcile drops (a 4xx is not retried by the caller).
@@ -290,9 +295,9 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
         "record_id": row[0],
         "contact_key": row[1],
         "person_id": row[2],              # None when no work_email was supplied
-        "work_email_norm": row[8],        # None when no work_email was supplied
-        "domain_norm": row[16],
-        "is_main_contact": row[10],
+        "work_email_norm": row[10],       # None when no work_email was supplied
+        "domain_norm": row[18],
+        "is_main_contact": row[12],
     }
 
 
