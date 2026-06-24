@@ -93,7 +93,7 @@ rows, which have no counterpart in any raw sfnet source).
 
 INDEXES (directive's hard deliverable — scalar BTREE only, kept minimal):
     companies                 : BTREE(normalized_domain)
-    people                    : BTREE(company_id), BTREE(normalized_domain)
+    people                    : BTREE(company_id), BTREE(normalized_domain), BTREE(person_linkedin_url)
     company_target_industries : BTREE(company_id), BTREE(normalized_domain), BTREE(target_industry)
 
 Control plane (Trigger v4 durable callback): the worker accepts ``trigger_callback_url`` and,
@@ -150,7 +150,10 @@ DATA_STORAGE_VERSION = "2.1"
 # Scalar index plan — the directive's hard deliverable. BTREE only; no speculative BITMAPs.
 INDEXES: dict[str, dict[str, list[str]]] = {
     "companies": {"BTREE": ["normalized_domain"]},
-    "people": {"BTREE": ["company_id", "normalized_domain"]},
+    # person_linkedin_url is a load-bearing resolution key (catalyst_api person-by-linkedin
+    # point-lookup) → BTREE it so the lookup is index pushdown, not a scan, and so the index
+    # is REBUILT on every overwrite (an out-of-band create_scalar_index would be dropped here).
+    "people": {"BTREE": ["company_id", "normalized_domain", "person_linkedin_url"]},
     # Edge grain — BTREE both join keys + the industry, so gtm-mcp filters resolve
     # instantly from either direction (company→industries or industry→companies).
     "company_target_industries": {"BTREE": ["company_id", "normalized_domain", "target_industry"]},

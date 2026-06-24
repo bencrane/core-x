@@ -100,6 +100,12 @@ SUBAWARDEE_CAPABILITY_PROFILES_URI = os.environ.get(
 CONTRACT_SUBAWARD_URI = os.environ.get(
     "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"
 )
+# GTM people SoR (active/people, 1 row/contact, BTREE person_linkedin_url + company_id +
+# normalized_domain). Carries the person's title (job title) + identity + the verbatim
+# person_linkedin_url. Backs the /api/v1/people/by-linkedin point-lookup.
+PEOPLE_URI = os.environ.get(
+    "PEOPLE_LANCE_URI", "s3://data-sink/active/people/"
+)
 
 # ── Map serving tables (the portal map read surface) ─────────────────────────
 # Denormalized, pre-geocoded read models (1 row per winner / per company), each
