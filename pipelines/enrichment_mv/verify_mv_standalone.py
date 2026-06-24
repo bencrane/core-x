@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS ops.email_verifications (
         CHECK (verification_status IN ('verified', 'risky', 'unresolved'))
 );
 ALTER TABLE ops.email_verifications ADD COLUMN IF NOT EXISTS mv_raw jsonb;
+ALTER TABLE ops.email_verifications ADD COLUMN IF NOT EXISTS person_linkedin_url text;
 CREATE INDEX IF NOT EXISTS email_verifications_status_idx ON ops.email_verifications (verification_status);
 CREATE INDEX IF NOT EXISTS email_verifications_domain_idx ON ops.email_verifications (company_domain);
 CREATE INDEX IF NOT EXISTS email_verifications_email_idx  ON ops.email_verifications (email);
