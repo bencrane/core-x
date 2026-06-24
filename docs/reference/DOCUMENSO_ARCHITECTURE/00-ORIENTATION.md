@@ -20,7 +20,7 @@ different places by THREE different mechanisms.**
 | Selector | Values (DB default first) | Consumed where | Mechanism | Cite |
 |---|---|---|---|---|
 | `render_mode` | `'through-docraptor'`, `'direct-to-documenso'` | proposal **confirm** (`_provision`) | **server-side** branch | `apps/edge_api/sql/operator_settings.sql:41`; `apps/edge_api/src/routers/proposals_v1.py:99` |
-| `direct_to_documenso_lane` | `'envelope-distribute'`, `'prefill-document-from-template'` | SPA `MandateDraftShell.confirm()` | **client-side** endpoint pick (never branched server-side) | `apps/edge_api/sql/operator_settings.sql:42`; `rare-structure-hq:apps/platform-app/src/proposals/MandateDraftShell.tsx:93` |
+| `direct_to_documenso_lane` | `'envelope-distribute'` (RETIRED), `'prefill-document-from-template'` (DEFAULT), `'embed-template'` (NEW) | SPA `MandateDraftShell.confirm()` | **client-side** endpoint pick (never branched server-side) | `apps/edge_api/sql/operator_settings.sql:84-90`; `apps/edge_api/src/operator_settings/models.py:21-23`; `rare-structure-hq:apps/platform-app/src/proposals/MandateDraftShell.tsx:93` |
 | `stripe_mode` | `'test'`, `'live'`, `NULL` | document-payment mint + Stripe webhook | **server-side** resolution (orthogonal) | `apps/edge_api/sql/operator_settings.sql:43`; `apps/edge_api/src/routers/document_payments_v1.py:96` |
 
 The single most dangerous misconception: **`render_mode = 'direct-to-documenso'` is a STUB** on the
@@ -79,14 +79,17 @@ path shapes, and forwards — **no business logic, no DB for these flows**
 |---|---|---|---|---|---|
 | `through-docraptor` (DEFAULT) | (ignored) | DocRaptor PDF → Documenso `/envelope/create` envelope; legacy `/p/:ref` surfaces | `POST /api/v1/proposals/{ref}/confirm` → `_provision` through-docraptor (`apps/edge_api/src/routers/proposals_v1.py:104`) | **02** | **ACTIVE / DEFAULT** |
 | `direct-to-documenso` | (proposal-confirm path) | **STUB** — no PDF, no envelope; draft row survives, "not yet wired" | `_provision` direct branch (`apps/edge_api/src/routers/proposals_v1.py:99-103`) | **02**, **09 §1** | **STUB** |
-| `direct-to-documenso` | `envelope-distribute` (DB DEFAULT) | Documenso `/envelope/use`; `externalId=draft_id`; returns ONLY `envelope_id`; **cannot build `/p/m` pair** → dead-ends prospect flow | `POST /api/v1/engagement-mandate-drafts/{draft_id}/confirm` (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:82`) | **03 Lane A**, **04 Lane B** | **ACTIVE** (default, thin) |
-| `direct-to-documenso` | `prefill-document-from-template` | Documenso `/template/use`; `externalId=`8-char handle; returns `(opportunity_id, document_id)`; locks fields read-only; builds `/p/m/{opp}/{doc}` — **the canonical live flow** | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:109`) | **03 Lane B**, **04 Lane C** | **ACTIVE / CANONICAL** (CONDITIONAL — non-default lane) |
+| `direct-to-documenso` | `envelope-distribute` | Documenso `/envelope/use`; `externalId=draft_id`; returned only `envelope_id`; **could not build `/p/m` pair** → dead-ended prospect flow | **RETIRED** — the `/envelope/use` + `.../{id}/confirm` lane was removed in code; the CHECK still accepts the value so a pre-existing row never violates it, but **no live route serves it** (`apps/edge_api/sql/operator_settings.sql:31-34`, `:84-90`; no `/confirm` endpoint in `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py`) | **03 Lane A**, **04 Lane B** | **RETIRED** |
+| `direct-to-documenso` | `prefill-document-from-template` (DEFAULT) | Documenso `/template/use`; `externalId=`8-char handle; returns `(opportunity_id, document_id)`; locks fields read-only; builds `/p/m/{opp}/{doc}` — **the canonical live flow** | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:113`) | **03 Lane B**, **04 Lane C** | **ACTIVE / CANONICAL / DEFAULT** |
+| `direct-to-documenso` | `embed-template` (NEW) | Documenso template DIRECT LINK; `create_direct_link` returns a reusable `direct_token` + `embed_url`; `externalId=`8-char handle; **NO document minted at originate** — the signer self-identifies in the embed and Documenso creates the document (source `TEMPLATE_DIRECT_LINK`) at completion; `status='ready'` | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:172`) | **04** | **ACTIVE / NEW** |
 | (any) | (any) | Document fee payment (DUAL-RAIL `card`+`us_bank_account`), `(opp,doc)`-keyed | `POST /api/v1/documenso/payment-intent/{opp}/{doc}` (`apps/edge_api/src/routers/document_payments_v1.py:84`) | **05 Lane B** | **ACTIVE** |
 | `through-docraptor` | — | Legacy engagement payment (ACH-only `us_bank_account`), proposal-ref-keyed | `POST /api/v1/proposals/{ref}/payment-intent` (`apps/edge_api/src/routers/payments_v1.py:36`) | **05 Lane A** | **ACTIVE** (legacy) |
 
 > Separate, ungated by these selectors: the **AO `engagement_docs`** render pathway (Stage → DocRaptor →
-> R2 → **DRAFT** Documenso `DOCUMENT`, never distributed) — **BROKEN at HEAD** by two bugs (`service.SLUG`
-> undefined + a vacated content dir). See **06 Part A**.
+> R2 → **DRAFT** Documenso `DOCUMENT`, never distributed) was previously **BROKEN at HEAD** — it has since
+> been **REMOVED**: no `apps/edge_api/src/engagement_docs/` module, no `engagement_mandates_v1.py` router,
+> and no `apps/edge_api/sql/ao_engagement_mandates.sql` exist on current main (grep: zero matches). The
+> live render lane is now the **render+push** lane (06; `internal_engagement_templates_v1.py`). See **06**.
 
 ---
 
@@ -98,13 +101,14 @@ A decision tree keyed on what you can observe (URL/ref shape, externalId shape, 
 1. What URL is the PROSPECT on?
    /p/:ref           (ref looks like "rs_…")     → LEGACY through-docraptor proposal flow → 02
    /p/m/:opp/:doc    (8-char handle / numeric)   → NEW direct prefill flow → 03 Lane B + 04 Lane C
+   /p/t/:opp/:token  (8-char handle / direct token) → NEW embed-template direct-link flow (no doc until signer completes) → 04
    /p/m/.../pay                                   → document payment (dual-rail) → 05 Lane B + 08
    /p/:ref/pay                                    → legacy engagement payment (ACH-only) → 05 Lane A
 
 2. externalId shape (on the Documenso envelope / in documenso_webhook_events.external_id)?
    "rs_" + token                                 → proposal lane (02); new_ref() (apps/edge_api/src/proposals/queries.py:40-42)
-   8 hex chars (e.g. "7bbf1081")                 → prefill lane; the opportunity PUBLIC handle (03 Lane B)
-   a full UUID (= draft_id)                       → envelope-distribute lane (03 Lane A) — DEAD-ENDS, no /p/m pair
+   8 hex chars (e.g. "7bbf1081")                 → prefill lane OR embed-template lane; the opportunity PUBLIC handle (03 Lane B; 04). For embed-template the externalId is stamped client-side by the embed, and no document exists until the signer completes.
+   a full UUID (= draft_id)                       → envelope-distribute lane (RETIRED) — DEAD-ENDED, no /p/m pair
 
 3. Stripe metadata.kind on the PaymentIntent / webhook event?
    "document"                                    → Lane B document payment → _handle_document_payment
@@ -130,11 +134,16 @@ longer receives traffic. STUB = present but not wired.
 | `GET/PUT /api/v1/operator-settings/{auth_user_id}` (edge settings gateway) | **ACTIVE** | `apps/edge_api/src/routers/operator_settings_v1.py:34`, `:43` |
 | `_provision` `through-docraptor` branch (PDF → envelope) | **ACTIVE / DEFAULT** | `apps/edge_api/src/routers/proposals_v1.py:104` |
 | `_provision` `direct-to-documenso` branch | **STUB** | `apps/edge_api/src/routers/proposals_v1.py:99-103` |
-| `envelope-distribute` lane (`/confirm`, `/envelope/use`) | **CONDITIONAL** (DB default; dead-ends prospect) | `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:82` |
-| `prefill-document-from-template` lane (`/originate-prefilled`, `/template/use`) | **CONDITIONAL / CANONICAL** | `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:109` |
-| `create_signing_envelope` (Lane A, `/envelope/create`) | **CONDITIONAL** (proposals through-docraptor only) | `apps/edge_api/src/services/documenso_client.py:198` |
-| `create_document_from_template_with_custom_pdf` (Lane B, `/envelope/use`; NO PDF render) | **CONDITIONAL** (`/confirm` only) | `apps/edge_api/src/services/documenso_client.py:321` |
-| `create_document_from_template` (Lane C, `/template/use`) | **ACTIVE** (canonical originate) | `apps/edge_api/src/services/documenso_client.py:427` |
+| `envelope-distribute` lane (`/confirm`, `/envelope/use`) | **RETIRED** (no route serves it; CHECK retains the value) | `apps/edge_api/sql/operator_settings.sql:31-34`; no `/confirm` in `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py` |
+| `prefill-document-from-template` lane (`/originate-prefilled`, `/template/use`) | **ACTIVE / CANONICAL / DEFAULT** | `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:113` |
+| `embed-template` lane (`/originate-embed-template`, `/template/direct/create`) | **ACTIVE / NEW** | `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:172` |
+| `create_document_from_template` (Lane C, `/template/use`; embed-document, mint now) | **ACTIVE** (canonical originate) | `apps/edge_api/src/services/documenso_client.py:228` |
+| `create_template_from_pdf` + `TemplateCreateResult` (`/api/v2/envelope/create` type=TEMPLATE; render+push terminal step) | **ACTIVE** | `apps/edge_api/src/services/documenso_client.py:420`, `:410` |
+| `create_direct_link` / `toggle_direct_link` / `get_template_recipients` (`/api/v2/template/direct/{create,toggle}`, `/api/v2/template/{id}`) + `DirectLinkResult` | **ACTIVE / NEW** | `apps/edge_api/src/services/documenso_client.py:514`, `:542`, `:504`, `:469` |
+| `POST /internal/engagement-templates/render-push` (trigger-secret) + `push.render_and_push()` | **ACTIVE / NEW** | `apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`; `apps/edge_api/src/engagement_templates/push.py:63` |
+| `engagement-template-push` Trigger.dev task (calls render-push via `callHqx`) | **ACTIVE / NEW** | `src/trigger/engagement_template_push.ts:53` |
+| `ops.engagement_template_push_runs` ledger (terminal row per push attempt) | **ACTIVE / NEW** | `apps/edge_api/sql/ops_engagement_template_push_runs.sql:12` |
+| `business.global_input_content` content-source REGISTRY (`brand` + `source_kind`) | **ACTIVE / NEW** | `apps/edge_api/sql/global_input_content.sql:21`, `:31-32` |
 | `POST /api/v1/documenso/webhook` + `business.documenso_webhook_events` (raw landing, SoR) | **ACTIVE** | `apps/edge_api/src/routers/documenso_webhooks_v1.py:39` |
 | `POST /api/v1/proposals/webhook` (legacy Documenso projection) | **DEPRECATED** (functional, no traffic) | `apps/edge_api/src/routers/proposals_v1.py:337` |
 | `GET /api/v1/documenso/sign-state/{opp}/{doc}` (offline poll) | **ACTIVE** | `apps/edge_api/src/routers/documenso_webhooks_v1.py:76` |
@@ -143,14 +152,15 @@ longer receives traffic. STUB = present but not wired.
 | Legacy engagement payment mint (ACH-only `["us_bank_account"]`) | **ACTIVE** (legacy) | `apps/edge_api/src/payments/stripe_client.py:70` |
 | `POST /webhooks/stripe` (single router, both lanes, multi-secret) | **ACTIVE** | `apps/edge_api/src/routers/webhooks_stripe.py:49` |
 | Trigger.dev post-payment fulfillment seams (×2) | **STUB** (intentional) | `apps/edge_api/src/routers/webhooks_stripe.py:107`, `:162` |
-| `engagement_docs` AO render lane (`engagement-mandates` POST + `/internal/.../render`) | **BROKEN at HEAD** | `apps/edge_api/src/routers/engagement_mandates_v1.py:52`; `apps/edge_api/src/engagement_docs/render.py:19` |
+| `engagement_docs` AO render lane (`engagement-mandates` POST + `/internal/.../render`) | **REMOVED** (module, router, and `ao_engagement_mandates.sql` all deleted; grep zero matches) | superseded by render+push (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`) |
 | Documenso template-fields/defaults editor, engagement-mappings picker, engagement-templates render, archetypes | **ACTIVE** | `apps/edge_api/src/routers/documenso_template_fields_v1.py:40`; `engagement_mappings_v1.py:29`; `engagement_templates_v1.py:30`; `engagement_archetypes.sql:19` |
+| engagement-template catalog — brand-aware (`active-operators` + `rare-structure`), `<brand>/<path>/<archetype>/<version>/global_engagement_content` | **ACTIVE** (2 brands: `_ALLOWED_BRANDS`) | `apps/edge_api/src/engagement_templates/catalog.py:28`; `apps/edge_api/content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/` |
 | `/p/m/:opportunityId/:documentId` `DocumentSignPage` / `.../pay` `DocumentPaymentPage` | **ACTIVE** | `rare-structure-hq:apps/platform-app/src/App.tsx:100`, `:103` |
 | `/p/:ref` `SummaryPage` / `/p/:ref/sign` `SignPage` / `/p/:ref/pay` `PaymentPage` | **ACTIVE** (legacy through-docraptor generation) | `rare-structure-hq:apps/platform-app/src/App.tsx:96`, `:105`, `:107` |
 | BFF `documensoPublicRoutes` (4 PUBLIC pair routes, dumb pass-through) | **ACTIVE** | `rare-structure-hq:apps/platform-api/src/routes/documenso-public.ts:37`, `:64`, `:90`, `:118` |
 | BFF `/api/v1/engagement-mandate-drafts` alias mount of `documensoPublicRoutes` | **CONDITIONAL** (transitional) | `rare-structure-hq:apps/platform-api/src/index.ts:124` |
 | BFF `proposals-admin.ts` direct Supabase `operator_settings.render_mode` read | **ACTIVE** (legacy exception to invariant) | `rare-structure-hq:apps/platform-api/src/routes/proposals-admin.ts:132-137` |
-| `GET /api/v1/engagement-mandate-drafts/document/{envelope_id}` (envelope-distribute prospect read) | **STUB** (no live SPA consumer) | `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169`; `rare-structure-hq:apps/platform-api/src/lib/edge.ts:506` |
+| `GET /api/v1/engagement-mandate-drafts/document/{envelope_id}` (envelope-distribute prospect read) | **RETIRED** (route removed with the envelope-distribute lane) | no such route in `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py` |
 | `operator_settings` RLS | **DEPRECATED-as-boundary** (ENABLED, not load-bearing) | `apps/edge_api/sql/operator_settings.sql:96-99` |
 | `MandateSignPage` (name) | **DEPRECATED** (0 matches; renamed `DocumentSignPage`) | `apps/edge_api/src/routers/documenso_webhooks_v1.py:84` (last surviving reference) |
 | `business.mandate_payments` / `business.mandate_payment_events` | **NONEXISTENT** | grep zero matches (07 "Proven-nonexistent"; 09 §3) |
@@ -163,9 +173,11 @@ longer receives traffic. STUB = present but not wired.
   `GENERATED ALWAYS AS (LEFT(id::text, 8)) STORED`, non-unique BTREE index, 8 hex = 32 bits. It is the
   Documenso `externalId` in the prefill lane and the `{opportunity_id}` segment of `/p/m/...`
   (`apps/edge_api/sql/opportunities_opportunity_id.sql:19-21`).
-- **row UUID** (`business.opportunities.id`): the internal PK / FK target — NOT externally visible. Carried
-  by `ao_engagement_mandates.opportunity_id` (the OPPOSITE carrier of `document_payments.opportunity_id`,
-  which carries the handle) (07 "two opportunity identifiers"; `apps/edge_api/sql/ao_engagement_mandates.sql:20`).
+- **row UUID** (`business.opportunities.id`): the internal PK / FK target — NOT externally visible. It is
+  the JOIN target for per-deal content (`opportunity_specific_content.opportunity_id = o.id`), the OPPOSITE
+  carrier of `document_payments.opportunity_id`, which carries the handle (07 "two opportunity identifiers";
+  `apps/edge_api/src/document_payments/queries.py:47-53`). (`ao_engagement_mandates`, the former row-UUID
+  carrier, has been REMOVED — grep zero matches.)
 - **envelope_id** (prefixed `envelope_…`): the Documenso v2 envelope handle; accepted by
   `/api/v2/envelope/*` and `/api/v2/template/*` (`apps/edge_api/src/services/documenso_client.py:303-318`);
   **400s on `/api/v2/document/{id}`** (`apps/edge_api/src/services/documenso_client.py:620-629`).
@@ -175,19 +187,34 @@ longer receives traffic. STUB = present but not wired.
   (`apps/edge_api/src/services/documenso_client.py:620-629`).
   **TRAP:** the `business.documenso_webhook_events.envelope_id` *column* actually holds this NUMERIC
   document id, despite its name (`apps/edge_api/src/documenso_webhooks/queries.py:71`).
-- **externalId**: the value stamped on the Documenso envelope at originate. Three shapes disambiguate lanes
-  in the single raw webhook table: `rs_…` (proposal lane), 8-char handle (prefill lane), full UUID =
-  draft_id (envelope-distribute lane) (04 §8; `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:97`, `:150`).
+- **externalId**: the value stamped on the Documenso envelope at originate. Shapes disambiguate lanes in
+  the single raw webhook table: `rs_…` (proposal lane), 8-char handle (prefill lane — stamped server-side
+  at originate; AND embed-template lane — stamped client-side by the embed at signer completion), full
+  UUID = draft_id (envelope-distribute lane, RETIRED) (04 §8;
+  `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:149` (prefill), `:215` (embed-template)).
 - **sign-token vs sign-state**: `GET /api/v1/documenso/sign-token/{opp}/{doc}` makes ONE live Documenso read
   to fetch the embed token (with two-recipient client-vs-originator selection); `GET
   /api/v1/documenso/sign-state/{opp}/{doc}` is FULLY OFFLINE — derives `signed` from raw
   `documenso_webhook_events` rows, zero Documenso calls
   (`apps/edge_api/src/routers/documenso_webhooks_v1.py:105`, `:76`).
 - **the lanes** (overloaded "lane"/"template"): `render_mode` lanes = through-docraptor vs direct. Direct
-  sub-lanes = envelope-distribute vs prefill-document-from-template. Documenso originate "lanes" in the
-  client = A `/envelope/create`, B `/envelope/use`, C `/template/use` (04). A Documenso **TEMPLATE** (a v2
-  envelope you instantiate) ≠ an **engagement-template** (repo HTML rendered to a standalone PDF, no
-  Documenso) (06).
+  sub-lanes = `prefill-document-from-template` (DEFAULT, embed-document — mint a Documenso document now)
+  vs `embed-template` (NEW — enable a template direct link, document created at signer completion) vs
+  `envelope-distribute` (RETIRED). Documenso originate "lanes" in the client = A `/envelope/create`
+  (RETIRED), B `/envelope/use` (RETIRED), C `/template/use` (`create_document_from_template`,
+  `apps/edge_api/src/services/documenso_client.py:228`), D `/template/direct/create`
+  (`create_direct_link`, `:514`) (04). A Documenso **TEMPLATE** (a v2 envelope you instantiate) ≠ an
+  **engagement-template** (repo HTML rendered to a standalone PDF, then pushed as a Documenso TEMPLATE
+  via the render+push lane) (06).
+- **direct-link token** (`embed-template` lane): a reusable, self-identifying signing token enabled on a
+  Documenso TEMPLATE via `POST /api/v2/template/direct/create {templateId, directRecipientId?}` →
+  `{token, ...}`. ONE value with three representations: the `MandateEmbedTemplateOriginated.direct_token`
+  API field, the `<EmbedDirectTemplate token=…>` SPA prop, and the public `/d/{token}` URL / iframe
+  `/embed/direct/{token}`. The signer enters their OWN name + email (name/email are NOT locked); Documenso
+  creates the document (source `TEMPLATE_DIRECT_LINK`) at completion, so NO document exists at originate
+  (`status='ready'`). `externalId` (the opportunity's 8-char handle) is stamped by the embed in
+  JavaScript, not at mint (`apps/edge_api/src/services/documenso_client.py:459-465`, `:514-540`;
+  `apps/edge_api/src/engagement_mandate_drafts/models.py:49-72`).
 
 ---
 
@@ -198,9 +225,9 @@ longer receives traffic. STUB = present but not wired.
 | **01-MODES-AND-LANES.md** | You need the selector layer: `operator_settings` columns/CHECKs, the merge-upsert (COALESCE-of-existing, NOT EXCLUDED) semantics, the three-layer enum lockstep, and the routing table mapping each `(render_mode, lane)` tuple → flow. |
 | **02-FLOW-through-docraptor.md** | You're on the `through-docraptor` default proposal flow: create → confirm → `_provision` (DocRaptor PDF → `/envelope/create`, anchor fields by `findText`) → `/p/:ref` sign → webhook status. Also flags the direct-to-documenso STUB inside `_provision`. |
 | **03-FLOW-direct-to-documenso.md** | You're on `render_mode='direct-to-documenso'` and need BOTH sub-lanes side-by-side: the divergence table (externalId, prefill source, recipient binding, read-only lock, `(opp,doc)` pair) for `envelope-distribute` vs `prefill-document-from-template`. |
-| **04-DOCUMENSO-INTEGRATION.md** | You need the edge_api Documenso v2 client internals: the three originate lanes (A/B/C), the three token-extraction helpers, read/download, the raw webhook capture, and the pair-gated sign reads (offline state + live token). |
+| **04-DOCUMENSO-INTEGRATION.md** | You need the edge_api Documenso v2 client internals: the live originate lanes (C `/template/use` `create_document_from_template`; D `/template/direct/create` `create_direct_link` + `toggle_direct_link` + `get_template_recipients`), the template-create-from-PDF method (`create_template_from_pdf`/`TemplateCreateResult`), the token-extraction helpers, read/download, the raw webhook capture, and the pair-gated sign reads (offline state + live token). Lanes A `/envelope/create` and B `/envelope/use` are RETIRED (methods removed). |
 | **05-PAYMENTS.md** | You're on Stripe: document payments (dual-rail, `(opp,doc)`-keyed) vs legacy engagement payments (ACH-only, ref-keyed), the single `/webhooks/stripe` router dispatching by `metadata.kind`, multi-secret verification, and the webhook-only `paid` rule. |
-| **06-ENGAGEMENT-DOCS-AND-TEMPLATES.md** | You're touching the AO `engagement_docs` render lane (BROKEN at HEAD) OR the Documenso TEMPLATE layer (defaults editor, mappings picker, archetypes, push script, standalone engagement-templates render). |
+| **06-ENGAGEMENT-DOCS-AND-TEMPLATES.md** | You're touching the AO `engagement_docs` render lane (REMOVED — module/router/`ao_engagement_mandates.sql` deleted) OR the Documenso TEMPLATE layer (defaults editor, mappings picker, archetypes, standalone engagement-templates render) OR the render+PUSH lane: brand-aware catalog (`active-operators` + `rare-structure`), the `business.global_input_content` content-source registry (`brand` + `source_kind`), `push.render_and_push()` (content → DocRaptor → Documenso TEMPLATE via `create_template_from_pdf`), `POST /internal/engagement-templates/render-push` (trigger-secret), the `engagement-template-push` Trigger.dev task, and the `ops.engagement_template_push_runs` ledger. |
 | **07-DATA-STORES.md** | You need the persistence map: which table is edge_api-owned vs upstream vs read-only, the two opportunity identifiers, schema-as-code boot apply, and idempotency posture per ledger. |
 | **08-FRONTEND-AND-BFF.md** | You're on the platform side: SPA routes, `MandateDraftShell` lane branch, the BFF→edge path remap (`/sign/{opp}/{doc}/{verb}` → `/{verb}/{opp}/{doc}`), the two prospect-completion models (server-poll vs browser-event), and the settings hook. |
 | **09-DEPRECATED-STUBS-AND-TRAPS.md** | You need the consolidated hazard list: every stub, deprecated route, stale comment, nonexistent table, and misnomer across both repos. Read before trusting any comment. |
@@ -267,17 +294,18 @@ longer receives traffic. STUB = present but not wired.
 
 10. **Two opposite opportunity carriers — joining the wrong one silently returns nothing.**
     `document_payments.opportunity_id` + `documenso_webhook_events.external_id` carry the **8-char handle**;
-    `ao_engagement_mandates.opportunity_id` carries the **row UUID**. The fee query uses BOTH in one
-    statement (handle in the `WHERE`, UUID on a JOIN leg)
-    (`apps/edge_api/src/document_payments/queries.py:50-53`; 07 Trap 1).
+    `business.opportunities.id` is the **row UUID**. The fee query uses BOTH in one statement — the handle
+    in the `WHERE` (`o.opportunity_id = %s`) and the row UUID on the JOIN leg
+    (`osc.opportunity_id = o.id`) (`apps/edge_api/src/document_payments/queries.py:47-53`; 07 Trap 1).
+    (The former `ao_engagement_mandates` row-UUID carrier has been REMOVED.)
 
 11. **The BFF "no longer touches `operator_settings`" claim is scoped to the settings-tab flow ONLY.**
     `proposals-admin.ts:132-137` still reads `render_mode` from Supabase service-role on the confirm path —
     the one live contradiction of the sole-gateway invariant (08; 09 §8.2).
 
 12. **`direct_to_documenso_lane` is a TEXT enum, never a boolean** (DB CHECK
-    `apps/edge_api/sql/operator_settings.sql:80`; pydantic Literal
-    `apps/edge_api/src/operator_settings/models.py:16`). There is no `= true` form (09 §8.3).
+    `apps/edge_api/sql/operator_settings.sql:84-90`; pydantic Literal
+    `apps/edge_api/src/operator_settings/models.py:21-23`). There is no `= true` form (09 §8.3).
 
 13. **`quarterly_total_cents` is NOT quarterly** — it carries `{{total}} = monthly_fee × duration`, a legacy
     name (`apps/edge_api/sql/engagement_proposals.sql:36`). On Lane A the page may DISPLAY a per-invoice
@@ -287,15 +315,30 @@ longer receives traffic. STUB = present but not wired.
     `opportunity_specific_content.field_values['fee_amount']`; legacy from `quarterly_total_cents`
     (`apps/edge_api/sql/document_payments.sql:9-12`; 05; 07).
 
-15. **The AO `engagement_docs` lane is BROKEN at HEAD** — `service.SLUG` is undefined (AttributeError before
-    INSERT) and `_CONTENT_DIR` points at a vacated path (FileNotFoundError). Do not assume Stage→render works
-    just because it is wired (`apps/edge_api/src/routers/engagement_mandates_v1.py:52`;
-    `apps/edge_api/src/engagement_docs/render.py:19`; 06 §A.3-A.4).
+15. **The AO `engagement_docs` lane has been REMOVED** (it was previously BROKEN at HEAD). The
+    `apps/edge_api/src/engagement_docs/` module, the `engagement_mandates_v1.py` router, and
+    `apps/edge_api/sql/ao_engagement_mandates.sql` no longer exist on current main (grep: zero matches).
+    The live repo-content render lane is the **render+push** lane
+    (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`;
+    `apps/edge_api/src/engagement_templates/push.py:63`; 06).
 
 16. **`MandateSignPage` and `business.mandate_payments`/`mandate_payment_events` do NOT exist.** The real
     prospect component is `DocumentSignPage`; the real payment tables are `business.document_payments` /
     `document_payment_events`. Rule of thumb: operator-facing = `Mandate*`, prospect-facing = `Document*`
-    (09 §3, §6).
+    (09 §3, §6). The new operator-facing originate result `MandateEmbedTemplateOriginated` follows the
+    rule (returned by the service-token-gated `originate-embed-template`)
+    (`apps/edge_api/src/engagement_mandate_drafts/models.py:49-72`).
+
+17. **The `embed-template` lane mints NO document at originate.** `originate-embed-template` enables a
+    template DIRECT LINK and returns a reusable `direct_token` + `embed_url` with `status='ready'` — the
+    signer self-identifies in the embed (name/email NOT locked) and Documenso creates the document
+    (source `TEMPLATE_DIRECT_LINK`) only at signer completion. Do not look for an `envelope_id`/`document_id`
+    on this response; the numeric document id arrives client-side via the embed's `onDocumentCompleted`,
+    after which the existing `/sign-state/{opp}/{doc}` surface tracks it (gate: `externalId == opportunity_id`)
+    (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:172-213`;
+    `apps/edge_api/src/engagement_mandate_drafts/models.py:49-72`;
+    `apps/edge_api/src/services/documenso_client.py:514-540`). Cross-repo: `<EmbedDirectTemplate>` /
+    `DirectTemplateSignPage` and the `/p/t/:opportunityId/:directToken` route live in `rare-structure-hq`.
 
 ---
 

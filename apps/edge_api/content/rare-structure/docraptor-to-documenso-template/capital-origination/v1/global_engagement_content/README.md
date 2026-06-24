@@ -66,3 +66,28 @@ The capital-origination archetype's financial architecture:
   rolling-ownership window.
 
 Provider executes as **Rare Structure LLC** (Benjamin J. Crane, Managing Director).
+
+## Origination Lanes (Documenso direct-to-documenso mode)
+
+When an operator is in `render_mode='direct-to-documenso'`, the origination flow uses this template via one of three lanes (selected by `direct_to_documenso_lane` in `operator_settings`):
+
+- **prefill-document-from-template** (DEFAULT): POST `/api/v2/template/use` with opportunity-specific field values prefilled, then distribute (NONE) → PENDING. Returns signing token + document id; signer receives the document immediately (source: PREFILLED_DOCUMENT).
+- **embed-template** (NEW): Enable a DIRECT LINK on the template via POST `/api/v2/template/direct/create`, returning a reusable token. Signer self-identifies in the embed; Documenso creates the document AT completion (source: TEMPLATE_DIRECT_LINK).
+- **envelope-distribute** (RETIRED): The /envelope/use + .../confirm lane was removed in code; the operator_settings CHECK retains the value so pre-existing rows never violate it, but no live path serves it.
+
+The corresponding edge_api endpoints:
+- POST `/api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` → MandatePrefilledOriginated {envelope_id, document_id, opportunity_id, signing_token, status, documenso_host}
+- POST `/api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` → MandateEmbedTemplateOriginated {direct_token, documenso_host, embed_url, external_id, opportunity_id, direct_recipient_id, recipient_email, recipient_name, status}
+
+Verify lane availability in `apps/edge_api/sql/operator_settings.sql` (lines 85-89: CHECK constraint on `direct_to_documenso_lane`).
+
+## Render + Push Lane (engagement-template-push)
+
+The control plane (Trigger.dev task `engagement-template-push`, src/trigger/engagement_template_push.ts) renders this HTML asset to PDF and publishes it as a Documenso TEMPLATE. The lane is orchestrated by:
+
+1. **Content source registry** (`business.global_input_content`, apps/edge_api/sql/global_input_content.sql): Rows carry `brand='rare-structure'` + `path='docraptor-to-documenso-template/capital-origination/v1'` + `source_kind='repo-html'`.
+2. **Catalog discovery** (apps/edge_api/src/engagement_templates/catalog.py): Resolves (brand, path, archetype, version) tuples to `apps/edge_api/content/<brand>/<path>/<archetype>/<version>/global_engagement_content/` directories. Allows only `_ALLOWED_BRANDS={'active-operators', 'rare-structure'}`.
+3. **Render + push** (apps/edge_api/src/engagement_templates/push.py): Assembles HTML + CSS, invokes DocRaptor to PDF, creates Documenso TEMPLATE via POST `/api/v2/envelope/create` (type=TEMPLATE), records outcome in `ops.engagement_template_push_runs` ledger.
+4. **Edge API endpoint** (apps/edge_api/src/routers/internal_engagement_templates_v1.py): POST `/internal/engagement-templates/render-push` (trigger-secret gated) accepts `registryPath` or explicit `brand`/`path`/`archetype`/`version`; returns documenso_template_id + numeric_id.
+
+The ledger table `ops.engagement_template_push_runs` (apps/edge_api/sql/ops_engagement_template_push_runs.sql) records every terminal state (success | error): brand, path, archetype, version, style, source_kind, documenso_template_id, pdf_bytes, pdf_r2_key, error reason.

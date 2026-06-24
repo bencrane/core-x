@@ -1,116 +1,102 @@
 # Documenso Architecture — 05 · Payments
 
-> **STATUS BANNER.** This file is the canonical reference for **both Stripe payment surfaces** owned by `edge_api`: (A) the **legacy engagement payment** (`render_mode`/lane = the proposal-`ref` "through-docraptor" path, ACH-only) and (B) the **direct-to-documenso document fee** (lane = `metadata.kind='document'`, pair-keyed, dual-rail). Both share **one** Stripe webhook endpoint, `POST /webhooks/stripe`, which is the **single writer** of `paid_at`/`'succeeded'` on either lane. Rails are stated **definitively from code** (verified verbatim 2026-06-18), against several **stale "ACH-only" comments and a stale E2E reference doc** — see [Traps](#traps).
+> **STATUS BANNER.** This file is the canonical reference for the **direct-to-documenso document-fee** payment surface (`metadata.kind='document'`, pair-keyed, dual-rail) — the **ONLY active Stripe integration** owned by `edge_api`. It mints intents at `POST /api/v1/documenso/payment-intent/...` and advances state on the single Stripe webhook `POST /webhooks/stripe`, which is the **sole writer** of `paid_at`/`'succeeded'`. **The legacy engagement-proposal payment lane (proposal-`ref`, ACH-only, "through-docraptor") was removed in commit `b83e002` (2026-06-18, "refactor(edge_api): remove legacy through-docraptor proposal + payment backend") — its router (`payments_v1.py`), module (`src/payments/**`), and the proposal-`ref` branch of the webhook are gone; the `business.engagement_proposals`/`engagement_payments` tables were kept (zero data loss). Any references to that lane below are historical only.** Rails are stated **definitively from code** (verified verbatim against worktree commit `e029728`), against several **stale "ACH-only" comments** — see [Traps](#traps).
+>
+> This doc also covers the two **template-authoring** lanes that feed the document-payment surface but never touch Stripe themselves: the **embed-template** sign lane (`originate-embed-template` → Documenso direct link) and the **render+push** content lane (`/internal/engagement-templates/render-push` → DocRaptor PDF → Documenso TEMPLATE), with the `business.global_input_content` content-source registry.
 
 ---
 
 ## Orientation
 
-`edge_api` is the SINGLE writer over the HQX Postgres and the ONLY caller of Stripe. Two payment lanes coexist and are deliberately self-contained — they share no table and no code path except the one webhook router. **Lane A (LEGACY engagement payment)** keys off a proposal `ref` (the bearer capability), is **ACH-only** (`payment_method_types=['us_bank_account']`), and stores payment state as `ALTER`-added columns on `business.engagement_proposals` (there is no separate `engagement_payments` table; the Stripe audit/idempotency ledger is `business.engagement_events`). **Lane B (direct-to-documenso document fee)** keys off the `(opportunity_id, document_id)` **pair**, is **dual-rail** (`['card','us_bank_account']`), and stores state on `business.document_payments` + the ledger `business.document_payment_events`. The webhook discriminates by `event.data.object.metadata.kind`: `'document'` → Lane B handler; everything else → the Lane A proposal-`ref` path. Both lanes are ACTIVE end-to-end through the cockpit SPA → the dumb platform-api BFF → `edge_api`. A "durable fulfillment" Trigger.dev seam exists on both `succeeded` paths but is an intentional STUB — only a log line fires.
+`edge_api` is the SINGLE writer over the HQX Postgres and the ONLY caller of Stripe. There is **ONE** payment lane: the **direct-to-documenso document fee**. It keys off the `(opportunity_id, document_id)` **pair**, is **dual-rail** (`['card','us_bank_account']`), and stores state on `business.document_payments` + the ledger `business.document_payment_events`. The webhook discriminates by `event.data.object.metadata.kind`: `'document'` → `_handle_document_payment`; **anything else is ignored** (`reason='not a document payment'`, `apps/edge_api/src/routers/webhooks_stripe.py:73`) — this is the only `kind` `edge_api` mints. The lane is ACTIVE end-to-end through the cockpit SPA → the dumb platform-api BFF → `edge_api`. A "durable fulfillment" Trigger.dev seam exists on the `succeeded` path but is an intentional STUB — only a log line fires.
+
+> **Removed (historical).** The legacy engagement-proposal payment lane — a PUBLIC proposal-`ref` capability, **ACH-only**, with state on `business.engagement_proposals` and an audit ledger on `business.engagement_events` — was deleted in commit `b83e002` (2026-06-18). The router `payments_v1.py`, the module `src/payments/**`, the proposals router `proposals_v1.py`, and the webhook's `kind != 'document'` fall-through are all gone; `main.py` no longer mounts a proposals/payments router. The `engagement_proposals`/`engagement_payments` tables and the template-authoring surface were kept untouched (zero data loss). Do not look for a second payment lane in this repo — there isn't one.
 
 ---
 
-## Route map (both lanes + the shared webhook)
+## Route map (the document-fee lane + the shared webhook + the authoring lanes)
 
-| Surface | Method + path | Repo / owner | Auth | Lane |
-|---|---|---|---|---|
-| Document fee mint | `POST /api/v1/documenso/payment-intent/{opportunity_id}/{document_id}` | `edge_api` `apps/edge_api/src/routers/document_payments_v1.py:84` | PUBLIC (pair = capability) | B |
-| Document fee state poll | `GET /api/v1/documenso/payment/{opportunity_id}/{document_id}` | `edge_api` `apps/edge_api/src/routers/document_payments_v1.py:228` | PUBLIC | B |
-| Legacy engagement mint | `POST /api/v1/proposals/{ref}/payment-intent` | `edge_api` `apps/edge_api/src/routers/payments_v1.py:36` | PUBLIC (ref = capability) | A |
-| Legacy engagement state poll | `GET /api/v1/proposals/{ref}/payment` | `edge_api` `apps/edge_api/src/routers/payments_v1.py:111` | PUBLIC | A |
-| **Stripe webhook (shared)** | `POST /webhooks/stripe` | `edge_api` `apps/edge_api/src/routers/webhooks_stripe.py:49` | Stripe-signed (verify-any-secret) | A + B |
+| Surface | Method + path | Repo / owner | Auth |
+|---|---|---|---|
+| Document fee mint | `POST /api/v1/documenso/payment-intent/{opportunity_id}/{document_id}` | `edge_api` `apps/edge_api/src/routers/document_payments_v1.py:84` | PUBLIC (pair = capability) |
+| Document fee state poll | `GET /api/v1/documenso/payment/{opportunity_id}/{document_id}` | `edge_api` `apps/edge_api/src/routers/document_payments_v1.py:228` | PUBLIC |
+| **Stripe webhook** | `POST /webhooks/stripe` | `edge_api` `apps/edge_api/src/routers/webhooks_stripe.py:47` | Stripe-signed (verify-any-secret) |
+| Embed-template originate (sign lane) | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` | `edge_api` `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169` | service-token |
+| Render+push (content lane) | `POST /internal/engagement-templates/render-push` | `edge_api` `apps/edge_api/src/routers/internal_engagement_templates_v1.py:84` | trigger-secret |
 
-The webhook router declares `prefix="/webhooks"` (`apps/edge_api/src/routers/webhooks_stripe.py:38`) and the handler is `@router.post("/stripe")` (`:49`); it is mounted in `main.py` with no prefix override (`apps/edge_api/main.py:260`), with a comment that it sits **outside `/api/v1`** because that is the path Stripe posts to (`apps/edge_api/main.py:258`; docstring `apps/edge_api/src/routers/webhooks_stripe.py:19`). The document-payments router (`prefix="/api/v1/documenso"`, `apps/edge_api/src/routers/document_payments_v1.py:31`) is registered at `apps/edge_api/main.py:186`; the legacy payments router (`prefix="/api/v1/proposals"`, `apps/edge_api/src/routers/payments_v1.py:28`) at `apps/edge_api/main.py:256`.
+The webhook router declares `prefix="/webhooks"` (`apps/edge_api/src/routers/webhooks_stripe.py:36`) and the handler is `@router.post("/stripe")` (`:47`; the `async def stripe_webhook` follows at `:48`); it is mounted in `main.py` with no prefix override (`apps/edge_api/main.py:299`), with a comment that it sits **outside `/api/v1`** because that is the path Stripe posts to (`apps/edge_api/main.py:297`–`:298`; docstring `apps/edge_api/src/routers/webhooks_stripe.py:19`). The document-payments router (`prefix="/api/v1/documenso"`, `apps/edge_api/src/routers/document_payments_v1.py:31`) is registered at `apps/edge_api/main.py:224`.
 
 ---
 
-## The shared Stripe webhook — `POST /webhooks/stripe`
+## The Stripe webhook — `POST /webhooks/stripe`
 
 ### Signature verification (verify-against-ANY-secret)
 
-The webhook verifies via `doc_pay_stripe.construct_event_any(raw, stripe_signature)` (`apps/edge_api/src/routers/webhooks_stripe.py:58`). The Lane-B document-payment **mode is operator-toggleable at runtime**, so events arrive signed by whichever mode (`test`/`live`) minted the intent; the legacy events verify the same way (shared secrets, one Stripe account) — comment at `apps/edge_api/src/routers/webhooks_stripe.py:55`.
+The webhook verifies via `doc_pay_stripe.construct_event_any(raw, stripe_signature)` (`apps/edge_api/src/routers/webhooks_stripe.py:56`). The document-payment **mode is operator-toggleable at runtime**, so events arrive signed by whichever mode (`test`/`live`) minted the intent — comment at `apps/edge_api/src/routers/webhooks_stripe.py:53`–`:55`.
 
-`construct_event_any` (`apps/edge_api/src/document_payments/stripe.py:172`) reads **all** configured webhook signing secrets via `config.stripe_webhook_secrets()` (`apps/edge_api/src/config.py:122`) — `STRIPE_WEBHOOK_SECRET_TEST` (`config.py:129`), `STRIPE_WEBHOOK_SECRET_LIVE` (`config.py:130`), and the bare `STRIPE_WEBHOOK_SECRET` (`config.py:131`), de-duplicated (`config.py:133`) — and tries each in a loop (`stripe.py:186`). It **raises** `StripeError('...is not set')` when none are configured (`stripe.py:180`) and `StripeError('webhook signature verification failed: ...')` when none verify (`stripe.py:189`). It never accepts an unverified event.
+`construct_event_any` (`apps/edge_api/src/document_payments/stripe.py:172`) reads **all** configured webhook signing secrets via `config.stripe_webhook_secrets()` (`apps/edge_api/src/config.py:122`) — `STRIPE_WEBHOOK_SECRET_TEST` (`config.py:129`), `STRIPE_WEBHOOK_SECRET_LIVE` (`config.py:130`), and the bare `STRIPE_WEBHOOK_SECRET` (`config.py:131`), de-duplicated (`config.py:133`) — and tries each in a loop. It **raises** `StripeError('...is not set')` when none are configured and `StripeError('webhook signature verification failed: ...')` when none verify. It never accepts an unverified event.
 
-The route maps the two failure classes to **distinct HTTP codes**: `503` when the message contains `'not set'` (`webhooks_stripe.py:61`→`:62`), else `400` (`:63`).
+The route maps the two failure classes to **distinct HTTP codes**: `503` when the message contains `'not set'` (`webhooks_stripe.py:59`→`:60`), else `400` (`:61`).
 
 ### Dispatch by `metadata.kind`
 
 ```
 event = construct_event_any(raw, sig)            # 503 (no secret) / 400 (bad sig)
 obj   = event.data.object
-if obj.metadata.kind == 'document':              # webhooks_stripe.py:73
-    return _handle_document_payment(...)         # Lane B  (:74)
-# else: fall through to the legacy proposal-ref path
-ref = obj.metadata.ref                           # Lane A  (:76)
+if obj.metadata.kind == 'document':              # webhooks_stripe.py:70
+    return _handle_document_payment(...)         # (:71)
+# anything without kind='document' is IGNORED — no other payment kind is minted
+return {'ok':True,'ignored':True,'event':...,'reason':'not a document payment'}  # :73
 ```
 
-`_EVENT_TO_STATUS` maps Stripe event types → persisted statuses (`apps/edge_api/src/routers/webhooks_stripe.py:41`):
+`_EVENT_TO_STATUS` maps Stripe event types → persisted statuses (`apps/edge_api/src/routers/webhooks_stripe.py:39`):
 
 | Stripe event | Persisted `payment_status` |
 |---|---|
-| `payment_intent.processing` | `processing` (`:42`) |
-| `payment_intent.succeeded` | `succeeded` (`:43`) |
-| `payment_intent.payment_failed` | `failed` (`:44`) |
-| `payment_intent.canceled` | `canceled` (`:45`) |
+| `payment_intent.processing` | `processing` (`:40`) |
+| `payment_intent.succeeded` | `succeeded` (`:41`) |
+| `payment_intent.payment_failed` | `failed` (`:42`) |
+| `payment_intent.canceled` | `canceled` (`:43`) |
 
-Any other event type yields `status=None` and is ignored as `{'ok':True,'ignored':True,'event':...}` — Lane A guard at `webhooks_stripe.py:79`→`:80`; Lane B guard at `:129`→`:130`.
+Inside `_handle_document_payment`, any other event type yields `status=None` and is ignored as `{'ok':True,'ignored':True,'event':...}` — guard at `webhooks_stripe.py:88`→`:89`.
 
-### Lane B handler — `_handle_document_payment`
+### Document-payment handler — `_handle_document_payment`
 
-`apps/edge_api/src/routers/webhooks_stripe.py:117`. Audit-first, advance-on-first-sight, single commit:
+`apps/edge_api/src/routers/webhooks_stripe.py:76`. Audit-first, advance-on-first-sight, single commit:
 
 ```
-status        = _EVENT_TO_STATUS.get(event_type)
-document_id   = obj.metadata.document_id         # :127
-opportunity_id= obj.metadata.opportunity_id      # :128
-if status is None or not document_id: ignore     # :129
-paid = status == 'succeeded'                      # :137
+status        = _EVENT_TO_STATUS.get(event_type)  # :83
+intent_id     = obj.id                            # :84
+document_id   = obj.metadata.document_id          # :86
+opportunity_id= obj.metadata.opportunity_id       # :87
+if status is None or not document_id: ignore      # :88
+paid = status == 'succeeded'                       # :96
 # 1) AUDIT — append the verbatim event (idempotent on stripe_event_id)
-first_seen = record_event_if_new(...)             # :140
-if first_seen:                                     # :149
-    rail = _resolve_rail(...)                      # :150
-    advance_status(document_id, status, paid, intent_id, rail)   # :151
-conn.commit()                                      # :159  (audit + advance commit TOGETHER)
-if paid and first_seen: logger.info('... PAID — fulfillment seam')  # :161-166  (STUB)
+first_seen = record_event_if_new(...)              # :99
+if first_seen:                                      # :108
+    rail = _resolve_rail(...)                       # :109
+    advance_status(document_id, status, paid, intent_id, rail)   # :110
+await conn.commit()                                 # :118  (audit + advance commit TOGETHER)
+if paid and first_seen: logger.info('... PAID — fulfillment seam')  # :120-125  (STUB)
 ```
 
-### Lane A handler — legacy proposal-ref path (inline in `stripe_webhook`)
+### Idempotency & monotonicity
 
-```
-ref = obj.metadata.ref                             # webhooks_stripe.py:76
-status = _EVENT_TO_STATUS.get(event_type)
-if status is None or not intent_id: ignore         # :79
-if not ref: ref = pay_queries.ref_for_intent(intent_id)   # :90  (lookup by intent id)
-if not ref: ignore reason='no matching proposal'   # :91-92
-# 1) AUDIT first (idempotent on the Stripe event id)
-first_seen = pay_queries.insert_event(source='stripe', idempotency_key=event_id, ...)  # :95
-# 2) ADVANCE — monotonic
-paid_at      = now() if status=='succeeded' else None   # :100
-amount_cents = obj.amount if status=='succeeded' else None  # :101
-applied = pay_queries.advance_payment_status(intent_id, status, paid_at, amount_cents)  # :102
-if status=='succeeded' and first_seen and applied: logger.info('... PAID — fulfillment seam')  # :106-109  (STUB)
-```
+| | `document_payments` |
+|---|---|
+| Idempotency key | `ON CONFLICT (stripe_event_id) DO NOTHING` in `record_event_if_new` (`apps/edge_api/src/document_payments/queries.py:148`); UNIQUE `stripe_event_id` |
+| Rank order | `none=0,requires_payment=1,processing=2,succeeded=3` (`apps/edge_api/src/document_payments/queries.py:160`/`:164`) |
+| Forward-state guard | `%(rank)s > {rank_case}` (`document_payments/queries.py:187`) |
+| Terminal-protect guard | `failed`/`canceled` apply only WHERE `payment_status <> 'succeeded'` (`document_payments/queries.py:185`) |
+| `paid_at` set-once | `paid_at = CASE WHEN %(paid)s THEN COALESCE(paid_at, now()) ELSE paid_at END` (`document_payments/queries.py:191`) |
 
-`ref_for_intent` resolves the proposal by `stripe_payment_intent_id` (`apps/edge_api/src/payments/queries.py:44`). NB `insert_event` **commits internally** (`apps/edge_api/src/payments/queries.py:138`), so on Lane A the audit row is durable **before** the advance runs — module docstring `webhooks_stripe.py:8` / `:13`.
+`advance_status` (`apps/edge_api/src/document_payments/queries.py:167`) additionally sets `rail = COALESCE(rail, %(rail)s)` (`:195`) and `stripe_payment_intent_id = COALESCE(%(intent_id)s, stripe_payment_intent_id)` (`:194`).
 
-### Idempotency & monotonicity (both lanes)
-
-| | Lane A (`engagement_proposals`) | Lane B (`document_payments`) |
-|---|---|---|
-| Idempotency key | `ON CONFLICT (source, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING` in `insert_event` (`apps/edge_api/src/payments/queries.py:132`); partial UNIQUE index `engagement_events_idem_uidx` (`apps/edge_api/sql/engagement_payments.sql:54`) | `ON CONFLICT (stripe_event_id) DO NOTHING` in `record_event_if_new` (`apps/edge_api/src/document_payments/queries.py:148`); UNIQUE `stripe_event_id` |
-| Rank order | `none=0,requires_payment=1,processing=2,succeeded=3` (`apps/edge_api/src/payments/queries.py:78`) | identical ranks (`apps/edge_api/src/document_payments/queries.py:160`/`:164`) |
-| Forward-state guard | `%s > {rank_case}` in UPDATE WHERE (`payments/queries.py:107`) | `%(rank)s > {rank_case}` (`document_payments/queries.py:187`) |
-| Terminal-protect guard | `failed`/`canceled` apply only WHERE `payment_status <> 'succeeded'` (`payments/queries.py:104`) | same (`document_payments/queries.py:185`) |
-| `paid_at` set-once | `paid_at = COALESCE(%s, now())` only when `status=='succeeded'` (`payments/queries.py:97`) | `paid_at = CASE WHEN %(paid)s THEN COALESCE(paid_at, now()) ELSE paid_at END` (`document_payments/queries.py:191`) |
-
-`advance_payment_status` (Lane A, `apps/edge_api/src/payments/queries.py:84`) returns `changed = cur.rowcount == 1` (`:116`); when the succeeded event carries an amount it writes `amount_charged_cents = %s` (`:100`) — note the column is `amount_charged_cents`, NOT `amount_cents`. `advance_status` (Lane B, `apps/edge_api/src/document_payments/queries.py:167`) additionally sets `rail = COALESCE(rail, %(rail)s)` (`:195`) and `stripe_payment_intent_id = COALESCE(%(intent_id)s, stripe_payment_intent_id)` (`:194`).
-
-> **The webhook is the SOLE writer of `'succeeded'`/`paid_at` on both lanes.** Negative claim (re-grepped in the verified dossiers): `business.document_payments` has exactly one UPDATE writer — `advance_status` (`document_payments/queries.py:167`), called only from the webhook at `webhooks_stripe.py:151`; its only INSERT writer is `upsert_intent` (mint), which never writes `'succeeded'`. The `proposals_v1.py` `advance_status` is a **DIFFERENT** module (writes `engagement_proposals` via the proposals path) — do not conflate.
+> **The webhook is the SOLE writer of `'succeeded'`/`paid_at` on document payments.** Negative claim: `business.document_payments` has exactly one UPDATE writer — `advance_status` (`document_payments/queries.py:167`), called only from the webhook at `webhooks_stripe.py:110`; its only INSERT writer is `upsert_intent` (mint), which never writes `'succeeded'`.
 
 ---
 
-## Lane B — Direct-to-documenso document fee
+## The document-fee lane — direct-to-documenso
 
 ### Mint — `POST /api/v1/documenso/payment-intent/{opportunity_id}/{document_id}`
 
@@ -164,7 +150,7 @@ return DocumentPaymentInitPublic(payment_status='requires_payment', ...)
 | `description` | `'Rare Structure engagement — document {opportunity_id}/{document_id}'` | `stripe.py:90` |
 | `metadata` | `{kind:'document', opportunity_id, document_id}` (routes the webhook) | `stripe.py:91`–`:94` |
 
-> Contrast with **Lane A** (`apps/edge_api/src/payments/stripe_client.py:58`): `payment_method_types=['us_bank_account']` (ACH-only, no card — `:70`), `setup_future_usage='off_session'` (`:71`), nested `payment_method_options={'us_bank_account':{'verification_method':'automatic'}}` (`:72`), `metadata={'ref':ref,'kind':'engagement'}` (`:74`).
+> The deleted legacy lane (`src/payments/stripe_client.py`, removed in `b83e002`) was the ACH-only counterpart — `payment_method_types=['us_bank_account']`, `metadata={'ref':ref,'kind':'engagement'}`. That `kind='engagement'` discriminant no longer reaches a handler; the webhook ignores it.
 
 ### Mint — reuse, retry, and idempotency
 
@@ -199,19 +185,19 @@ PUBLIC, `response_model=DocumentPaymentStatePublic` (`apps/edge_api/src/routers/
 
 ### Rail attribution (cosmetic, set-once)
 
-`_resolve_rail` (`apps/edge_api/src/routers/webhooks_stripe.py:173`):
+`_resolve_rail` (`apps/edge_api/src/routers/webhooks_stripe.py:132`):
 
 ```
-if status == 'processing': return 'us_bank_account'   # :186-187  (call-free; only ACH emits processing)
-if status != 'succeeded' or not intent_id: return None # :188
-existing = get_payment(conn, document_id)              # :193
-if existing and existing.rail: return None             # :194  (already pinned by prior processing — keep it)
-return retrieve_settled_rail(intent_id, mode)          # :197  (authoritative charge read, ambiguous succeeded only)
+if status == 'processing': return 'us_bank_account'   # :145-146  (call-free; only ACH emits processing)
+if status != 'succeeded' or not intent_id: return None # :147
+existing = get_payment(conn, document_id)              # :152
+if existing and existing.rail: return None             # :153  (already pinned by prior processing — keep it)
+return retrieve_settled_rail(intent_id, mode)          # :155-156  (authoritative charge read, ambiguous succeeded only)
 ```
 
 `retrieve_settled_rail` (`apps/edge_api/src/document_payments/stripe.py:128`) calls `PaymentIntent.retrieve(intent_id, expand=['latest_charge'])` (`:139`) and reads `latest_charge.payment_method_details.type` (`:147`); returns `None` on any failure (`:141`/`:148`) — caller treats `None` as "leave rail unset". Rail is **cosmetic** (used only to tailor paid-state copy) and never raises into the webhook (set once via `COALESCE`, `document_payments/queries.py:195`).
 
-### Lane B tables
+### Tables
 
 `business.document_payments` (`apps/edge_api/sql/document_payments.sql:16`):
 
@@ -238,47 +224,69 @@ Response models: `DocumentPaymentInitPublic` (`apps/edge_api/src/document_paymen
 
 ---
 
-## Lane A — Legacy engagement payment (proposal-ref, ACH-only)
+## Authoring lanes that feed the document-fee surface
 
-**ACTIVE, not deprecated.** Registered in `main.py` (`apps/edge_api/main.py:256`) and wired end-to-end: SPA `/p/:ref/pay` (`PaymentPage`, route at `rare-structure-hq:apps/platform-app/src/App.tsx:107`) → BFF `/api/v1/proposals/:ref/payment-intent` & `/payment` (`rare-structure-hq:apps/platform-api/src/routes/proposals-admin.ts:266`/`:288`) → `edge_api payments_v1.py`.
+The document-fee mint requires a **signed Documenso document** for the `(opportunity_id, document_id)` pair, and that document is instantiated from a **Documenso TEMPLATE**. Two repo-owned lanes produce those upstream artifacts. Neither touches Stripe; they are documented here because the payment gate depends on their output.
 
-Two PUBLIC routes under `prefix="/api/v1/proposals"` (the `ref` is the bearer capability): `POST /{ref}/payment-intent` (`apps/edge_api/src/routers/payments_v1.py:36`) and `GET /{ref}/payment` (`:111`).
+### Embed-template sign lane — `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template`
 
-**Signed gate.** `_PAYABLE_STATUSES = {'signed','completed'}` (`payments_v1.py:31`); `if proposal.status not in _PAYABLE_STATUSES: 409 'agreement not yet signed'` (`:46`–`:47`).
+Service-token gated (`Depends(require_service_token)`, `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:170`); the handler is at `:172`. PARALLEL to `originate-prefilled` (the embed-document lane, which is left untouched, `:175`/`:183`) — it does not replace it. Selected by `operator_settings.direct_to_documenso_lane = 'embed-template'` (the lane domain is `{envelope-distribute (RETIRED), prefill-document-from-template (DEFAULT), embed-template}`, `apps/edge_api/sql/operator_settings.sql:86`–`:88`; the Pydantic `DirectToDocumensoLane` Literal at `apps/edge_api/src/operator_settings/models.py:21`–`:22`).
 
-**Amount resolution.** `resolve_charge_cents(proposal)` returns `int(p.quarterly_total_cents)` (`apps/edge_api/src/payments/amount.py:18`/`:20`); `if charge_cents <= 0: 409 'proposal has no payable amount'` (`payments_v1.py:50`–`:51`).
+Flow: it loads the draft + the opportunity's public handle/contact (`:187`/`:190`), reads the template's recipients (`documenso_client.get_template_recipients`, `:196`), picks the direct recipient (`body.direct_recipient_id` override or `_pick_direct_recipient_id`, `:197`), and enables a Documenso DIRECT LINK on the template (`documenso_client.create_direct_link`, `:198`). **No document is minted here** — the signer self-identifies in the embed and Documenso creates the document (source `TEMPLATE_DIRECT_LINK`) at completion. A `DocumensoError` → `502` (`:201`–`:202`); a token-less link → `502` (`:203`–`:204`).
 
-**Mint.** ACH-only (`stripe_client.py:70`); idempotent on `idempotency_key=f'ach_{ref}'` (`payments_v1.py:89`; idempotent-create docstring `stripe_client.py:61`). On mint it attaches the intent (`attach_payment_intent`, `status='requires_payment'`, `payments_v1.py:95`/`:97`) and appends a system `payment_intent.created` event to `business.engagement_events` (`source='system'`, `idempotency_key=created intent id`, `:99`–`:101`). `attach_payment_intent` never overwrites a row already `'succeeded'` (`WHERE ref=%s AND payment_status <> 'succeeded'`, `apps/edge_api/src/payments/queries.py:70`) and COALESCEs `stripe_customer_id`/`payment_initiated_at` set-once (`:63`/`:68`).
+Returns `MandateEmbedTemplateOriginated` (`apps/edge_api/src/engagement_mandate_drafts/models.py:49`): `direct_token`, `documenso_host`, `embed_url` (`{host}/embed/direct/{token}`, `:214`), `external_id`/`opportunity_id` (the public 8-char handle, both `:215`/`:216`), `direct_recipient_id`, `recipient_email`, `recipient_name` (optional embed prefill — the signer may still change them), `status='ready'` (`:211`–`:221`). The prospect signing-state surface then tracks the completed document by the `external_id == opportunity_id` gate; once captured, the `(opportunity_id, document_id)` pair feeds the document-fee mint above.
 
-**Reuse.** An existing open intent (status not in `failed`/`canceled`) is retrieved and amount re-synced only when status in `_AMOUNT_MUTABLE = {'requires_payment_method','requires_confirmation','requires_action'}` (`payments_v1.py:33`/`:59`/`:62`); reuse failures degrade to a fresh mint, never a 500 (`:73`/`:78`).
+**Documenso direct-link client** (`apps/edge_api/src/services/documenso_client.py`): `DirectLinkResult` (`:469`), `create_direct_link` (`:514`, `POST /api/v2/template/direct/create {templateId, directRecipientId?}` → `{token,...}`, `:519`/`:529`), `toggle_direct_link` (`:542`, `POST /api/v2/template/direct/toggle`), and `get_template_recipients` (`:504`) are NEW. `create_document_from_template` (the embed-document path, `:228`) is unchanged. The `token` is the `<EmbedDirectTemplate>` prop AND the public `/d/{token}` / iframe `/embed/direct/{token}`; the signer enters their own name + email.
 
-**Stripe key resolution (asymmetric vs Lane B).** Lane A uses the **env-driven** getters `config.stripe_publishable_key()` (`payments_v1.py:38`) / `config.stripe_secret_key()` (`:39`, def `config.py:72`), selected by env `STRIPE_MODE` — **NOT** the per-request operator-selectable `resolve_stripe_mode` used by Lane B. `503 'Stripe is not configured'` when either key is absent (`payments_v1.py:40`).
+### Render+push content lane — `POST /internal/engagement-templates/render-push`
 
-**Lane A state lives on `engagement_proposals`** as ALTER-added columns (no separate payments table); the audit/idempotency ledger is `business.engagement_events`.
+Trigger-secret gated (`Depends(require_trigger_secret)`, `apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`), mounted under `/internal` (`apps/edge_api/main.py:274`) so the full path is `/internal/engagement-templates/render-push`. Called by the Trigger.dev task `"engagement-template-push"` (cross-repo: `rare-structure-hq:src/trigger/engagement_template_push.ts` — UNVERIFIED here). Renders a content source to a PDF and creates a Documenso TEMPLATE from the bytes:
+
+```
+render.assemble_html(content_dir, style)            # push.py:92
+render.render_pdf(html)                             # DocRaptor LIVE PDF — push.py:99
+store ... ; documenso_client.create_template_from_pdf(...)  # push.py:114
+```
+
+`render_and_push` (`apps/edge_api/src/engagement_templates/push.py:63`) is DB-free (pure HTTP/filesystem) and raises typed errors mapped by the router to `400` (`push.PushError`/`render.StyleError`, `:98`–`:100`), `503` (`render.RenderConfigError`, `:101`–`:103`), or `502` (`render.RenderError`/`documenso_client.DocumensoError`, `:104`–`:106`). On success it records `ops.engagement_template_push_runs` (`push.record_run`, `:109`; ledger DDL `apps/edge_api/sql/ops_engagement_template_push_runs.sql:12`) with the resolved `(brand, path, archetype, version, style, source_kind)`, the `documenso_template_id` + numeric id, and the PDF's R2 key.
+
+`create_template_from_pdf` (`apps/edge_api/src/services/documenso_client.py:420`) is NEW — `POST /api/v2/envelope/create` (multipart `payload` JSON + the PDF file) with `type=TEMPLATE` (`:437`/`:440`), returning `TemplateCreateResult` (`:410`).
+
+**Brand-aware catalog.** `apps/edge_api/src/engagement_templates/catalog.py` resolves a template by `content/<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` (`:4`). `_ALLOWED_BRANDS = {active-operators, rare-structure}` (`:28`) is enforced in both `list_templates` (`:65`) and `resolve` (`:99`/`:105`) — an unvetted directory can never surface as selectable. `brand` defaults to `active-operators` (`:21`) so the original three-segment call sites keep working.
+
+**Brand asset tree.** `apps/edge_api/content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/` is the rare-structure capital-origination template family (static-blank HTML: field-slot blanks with no underscore glyphs, the §8.4 Authority rep, 1.6 leading, plain + branded styles). It maps to the live Documenso template numeric id `14310` at runtime (a Documenso-side fact, not a repo constant).
+
+### `business.global_input_content` — content-source registry
+
+`apps/edge_api/sql/global_input_content.sql:21`. The registry of which content sources are selectable for the render+push lane. It gained `brand` (`'active-operators' | 'rare-structure'`, `ALTER ... ADD COLUMN ... DEFAULT 'active-operators'`, `:31`) and `source_kind` (`ALTER ... DEFAULT 'repo-html'`, `:32`), the latter guarded by a `CHECK (source_kind IN ('repo-html', 'db-markdown'))` constraint added idempotently (`:43`–`:45`). `path` is the brand-relative `<family>/<archetype>/<version>` for `repo-html` or a slug for `db-markdown` (`:23`). Seeds two rows (`ON CONFLICT` keeps any hand-provisioned row, `:53`–`:55`): the active-operators term-only template (`docraptor-to-documenso-template/term-only/v1`) and the rare-structure capital-origination template (`docraptor-to-documenso-template/capital-origination/v1`).
 
 ---
 
 ## Cross-repo handoffs (SPA → BFF → edge_api)
 
+> **CROSS-REPO — UNVERIFIED.** The SPA (`platform-app`) and BFF (`platform-api`) live in the SEPARATE `rare-structure-hq` repo, not verifiable from this codebase. The `rare-structure-hq:...` citations below are carried forward from prior audits and may have drifted. The `edge_api` CONTRACT they consume (route shapes + response models) is verified in this repo and is authoritative.
+
 Architecture invariant: `platform-app` → `platform-api` (DUMB BFF, no business logic / no DB for these flows) → `edge_api`. The BFF only remaps field names (snake → camel) and translates error codes.
 
-**Lane B MINT.** `createDocumentPaymentIntent` (`rare-structure-hq:apps/platform-app/src/proposals/api.ts:307`, fetch `:312`) → `POST` BFF `/api/v1/documenso/sign/:opportunityId/:documentId/payment-intent` (`rare-structure-hq:apps/platform-api/src/routes/documenso-public.ts:90`, **no `requireUser`** — pair is the capability) → `edgeCreateDocumentPaymentIntent` (`rare-structure-hq:apps/platform-api/src/lib/edge.ts:595`, fetch `:600`) → `edge_api POST /api/v1/documenso/payment-intent/{opp}/{doc}`. The BFF camelCases to `clientSecret`/`publishableKey`/`amountCents`/`currency`/`paymentStatus`/`contactName`/`contactEmail` (`documenso-public.ts:97`–`:103`) and **propagates the edge HTTP status verbatim** (`const status = e.status ?? 502` `:109`; re-throw `:110`; `.status` set on `EdgeError` at `edge.ts:606`) so a `409` reaches the SPA as "sign first".
+**MINT.** `createDocumentPaymentIntent` (`rare-structure-hq:apps/platform-app/src/proposals/api.ts:307`, fetch `:312`) → `POST` BFF `/api/v1/documenso/sign/:opportunityId/:documentId/payment-intent` (`rare-structure-hq:apps/platform-api/src/routes/documenso-public.ts:90`, **no `requireUser`** — pair is the capability) → `edgeCreateDocumentPaymentIntent` (`rare-structure-hq:apps/platform-api/src/lib/edge.ts:595`, fetch `:600`) → `edge_api POST /api/v1/documenso/payment-intent/{opp}/{doc}`. The BFF camelCases to `clientSecret`/`publishableKey`/`amountCents`/`currency`/`paymentStatus`/`contactName`/`contactEmail` (`documenso-public.ts:97`–`:103`) and **propagates the edge HTTP status verbatim** (`const status = e.status ?? 502` `:109`; re-throw `:110`; `.status` set on `EdgeError` at `edge.ts:606`) so a `409` reaches the SPA as "sign first".
 
-**Lane B STATE POLL.** `getDocumentPaymentState` (`rare-structure-hq:apps/platform-app/src/proposals/api.ts:334`, fetch `:339`) → `GET` BFF `/api/v1/documenso/sign/:opportunityId/:documentId/payment` (`rare-structure-hq:apps/platform-api/src/routes/documenso-public.ts:118`) → `edgeGetDocumentPaymentState` (`rare-structure-hq:apps/platform-api/src/lib/edge.ts:622`, fetch `:627`) → `edge_api GET /api/v1/documenso/payment/{opp}/{doc}`. CamelCases to `paymentStatus`/`amountCents`/`currency`/`paidAt`/`rail` (`documenso-public.ts:125`–`:129`); this state-poll route maps `EdgeError → 502` (`:134`), NOT verbatim.
+**STATE POLL.** `getDocumentPaymentState` (`rare-structure-hq:apps/platform-app/src/proposals/api.ts:334`, fetch `:339`) → `GET` BFF `/api/v1/documenso/sign/:opportunityId/:documentId/payment` (`rare-structure-hq:apps/platform-api/src/routes/documenso-public.ts:118`) → `edgeGetDocumentPaymentState` (`rare-structure-hq:apps/platform-api/src/lib/edge.ts:622`, fetch `:627`) → `edge_api GET /api/v1/documenso/payment/{opp}/{doc}`. CamelCases to `paymentStatus`/`amountCents`/`currency`/`paidAt`/`rail` (`documenso-public.ts:125`–`:129`); this state-poll route maps `EdgeError → 502` (`:134`), NOT verbatim.
+
+**Embed-template sign (cross-repo).** The SPA's `MandateDraftShell` carries a THIRD dispatch branch (alongside embed-document + the retired distribute) for `direct_to_documenso_lane='embed-template'`, calling the BFF `originate-embed-template` → `edge_api POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template`. It mounts `DirectTemplateSignPage` (`EmbedDirectTemplate`) at `/p/t/:opportunityId/:directToken` with `?host=`, threading the `direct_token`/`documenso_host` from the response. The signer self-identifies (name/email NOT locked). `SignLink` is a discriminated union and the `DirectToDocumensoLane` literal is shared. ALL of this is `rare-structure-hq` and UNVERIFIED here; the matching `edge_api` contract is the `MandateEmbedTemplateOriginated` model above.
 
 **BFF dual mount.** `documensoPublicRoutes` is mounted at `/api/v1/documenso` (`rare-structure-hq:apps/platform-api/src/index.ts:123`) AND the legacy transitional alias `/api/v1/engagement-mandate-drafts` (`:124`) so an in-flight SPA bundle calling the old path keeps working across independent deploys. A SEPARATE operator-authed router (`engagementMandateDraftRoutes`) is also mounted at the legacy prefix (`index.ts:126`) — the alias and the real legacy router coexist; do not conflate.
 
 **SPA pay page.** `/p/m/:opportunityId/:documentId/pay` (`rare-structure-hq:apps/platform-app/src/routes/p/DocumentPaymentPage.tsx:2`). ACH settles asynchronously: `confirmPayment` returns `processing`, NOT `succeeded` (`DocumentPaymentPage.tsx:14`); the page polls `getDocumentPaymentState` every **5000ms** (`:97`, `startPolling` `:66`) until terminal. **Server truth only advances the page; the browser confirm result never sets paid** (`:65`). SPA error branching: `if e instanceof PaymentError && e.status===409` (`:133`); `/already paid/i → succeeded` else `unsigned` (`:136`); any other error → `unavailable` (`:138`). The confirm-result `SettledHint` maps `succeeded → rail 'card'` / `processing → rail 'us_bank_account'` as an instant client-side hint (`rare-structure-hq:apps/platform-app/src/proposals/StagedAchForm.tsx:494`/`:498`), refined by the server poll; `enableCard` is passed (`rare-structure-hq:apps/platform-app/src/proposals/DocumentPaymentForm.tsx:54`) so Stripe renders the "Card | US bank account" tabs.
 
-**PAID transition (both lanes).** Stripe → `edge_api POST /webhooks/stripe` (`webhooks_stripe.py:49`) is the only thing that flips `'succeeded'`/`paid_at`. The SPA learns it only via its state poll.
+**PAID transition.** Stripe → `edge_api POST /webhooks/stripe` (`webhooks_stripe.py:47`) is the only thing that flips `'succeeded'`/`paid_at`. The SPA learns it only via its state poll.
 
 ---
 
 ## Schema-drift seatbelt & boot-time apply
 
-`_payments_db()` (`apps/edge_api/src/routers/document_payments_v1.py:50`) wraps every Lane-B DB read/write so any of `UndefinedColumn`/`UndefinedTable`/`UndefinedFunction`/`InvalidSchemaName` (`_SCHEMA_DRIFT_ERRORS`, `:42`–`:47`) is converted to **HTTP 503 `'payment is temporarily unavailable'`** instead of a raw 500 (`:58`→`:63`). This is the seatbelt for the PR #518 rail-column outage (comment `:36`–`:41`).
+`_payments_db()` (`apps/edge_api/src/routers/document_payments_v1.py:50`) wraps every document-payment DB read/write so any of `UndefinedColumn`/`UndefinedTable`/`UndefinedFunction`/`InvalidSchemaName` (`_SCHEMA_DRIFT_ERRORS`, `:42`–`:47`) is converted to **HTTP 503 `'payment is temporarily unavailable'`** instead of a raw 500 (`:58`→`:63`). This is the seatbelt for the PR #518 rail-column outage (comment `:36`–`:41`).
 
-The primary fix is the startup apply: `run_migrations` (`apps/edge_api/src/migrate.py:64`) re-applies every `sql/*.sql` (sorted glob, `:61`) to `HQX_DB_URL_POOLED` before serving, each in its own transaction (`:88`) guarded by a transaction-scoped `pg_advisory_xact_lock` (`:90`) to serialize concurrent replica boots. Escape hatch: `EDGE_API_SKIP_DB_MIGRATE=1` (`apps/edge_api/src/config.py:221`).
+The primary fix is the startup apply: `run_migrations` (`apps/edge_api/src/migrate.py:64`) re-applies every `sql/*.sql` (sorted glob) to `HQX_DB_URL_POOLED` before serving, each in its own transaction guarded by a transaction-scoped `pg_advisory_xact_lock` to serialize concurrent replica boots. Escape hatch: `EDGE_API_SKIP_DB_MIGRATE=1` (`apps/edge_api/src/config.py:233`).
 
 ---
 
@@ -286,11 +294,11 @@ The primary fix is the startup apply: `run_migrations` (`apps/edge_api/src/migra
 
 | Var | Role | Cite |
 |---|---|---|
-| `STRIPE_SECRET_KEY` / `STRIPE_SECRET_KEY_{LIVE,TEST}` | Stripe secret (sk_), server-side only; Lane B by explicit mode, Lane A bare | `apps/edge_api/src/config.py:112`/`:107` |
-| `STRIPE_PUBLISHABLE_KEY_{LIVE,TEST}` | publishable (pk_), surfaced to browser in the Init response | `apps/edge_api/src/config.py:117` |
-| `STRIPE_WEBHOOK_SECRET_{LIVE,TEST}` + bare | webhook signing secrets; ALL tried by `construct_event_any` | `apps/edge_api/src/config.py:129`/`:130` |
+| `STRIPE_SECRET_KEY` / `STRIPE_SECRET_KEY_{LIVE,TEST}` | Stripe secret (sk_), server-side only; resolved by explicit mode (`stripe_secret_key_for_mode`) | `apps/edge_api/src/config.py:112`/`:107` |
+| `STRIPE_PUBLISHABLE_KEY_{LIVE,TEST}` | publishable (pk_), surfaced to browser in the Init response (`stripe_publishable_key_for_mode`) | `apps/edge_api/src/config.py:117` |
+| `STRIPE_WEBHOOK_SECRET_{LIVE,TEST}` + bare | webhook signing secrets; ALL tried by `construct_event_any` | `apps/edge_api/src/config.py:129`/`:130`/`:131` |
 | `STRIPE_MODE` / `STRIPE_MODE_{TEST,LIVE}` | default mode (defaults `'test'`) + indirection target for `operator_settings.stripe_mode` | `apps/edge_api/src/config.py:62`/`:103` |
-| `EDGE_API_SKIP_DB_MIGRATE` | skip the boot-time `sql/*.sql` apply | `apps/edge_api/src/config.py:221` |
+| `EDGE_API_SKIP_DB_MIGRATE` | skip the boot-time `sql/*.sql` apply | `apps/edge_api/src/config.py:233` |
 
 ---
 
@@ -298,36 +306,35 @@ The primary fix is the startup apply: `run_migrations` (`apps/edge_api/src/migra
 
 | Component | Status | Note |
 |---|---|---|
-| `POST /webhooks/stripe` (shared router) | **ACTIVE** | sole writer of `'succeeded'`/`paid_at` on both lanes (`webhooks_stripe.py:49`) |
-| Lane B `POST /api/v1/documenso/payment-intent/{opp}/{doc}` | **ACTIVE** | dual-rail mint (`document_payments_v1.py:84`) |
-| Lane B `GET /api/v1/documenso/payment/{opp}/{doc}` | **ACTIVE** | state poll (`document_payments_v1.py:228`) |
-| Lane B `_handle_document_payment` | **CONDITIONAL** | runs only when `metadata.kind=='document'` (`webhooks_stripe.py:73`) |
-| Lane B dual-rail mint `create_payment_intent` | **ACTIVE** | `['card','us_bank_account']` (`stripe.py:87`) |
-| Lane B `_resolve_rail` / `retrieve_settled_rail` | **ACTIVE** | rail cosmetic, set-once (`webhooks_stripe.py:173`, `stripe.py:128`) |
-| Lane B signed gate `read_sign_state` | **ACTIVE** | offline `DOCUMENT_COMPLETED` projection (`documenso_webhooks/queries.py:63`) |
-| Lane A `POST /api/v1/proposals/{ref}/payment-intent` | **ACTIVE** | ACH-only (`payments_v1.py:36`, `stripe_client.py:70`) |
-| Lane A `GET /api/v1/proposals/{ref}/payment` | **ACTIVE** | state poll (`payments_v1.py:111`) |
-| Lane A inline proposal-ref webhook path | **CONDITIONAL** | runs only when `metadata.kind != 'document'` (`webhooks_stripe.py:76`) |
+| `POST /webhooks/stripe` | **ACTIVE** | sole writer of `'succeeded'`/`paid_at` on document payments (`webhooks_stripe.py:47`) |
+| `POST /api/v1/documenso/payment-intent/{opp}/{doc}` | **ACTIVE** | dual-rail mint (`document_payments_v1.py:84`) |
+| `GET /api/v1/documenso/payment/{opp}/{doc}` | **ACTIVE** | state poll (`document_payments_v1.py:228`) |
+| `_handle_document_payment` | **CONDITIONAL** | runs only when `metadata.kind=='document'` (`webhooks_stripe.py:70`) |
+| dual-rail mint `create_payment_intent` | **ACTIVE** | `['card','us_bank_account']` (`stripe.py:87`) |
+| `_resolve_rail` / `retrieve_settled_rail` | **ACTIVE** | rail cosmetic, set-once (`webhooks_stripe.py:132`, `stripe.py:128`) |
+| signed gate `read_sign_state` | **ACTIVE** | offline `DOCUMENT_COMPLETED` projection (`documenso_webhooks/queries.py:63`) |
 | `construct_event_any` (verify-any-secret) | **ACTIVE** | test+live+bare (`stripe.py:172`) |
 | `_payments_db` schema-drift 503 seatbelt | **ACTIVE** | (`document_payments_v1.py:50`) |
 | `run_migrations` boot-time `sql/*.sql` apply | **ACTIVE** | advisory-locked (`migrate.py:64`) |
+| Embed-template `POST .../originate-embed-template` | **ACTIVE** | direct-link sign lane, no document minted here (`engagement_mandate_drafts_v1.py:169`) |
+| Render+push `POST /internal/engagement-templates/render-push` | **ACTIVE** | render → DocRaptor → Documenso TEMPLATE (`internal_engagement_templates_v1.py:84`) |
+| `business.global_input_content` content registry | **ACTIVE** | `brand` + `source_kind` (`global_input_content.sql:21`) |
+| `ops.engagement_template_push_runs` ledger | **ACTIVE** | render+push audit (`ops_engagement_template_push_runs.sql:12`) |
+| `direct_to_documenso_lane = 'envelope-distribute'` | **RETIRED** | value retained in CHECK; lane code removed (`operator_settings.sql:80`) |
 | BFF legacy alias `/api/v1/engagement-mandate-drafts` | **CONDITIONAL** | transitional, for in-flight bundles (`rare-structure-hq:apps/platform-api/src/index.ts:124`) |
-| Post-payment fulfillment seam (Trigger.dev) — both lanes | **STUB** | only a `logger.info`; nothing fires (`webhooks_stripe.py:161`–`:166` Lane B, `:106`–`:109` Lane A) |
-| `DIRECT_TO_DOCUMENSO_PAYMENT_E2E.md` reference doc | **DEPRECATED** (as ground truth) | states ACH-only; contradicted by dual-rail code at `stripe.py:87` |
+| Post-payment fulfillment seam (Trigger.dev) | **STUB** | only a `logger.info`; nothing fires (`webhooks_stripe.py:120`–`:125`) |
+| Legacy proposal-`ref` payment lane (`payments_v1.py`, `src/payments/**`) | **REMOVED** | deleted in `b83e002` (2026-06-18); tables kept |
 
 ---
 
 ## Traps
 
-- **STALE "ACH-only" comments — code is DUAL-RAIL.** The Lane B router module docstring (`document_payments_v1.py:3` "mint/reuse ACH intent"), the SQL header (`apps/edge_api/sql/document_payments.sql:1` "Stripe ACH"), the `currency` column comment ("ACH (us_bank_account) is USD-only", `document_payments.sql:20`), and the `webhooks_stripe.py` module docstring (describes the surface as "ACH"/"engagement ACH debits") all **predate** the dual-rail mint. The behavior is `['card','us_bank_account']` (`stripe.py:87`). Only the prose lags. **The CODE wins.**
-- **The E2E reference doc is out of date on the rail.** `docs/reference/DIRECT_TO_DOCUMENSO_PAYMENT_E2E.md` describes Lane B as ACH-only; that is wrong vs current code. Treat it as a historical starting point, not ground truth.
-- **Two `advance_status`-family functions — do not conflate.** `document_payments/queries.py:advance_status` writes `business.document_payments` (Lane B, webhook-only). Lane A's webhook advance is `payments/queries.py:advance_payment_status` (`:84`). The `proposals_v1.py`/`proposals.queries` `advance_status` is yet another function writing `business.engagement_proposals` via the proposals module.
-- **Two lanes, two amount resolvers, two key-resolution paths.** Lane B `resolve_fee_cents` parses a display string from `field_values['fee_amount']` (`amount.py:19`); Lane A `resolve_charge_cents` returns `quarterly_total_cents` (`payments/amount.py:18`/`:20`). Lane B keys are mode-selected via `resolve_stripe_mode` (operator-toggleable); Lane A keys are bare env via `config.stripe_secret_key()`. Do not assume one path covers both.
-- **Lane A displayed-vs-charged divergence (live, code-confirmed).** The legacy mint charges `quarterly_total_cents`, which the proposals router populates with the FULL engagement total `= total_cents(monthly_fee_cents, duration_months)` (`apps/edge_api/src/proposals/models.py:50`). Meanwhile the public projection's `amount_due` is computed by **billing cadence** via `charge_cents` (`models.py:53`: `monthly`→1mo `:59`, `quarterly`→3mo `:61`, else full `:62`). For a `monthly` or `quarterly` cadence proposal, displayed `amount_due` and the actually-charged amount **diverge**. `DEFAULT_BILLING_CADENCE='upfront_in_full'`, so for default proposals charge == full total and there is no gap; the gap is real ONLY for `billing_cadence ∈ {monthly, quarterly}`. The `payments/amount.py` docstring asserting "charge == signed amount by construction" is stale for those cadences.
-- **`amount_charged_cents`, not `amount_cents`, on the legacy advance.** `advance_payment_status` writes `amount_charged_cents = %s` (`payments/queries.py:100`) when the succeeded event carries an amount — distinct from the Lane-B `amount_cents` column.
-- **`processing` is NOT `paid`.** ACH settles asynchronously; `confirmPayment` returns `processing`. Only a `payment_intent.succeeded` webhook flips `'succeeded'`/`paid_at`. The browser confirm result never advances the page (`DocumentPaymentPage.tsx:65`).
+- **The legacy proposal-`ref` payment lane is GONE.** Removed in `b83e002` (2026-06-18). Do not look for `payments_v1.py`, `src/payments/**`, `proposals_v1.py`, or a `kind != 'document'` webhook branch — none exist. The webhook IGNORES any event without `metadata.kind='document'` (`webhooks_stripe.py:73`). The `engagement_proposals`/`engagement_payments` tables remain in `sql/` (zero data loss) but have no live payment code reading or writing them.
+- **STALE "ACH-only" comments — code is DUAL-RAIL.** The router module docstring (`document_payments_v1.py:3` "mint/reuse ACH intent"), the SQL header (`apps/edge_api/sql/document_payments.sql:1` "Stripe ACH"), the `currency` column comment ("ACH (us_bank_account) is USD-only", `document_payments.sql:20`), and the `webhooks_stripe.py` module docstring (describes the surface as "ACH"/"engagement ACH debits", `:1`–`:19`) all **predate** the dual-rail mint. The behavior is `['card','us_bank_account']` (`stripe.py:87`). Only the prose lags. **The CODE wins.**
+- **`processing` is NOT `paid`.** ACH settles asynchronously; `confirmPayment` returns `processing`. Only a `payment_intent.succeeded` webhook flips `'succeeded'`/`paid_at`. The browser confirm result never advances the page (`DocumentPaymentPage.tsx:65`, cross-repo).
 - **The state poll returns `'none'` on a pair mismatch, not an error** (`document_payments_v1.py:239`–`:240`) — a `'none'` poll result does not necessarily mean "never minted"; it can mean the document id does not belong to the opportunity. The mint, by contrast, propagates a 409 verbatim through the BFF.
-- **`metadata.kind` is the ONLY dispatch discriminant** (`webhooks_stripe.py:73`). An intent minted without `kind='document'` is routed to the legacy proposal-ref path. Lane B mints always set it (`stripe.py:92`); Lane A mints set `kind='engagement'` (`stripe_client.py:74`) which falls through to the legacy path keyed by the `ref`.
+- **`metadata.kind` is the ONLY dispatch discriminant** (`webhooks_stripe.py:70`). An intent minted without `kind='document'` is ignored (`:73`). The document mint always sets it (`stripe.py:92`). There is no longer a fall-through path for any other `kind`.
 - **`rail` is cosmetic.** It tailors paid-state copy only; it is stamped once via `COALESCE` and `retrieve_settled_rail` returning `None` is benign. Never gate logic on it.
-- **Fulfillment is a STUB on BOTH lanes.** No provision/receipt/CRM action fires on payment success — only a log line marks the Trigger.dev seam (`webhooks_stripe.py:161`–`:166` and `:106`–`:109`). The `document_payment_events` / `engagement_events` rows are the audit of record.
-- **Upstream DDL not in this repo.** `business.opportunities`, `business.opportunity_specific_content`, `business.contacts` are upstream-owned (no `CREATE TABLE` under `apps/edge_api/sql`); their column definitions live outside this tree. Lane B joins them read-only.
+- **Fulfillment is a STUB.** No provision/receipt/CRM action fires on payment success — only a log line marks the Trigger.dev seam (`webhooks_stripe.py:120`–`:125`). The `document_payment_events` rows are the audit of record.
+- **The embed-template lane mints NO document.** `originate-embed-template` only enables a Documenso direct link and returns its token; Documenso creates the document (source `TEMPLATE_DIRECT_LINK`) when the signer completes. Until then the `(opportunity_id, document_id)` pair the payment gate needs does not exist (`engagement_mandate_drafts_v1.py:175`–`:185`).
+- **Upstream DDL not in this repo.** `business.opportunities`, `business.opportunity_specific_content`, `business.contacts` are upstream-owned (no `CREATE TABLE` under `apps/edge_api/sql`); their column definitions live outside this tree. The mint joins them read-only.

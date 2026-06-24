@@ -1,12 +1,12 @@
 # 06 — Engagement Docs Subsystem & Documenso Templates/Fields/Archetypes Layer
 
-> **STATUS BANNER.** This file covers the **AO (Active Operators) engagement-document origination** machinery in `core-x` edge_api, across **two render lanes that must not be conflated**: (1) the `engagement_docs` subsystem — the older static-HTML → DocRaptor PDF → **DRAFT** two-signer Documenso DOCUMENT pathway, **WIRED end-to-end but BROKEN at HEAD by two critical-path bugs** and explicitly "left disconnected pending an explicit repoint" by commit #494; and (2) the **Documenso TEMPLATES / fields / defaults / archetypes / mappings** layer plus the successor `engagement_templates` DocRaptor-only render surface. It pertains to the AO term-only and term+success-fee economic shapes. It does **not** cover the `direct-to-documenso` prefill payment lane (see `05-DIRECT_TO_DOCUMENSO_PAYMENT_E2E`) nor the `engagement-mandate-drafts` staging-draft signing lane.
+> **STATUS BANNER.** This file covers the **AO (Active Operators) engagement-document origination** machinery in `core-x` edge_api, across **two render lanes that must not be conflated**: (1) the `engagement_docs` subsystem — the older static-HTML → DocRaptor PDF → **DRAFT** two-signer Documenso DOCUMENT pathway, **WIRED end-to-end but BROKEN at HEAD by two critical-path bugs** and explicitly "left disconnected pending an explicit repoint" by commit #494; and (2) the **Documenso TEMPLATES / fields / defaults / archetypes / mappings** layer plus the successor `engagement_templates` surface (TWO routes: a DocRaptor-only PDF render AND a render+push that CREATES a Documenso TEMPLATE). It pertains to the AO term-only and term+success-fee economic shapes. It does **not** cover the `direct-to-documenso` prefill payment lane (see `05-DIRECT_TO_DOCUMENSO_PAYMENT_E2E`) nor the `engagement-mandate-drafts` staging-draft signing lane.
 
 ## Orientation
 
 A fresh agent should hold two distinct mental models. **First**, `engagement_docs` (`apps/edge_api/src/engagement_docs/`) is a self-contained pathway: an operator "Stage" click on a `rare-structure-hq` Applications row → Trigger.dev task `engagement-doc-render` → edge_api binds an opportunity's company/signer values + a server-resolved price/term package into **repo-resident static AO term-only HTML** → DocRaptor renders a plain PDF (LIVE) → stored in a segregated R2 namespace → a **DRAFT** (never distributed) two-signer Documenso DOCUMENT is created with SIGNATURE/DATE fields placed by `[[anchor]]` `findText`. Its ledger is `business.ao_engagement_mandates` (one row = one deal/document; an opportunity may have many). **At HEAD this lane is non-functional**: the POST raises `AttributeError` on `service.SLUG` (undefined) before INSERT, and the render reads a content directory that was relocated out from under it in #494.
 
-**Second**, the Documenso **templates layer** governs how edge_api reads/writes/classifies live Documenso v2 TEMPLATE envelopes and the per-operator content that feeds them: a Settings defaults editor that writes default field values onto a live template; a Dossier engagement picker scoped by operator email-domain; a standalone `engagement_templates` DocRaptor-to-PDF surface (NO Documenso); the `business.engagement_archetypes` economic-shape classifier above `business.documenso_templates`; and a one-shot push script that CREATES the two AO agreement templates in Documenso. These surfaces ARE active in the live flow.
+**Second**, the Documenso **templates layer** governs how edge_api reads/writes/classifies live Documenso v2 TEMPLATE envelopes and the per-operator content that feeds them: a Settings defaults editor that writes default field values onto a live template; a Dossier engagement picker scoped by operator email-domain; the brand-aware `engagement_templates` surface — a service-token DocRaptor-to-PDF render (NO Documenso) AND a trigger-secret render+push that CREATES a Documenso TEMPLATE (Trigger.dev `engagement-template-push`), keyed off the `business.global_input_content` content-source registry; the `business.engagement_archetypes` economic-shape classifier above `business.documenso_templates`; and a one-shot push script that CREATES the two AO agreement templates in Documenso. These surfaces ARE active in the live flow.
 
 All HTTP surfaces here are **service-token gated** and brokered by the `rare-structure-hq` platform-api BFF (a dumb forwarder across the auth boundary).
 
@@ -47,7 +47,7 @@ queries.update_mandate(status="pending", trigger_run_id=run_id); commit  # (:61)
 
 ### A.4 CRITICAL BUG #2 — `render.py` reads a vacated content directory
 
-`render.py` computes `_CONTENT_DIR = parents[2] / "content" / "global_engagement_content"` → `apps/edge_api/content/global_engagement_content` (`render.py:19`), with `_MANIFEST = _CONTENT_DIR / "manifest.json"` (`:20`). That directory **does not exist at HEAD** (verified `ls`: "No such file or directory"). The content tree was renamed in **#494 (commit 44ef2fc)** into `apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/` (verified: that path holds `active_operators_term_only.html`, `manifest.json`, `styles/`). `render.py` was never repointed. So `assemble_html()` reading `_MANIFEST.read_text()` (`render.py:32`, called via `:43`/`:46`) raises `FileNotFoundError`. **Even if `service.SLUG` were fixed, the render task would still fail.** The successor `engagement_templates` uses the correct relocated root (`catalog.py:17`, see B.7), proving the move was intentional and `engagement_docs/render.py` is the stale survivor.
+`render.py` computes `_CONTENT_DIR = parents[2] / "content" / "global_engagement_content"` → `apps/edge_api/content/global_engagement_content` (`render.py:19`), with `_MANIFEST = _CONTENT_DIR / "manifest.json"` (`:20`). That directory **does not exist at HEAD** (verified `ls`: "No such file or directory"). The content tree was renamed in **#494 (commit 44ef2fc)** into `apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/` (verified: that path holds `active_operators_term_only.html`, `manifest.json`, `styles/`). `render.py` was never repointed. So `assemble_html()` reading `_MANIFEST.read_text()` (`render.py:32`, called via `:43`/`:46`) raises `FileNotFoundError`. **Even if `service.SLUG` were fixed, the render task would still fail.** The successor `engagement_templates` uses the correct relocated root (`catalog.py:20`, `_CONTENT_ROOT = parents[2] / "content"`, see B.7), proving the move was intentional and `engagement_docs/render.py` is the stale survivor.
 
 ### A.5 The render orchestrator — `service.render_mandate`
 
@@ -287,11 +287,17 @@ Seeded with **exactly two** live archetypes via `INSERT ... ON CONFLICT (key) DO
 
 There is **no `CREATE TABLE`** for `business.documenso_templates` or `business.engagement_documenso_template_mappings` anywhere in the repo (independently re-verified: `grep -rniE 'create table[^;]*documenso_templates|create table[^;]*engagement_documenso'` returns nothing). edge_api only ALTERs `documenso_templates` (adds `archetype_id`) and SELECTs from both. The SQL itself states "the table predates this file and is not defined here" (`engagement_archetypes.sql:46`). Columns observed in use: `documenso_template_id` (numeric id as text — the originate value), `id` (surrogate PK), `organization_id`, `archetype_id`, `source_config_id` (referenced only in comment/docstring; its column type was not read from a CREATE TABLE), `recipients` (jsonb → `'text_fields'`). Also: `business.engagement_mandate_draft_content` denormalizes `archetype_id` from `documenso_templates` via the same ALTER+FK+index+backfill pattern, matching on the text numeric template id (`engagement_mandate_draft_content.sql:25`, `:35`-`36`, `:43`, `:48`-`51`).
 
-### B.7 Standalone DocRaptor render surface — `engagement_templates_v1.py`
+### B.7 The `engagement_templates` lane — TWO distinct routes
 
-`GET /api/v1/engagement-templates` lists selectable templates; `POST /api/v1/engagement-templates/render` renders one to a PDF (plain style by default) and returns a **presigned R2 URL** with a 3600s TTL (`_PDF_TTL_SECONDS = 3600`, `engagement_templates_v1.py:27`). Both service-token gated (`:30`, `:46`). This surface **explicitly does NOT touch Documenso** (`:6`, `:48`-`49`).
+`engagement_templates` exposes **two routes that must not be conflated**: a DocRaptor-only PDF render (service-token, operator-facing, NO Documenso) and a render+PUSH that CREATES a live Documenso TEMPLATE (trigger-secret, Trigger.dev-facing).
 
-The catalog (`engagement_templates/catalog.py`) discovers any `<path>/<archetype>/<version>/global_engagement_content/manifest.json` under `_AO_ROOT = parents[2] / "content" / "active-operators"` (the **correct relocated root**, `:17`). Selection segments are validated against `_SAFE_SEG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")` (`:23`) AND the resolved dir is confirmed inside the content root (`if _AO_ROOT not in content_dir.parents: raise`, `:92`) — path-traversal defense-in-depth.
+**(1) DocRaptor-only render — `engagement_templates_v1.py` (service-token).** `GET /api/v1/engagement-templates` lists selectable templates; `POST /api/v1/engagement-templates/render` renders one to a PDF (plain style by default) and returns a **presigned R2 URL** with a 3600s TTL (`_PDF_TTL_SECONDS = 3600`, `engagement_templates_v1.py:27`). Both service-token gated (`:30`, `:47`). This surface **explicitly does NOT touch Documenso** (`:6`, `:49`-`50`) — the operator gets a clean PDF link and affixes Documenso fields by hand afterward.
+
+**(2) Render+PUSH — `internal_engagement_templates_v1.py` (trigger-secret).** `POST /internal/engagement-templates/render-push` (prefix `/engagement-templates` under `/internal`, gated by `require_trigger_secret`, `internal_engagement_templates_v1.py:24`, `:28`, `:84`) renders the content source via DocRaptor **and CREATES a Documenso TEMPLATE** from the bytes, recording a terminal row in `ops.engagement_template_push_runs`. It is called by the Trigger.dev task `engagement-template-push` (`src/trigger/engagement_template_push.ts`, `id: "engagement-template-push"`, `maxDuration: 300`, `retry: { maxAttempts: 1 }`) via `callHqx`. Both routers registered in `main.py` (`apps/edge_api/main.py:51` / `:267` render; `:52` / `:274` render-push under `prefix="/internal"`). **Distinct lanes: render = PDF-only for operator consumption; render-push = template creation for live Documenso.**
+
+The render-push request resolves its content descriptor two ways (`internal_engagement_templates_v1.py:45`-`81`): pass a `registryPath`/`registryId` to look up a `business.global_input_content` row (brand + source_kind + brand-relative path; `engagement_templates/registry.py`), OR pass explicit `brand`/`path`/`archetype`/`version`. Either way `push.split_registry_path()` extracts the `(path, archetype, version)` triple from the registry path string (`push.py:52`-`60`) and `push.render_and_push()` resolves the content, renders LIVE DocRaptor, optionally stores an R2 audit copy, and calls `documenso_client.create_template_from_pdf` (`push.py:63`-`130`). Only `source_kind='repo-html'` is wired; `'db-markdown'` raises `PushError` (`push.py:81`-`84`).
+
+The catalog (`engagement_templates/catalog.py`) discovers any `<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` under `_CONTENT_ROOT = parents[2] / "content"` (`catalog.py:20`), gated by `_ALLOWED_BRANDS = frozenset({"active-operators", "rare-structure"})` (`catalog.py:28`) — `brand` selects the content-root subtree and defaults to `active-operators` so the original three-segment call sites keep working (`catalog.py:99`). Selection segments (brand+path+archetype+version) are validated against `_SAFE_SEG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")` (`catalog.py:32`, `:102`-`104`) AND the resolved dir is confirmed inside the content root (`if _CONTENT_ROOT not in content_dir.parents: raise`, `catalog.py:109`) — path-traversal defense-in-depth.
 
 Render assembly does **NO token substitution** (the HTML body carries no `{{tokens}}` — every dynamic value is reserved blank space the operator affixes as Documenso fields later); `assemble_html` only injects the chosen stylesheet into the `__STYLESHEET__` slot (`engagement_templates/render.py:1`, `:4`-`5`, `:70`). DocRaptor renders LIVE `"test": False` (`render.py:79`-`80`).
 
@@ -307,9 +313,22 @@ Rendered PDFs are stored under the segregated `engagement_templates/store.py` PR
 | `StoreConfigError` (R2 unconfigured) | 503 | `:75`-`76` |
 | `StoreError` (put/sign failure) | 502 | `:77`-`78` |
 
-### B.8 The only wired content lane + its manifest
+### B.8 The wired content lanes + their manifests
 
-Only **one** content lane is selectable by the `engagement_templates` catalog: `docraptor-to-documenso-template/term-only/v1/global_engagement_content` (it sits at the required `<path>/<archetype>/<version>/global_engagement_content/manifest.json` depth). *(Per the verified dossier, this is the only lane wired into the render catalog of the three lanes in the `content/active-operators` tree.)* The relocated **document-only** content (consumed by the broken `engagement_docs` lane) lives at `apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/manifest.json` and declares slug `active_operators_term_only`, name "Active Operators — Strategic Origination Agreement (Term Only)", archetype `term_only`, document `active_operators_term_only.html`, stylesheets `{plain, branded}`, `plain: true`, signing_anchors the four `[[...]]` placeholders (`manifest.json:2`-`24`).
+**TWO** content lanes are selectable by the `engagement_templates` catalog, one per brand subtree (both at the required `<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` depth):
+
+| Brand | Catalog path | Archetype | Manifest evidence |
+|---|---|---|---|
+| `active-operators` | `docraptor-to-documenso-template/term-only/v1` | `term_only` | seeded `global_input_content.sql:54` |
+| `rare-structure` | `docraptor-to-documenso-template/capital-origination/v1` | `capital_origination` | `…/capital-origination/v1/global_engagement_content/manifest.json` |
+
+The rare-structure capital-origination manifest declares slug `rare_structure_strategic_origination`, name "Rare Structure — Strategic Origination Agreement (Capital Origination)", archetype `capital_origination`, document `rare_structure_strategic_origination.html`, stylesheets `{plain, branded}`, `plain: true` (`content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/manifest.json`). Both lanes are registered in `business.global_input_content` (`global_input_content.sql:53`-`56`).
+
+The relocated **document-only** content (consumed by the broken `engagement_docs` lane) lives at `apps/edge_api/content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/manifest.json` and declares slug `active_operators_term_only`, name "Active Operators — Strategic Origination Agreement (Term Only)", archetype `term_only`, document `active_operators_term_only.html`, stylesheets `{plain, branded}`, `plain: true`, signing_anchors the four `[[...]]` placeholders (`manifest.json:2`-`24`).
+
+#### B.8.1 The content-source registry — `business.global_input_content`
+
+The render+push lane (B.7) resolves WHERE to pull content from a registry table, NOT from `documenso_templates`. `business.global_input_content` is one row per content asset: `{id, path, name, status, created_at, updated_at}` provisioned upstream, plus the guarded-ALTER source-selection columns `brand` (`'active-operators' | 'rare-structure'`) and `source_kind` (`'repo-html' | 'db-markdown'`, CHECK-constrained) (`global_input_content.sql:21`-`47`). **It does NOT carry `archetype_id`** — archetype is implicit in the `path` string (`<family>/<archetype>/<version>`, brand-relative), which `push.split_registry_path()` parses back into segments (`global_input_content.sql:14`-`16`, `:23`; `push.py:52`-`60`). `source_kind` selects HOW to resolve the row: `repo-html` reads `content/<brand>/<path>/global_engagement_content`; `db-markdown` (documented extension point, not yet wired) would read `business.global_engagement_content` by slug. Seeds the AO term-only and RS capital-origination repo-html assets via `ON CONFLICT (path) DO NOTHING` (`global_input_content.sql:52`-`56`).
 
 ### B.9 One-shot template-push script — `scripts/documenso_push_templates.py`
 
@@ -324,7 +343,37 @@ Per archetype: `build_html` (reused from `render_ao_preview`, `:35`) → DocRapt
 
 ### B.10 Distinct-lane callout
 
-The BFF route `engagement-mandates-admin.ts` header explicitly distinguishes the `engagement_docs` lane from `engagement-mandate-drafts` ("Distinct from engagement-mandate-drafts (staging draft → Documenso)", `rare-structure-hq:apps/platform-api/src/routes/engagement-mandates-admin.ts:8`). Three sibling lanes coexist alongside `engagement_docs`: the `engagement_templates` render path (#494, correct `content/active-operators` paths, `catalog.py:1`/`:17`; registered `main.py:53`/`:236`), the `engagement-mandate-drafts` Documenso template-use lane (`main.py:51`/`:220`), and the `engagement-mappings` picker (`main.py:50`/`:216`).
+The BFF route `engagement-mandates-admin.ts` header explicitly distinguishes the `engagement_docs` lane from `engagement-mandate-drafts` ("Distinct from engagement-mandate-drafts (staging draft → Documenso)", `rare-structure-hq:apps/platform-api/src/routes/engagement-mandates-admin.ts:8`). Sibling lanes coexist alongside `engagement_docs`: the `engagement_templates` render + render-push paths (correct brand-aware `content/` root, `catalog.py:20`/`:28`; registered `apps/edge_api/main.py:51`/`:267` and `:52`/`:274`), the `engagement-mandate-drafts` Documenso template-use lane (`main.py:49`/`:251`), and the `engagement-mappings` picker (`main.py:247`).
+
+### B.11 Embed-template lane — direct-link origination (PARALLEL to prefill)
+
+A THIRD `direct-to-documenso` sub-lane sits alongside `prefill-document-from-template` under `render_mode='direct-to-documenso'`: `direct_to_documenso_lane='embed-template'` (`operator_settings.sql:81`-`89`; the lane CHECK now accepts `{envelope-distribute` (RETIRED), `prefill-document-from-template` (DEFAULT), `embed-template}`). It originates via `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` (`engagement_mandate_drafts_v1.py:168`-`221`, service-token gated `:170`), **PARALLEL to** `originate-prefilled` (which is left untouched, `:175`).
+
+**No document is minted here.** The endpoint enables a Documenso DIRECT LINK on the draft's template and returns its reusable token; the signer **self-identifies** in the embed (name/email NOT locked) and Documenso creates the document AT completion (source `TEMPLATE_DIRECT_LINK`, `:179`). Control flow (`:186`-`221`): load draft + opportunity ref/contact → `documenso_client.get_template_recipients(template_id)` (`:196`) → pick the direct recipient (`body.direct_recipient_id` or `_pick_direct_recipient_id`, `:197`; the helper at `:43`) → `documenso_client.create_direct_link(template_id, direct_recipient_id=…)` (`:198`-`200`) → 502 if no token (`:203`-`204`).
+
+Response model `MandateEmbedTemplateOriginated` (`engagement_mandate_drafts/models.py:49`-`70`):
+
+| Field | Meaning | Citation |
+|---|---|---|
+| `direct_token` | the reusable direct-template token (`EmbedDirectTemplate` prop / `/d/{token}` / iframe `/embed/direct/{token}`) | `models.py:62` |
+| `documenso_host` | Documenso API base | `models.py:63` |
+| `embed_url` | `f"{host}/embed/direct/{token}"` | `models.py:64`; `engagement_mandate_drafts_v1.py:214` |
+| `external_id` | opportunity's PUBLIC 8-char handle (stamped by the embed) | `models.py:65` |
+| `opportunity_id` | same 8-char handle | `models.py:66` |
+| `direct_recipient_id` | the template recipient the public signer assumes | `models.py:67` |
+| `recipient_email` / `recipient_name` | optional embed prefill (signer may change) | `models.py:68`-`69` |
+| `status` | `"ready"` — no document exists until someone signs | `models.py:70` |
+
+The Documenso v2 surface (`documenso_client.py`):
+
+- `get_template_recipients(documenso_template_id)` — `GET /api/v2/template/{id}`, returns recipients (id/email/name/role) to designate the direct-link recipient (`:504`-`511`).
+- `create_direct_link(documenso_template_id, *, direct_recipient_id=None)` — `POST /api/v2/template/direct/create {templateId, directRecipientId?}`; **idempotent**: an already-enabled link 4xxes, so it falls back to `/template/direct/toggle {enabled:true}` to recover the existing token (`:514`-`539`).
+- `toggle_direct_link(documenso_template_id, *, enabled)` — `POST /api/v2/template/direct/toggle` (`:542`-`551`).
+- `DirectLinkResult` dataclass `{token, enabled, direct_template_recipient_id, envelope_id, template_id}` (`documenso_client.py:468`-`477`).
+
+The numeric template id `/template/direct/*` requires is extracted by `_template_id_number` (DB stores the numeric id as text; tolerates a prefixed handle, `:480`-`489`). The embed-document path (`create_document_from_template`) is **unchanged** — it binds a specific recipient and mints a document NOW, vs. the direct-link path where Documenso creates the document at signer completion (`documenso_client.py:460`-`465`).
+
+> **Cross-repo (rare-structure-hq, SEPARATE repo).** The SPA mounts `<EmbedDirectTemplate token={direct_token} host={documenso_host} externalId={external_id}>` on a `DirectTemplateSignPage` at route `/p/t/:opportunityId/:directToken?host=`; the signer self-identifies. Not verifiable from this repo — corrected only against the `MandateEmbedTemplateOriginated` contract above.
 
 ---
 
@@ -344,17 +393,23 @@ The BFF route `engagement-mandates-admin.ts` header explicitly distinguishes the
 | `participant/provider_signing_token` columns | **STUB** | Never written — no send/distribute action exists. |
 | `GET /api/v1/documenso-template-fields` + `POST .../defaults` | **ACTIVE** | Settings defaults editor; live template is source of truth. |
 | `GET /api/v1/engagement-mappings` | **ACTIVE** | Dossier picker; org-domain scoped; live text_fields override. |
-| `GET /api/v1/engagement-templates` + `POST .../render` | **ACTIVE** | Standalone DocRaptor→PDF; NO Documenso. |
+| `GET /api/v1/engagement-templates` + `POST .../render` | **ACTIVE** | Standalone DocRaptor→PDF; NO Documenso; service-token. |
+| `POST /internal/engagement-templates/render-push` | **ACTIVE** | DocRaptor PDF → CREATE Documenso TEMPLATE; trigger-secret; called by `engagement-template-push` task. |
+| `engagement-template-push` Trigger.dev task | **ACTIVE** | Calls render-push; `maxAttempts: 1` (template create is billable). |
+| `ops.engagement_template_push_runs` ledger | **ACTIVE** | One row per render+push (success\|error); fire-and-forget. |
+| `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` | **ACTIVE** | Direct-link embed lane; PARALLEL to originate-prefilled; mints NO document. |
+| `business.global_input_content` | **ACTIVE (registry)** | Content-source registry (brand + source_kind); no `archetype_id` (implicit in path). |
 | `business.engagement_archetypes` (+ ALTER/backfill) | **ACTIVE** | Classifier above `documenso_templates`; 2 seed rows. |
 | `business.documenso_templates` / `..._mappings` | **ACTIVE (upstream-owned)** | No `CREATE TABLE` here; only ALTER+SELECT. |
 | `scripts/documenso_push_templates.py` | **ACTIVE (one-shot, operator-run)** | Not an HTTP route; CREATES real templates. |
-| `docraptor-to-documenso-template/term-only/v1` content lane | **ACTIVE (only wired catalog lane)** | Per dossier, the sole lane at the required manifest depth. |
+| `docraptor-to-documenso-template/term-only/v1` content lane | **ACTIVE** | AO Term Only; capital-origination/v1 (rare-structure) also active. |
+| `docraptor-to-documenso-template/capital-origination/v1` content lane | **ACTIVE** | Rare Structure Capital Origination; seeded in `global_input_content`. |
 
 ---
 
 ## Traps
 
-1. **`engagement_docs` ≠ `engagement_templates` ≠ `engagement-mandate-drafts`.** Three separate lanes with overlapping names. `engagement_docs` (this file, Part A) is the BROKEN static-HTML→DocRaptor→**DRAFT Documenso DOCUMENT** lane. `engagement_templates` (Part B.7) is a DocRaptor-only render that **never touches Documenso**. `engagement-mandate-drafts` is a separate Documenso **template-use** staging lane (out of scope here).
+1. **`engagement_docs` ≠ `engagement_templates` ≠ `engagement-mandate-drafts`.** Separate lanes with overlapping names. `engagement_docs` (this file, Part A) is the BROKEN static-HTML→DocRaptor→**DRAFT Documenso DOCUMENT** lane. `engagement_templates` (Part B.7) has **TWO routes**: `/render` (DocRaptor-only PDF, NO Documenso) and `/render-push` (DocRaptor PDF → CREATE Documenso TEMPLATE) — do not assume the family "never touches Documenso." `engagement-mandate-drafts` is a separate Documenso **template-use** staging lane carrying two PARALLEL originate paths: `originate-prefilled` (mints a document now) and `originate-embed-template` (direct link, document created at signer completion; Part B.11).
 2. **Two HEAD bugs make the whole `engagement_docs` write path dead.** `service.SLUG` is undefined (POST dies before INSERT) and `render.py:19` reads the vacated `content/global_engagement_content` (render dies on `FileNotFoundError`). Do not assume the staging action works end-to-end. Prod may be running a pre-bug deploy — that was **not** verified; this doc reflects HEAD source.
 3. **Stale docstrings name a directory that no longer exists.** `engagement_docs/__init__.py:5`, `render.py:5`, and `ao_engagement_mandates.sql:6` all reference `apps/edge_api/content/global_engagement_content/` — it was moved by #494. The live content is under `content/active-operators/docraptor-to-documenso-document-only/global_engagement_content/`.
 4. **SQL comment lies about distribution.** `ao_engagement_mandates.sql:37`-`38` says distribution mints signing tokens "without emailing." The code never distributes (`documenso.py:118` `distributeDocument: False`). Tokens are never minted; the columns stay NULL. CODE wins.

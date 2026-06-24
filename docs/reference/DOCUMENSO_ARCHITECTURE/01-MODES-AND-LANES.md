@@ -1,6 +1,6 @@
 # 01 — Modes & Lanes: the selector layer
 
-> **STATUS BANNER.** This file is the **selector layer** for the entire Documenso/origination domain. It pertains to **all three independent selectors** carried by `public.operator_settings`: `render_mode` (`'through-docraptor'` | `'direct-to-documenso'`), `direct_to_documenso_lane` (`'envelope-distribute'` | `'prefill-document-from-template'`, meaningful **only** under `render_mode='direct-to-documenso'`), and `stripe_mode` (`'test'` | `'live'` | `NULL`). It documents the storage table, the dumb-BFF settings pass-through, the per-tuple routing table, and the edge_api router-mount overview. Downstream lane-specific flows are documented in sibling files; this file tells you **which** flow each tuple selects.
+> **STATUS BANNER.** This file is the **selector layer** for the entire Documenso/origination domain. It pertains to **all three independent selectors** carried by `public.operator_settings`: `render_mode` (`'through-docraptor'` | `'direct-to-documenso'`), `direct_to_documenso_lane` (`'envelope-distribute'` (RETIRED) | `'prefill-document-from-template'` (DEFAULT) | `'embed-template'`, meaningful **only** under `render_mode='direct-to-documenso'`), and `stripe_mode` (`'test'` | `'live'` | `NULL`). It documents the storage table, the dumb-BFF settings pass-through, the per-tuple routing table, and the edge_api router-mount overview. Downstream lane-specific flows are documented in sibling files; this file tells you **which** flow each tuple selects.
 
 ## Orientation
 
@@ -18,19 +18,19 @@ One row per operator, in `public` in the **same HQX Postgres** as `business.*` (
 |---|---|---|---|---|
 | `auth_user_id` | `uuid` | `PRIMARY KEY` | Supabase JWT `sub`. Grain key (one row per operator). | `apps/edge_api/sql/operator_settings.sql:40` |
 | `render_mode` | `text` | `NOT NULL DEFAULT 'through-docraptor'` | Top-level originate pathway. | `apps/edge_api/sql/operator_settings.sql:41` |
-| `direct_to_documenso_lane` | `text` | `NOT NULL DEFAULT 'envelope-distribute'` | Sub-selector; meaningful **only** under `render_mode='direct-to-documenso'`. | `apps/edge_api/sql/operator_settings.sql:42`, `apps/edge_api/sql/operator_settings.sql:49` |
+| `direct_to_documenso_lane` | `text` | `NOT NULL DEFAULT 'prefill-document-from-template'` | Sub-selector; meaningful **only** under `render_mode='direct-to-documenso'`. | `apps/edge_api/sql/operator_settings.sql:43`, `apps/edge_api/sql/operator_settings.sql:50` |
 | `stripe_mode` | `text` | **NULLABLE**, no default | Document-payment Stripe toggle. `NULL` = "follow the `STRIPE_MODE` env". | `apps/edge_api/sql/operator_settings.sql:43`, `apps/edge_api/sql/operator_settings.sql:52` |
 | `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Set to `now()` on upsert. `null` in the GET response only when no row exists (resolved defaults, never persisted). | `apps/edge_api/sql/operator_settings.sql:44`, `apps/edge_api/src/operator_settings/queries.py:32` |
 
 ### DB CHECK constraints (the canonical allowed-value record)
 
-All three are added **idempotently** inside `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname=...)` guards, so re-running the DDL does not error on an existing constraint (`apps/edge_api/sql/operator_settings.sql:62`, `apps/edge_api/sql/operator_settings.sql:72`, `apps/edge_api/sql/operator_settings.sql:84`).
+The `render_mode` and `stripe_mode` constraints are added **idempotently** inside `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname=...)` guards, so re-running the DDL does not error on an existing constraint (`apps/edge_api/sql/operator_settings.sql:61`, `apps/edge_api/sql/operator_settings.sql:91`). The `direct_to_documenso_lane` constraint instead uses a **guarded DROP + re-ADD** (`DROP CONSTRAINT IF EXISTS ... ; ADD CONSTRAINT ...`) so a newly-widened value set converges on every apply — a guarded add-if-missing would never widen an existing constraint (`apps/edge_api/sql/operator_settings.sql:81`, `apps/edge_api/sql/operator_settings.sql:83`).
 
 | Constraint | Rule | Citation |
 |---|---|---|
-| `operator_settings_render_mode_check` | `render_mode = ANY (ARRAY['through-docraptor','direct-to-documenso'])` | `apps/edge_api/sql/operator_settings.sql:67`, `apps/edge_api/sql/operator_settings.sql:68` |
-| `operator_settings_direct_to_documenso_lane_check` | `direct_to_documenso_lane = ANY (ARRAY['envelope-distribute','prefill-document-from-template'])` | `apps/edge_api/sql/operator_settings.sql:79`, `apps/edge_api/sql/operator_settings.sql:80` |
-| `operator_settings_stripe_mode_check` | `stripe_mode IS NULL OR stripe_mode = ANY (ARRAY['test','live'])` | `apps/edge_api/sql/operator_settings.sql:91`, `apps/edge_api/sql/operator_settings.sql:92` |
+| `operator_settings_render_mode_check` | `render_mode = ANY (ARRAY['through-docraptor','direct-to-documenso'])` | `apps/edge_api/sql/operator_settings.sql:68`, `apps/edge_api/sql/operator_settings.sql:69` |
+| `operator_settings_direct_to_documenso_lane_check` | `direct_to_documenso_lane = ANY (ARRAY['envelope-distribute','prefill-document-from-template','embed-template'])` | `apps/edge_api/sql/operator_settings.sql:84`–`apps/edge_api/sql/operator_settings.sql:89` |
+| `operator_settings_stripe_mode_check` | `stripe_mode IS NULL OR stripe_mode = ANY (ARRAY['test','live'])` | `apps/edge_api/sql/operator_settings.sql:98`, `apps/edge_api/sql/operator_settings.sql:99` |
 
 ### RLS
 
@@ -52,13 +52,13 @@ The path param `auth_user_id` is typed `UUID`, so a malformed id is rejected wit
 if no row for auth_user_id:
     return {
         render_mode:              DEFAULT_RENDER_MODE                # 'through-docraptor'
-        direct_to_documenso_lane: DEFAULT_DIRECT_TO_DOCUMENSO_LANE   # 'envelope-distribute'
+        direct_to_documenso_lane: DEFAULT_DIRECT_TO_DOCUMENSO_LANE   # 'prefill-document-from-template'
         stripe_mode:              None
         updated_at:               None       # <- null ONLY here (never persisted)
     }
 ```
 
-(`apps/edge_api/src/operator_settings/queries.py:27`–`apps/edge_api/src/operator_settings/queries.py:33`.) Python-side defaults `DEFAULT_RENDER_MODE='through-docraptor'` and `DEFAULT_DIRECT_TO_DOCUMENSO_LANE='envelope-distribute'` are kept in lockstep with the DB column defaults and imported into `queries.py` (`apps/edge_api/src/operator_settings/models.py:26`, `apps/edge_api/src/operator_settings/models.py:27`, `apps/edge_api/src/operator_settings/queries.py:10`).
+(`apps/edge_api/src/operator_settings/queries.py:27`–`apps/edge_api/src/operator_settings/queries.py:33`.) Python-side defaults `DEFAULT_RENDER_MODE='through-docraptor'` and `DEFAULT_DIRECT_TO_DOCUMENSO_LANE='prefill-document-from-template'` are kept in lockstep with the DB column defaults and imported into `queries.py` (`apps/edge_api/src/operator_settings/models.py:33`, `apps/edge_api/src/operator_settings/models.py:34`, `apps/edge_api/src/operator_settings/queries.py:10`).
 
 ### PUT semantics — merge-upsert via COALESCE-of-existing (NOT EXCLUDED)
 
@@ -88,8 +88,8 @@ Verbatim: INSERT branch at `apps/edge_api/src/operator_settings/queries.py:73`�
 | Type | Allowed values | Citation |
 |---|---|---|
 | `RenderMode` | `Literal['through-docraptor','direct-to-documenso']` | `apps/edge_api/src/operator_settings/models.py:15` |
-| `DirectToDocumensoLane` | `Literal['envelope-distribute','prefill-document-from-template']` | `apps/edge_api/src/operator_settings/models.py:16` |
-| `StripeMode` | `Literal['test','live']` | `apps/edge_api/src/operator_settings/models.py:20` |
+| `DirectToDocumensoLane` | `Literal['envelope-distribute','prefill-document-from-template','embed-template']` | `apps/edge_api/src/operator_settings/models.py:21`–`apps/edge_api/src/operator_settings/models.py:23` |
+| `StripeMode` | `Literal['test','live']` | `apps/edge_api/src/operator_settings/models.py:27` |
 
 `OperatorSettingsUpsert` has **all three fields Optional** (`render_mode|None`, `direct_to_documenso_lane|None`, `stripe_mode|None`) — the cockpit save payload merges, so toggling one never clobbers another (`apps/edge_api/src/operator_settings/models.py:41`, `apps/edge_api/src/operator_settings/models.py:46`–`apps/edge_api/src/operator_settings/models.py:48`).
 
@@ -128,7 +128,7 @@ PUT /api/v1/settings:
 | Set | Values | Default | Citation |
 |---|---|---|---|
 | `RENDER_MODES` | `['through-docraptor','direct-to-documenso']` | `DEFAULT_RENDER_MODE='through-docraptor'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:13`, `:15` |
-| `DIRECT_TO_DOCUMENSO_LANES` | `['envelope-distribute','prefill-document-from-template']` | `DEFAULT_DIRECT_TO_DOCUMENSO_LANE='envelope-distribute'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:30`, `:35` |
+| `DIRECT_TO_DOCUMENSO_LANES` | `['envelope-distribute','prefill-document-from-template','embed-template']` | `DEFAULT_DIRECT_TO_DOCUMENSO_LANE='prefill-document-from-template'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts` (cross-repo; mirrors edge_api `models.py:21`–`:23`, `:34` — verify exact lines in that repo) |
 | `STRIPE_MODES` | `['test','live']` | `DEFAULT_STRIPE_MODE='live'` (UI/wire surface) | `rare-structure-hq:packages/shared/src/schemas/settings.ts:45`, `:47` |
 
 > **`DEFAULT_STRIPE_MODE='live'` (shared/wire) ≠ the env default.** `config.stripe_mode()` returns `os.environ.get('STRIPE_MODE','test')` — the **env-level default is `'test'`** (fail-safe so an unset/typo'd mode never accidentally hits live rails). These are different layers, not contradictory (`rare-structure-hq:packages/shared/src/schemas/settings.ts:47`, `apps/edge_api/src/config.py:62`, `apps/edge_api/src/config.py:61`).
@@ -142,7 +142,7 @@ The three selectors are consumed in **three distinct places by three distinct me
 | Selector | Consumed where | Mechanism | Downstream branch | Status |
 |---|---|---|---|---|
 | `render_mode` | edge_api `POST /api/v1/proposals/{ref}/confirm` → `_provision` | **server-side** branch | `through-docraptor`/None → DocRaptor render + Documenso envelope (**wired**); `direct-to-documenso` → non-raising **STUB** | CONDITIONAL |
-| `direct_to_documenso_lane` | SPA `MandateDraftShell.confirm()` | **client-side** endpoint pick | `prefill-document-from-template` → `originate-prefilled`; else `envelope-distribute` → `confirm` | ACTIVE |
+| `direct_to_documenso_lane` | SPA `MandateDraftShell.confirm()` | **client-side** endpoint pick | `prefill-document-from-template` → `originate-prefilled`; `embed-template` → `originate-embed-template`; `envelope-distribute` → `confirm` (RETIRED) | ACTIVE |
 | `stripe_mode` | edge_api document-payment mint + Stripe webhook | **server-side** resolution | `resolve_stripe_mode(get_stripe_mode_selection())` picks mode-specific keys | ACTIVE |
 
 ### `render_mode` routing (server-side, at proposal-confirm)
@@ -166,20 +166,25 @@ The `direct-to-documenso` branch is a **non-raising stub** — it logs and retur
 
 ### `direct_to_documenso_lane` routing (client-side, in the SPA)
 
-The lane is decided **purely client-side**. There is **no server-side branch on the lane column anywhere** (verified by grep across `edge_api/src` and `platform-api/src`: the column appears only in the operator_settings storage module in edge_api, and only in `edge.ts` type/body + `settings.ts` gateway in platform-api). The SPA `MandateDraftShell` reads `directToDocumensoLane` via `useOriginationMode` and picks the endpoint:
+The lane is decided **purely client-side**. There is **no server-side branch on the lane column anywhere** (verified by grep across `edge_api/src` and `platform-api/src`: the column appears only in the operator_settings storage module in edge_api, and only in `edge.ts` type/body + `settings.ts` gateway in platform-api). The SPA `MandateDraftShell` reads `directToDocumensoLane` via `useOriginationMode` and dispatches across the **three** lanes (cross-repo — exact line numbers belong to `rare-structure-hq`):
 
 ```text
-const { directToDocumensoLane } = useOriginationMode();   // MandateDraftShell.tsx:72
+const { directToDocumensoLane } = useOriginationMode();   // MandateDraftShell.tsx
 async function confirm() {
   if (directToDocumensoLane === "prefill-document-from-template") {
-    originatePrefilled(token, draftId);   // -> POST .../{id}/originate-prefilled   (MandateDraftShell.tsx:93-94)
+    originatePrefilled(token, draftId);       // -> POST .../{id}/originate-prefilled       (prefill / embed-document lane)
+  } else if (directToDocumensoLane === "embed-template") {
+    originateEmbedTemplate(token, draftId);   // -> POST .../{id}/originate-embed-template   (embed-template lane)
   } else {
-    confirmMandateDraft(token, draftId);  // -> POST .../{id}/confirm  (envelope-distribute)  (MandateDraftShell.tsx:104)
+    confirmMandateDraft(token, draftId);      // -> POST .../{id}/confirm                   (envelope-distribute lane — RETIRED)
   }
 }
 ```
 
-(`rare-structure-hq:apps/platform-app/src/proposals/MandateDraftShell.tsx:72`, `:93`, `:94`, `:104`.) The two BFF lane endpoints are independent handlers, **neither reading `operator_settings`**: `POST /:id/confirm` → `edgeConfirmMandateDraft` (envelope-distribute lane); `POST /:id/originate-prefilled` → `edgeOriginatePrefilled` (prefill lane, returns `opportunity_id` + `document_id` for the `/p/m/{opportunityId}/{documentId}` link) (`rare-structure-hq:apps/platform-api/src/routes/engagement-mandate-drafts-admin.ts:121`, `:124`, `:142`, `:145`).
+The three edge_api lane endpoints are independent handlers, **none reading `operator_settings`**:
+- `POST /{draft_id}/originate-prefilled` (the canonical prefill / embed-document lane) mints a Documenso DOCUMENT now via `create_document_from_template`, distributes `NONE` → `PENDING`, and returns `opportunity_id` + `document_id` (+ `signing_token`) for the `/p/m/{opportunityId}/{documentId}` link — `MandatePrefilledOriginated` (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:109`–`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:165`).
+- `POST /{draft_id}/originate-embed-template` (the embed-template lane, **PARALLEL** to prefill) enables a Documenso DIRECT LINK on the draft's template via `get_template_recipients` + `create_direct_link` and returns the reusable `direct_token` (+ `embed_url`, `external_id`, `direct_recipient_id`, optional `recipient_email`/`recipient_name`) — `MandateEmbedTemplateOriginated`, `status='ready'`. **No document is minted here**: the signer self-identifies in the embed and Documenso creates the document (source `TEMPLATE_DIRECT_LINK`) at completion (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:168`–`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:221`, model at `apps/edge_api/src/engagement_mandate_drafts/models.py:49`–`apps/edge_api/src/engagement_mandate_drafts/models.py:70`).
+- `POST /{draft_id}/confirm` (envelope-distribute) is **RETIRED** — the `/envelope/use` lane was removed in code; the lane value survives only so a pre-existing row never violates the CHECK (`apps/edge_api/sql/operator_settings.sql:31`–`apps/edge_api/sql/operator_settings.sql:34`, `apps/edge_api/sql/operator_settings.sql:80`).
 
 ### `stripe_mode` routing (server-side, at the document-payment mint + webhook)
 
@@ -217,7 +222,7 @@ When `render_mode='through-docraptor'`, `direct_to_documenso_lane` is **ignored*
 | Settings **read** | `getSettings` | `GET /api/v1/settings` → `edgeGetOperatorSettings` | `GET /api/v1/operator-settings/{auth_user_id}` | `get_settings` |
 | Settings **write** | `useOriginationMode.putSettings` | `PUT /api/v1/settings` → `edgePutOperatorSettings` | `PUT /api/v1/operator-settings/{auth_user_id}` | `upsert_settings` |
 | `render_mode` (proposal originate) | confirm | `POST /api/v1/proposals/:ref/confirm` (**reads `operator_settings.render_mode` directly via Supabase service-role**) → `edgeConfirmProposal` | `POST /api/v1/proposals/{ref}/confirm` | `_provision` (docraptor wired / direct-to-documenso stub) |
-| `direct_to_documenso_lane` (mandate originate) | `MandateDraftShell.confirm()` (**client-side lane pick**) | `POST /api/v1/engagement-mandate-drafts/:id/confirm` **or** `.../:id/originate-prefilled` | `confirm` **or** `originate-prefilled` | lane-specific |
+| `direct_to_documenso_lane` (mandate originate) | `MandateDraftShell.confirm()` (**client-side lane pick**) | `POST /api/v1/engagement-mandate-drafts/:id/originate-prefilled` **\|** `.../:id/originate-embed-template` **\|** `.../:id/confirm` (RETIRED) | `originate-prefilled` **\|** `originate-embed-template` **\|** `confirm` | lane-specific |
 | `stripe_mode` (document payment) | prospect SPA | BFF | `POST /api/v1/documenso/payment-intent/{opp}/{doc}` | `resolve_stripe_mode(get_stripe_mode_selection())` |
 
 The SPA `useOriginationMode` hook stages `render_mode`/`lane`/`stripe_mode` locally (no network) and commits all three in **one PUT** to `/api/v1/settings`; it skips the call entirely under the DEV mock session (`token === 'dev'`) (`rare-structure-hq:apps/platform-app/src/settings/originationMode.ts:94`, `:149`, `:150`, `:154`). The `Settings.tsx` `OriginationModeCard` renders the lane sub-selector **only** when `selected === 'direct-to-documenso'` (`showLaneSelector`), matching the column's conditional semantics; the Stripe-mode selector is **always** shown (`rare-structure-hq:apps/platform-app/src/routes/app/Settings.tsx:151`, `:201`, `:251`).
@@ -252,7 +257,7 @@ On the platform side: `app.route('/api/v1/settings', settingsRoutes)` is the dum
 | `GET/PUT /api/v1/settings` (BFF dumb pass-through) | **ACTIVE** | `rare-structure-hq:apps/platform-api/src/routes/settings.ts:63`, `:74` |
 | `render_mode='through-docraptor'` branch in `_provision` | **ACTIVE** | the wired proposal-confirm pathway, `apps/edge_api/src/routers/proposals_v1.py:104` |
 | `render_mode='direct-to-documenso'` branch in `_provision` | **STUB** | non-raising "not yet wired", `apps/edge_api/src/routers/proposals_v1.py:103` |
-| `direct_to_documenso_lane` client-side routing (`MandateDraftShell`) | **ACTIVE** | both lanes live, `rare-structure-hq:apps/platform-app/src/proposals/MandateDraftShell.tsx:93` |
+| `direct_to_documenso_lane` client-side routing (`MandateDraftShell`) | **ACTIVE** | prefill + embed-template lanes live; envelope-distribute RETIRED. edge endpoints `originate-prefilled` / `originate-embed-template` at `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:109`, `:168` |
 | `direct_to_documenso_lane` server-side branch | **does NOT exist** | no server reads the lane for routing (grep-confirmed) |
 | `stripe_mode` resolution (mint + webhook) | **ACTIVE** | `apps/edge_api/src/routers/document_payments_v1.py:96`, `apps/edge_api/src/routers/webhooks_stripe.py:196` |
 | `proposals-admin.ts` direct Supabase read of `render_mode` | **ACTIVE (legacy, discrepant)** | reads `operator_settings` out-of-band from the edge gateway, `rare-structure-hq:apps/platform-api/src/routes/proposals-admin.ts:132` |
@@ -264,7 +269,9 @@ On the platform side: `app.route('/api/v1/settings', settingsRoutes)` is the dum
 
 - **The "BFF no longer touches `public.operator_settings`" docstrings are scoped, not absolute.** That claim holds **only for the `/api/v1/settings` gateway route** (`rare-structure-hq:apps/platform-api/src/routes/settings.ts:9`; DDL `apps/edge_api/sql/operator_settings.sql:7`; router `apps/edge_api/src/routers/operator_settings_v1.py:8`). The **proposal-confirm path still reads `operator_settings.render_mode` directly** via the Supabase service-role client (`rare-structure-hq:apps/platform-api/src/routes/proposals-admin.ts:132`–`:137`, `lib/db.ts` at `rare-structure-hq:apps/platform-api/src/lib/db.ts:15`). The **code wins**: do not assume the BFF is a pure pass-through for the render_mode-at-confirm flow. (Whether this is intentional legacy or pending migration is **undocumented / unverified** — carry that uncertainty.)
 
-- **The lane is NEVER routed server-side.** `direct_to_documenso_lane` is selected **only** in the SPA (`MandateDraftShell.tsx:93`). Do not look for an edge_api or BFF branch on the lane column — there isn't one. The lane's two BFF endpoints (`/confirm`, `/originate-prefilled`) are dumb and independent; the SPA decides which one to call.
+- **The lane is NEVER routed server-side.** `direct_to_documenso_lane` is selected **only** in the SPA (`MandateDraftShell.confirm()`). Do not look for an edge_api or BFF branch on the lane column — there isn't one. The lane's three edge endpoints (`/originate-prefilled`, `/originate-embed-template`, `/confirm`) are dumb and independent; the SPA decides which one to call. `prefill-document-from-template` and `embed-template` are both live; `envelope-distribute` (`/confirm`) is **RETIRED** (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:109`, `:168`; `apps/edge_api/sql/operator_settings.sql:80`).
+
+- **`embed-template` ≠ `prefill-document-from-template` — different Documenso primitives, different "when is a document created".** The prefill lane mints a Documenso DOCUMENT **at originate** (`create_document_from_template`, source TEMPLATE) and hands back a per-document `signing_token` + numeric `document_id`. The embed-template lane mints **nothing at originate** — it enables a reusable DIRECT LINK on the *template* (`create_direct_link`) and returns a `direct_token`; the document is created by Documenso **at signer completion** (source `TEMPLATE_DIRECT_LINK`), and the signer self-identifies (name/email NOT locked). Do not assume a `document_id` exists right after an embed-template originate — there isn't one until someone signs (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:175`–`:185`, `apps/edge_api/src/engagement_mandate_drafts/models.py:49`–`:70`).
 
 - **`DEFAULT_STRIPE_MODE='live'` (shared) vs `STRIPE_MODE` env default `'test'`.** These are **different layers** and both correct: `'live'` is the UI/wire resolution the BFF applies when the DB value is null (`rare-structure-hq:packages/shared/src/schemas/settings.ts:47`); `'test'` is the env-level fail-safe (`apps/edge_api/src/config.py:62`). Do not "fix" one to match the other.
 
