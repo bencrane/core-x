@@ -630,6 +630,13 @@ class SubawardProfileResponse(_Model):
 
 
 # ── Person-by-LinkedIn surface (/api/v1/people/by-linkedin) ──────────────────
+class PersonByLinkedInRequest(_Model):
+    """POST body for /api/v1/people/by-linkedin — the LinkedIn URL travels in the body
+    (no query string, no path value). ``url`` is the person's linkedin.com/in/<slug> URL."""
+
+    url: str
+
+
 class PersonMatch(_Model):
     """One ``active/people`` row matched on the LinkedIn URL. A person URL can recur
     (same person re-observed, or present at multiple companies), so every distinct match
