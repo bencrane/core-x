@@ -1,6 +1,6 @@
 # 07 — Data Stores: the Table System-of-Record Map
 
-**STATUS:** Persistence-layer reference for the **edge_api HQX Postgres** (`HQX_DB_URL_POOLED`). Spans ALL render_modes and lanes — `through-docraptor`, `direct-to-documenso` (`envelope-distribute` RETIRED, `prefill-document-from-template` DEFAULT, `embed-template` NEW), the engagement-template render+PUSH lane, plus the parallel `ao_engagement_mandates` pathway and the GTM/company ingest tables. This is the cross-cutting ownership map; lane-specific control flow lives in the sibling docs.
+**STATUS:** Persistence-layer reference for the **edge_api HQX Postgres** (`HQX_DB_URL_POOLED`). Spans ALL render_modes and lanes — `through-docraptor`, `direct-to-documenso` (`envelope-distribute` RETIRED, `prefill-document-from-template` DEFAULT, `embed-template` NEW), the engagement-template render+PUSH lane, and the GTM/company ingest tables. (The parallel `ao_engagement_mandates` pathway is **REMOVED** — see its subsection below.) This is the cross-cutting ownership map; lane-specific control flow lives in the sibling docs.
 
 ## Orientation
 
@@ -47,15 +47,17 @@ main.py lifespan
 |---|---|---|---|
 | `document_payments.opportunity_id` (`text`) | 8-char **HANDLE** | `WHERE o.opportunity_id = %s` | `apps/edge_api/sql/document_payments.sql:18`; `apps/edge_api/src/document_payments/queries.py:53` |
 | `documenso_webhook_events.external_id` (`text`) | 8-char **HANDLE** (= `externalId` at originate) | `WHERE external_id = %(opportunity_id)s` | `apps/edge_api/sql/documenso_webhook_events.sql:19`; `apps/edge_api/src/documenso_webhooks/queries.py:95` |
-| `ao_engagement_mandates.opportunity_id` (`uuid`) | row **UUID** (by value, no FK) — the OPPOSITE | `%(opportunity_id)s::uuid` / `o.id = %s::uuid` | `apps/edge_api/sql/ao_engagement_mandates.sql:20`; `apps/edge_api/src/engagement_docs/queries.py:38,65` |
+| `business.opportunities.id` (`uuid`) | row **UUID** — the OPPOSITE (PK / FK target / JOIN leg) | `JOIN … osc ON osc.opportunity_id = o.id` | `apps/edge_api/src/document_payments/queries.py:41-57` |
 
 The `document_payments` fee-resolution query uses BOTH ids on different join legs of the SAME query: it joins `business.opportunity_specific_content osc ON osc.opportunity_id = o.id` (the **UUID** leg) and filters `WHERE o.opportunity_id = %s` (the **8-char handle** leg) (`apps/edge_api/src/document_payments/queries.py:41-57`, design note in module docstring `:3-5`).
+
+> The former row-UUID carrier `ao_engagement_mandates.opportunity_id` (`uuid`, by value, no FK) was **REMOVED** with the AO `engagement_docs` lane — its DDL, module, and queries were all deleted (`refactor(edge_api): prune dead/broken Documenso originate paths`, commit `47e1815`, #531; `git grep` zero matches). The surviving row-UUID is `business.opportunities.id` itself (the JOIN leg above).
 
 ## Ownership classes
 
 | Class | Means | Tables |
 |---|---|---|
-| **edge_api (defines + writes)** | `CREATE TABLE` in `sql/`; edge_api is the writer | `document_payments`, `document_payment_events`, `documenso_webhook_events`, `engagement_proposals`, `engagement_events`, `ao_engagement_mandates`, `engagement_archetypes`, `global_engagement_content`, `global_input_content`, `engagement_template_push_runs`, `operator_settings`, `map_query_runs`, `company_profiles`, `company_profile_snapshots`, `clay_find_companies`, `clay_find_people` |
+| **edge_api (defines + writes)** | `CREATE TABLE` in `sql/`; edge_api is the writer | `document_payments`, `document_payment_events`, `documenso_webhook_events`, `engagement_proposals`, `engagement_events`, `engagement_archetypes`, `global_engagement_content`, `global_input_content`, `engagement_template_push_runs`, `operator_settings`, `map_query_runs`, `company_profiles`, `company_profile_snapshots`, `clay_find_companies`, `clay_find_people` |
 | **upstream (hq-x defines; edge_api writes via upsert)** | NO `CREATE TABLE` in `sql/`; edge_api upserts to live partial-unique keys | `business.opportunities`, `business.accounts`, `business.contacts` |
 | **upstream (hq-x defines; edge_api READS only)** | NO `CREATE TABLE`, NO write anywhere | `business.opportunity_specific_content` |
 | **upstream/shared (ALTER-only by edge_api)** | base predates this repo's DDL; edge_api only ALTER-adds columns + reads/FK-references | `business.engagement_mandate_draft_content`, `business.documenso_templates`, `business.organizations` |
@@ -105,13 +107,11 @@ Proof that the upstream tables are NOT defined here: `grep -rniE 'create table.*
 
 - PK = `id uuid DEFAULT gen_random_uuid()`; FK `ref → business.engagement_proposals(ref) ON DELETE CASCADE`; `source text NOT NULL CHECK (source IN ('documenso','stripe','system'))`; `event_type` carries provider strings like `'payment_intent.succeeded'`, `'DOCUMENT_COMPLETED'`; partial UNIQUE `engagement_events_idem_uidx ON (source, idempotency_key) WHERE idempotency_key IS NOT NULL` is the webhook-redelivery idempotency guard (`apps/edge_api/sql/engagement_payments.sql:43-56`).
 
-### `business.ao_engagement_mandates` — PARALLEL engagement-document ledger
+### `business.ao_engagement_mandates` — REMOVED (was: PARALLEL engagement-document ledger)
 
-- PK = `id text` (`mand_…`, minted at stage time); **`opportunity_id uuid NOT NULL` references `business.opportunities(id)` BY VALUE (no FK)** — the OPPOSITE carrier of `document_payments` (`apps/edge_api/sql/ao_engagement_mandates.sql:11-13`, `:19-20`).
-- `status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','rendering','rendered','failed'))`; `style text NOT NULL DEFAULT 'plain' CHECK (style IN ('plain','branded'))` (`apps/edge_api/sql/ao_engagement_mandates.sql:26-31`).
-- `opportunity_id` is NON-unique-indexed — "MANY deals (documents) per opportunity"; the prior one-per-opportunity unique index is dropped in place (`apps/edge_api/sql/ao_engagement_mandates.sql:52-57`).
-- Documenso v2 linkage: `documenso_envelope_id text` (`envelope_…`), `documenso_document_id integer` (numeric `secondaryId`), `participant_signing_token`, `provider_signing_token` — distributed NONE so the signing tokens exist WITHOUT Documenso emailing anyone (`apps/edge_api/sql/ao_engagement_mandates.sql:36-42`, repeated as guarded ALTER ADD `:63-66`).
-- This pathway "owns its own state — it never writes `engagement_proposals` or the proposal SoR" (`apps/edge_api/sql/ao_engagement_mandates.sql:9`).
+- **REMOVED from current main.** This table was defined, written, and queried ONLY by the AO `engagement_docs` "Stage" render lane, which was pruned wholesale — `apps/edge_api/sql/ao_engagement_mandates.sql` (the DDL), `apps/edge_api/src/engagement_docs/` (the module incl. `queries.py`), the `engagement_mandates_v1.py` router, the `engagement_doc_render` Trigger task, and the internal render route were ALL deleted (`refactor(edge_api): prune dead/broken Documenso originate paths`, commit `47e1815`, #531). `git grep ao_engagement_mandates` over current main returns **zero source matches**; nothing creates, writes, or reads it. Do NOT document it as a live edge_api-defined table.
+- For the record (pre-removal shape, no longer on disk): it was a `business.*` ledger keyed `id text` (`mand_…`) whose `opportunity_id uuid` carried the row UUID BY VALUE (no FK) — the OPPOSITE carrier of `document_payments` — but the lane was already non-functional at HEAD before the prune (the POST raised `AttributeError` on undefined `service.SLUG` before any INSERT). The surviving row-UUID is `business.opportunities.id` itself (see the carrier table above).
+- The live repo-content render lane is now the **render+push** lane (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`; see **Engagement-template render+PUSH lane** above and sibling **06**).
 
 ### `business.engagement_archetypes` — economic-shape classifier (ABOVE `documenso_templates`)
 
@@ -298,7 +298,7 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 
 ---
 
-## Status: ACTIVE / CONDITIONAL / DEPRECATED / STUB
+## Status: ACTIVE / CONDITIONAL / DEPRECATED / REMOVED / STUB
 
 **ACTIVE**
 - `run_migrations()` boot DDL apply — `apps/edge_api/src/migrate.py:64-96`
@@ -306,7 +306,6 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 - `business.document_payments` + `business.document_payment_events` — `apps/edge_api/sql/document_payments.sql:16-50`
 - `business.documenso_webhook_events` (raw landing; offline sign-state) — `apps/edge_api/sql/documenso_webhook_events.sql:26-33`
 - `business.engagement_proposals` + ALTERed payment columns + `business.engagement_events` — `apps/edge_api/sql/engagement_proposals.sql:21-65`, `apps/edge_api/sql/engagement_payments.sql:18-56`
-- `business.ao_engagement_mandates` (parallel pathway) — `apps/edge_api/sql/ao_engagement_mandates.sql:17-66`
 - `business.engagement_archetypes` + `documenso_templates.archetype_id` ALTER/backfill — `apps/edge_api/sql/engagement_archetypes.sql:19-78`
 - `business.global_engagement_content` — `apps/edge_api/sql/global_engagement_content.sql:80-112`
 - `business.global_input_content` (render+push content-source registry) — `apps/edge_api/sql/global_input_content.sql:21-58`
@@ -331,14 +330,17 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 - `engagement_proposals.quarterly_total_cents` NAME — legacy; now carries `{{total}}` = monthly_fee × duration (`apps/edge_api/sql/engagement_proposals.sql:36`)
 - `direct_to_documenso_lane='envelope-distribute'` — RETIRED; the `/envelope/use` + `.../{id}/confirm` lane was removed in code; the CHECK still accepts the value so a pre-existing row never violates it, but no live path serves it (`apps/edge_api/sql/operator_settings.sql:30-34`)
 
+**REMOVED**
+- `business.ao_engagement_mandates` (+ its DDL, the `engagement_docs` module/queries, the `engagement_mandates_v1.py` router, and the `engagement_doc_render` Trigger task) — deleted with the AO `engagement_docs` "Stage" lane (`refactor(edge_api): prune dead/broken Documenso originate paths`, commit `47e1815`, #531; `git grep` zero matches). Existed on main until the prune; NOT to be confused with the never-existed `mandate_payments` below. Superseded by the render+push lane (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`).
+
 **STUB / nonexistent**
-- `mandate_payments`, `mandate_payment_events` — DO NOT EXIST (grep-zero across both repos; see "Proven-nonexistent tables" above)
+- `mandate_payments`, `mandate_payment_events` — DO NOT EXIST (grep-zero across both repos; see "Proven-nonexistent tables" above; these NEVER existed, unlike `ao_engagement_mandates` which was removed)
 
 ---
 
 ## Traps
 
-1. **Two opportunity ids, opposite carriers.** `document_payments.opportunity_id` and `documenso_webhook_events.external_id` carry the **8-char handle**; `ao_engagement_mandates.opportunity_id` carries the **row UUID** (`uuid`, by value, no FK). Never assume one type. Citations: `apps/edge_api/sql/document_payments.sql:18`, `apps/edge_api/sql/documenso_webhook_events.sql:19`, `apps/edge_api/sql/ao_engagement_mandates.sql:20`.
+1. **Two opportunity ids, opposite carriers.** `document_payments.opportunity_id` and `documenso_webhook_events.external_id` carry the **8-char handle**; `business.opportunities.id` is the **row UUID** (`uuid`; the PK / FK target / JOIN leg `osc.opportunity_id = o.id`). Never assume one type. The fee query uses BOTH in one statement. Citations: `apps/edge_api/sql/document_payments.sql:18`, `apps/edge_api/sql/documenso_webhook_events.sql:19`, fee-query both-legs `apps/edge_api/src/document_payments/queries.py:41-57`. (The former row-UUID carrier `ao_engagement_mandates.opportunity_id` was **REMOVED** with the AO `engagement_docs` lane — prune `47e1815`, #531; `git grep` zero matches.)
 
 2. **`documenso_webhook_events.envelope_id` DDL comment LIES (for the direct lane).** The DDL comments it as "the envelope handle (payload id/envelopeId)" (`apps/edge_api/sql/documenso_webhook_events.sql:18`), but the live sign-state projection treats it as Documenso's NUMERIC document id and matches it against `{document_id}` (`apps/edge_api/src/documenso_webhooks/queries.py:69-76,88-96`). The webhook extract digs `id`/`documentId`/`envelopeId` in that order (`apps/edge_api/src/routers/documenso_webhooks_v1.py:61`); the numeric id lands first for the direct lane. Verified numeric for the direct lane only — the `envelope-distribute` lane's stored value was not independently probed.
 
