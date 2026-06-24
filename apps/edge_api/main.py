@@ -61,6 +61,7 @@ from .src.routers.equipment_provider_v1 import router as equipment_provider_rout
 from .src.routers.equipment_finance_candidates_v1 import router as equipment_finance_candidates_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
+from .src.routers.title_normalize_v1 import router as title_normalize_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
@@ -282,6 +283,12 @@ app.include_router(company_profiles_router)
 # Service-token gated; the single LLM touchpoint of the map. No gtm_mcp / gtm-agent.
 app.include_router(map_ask_router)
 
+# titles/normalize: the pre-enrichment classification gate. One raw scraped job title →
+# forced-tool Anthropic Messages call → strict internal taxonomy (6 job levels × 22 job
+# functions, output pinned to closed enums; unexpected/missing → "Other"). Stateless; reuses
+# ANTHROPIC_API_KEY. Service-token gated. Front-runs expensive enrichment with normalized keys.
+app.include_router(title_normalize_router)
+
 # cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
 # Signature-gated (X-Cal-Signature-256 / CAL_WEBHOOK_SECRET). NOT under /api/v1 — cal.com posts /webhooks/cal.
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
@@ -314,6 +321,7 @@ def _info() -> dict:
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
+            "title_normalize": True,   # /api/v1/titles/normalize (raw title → forced-tool → {level, function})
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
