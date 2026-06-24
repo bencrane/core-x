@@ -58,6 +58,7 @@ from .src.routers.contacts_v1 import router as contacts_router
 from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
 from .src.routers.industries_served_v1 import router as industries_served_router
 from .src.routers.capital_providers_v1 import router as capital_providers_router
+from .src.routers.existing_claygent_payloads_v1 import router as existing_claygent_payloads_router
 from .src.routers.equipment_provider_v1 import router as equipment_provider_router
 from .src.routers.equipment_finance_candidates_v1 import router as equipment_finance_candidates_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
@@ -203,6 +204,14 @@ app.include_router(industries_served_router)
 # /land only. Service-token gated.
 app.include_router(capital_providers_router)
 
+# existing-claygent-payloads: universal raw landing sink for heterogeneous Claygent enrichment
+# payloads → gtm.existing_claygent_payloads. Body {domain, enrichment_payload_type, raw_payload};
+# raw_payload stored verbatim as jsonb under a string discriminator (enrichment_payload_type) — no
+# projection, no per-shape table. jsonb is schemaless so divergent shapes land losslessly; sorted
+# out at read time by filtering on enrichment_payload_type. /land only. No bridges / no secondary
+# indexes. Service-token gated.
+app.include_router(existing_claygent_payloads_router)
+
 # equipment-provider: raw, append-only landing of company-is-equipment-provider classification
 # payloads into gtm.equipment_provider (verbatim raw_payload + flat projection of isEquipmentProvider,
 # mode, confidence, reasoning, stepsTaken, evidenceUrl, evidenceSnippet). Bridges to
@@ -331,6 +340,7 @@ def _info() -> dict:
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}
             "capital_providers": True,    # /api/v1/capital-providers/land (in-house capital LLM classification)
+            "existing_claygent_payloads": True,  # /api/v1/existing-claygent-payloads/land (universal jsonb sink, discriminated)
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
