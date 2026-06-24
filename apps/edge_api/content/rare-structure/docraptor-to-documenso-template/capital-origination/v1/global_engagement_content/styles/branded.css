@@ -33,6 +33,10 @@ strong { color: #fafafa; }
 p { margin: 0 0 8pt; text-align: justify; }
 .lead { color: #f4f4f5; }
 
+/* Inline fill-in zone — a ruled line a Documenso field is dropped onto and sized in the editor (like
+   the signature line). NO underscore glyphs; width is just the visual guide (min-width per slot). */
+.field-slot { display: inline-block; min-width: 120pt; border-bottom: 0.75pt solid #2d3548; vertical-align: baseline; }
+
 .sig-wrap { margin-top: 30pt; page-break-inside: avoid; }
 .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
 .sig-grid td { width: 50%; vertical-align: top; padding-right: 28pt; }
