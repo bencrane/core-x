@@ -1,34 +1,47 @@
-# Through-DocRaptor Proposals Flow (engagement agreement + e-signature)
+# Through-DocRaptor Proposals Flow (engagement agreement + e-signature) — ARCHIVED
 
-> **STATUS BANNER** — This file documents the **`render_mode == 'through-docraptor'`** lane (the DB-default render mode), implemented in `edge_api` `proposals_v1` + `src/proposals/*`. This is the **legacy/default** engagement-agreement origination path: create draft → confirm/originate → DocRaptor PDF render → Documenso v2 envelope by anchor → embedded sign → webhook. The `render_mode == 'direct-to-documenso'` branch inside this same router is a **STUB** (`'direct-to-documenso pathway not yet wired'`); the live direct path lives in the SEPARATE `engagement-mandate-drafts` flow (not covered here).
+> **⚠️ ARCHIVED — REMOVED SYSTEM, HISTORICAL ONLY.** The entire `render_mode == 'through-docraptor'` proposals backend was **DELETED** in commit `b83e002` (`refactor(edge_api): remove legacy through-docraptor proposal + payment backend`, #533). That commit removed `apps/edge_api/src/routers/proposals_v1.py` (create/confirm/provision/ref-read/signed-pdf + the in-router webhook), `apps/edge_api/src/proposals/agreement_template.py`, `apps/edge_api/src/proposals/queries.py`, and `documenso_client.create_signing_envelope`. None of those files/functions exist on current `main` (verified: `git show --stat b83e002`; `proposals_v1.py` returns "No such file"; `grep 'create_signing_envelope' src/services/documenso_client.py` returns nothing). The router is no longer imported or mounted in `apps/edge_api/main.py`. This file is kept as the historical account of the removed lane — every endpoint and helper below is **REMOVED**, NOT active. Do NOT cite this document as a description of live behavior.
+>
+> **WHERE THE LIVE FLOW IS NOW.** Engagement origination is the **direct-to-documenso** flow in `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py`, with two parallel live originate lanes plus a separate render+push lane:
+> - **`prefill-document-from-template`** (DEFAULT) — `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` mints a Documenso document NOW from the draft's template via `/api/v2/template/use`, prefilled with per-deal field values (`engagement_mandate_drafts_v1.py:113`, `documenso_client.create_document_from_template`).
+> - **`embed-template`** — `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` enables a Documenso DIRECT LINK on the template and returns a reusable token; NO document is minted until the signer completes (Documenso then creates it, source `TEMPLATE_DIRECT_LINK`) (`engagement_mandate_drafts_v1.py:172`, `documenso_client.create_direct_link`).
+> - **render+push** — `POST /internal/engagement-templates/render-push` (trigger-secret) renders an engagement-content source via DocRaptor and PUSHes it to Documenso as a TEMPLATE (`internal_engagement_templates_v1.py:84`, `documenso_client.create_template_from_pdf`).
+>
+> The lane is selected by `public.operator_settings.direct_to_documenso_lane` (`apps/edge_api/sql/operator_settings.sql:85`). See `01-MODES-AND-LANES.md` and `03-FLOW-direct-to-documenso.md` for the live architecture. §11 below maps the removed surface to its live replacement.
 
-## Orientation
+## Orientation (historical)
 
-This is the engagement-agreement + e-signature pathway in `core-x` `edge_api`, keyed on an unguessable capability ref (`rs_…`). An operator (via the `platform-api` BFF) mints a DRAFT proposal, then originates it: confirm stamps the operator's locked-in structured pricing onto the still-draft row, renders a legal PDF via DocRaptor (PrinceXML, LIVE mode), creates a Documenso v2 envelope from that PDF with the Client as the sole `SIGNER`, places `SIGNATURE`/`DATE` fields BY ANCHOR (`[[CLIENT_SIGNATURE]]` / `[[CLIENT_DATE]]` resolved via Documenso `findText`), distributes WITHOUT email, and binds the envelope + signing token to the row (`draft` → `sent`). The prospect reads a PUBLIC projection and signs in the embedded Documenso surface. `render_mode` is resolved server-side by the BFF from `public.operator_settings.render_mode` (default `'through-docraptor'`); the client never supplies it at confirm time. All persistence is on `business.engagement_proposals`; the Stripe ACH payment overlay is additive columns on that same row.
+This WAS the engagement-agreement + e-signature pathway in `core-x` `edge_api`, keyed on an unguessable capability ref (`rs_…`). An operator (via the `platform-api` BFF) minted a DRAFT proposal, then originated it: confirm stamped the operator's locked-in structured pricing onto the still-draft row, rendered a legal PDF via DocRaptor (PrinceXML, LIVE mode), created a Documenso v2 envelope from that PDF with the Client as the sole `SIGNER`, placed `SIGNATURE`/`DATE` fields BY ANCHOR (`[[CLIENT_SIGNATURE]]` / `[[CLIENT_DATE]]` resolved via Documenso `findText`), distributed WITHOUT email, and bound the envelope + signing token to the row (`draft` → `sent`). The prospect read a PUBLIC projection and signed in the embedded Documenso surface. `render_mode` was resolved server-side by the BFF from `public.operator_settings.render_mode`; the client never supplied it at confirm time. Persistence was on `business.engagement_proposals`; the Stripe ACH payment overlay was additive columns on that same row.
 
-This is ONE of several Documenso lanes. Sibling lanes — the live `direct-to-documenso` path (`engagement-mandate-drafts`) and the document-payment flow — are separate domains. **Critical correction vs prior internal docs:** the in-router webhook `POST /api/v1/proposals/webhook` is now **DEPRECATED** — Documenso is repointed to the raw-capture `POST /api/v1/documenso/webhook`, and the legacy proposals webhook no longer receives deliveries.
+**All of that origination backend was removed in `b83e002`.** The `business.engagement_proposals` DDL still exists (`apps/edge_api/sql/engagement_proposals.sql` — data preserved) but is no longer written or read by any `.py` (verified: `grep -rn 'engagement_proposals' apps/edge_api/src/ --include='*.py'` returns nothing). The live engagement workflow uses the `engagement_mandate_drafts` flow described in the banner.
+
+This WAS one of several Documenso lanes. The live `direct-to-documenso` path (`engagement-mandate-drafts`) and the document-payment flow are separate domains. **Note vs prior internal docs:** the in-router webhook `POST /api/v1/proposals/webhook` was not merely deprecated — it was **REMOVED entirely** with the rest of `proposals_v1.py`. The live webhook is the raw-capture `POST /api/v1/documenso/webhook` (`documenso_webhooks_v1.py`), which is still active. See §6.
 
 ---
 
-## 1. The capability ref (`rs_…`)
+## 1. The capability ref (`rs_…`) — REMOVED
 
-The `ref` is minted on create by `queries.new_ref()` as `"rs_" + secrets.token_urlsafe(16)` — an unguessable capability token that is simultaneously the **primary key**, the **URL slug**, and the **bearer credential** (`apps/edge_api/src/proposals/queries.py:40`, `apps/edge_api/src/proposals/queries.py:42`). It is the PRIMARY KEY of `business.engagement_proposals` (`apps/edge_api/sql/engagement_proposals.sql:23`). Because the ref IS the credential, the public read and document routes are unauthenticated — possession of the ref is authorization.
+In the removed lane, the `ref` was minted on create as `"rs_" + secrets.token_urlsafe(16)` — an unguessable capability token that was simultaneously the **primary key**, the **URL slug**, and the **bearer credential**. It was the PRIMARY KEY of `business.engagement_proposals` (`apps/edge_api/sql/engagement_proposals.sql:23` — DDL still present, table unused). Because the ref WAS the credential, the public read and document routes were unauthenticated — possession of the ref was authorization. The minting helper lived in `apps/edge_api/src/proposals/queries.py`, **deleted in `b83e002`** (248 lines removed).
+
+The live flow keys on `business.opportunities.opportunity_id` (an 8-char PUBLIC handle), not an `rs_…` ref — see `engagement_mandate_drafts_v1.py:137` and §11.
 
 ---
 
-## 2. Edge_api routes (`proposals_v1`)
+## 2. Edge_api routes (`proposals_v1`) — REMOVED
 
-The router is mounted with `prefix="/api/v1/proposals"`, `tags=["proposals"]` (`apps/edge_api/src/routers/proposals_v1.py:52`), imported at `apps/edge_api/main.py:59` and included at `apps/edge_api/main.py:176`.
+> **The `proposals_v1` router was deleted in `b83e002` and is no longer imported or mounted.** `apps/edge_api/src/routers/proposals_v1.py` does not exist on current `main`; `grep -n 'proposals_v1' apps/edge_api/main.py` returns nothing. The line references in this section point at the pre-removal file for historical traceability only. Every endpoint below has status **REMOVED**.
 
-| Method + path | Function | Auth | Status | Purpose |
+| Method + path | Function | Auth | Status | Live replacement |
 |---|---|---|---|---|
-| `POST /api/v1/proposals` | `create_proposal` | service-token | ACTIVE | Mint a DRAFT; provisioning deferred to `/confirm` (`apps/edge_api/src/routers/proposals_v1.py:142`) |
-| `POST /api/v1/proposals/{ref}/confirm` | `confirm_proposal` | service-token | ACTIVE | Originate: stamp pricing → `_provision` (render_mode-aware) (`apps/edge_api/src/routers/proposals_v1.py:203`) |
-| `POST /api/v1/proposals/{ref}/provision` | `provision_proposal` | service-token | ACTIVE (no BFF broker) | Re-render PDF + create envelope; through-docraptor only (`apps/edge_api/src/routers/proposals_v1.py:254`) |
-| `GET /api/v1/proposals` | `list_proposals` | service-token | ACTIVE | Operator list; limit clamped `1..500` (`apps/edge_api/src/routers/proposals_v1.py:272`) |
-| `GET /api/v1/proposals/{ref}` | `get_proposal` | PUBLIC | ACTIVE | Consumer page data source (`apps/edge_api/src/routers/proposals_v1.py:286`) |
-| `GET /api/v1/proposals/{ref}/document` | `get_signed_document` | PUBLIC | ACTIVE | Stream sealed PDF when `status=='completed'` (`apps/edge_api/src/routers/proposals_v1.py:321`) |
-| `POST /api/v1/proposals/webhook` | `documenso_webhook` | `X-Documenso-Secret` | **DEPRECATED** | Legacy status advance; no longer receives Documenso deliveries (`apps/edge_api/src/routers/proposals_v1.py:337`) |
+| `POST /api/v1/proposals` | `create_proposal` | service-token | **REMOVED** | `POST /api/v1/engagement-mandate-drafts` (`engagement_mandate_drafts_v1.py:67`) |
+| `POST /api/v1/proposals/{ref}/confirm` | `confirm_proposal` | service-token | **REMOVED** | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` (`engagement_mandate_drafts_v1.py:113`) |
+| `POST /api/v1/proposals/{ref}/provision` | `provision_proposal` | service-token | **REMOVED** | No equivalent — templates are pre-created (render+push) and documents instantiated at originate time |
+| `GET /api/v1/proposals` | `list_proposals` | service-token | **REMOVED** | None — proposals are no longer created or listed via this flow |
+| `GET /api/v1/proposals/{ref}` | `get_proposal` | PUBLIC | **REMOVED** | Document shell read via the direct-to-documenso `(opportunity_id, document_id)` sign-token surface |
+| `GET /api/v1/proposals/{ref}/document` | `get_signed_document` | PUBLIC | **REMOVED** | Signed PDF downloaded from Documenso directly via the platform-api/SPA integration |
+| `POST /api/v1/proposals/webhook` | `documenso_webhook` | `X-Documenso-Secret` | **REMOVED** | `POST /api/v1/documenso/webhook` (`documenso_webhooks_v1.py:39`) — still active |
+
+> **§§2.1–2.6 below describe REMOVED code (`b83e002`).** They are retained verbatim as the historical record of how the lane behaved; the cited `proposals_v1.py` line numbers reference the pre-removal file. None of these functions exist on current `main`.
 
 ### 2.1 `create_proposal` — mint DRAFT
 
@@ -90,17 +103,19 @@ PUBLIC — no service-token dependency on the decorator; the ref is the bearer c
 
 PUBLIC (`apps/edge_api/src/routers/proposals_v1.py:321`). Streams the sealed PDF (`media_type application/pdf`, inline `filename "{ref}.pdf"`) ONLY when `status == 'completed'` AND `documenso_envelope_id` is set; else 409 `'agreement not yet completed'` (404 if unknown) (`apps/edge_api/src/routers/proposals_v1.py:328`, `apps/edge_api/src/routers/proposals_v1.py:329`). It calls `documenso_client.download_signed_pdf(p.documenso_envelope_id)` (`apps/edge_api/src/routers/proposals_v1.py:330`).
 
-### 2.6 `documenso_webhook` (in-router) — DEPRECATED
+### 2.6 `documenso_webhook` (in-router) — REMOVED
 
-The route is service-gated by `X-Documenso-Secret` (constant-time compare via `verify_webhook_secret`), returns 503 if the secret is unconfigured (`apps/edge_api/src/routers/proposals_v1.py:342`) and 401 on mismatch (`apps/edge_api/src/routers/proposals_v1.py:344`, `apps/edge_api/src/routers/proposals_v1.py:345`), normalizes via `documenso_client.normalize_event` (`apps/edge_api/src/routers/proposals_v1.py:348`), resolves the proposal by `externalId` (the ref) first then `get_by_envelope` (`apps/edge_api/src/routers/proposals_v1.py:356`, `apps/edge_api/src/routers/proposals_v1.py:358`), sets `signed_url = /api/v1/proposals/{ref}/document` only when `status == 'completed'` (`apps/edge_api/src/routers/proposals_v1.py:362`), and advances via `queries.advance_status` on the stored envelope id (`apps/edge_api/src/routers/proposals_v1.py:365`).
+In the removed lane, this route was service-gated by `X-Documenso-Secret` (constant-time compare via `verify_webhook_secret`), returned 503 if the secret was unconfigured and 401 on mismatch, normalized via `documenso_client.normalize_event`, resolved the proposal by `externalId` (the ref) first then `get_by_envelope`, set `signed_url = /api/v1/proposals/{ref}/document` only when `status == 'completed'`, and advanced via `queries.advance_status` on the stored envelope id.
 
-**The route code is intact and would work if called, but it is DEPRECATED**: Documenso is repointed to `POST /api/v1/documenso/webhook` (same shared `DOCUMENSO_WEBHOOK_SECRET`), and this legacy route "simply stops receiving deliveries" (`apps/edge_api/src/routers/documenso_webhooks_v1.py:5`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:8`). See §6.
+**The route was DELETED with the rest of `proposals_v1.py` in `b83e002` — it is REMOVED, not merely deprecated/repointed.** The live webhook is the raw-capture `POST /api/v1/documenso/webhook` (same shared `DOCUMENSO_WEBHOOK_SECRET`), which is still active (`apps/edge_api/src/routers/documenso_webhooks_v1.py:5`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:8`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:39`). See §6.
 
 ---
 
-## 3. `_provision` — render + envelope step
+## 3. `_provision` — render + envelope step — REMOVED
 
-`_provision(conn, p, render_mode)` is **non-raising** — it returns `tuple[bool, str | None]` (`apps/edge_api/src/routers/proposals_v1.py:89`, `apps/edge_api/src/routers/proposals_v1.py:90`).
+> **`_provision`, `_title`, `_agreement_html`, and `_field_values` all lived in `proposals_v1.py`, deleted in `b83e002`.** The through-docraptor envelope creation (`documenso_client.create_signing_envelope`) was removed in the same commit. The live originate path mints documents from pre-created Documenso templates (`create_document_from_template`) or enables a template direct link (`create_direct_link`); there is no in-request DocRaptor-render-then-create-envelope step. §§3.1–3.3 are retained as historical record; the cited line numbers reference the pre-removal file.
+
+`_provision(conn, p, render_mode)` was **non-raising** — it returned `tuple[bool, str | None]` (`apps/edge_api/src/routers/proposals_v1.py:89`, `apps/edge_api/src/routers/proposals_v1.py:90`).
 
 ```
 _provision(conn, p, render_mode=None):
@@ -122,7 +137,7 @@ _provision(conn, p, render_mode=None):
 
 The `except` catches DocRaptor errors, Documenso errors, and `httpx.HTTPError` (including transport timeouts) — returning `(False, str(exc))` non-raising so the committed draft survives and is re-provisionable, never stranding the caller (`apps/edge_api/src/routers/proposals_v1.py:112`, `apps/edge_api/src/routers/proposals_v1.py:115`, `apps/edge_api/src/routers/proposals_v1.py:116`).
 
-> **The `direct-to-documenso` branch is a STUB** — it logs and returns `(False, 'direct-to-documenso pathway not yet wired')` WITHOUT rendering a PDF or creating an envelope (`apps/edge_api/src/routers/proposals_v1.py:99`, `apps/edge_api/src/routers/proposals_v1.py:102`, `apps/edge_api/src/routers/proposals_v1.py:103`). The committed draft survives; no origination occurs. The docstring above it confirms the through-docraptor branch is "CURRENT behavior" while direct-to-documenso is "NOT YET WIRED (stub below)" (`apps/edge_api/src/routers/proposals_v1.py:96`, `apps/edge_api/src/routers/proposals_v1.py:97`).
+> **Historical note (no longer true):** in the removed code, the `direct-to-documenso` branch WAS a stub returning `(False, 'direct-to-documenso pathway not yet wired')`. That stub, and the entire `_provision` function, were deleted in `b83e002`. The `direct-to-documenso` path is now the FULLY LIVE `engagement-mandate-drafts` flow (§11), not a stub.
 
 ### 3.1 `_title`
 
@@ -156,9 +171,11 @@ If a PUBLISHED template exists for `p.template_id` it pre-renders BLOCK tokens, 
 
 ---
 
-## 5. Documenso v2 envelope by anchor
+## 5. Documenso v2 envelope by anchor — REMOVED
 
-`documenso_client.create_signing_envelope` is the through-docraptor envelope creator — 4 steps against Documenso Cloud v2 (`apps/edge_api/src/services/documenso_client.py:198`):
+> **`documenso_client.create_signing_envelope` was deleted in `b83e002`** (verified: `grep -n 'create_signing_envelope' apps/edge_api/src/services/documenso_client.py` returns nothing). The 4-step envelope-by-anchor creation below no longer exists. The signing-anchor sentinels (`signing_anchors.py`) survive in the repo but are no longer wired into an envelope creator on this lane. The LIVE Documenso integration uses template-direct linking and template-use instead — see §11.4 and `04-DOCUMENSO-INTEGRATION.md`. §§5.1–5.4 are historical; cited line numbers reference the pre-removal file (except §5.4 `download_signed_pdf`, which still exists — see note in §5.4).
+
+`documenso_client.create_signing_envelope` WAS the through-docraptor envelope creator — 4 steps against Documenso Cloud v2:
 
 ```
 1) POST /api/v2/envelope/create   (multipart)                            (documenso_client.py:223)
@@ -193,15 +210,15 @@ The anchor sentinels are the literal strings `'[[CLIENT_SIGNATURE]]'` and `'[[CL
 
 ### 5.4 Sealed-PDF download
 
-`download_signed_pdf` resolves the numeric document id from the envelope, GETs `/api/v2/document/{numeric}/download?version=signed`, and returns bytes directly for `application/pdf` or a `%PDF-` magic; otherwise it follows a JSON `downloadUrl` with a BARE `httpx` client (never attaching the Documenso API key to the third-party presigned host) (`apps/edge_api/src/services/documenso_client.py:762`, `apps/edge_api/src/services/documenso_client.py:773`, `apps/edge_api/src/services/documenso_client.py:778`, `apps/edge_api/src/services/documenso_client.py:785`).
+`download_signed_pdf` **still exists** (`apps/edge_api/src/services/documenso_client.py:711`) — it survived `b83e002`; only its proposals-lane caller (`get_signed_document`) was removed. It resolves the numeric document id from the envelope, GETs `/api/v2/document/{numeric}/download?version=signed`, and returns bytes directly for `application/pdf` or a `%PDF-` magic; otherwise it follows a JSON `downloadUrl` with a BARE `httpx` client (never attaching the Documenso API key to the third-party presigned host).
 
 ---
 
-## 6. Status truth — the webhook repoint (CRITICAL)
+## 6. Status truth — the webhook (CRITICAL)
 
-**The live status-of-record is the raw-capture webhook, NOT the in-router proposals webhook.**
+**The live status-of-record is the raw-capture webhook. The in-router proposals webhook was REMOVED, not just repointed.**
 
-`POST /api/v1/documenso/webhook` (`documenso_webhooks_v1`, prefix `/api/v1/documenso`) is `X-Documenso-Secret` gated and append-inserts EVERY raw Documenso event into `business.documenso_webhook_events` with NO normalization/projection (`apps/edge_api/src/routers/documenso_webhooks_v1.py:39`, mounted at `apps/edge_api/main.py:181`). Its module docstring states Documenso "is repointed here from the legacy `/api/v1/proposals/webhook` (same shared `DOCUMENSO_WEBHOOK_SECRET`)" and "The legacy proposals webhook is untouched (it simply stops receiving deliveries)" (`apps/edge_api/src/routers/documenso_webhooks_v1.py:5`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:8`).
+`POST /api/v1/documenso/webhook` (`documenso_webhooks_v1`, prefix `/api/v1/documenso`) is `X-Documenso-Secret` gated and append-inserts EVERY raw Documenso event into `business.documenso_webhook_events` with NO normalization/projection (`apps/edge_api/src/routers/documenso_webhooks_v1.py:39`, mounted at `apps/edge_api/main.py:219`). It is **still active** and survived `b83e002`. Its module docstring (written before the legacy route's deletion) states Documenso "is repointed here from the legacy `/api/v1/proposals/webhook` (same shared `DOCUMENSO_WEBHOOK_SECRET`)" (`apps/edge_api/src/routers/documenso_webhooks_v1.py:5`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:8`); that legacy route has since been DELETED outright.
 
 ```
 Documenso  --(X-Documenso-Secret)-->  POST /api/v1/documenso/webhook   [ACTIVE, raw capture]
@@ -209,12 +226,11 @@ Documenso  --(X-Documenso-Secret)-->  POST /api/v1/documenso/webhook   [ACTIVE, 
                                           +--> append-insert RAW into business.documenso_webhook_events
                                                 (every event, no filter/normalize/project)
 
-Documenso  --X--X-->  POST /api/v1/proposals/webhook   [DEPRECATED, code intact, no traffic]
-                          |
-                          +--> normalize_event -> advance_status   [CONDITIONAL: only reachable here]
+POST /api/v1/proposals/webhook   [REMOVED in b83e002 — route, normalize→advance_status, and
+                                  proposals/queries.advance_status all deleted with proposals_v1.py]
 ```
 
-`normalize_event` (used by the deprecated route) maps Documenso event names → internal status via `_EVENT_TO_STATUS` (`apps/edge_api/src/services/documenso_client.py:45`-52, `apps/edge_api/src/services/documenso_client.py:803`):
+`normalize_event` **still exists** (`apps/edge_api/src/services/documenso_client.py:752`) and maps Documenso event names → internal status via `_EVENT_TO_STATUS`:
 
 | Documenso event | Internal status |
 |---|---|
@@ -225,15 +241,17 @@ Documenso  --X--X-->  POST /api/v1/proposals/webhook   [DEPRECATED, code intact,
 | `DOCUMENT_REJECTED` | `rejected` |
 | `DOCUMENT_CANCELLED` | `voided` |
 
-It folds both lowercase-dotted (`document.completed`) and enum forms to the enum key (`apps/edge_api/src/services/documenso_client.py:810`) and reads `envelope_id` from payload `id`/`documentId`/`envelopeId` and `external_id` from `payload.externalId` (`apps/edge_api/src/services/documenso_client.py:816`).
+It folds both lowercase-dotted (`document.completed`) and enum forms to the enum key and reads `envelope_id` from payload `id`/`documentId`/`envelopeId` and `external_id` from `payload.externalId`. (`normalize_event` survives but its only former in-tree consumer — the removed proposals webhook — is gone; raw capture does no normalization.)
 
-`verify_webhook_secret` does an `hmac.compare_digest` constant-time compare of `X-Documenso-Secret` against `config.documenso_webhook_secret()`, returning False (refuse) when the secret is unconfigured (`apps/edge_api/src/services/documenso_client.py:791`, `apps/edge_api/src/services/documenso_client.py:797`, `apps/edge_api/src/services/documenso_client.py:800`). Used by BOTH webhook routes.
+`verify_webhook_secret` (`apps/edge_api/src/services/documenso_client.py:740`) does an `hmac.compare_digest` constant-time compare of `X-Documenso-Secret` against `config.documenso_webhook_secret()`, returning False (refuse) when the secret is unconfigured. It is used by the live raw-capture webhook route.
 
-> **OPEN QUESTION (carried forward, UNVERIFIED):** For the proposals/ref (through-docraptor) lane SPECIFICALLY, no code path was found in this pass that projects `business.documenso_webhook_events` back onto `engagement_proposals.status`. So it is UNVERIFIED whether a proposals-ref agreement's `status` still advances past `'sent'` server-side after the repoint, or whether status advance is now resolved only for the direct `(opportunity_id, document_id)` lane via the offline `/sign-state` poll. This needs a follow-up trace.
+> **RESOLVED (was an open question):** With the proposals/ref lane removed (`b83e002`), there is no `engagement_proposals.status` projection path because the table is no longer written. Status truth for the live direct lane is resolved on the `(opportunity_id, document_id)` surface — see `03-FLOW-direct-to-documenso.md`.
 
 ---
 
 ## 7. Persistence — `business.engagement_proposals` + queries
+
+> **The `business.engagement_proposals` DDL still exists (data preserved) but is no longer actively used** — `apps/edge_api/src/proposals/queries.py` was deleted in `b83e002` (248 lines), and `grep -rn 'engagement_proposals' apps/edge_api/src/ --include='*.py'` returns zero references. The live workflow persists to `business.engagement_mandate_draft_content` + `business.opportunity_specific_content` and originates against Documenso directly — see §11 and `07-DATA-STORES.md`. §7.1 (the table) remains a correct description of the surviving DDL; §7.3 (durability queries) describes REMOVED code.
 
 ### 7.1 The table
 
@@ -247,12 +265,14 @@ Representative columns (`apps/edge_api/sql/engagement_proposals.sql:23`-55): `re
 
 `ProposalStatus` is one of `draft | sent | opened | signed | completed | rejected | voided`, declared in the model (`apps/edge_api/src/proposals/models.py:38`) and CHECK-constrained in the DDL (`apps/edge_api/sql/engagement_proposals.sql:39`, `apps/edge_api/sql/engagement_proposals.sql:40`).
 
-### 7.3 The durability queries
+### 7.3 The durability queries — REMOVED
+
+> All functions below lived in `apps/edge_api/src/proposals/queries.py`, **deleted in `b83e002`**. Retained as historical record of the removed durability model.
 
 - `queries.insert_proposal` inserts with `status` hardcoded `'draft'` and commits; `success_fee_schedule` and `field_values` stored as `Jsonb` (`apps/edge_api/src/proposals/queries.py:49`, `apps/edge_api/src/proposals/queries.py:70`, `apps/edge_api/src/proposals/queries.py:79`, `apps/edge_api/src/proposals/queries.py:84`).
 - `queries.update_pricing` UPDATEs ONLY `WHERE ref=%s AND status='draft'` (the durability gate) and RETURNS the updated row or None on a non-draft row — origination terms become immutable once the envelope is bound (`apps/edge_api/src/proposals/queries.py:88`, `apps/edge_api/src/proposals/queries.py:116`, `apps/edge_api/src/proposals/queries.py:130`).
 - `queries.attach_envelope` binds `documenso_envelope_id` + `documenso_client_token` and moves `draft → sent` (CASE), setting `sent_at = COALESCE(sent_at, now())`, ONLY `WHERE documenso_envelope_id IS NULL` (no silent rebind); returns whether one row was bound (`apps/edge_api/src/proposals/queries.py:160`, `apps/edge_api/src/proposals/queries.py:173`, `apps/edge_api/src/proposals/queries.py:176`, `apps/edge_api/src/proposals/queries.py:180`).
-- `queries.advance_status` applies a webhook-driven transition atomically/idempotently with the monotonic/terminal guard IN the UPDATE WHERE predicate. Forward-chain (rank `draft0 → sent1 → opened2 → signed3 → completed4`) applies only when strictly ahead (`apps/edge_api/src/proposals/queries.py:214`); terminal (`rejected`/`voided`) applies unless already in `('rejected','voided','completed')` (`apps/edge_api/src/proposals/queries.py:211`, `apps/edge_api/src/proposals/queries.py:212`). Returns whether a row changed (`apps/edge_api/src/proposals/queries.py:222`). **CONDITIONAL** — the SQL logic is correct but is reachable only from the deprecated proposals webhook, so it is off the live status path.
+- `queries.advance_status` applies a webhook-driven transition atomically/idempotently with the monotonic/terminal guard IN the UPDATE WHERE predicate. Forward-chain (rank `draft0 → sent1 → opened2 → signed3 → completed4`) applies only when strictly ahead (`apps/edge_api/src/proposals/queries.py:214`); terminal (`rejected`/`voided`) applies unless already in `('rejected','voided','completed')` (`apps/edge_api/src/proposals/queries.py:211`, `apps/edge_api/src/proposals/queries.py:212`). Returns whether a row changed (`apps/edge_api/src/proposals/queries.py:222`). **REMOVED** — deleted in `b83e002` along with its only caller (the in-router proposals webhook); no status-advance projection exists for this table anymore.
 - The `_SELECT_COLS` used by all reads COALESCEs `duration_months → 6`, `billing_cadence → 'upfront_in_full'`, `success_fee_schedule → '[]'::jsonb` so legacy rows read cleanly and the model never sees a NULL (`apps/edge_api/src/proposals/queries.py:28`, `apps/edge_api/src/proposals/queries.py:31`, `apps/edge_api/src/proposals/queries.py:32`, `apps/edge_api/src/proposals/queries.py:33`).
 - `queries.get_org_identity` reads `business.organizations` (`name`, `theme_config`) `WHERE id=%s AND deleted_at IS NULL`, returning `{display_name, legal_name (theme.legal_name or name), theme}`; None when not found (`apps/edge_api/src/proposals/queries.py:227`, `apps/edge_api/src/proposals/queries.py:236`, `apps/edge_api/src/proposals/queries.py:246`). `business.organizations` is UPSTREAM-OWNED (read-only here).
 
@@ -276,9 +296,11 @@ The `Proposal` model carries money in integer cents. `total_cents(monthly_fee_ce
 
 ## 9. Renderers (built-in + authored-template)
 
-### 9.1 Built-in Strategic Origination Mandate
+> **Split survival:** §9.1 (`render_agreement_html` / `agreement_template.py`) is **REMOVED** — `apps/edge_api/src/proposals/agreement_template.py` was deleted in `b83e002` (319 lines; `grep -rn 'render_agreement_html' apps/edge_api/src` returns nothing). §9.2 (`template_render.py`: `render_template_html`, `render_branded_document`, `substitute_tokens`, `proposal_token_values`, `substitute_markdown_tokens`, `extract_tokens`) and §9.3 (`proposal_templates_v1` + `template_queries.get_published_by_slug`) **still exist** — but with `_agreement_html` and `create_signing_envelope` gone, this authoring surface no longer renders into a signed proposal/envelope; it is markdown storage + DocRaptor PDF preview only.
 
-`render_agreement_html` is the built-in "Strategic Origination Mandate" — a style-agnostic legal body with a `«STYLE»` injection slot; default `_PLAIN_STYLE` (neutral white/black serif), with `_BRAND_STYLE` (Rare Structure dark identity) available (`apps/edge_api/src/proposals/agreement_template.py:1`, `apps/edge_api/src/proposals/agreement_template.py:34`, `apps/edge_api/src/proposals/agreement_template.py:67`). Merge tokens use a `«TOKEN»` sentinel substituted by `str.replace` (NOT `str.format`) so print-CSS braces are untouched; the `[[CLIENT_SIGNATURE]]` / `[[CLIENT_DATE]]` anchors ride in NOT-escaped (`apps/edge_api/src/proposals/agreement_template.py:52`, `apps/edge_api/src/proposals/agreement_template.py:55`).
+### 9.1 Built-in Strategic Origination Mandate — REMOVED
+
+`render_agreement_html` WAS the built-in "Strategic Origination Mandate" — a style-agnostic legal body with a `«STYLE»` injection slot; default `_PLAIN_STYLE` (neutral white/black serif), with `_BRAND_STYLE` (Rare Structure dark identity) available (`apps/edge_api/src/proposals/agreement_template.py:1`, `apps/edge_api/src/proposals/agreement_template.py:34`, `apps/edge_api/src/proposals/agreement_template.py:67`). Merge tokens use a `«TOKEN»` sentinel substituted by `str.replace` (NOT `str.format`) so print-CSS braces are untouched; the `[[CLIENT_SIGNATURE]]` / `[[CLIENT_DATE]]` anchors ride in NOT-escaped (`apps/edge_api/src/proposals/agreement_template.py:52`, `apps/edge_api/src/proposals/agreement_template.py:55`).
 
 The execution block pre-renders RS as the pre-signed party (typed-name italic serif, NOT a script font because DocRaptor/Prince blocks filesystem font access — named script fonts 422) and leaves the CLIENT signature + date lines carrying the anchor markers in `.sig-anchor` (real selectable text in a standard font; never `display:none`/zero-size) (`apps/edge_api/src/proposals/agreement_template.py:107`, `apps/edge_api/src/proposals/agreement_template.py:113`, `apps/edge_api/src/proposals/agreement_template.py:296`, `apps/edge_api/src/proposals/agreement_template.py:309`, `apps/edge_api/src/proposals/agreement_template.py:313`).
 
@@ -296,9 +318,11 @@ The execution block pre-renders RS as the pre-signed party (typed-name italic se
 
 ---
 
-## 10. Cross-repo handoffs (SPA → BFF → edge_api)
+## 10. Cross-repo handoffs (SPA → BFF → edge_api) — edge_api side REMOVED
 
-The architecture invariant: `platform-app` → `platform-api` (dumb BFF) → `edge_api`. `render_mode` is resolved server-side by the BFF at confirm time; the client never supplies it.
+> **Every `edge_api` route in this table was removed in `b83e002` (REMOVED, see §2).** The SPA/BFF (the `rare-structure-hq` repo, cross-repo — not verifiable from `core-x`) targeted those routes; whether the SPA/BFF callers still exist or have been repointed to the `engagement-mandate-drafts` lane must be checked in that repo (`08-FRONTEND-AND-BFF.md` covers the live SPA/BFF). The live cross-repo contract is the direct-to-documenso prefill + embed-template lanes — see §11.5. The table is retained as the historical handoff map.
+
+The architecture invariant WAS: `platform-app` → `platform-api` (dumb BFF) → `edge_api`. `render_mode` was resolved server-side by the BFF at confirm time; the client never supplied it.
 
 | Stage | SPA call | BFF route | edge_api route |
 |---|---|---|---|
@@ -325,43 +349,124 @@ The prospect signs via the SPA `SignPage` using `@documenso/embed-react` `EmbedS
 
 ---
 
-## Status: ACTIVE / CONDITIONAL / DEPRECATED / STUB
+## 11. The live replacement (post-`b83e002`)
+
+This section is the forward map from the removed through-docraptor lane to the live engagement-origination system. It is intentionally a pointer/summary — the full live architecture is in `01-MODES-AND-LANES.md`, `03-FLOW-direct-to-documenso.md`, and `04-DOCUMENSO-INTEGRATION.md`.
+
+### 11.1 Removed → live route map
+
+| Removed (`proposals_v1`, `b83e002`) | Live (`engagement_mandate_drafts_v1`) |
+|---|---|
+| `POST /api/v1/proposals` (`create_proposal`) | `POST /api/v1/engagement-mandate-drafts` (`create_mandate_draft`, `engagement_mandate_drafts_v1.py:67`) |
+| `POST /api/v1/proposals/{ref}/confirm` (`confirm_proposal`) | `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` (`engagement_mandate_drafts_v1.py:113`) — DEFAULT lane |
+| `POST /api/v1/proposals/{ref}/provision` (`provision_proposal`) | — (no equivalent; templates pre-created via render+push) |
+| `GET /api/v1/proposals/{ref}` (`get_proposal`) | `GET /api/v1/engagement-mandate-drafts/by-opportunity/{opportunity_id}` (`get_staging_by_opportunity`, `engagement_mandate_drafts_v1.py:80`) for staging; signed doc read via the `(opportunity_id, document_id)` sign-token surface |
+| `GET /api/v1/proposals/{ref}/document` (`get_signed_document`) | Signed PDF from Documenso directly (`download_signed_pdf` survives) |
+| `POST /api/v1/proposals/webhook` (`documenso_webhook`) | `POST /api/v1/documenso/webhook` (`documenso_webhooks_v1.py:39`) |
+
+### 11.2 Lane selection (`operator_settings.direct_to_documenso_lane`)
+
+Under `render_mode == 'direct-to-documenso'`, the sub-lane is a SECOND independent selector `public.operator_settings.direct_to_documenso_lane` (`apps/edge_api/sql/operator_settings.sql:43`), CHECK-constrained to three values (`operator_settings.sql:85`):
+
+| Lane | Status | Behavior |
+|---|---|---|
+| `prefill-document-from-template` | **DEFAULT** (`operator_settings.sql:43`, `:50`) | `originate-prefilled` → `/api/v2/template/use`, mint a document NOW with per-deal values prefilled |
+| `embed-template` | ACTIVE | `originate-embed-template` → Documenso DIRECT LINK on the template; signer self-identifies, document minted by Documenso at completion |
+| `envelope-distribute` | **RETIRED** (`operator_settings.sql:31`, `:80`) | `/envelope/use` lane removed in code; the CHECK value is retained so a pre-existing row never violates |
+
+### 11.3 The two live originate lanes
+
+- **`originate-prefilled`** (`engagement_mandate_drafts_v1.py:113`) — reads the draft + the opportunity's prefill/contact, then calls `documenso_client.create_document_from_template(...)` (`/api/v2/template/use`) with `field_values_by_label` prefilled, `external_id` = the opportunity's 8-char PUBLIC handle, title `"Engagement Agreement"`, distributing `NONE` → `PENDING`. Returns `MandatePrefilledOriginated {envelope_id, document_id, opportunity_id, signing_token, status='pending', documenso_host}`.
+- **`originate-embed-template`** (`engagement_mandate_drafts_v1.py:172`) — PARALLEL to `originate-prefilled` (which is untouched). Reads the template's recipients (`get_template_recipients`), designates the counterparty direct recipient (`_pick_direct_recipient_id`, or `body.direct_recipient_id`), enables a DIRECT LINK (`create_direct_link`), and returns `MandateEmbedTemplateOriginated {direct_token, documenso_host, embed_url=f"{host}/embed/direct/{token}", external_id, opportunity_id, direct_recipient_id, recipient_email, recipient_name, status='ready'}`. **No document is minted here** — Documenso creates it (source `TEMPLATE_DIRECT_LINK`) when the signer completes.
+
+### 11.4 Documenso client (live methods)
+
+`apps/edge_api/src/services/documenso_client.py` (`create_signing_envelope` removed):
+
+- `create_document_from_template(...)` — `/api/v2/template/use`; embed-document / prefill lane (`documenso_client.py:228`).
+- `create_template_from_pdf(*, title, pdf, recipients=None, filename=None) -> TemplateCreateResult` — `/api/v2/envelope/create` with `type=TEMPLATE`; the render+push terminal step (`documenso_client.py:420`). Field placement is NOT done here (the engagement HTML is a static blank body).
+- `get_template_recipients(documenso_template_id) -> list[dict]` — `GET /api/v2/template/{id}` (`documenso_client.py:504`).
+- `create_direct_link(documenso_template_id, *, direct_recipient_id=None) -> DirectLinkResult` — `POST /api/v2/template/direct/create {templateId, directRecipientId?}`; idempotent (falls back to `/template/direct/toggle {enabled:true}` if the link already exists) (`documenso_client.py:514`).
+- `toggle_direct_link(documenso_template_id, *, enabled) -> DirectLinkResult` — `POST /api/v2/template/direct/toggle` (`documenso_client.py:542`).
+
+The direct-link `token` is the single value used three ways: the API-response token, the `EmbedDirectTemplate` `token` prop, and the public `/d/{token}` URL / iframe `/embed/direct/{token}` (`documenso_client.py:459`-465).
+
+### 11.5 The render+PUSH lane (engagement_templates)
+
+A separate, Trigger-facing lane renders a brand-aware engagement-content source to a DocRaptor PDF and pushes it to Documenso as a TEMPLATE (this is how the templates the originate lanes consume get created):
+
+- **Catalog** — `apps/edge_api/src/engagement_templates/catalog.py` resolves `content/<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` under the content root `apps/edge_api/content` (`catalog.py:20`), with a strict brand allowlist `_ALLOWED_BRANDS = {active-operators, rare-structure}` (`catalog.py:28`).
+- **Push** — `push.render_and_push(brand, path, archetype, version, source_kind=REPO_HTML, style, title)` (`push.py:63`) resolves the source, renders via DocRaptor LIVE (`render.render_pdf`, `test=False` — `render.py:80`), and creates a Documenso TEMPLATE (`create_template_from_pdf`); only `repo-html` is wired (`db-markdown` raises `PushError`, `push.py:81`-84).
+- **Internal route** — `POST /internal/engagement-templates/render-push` (`internal_engagement_templates_v1.py:84`), gated by `require_trigger_secret` (`TRIGGER_SHARED_SECRET`), mounted under `/internal` (`main.py:274`). Accepts either a `registryPath`/`registryId` (resolved against `business.global_input_content`) OR explicit `brand`/`path`/`archetype`/`version`.
+- **Trigger task** — `engagement-template-push` (`src/trigger/engagement_template_push.ts:53`) calls the route via `callHqx`.
+- **Ledger** — every attempt writes one terminal row to `ops.engagement_template_push_runs` (`apps/edge_api/sql/ops_engagement_template_push_runs.sql:12`): `run_id`, `brand`, `path`, `archetype`, `version`, `style`, `source_kind`, `status` (`success`/`error`), `documenso_template_id`, `documenso_numeric_id`, `pdf_r2_key`, `pdf_bytes`, `error`.
+
+### 11.6 The content-source registry (`business.global_input_content`)
+
+`business.global_input_content` is the CONTENT-SOURCE REGISTRY — one row per repo-resident (or DB-markdown) engagement-content source (`apps/edge_api/sql/global_input_content.sql:21`). It gained two columns (`global_input_content.sql:31`, `:32`):
+
+- `brand` (`'active-operators' | 'rare-structure'`, default `'active-operators'`, indexed `:49`).
+- `source_kind` (`'repo-html' | 'db-markdown'`, default `'repo-html'`, CHECK at `:44`) — `repo-html` resolves under `content/<brand>/<path>/global_engagement_content`; `db-markdown` resolves `business.global_engagement_content WHERE slug = path`.
+
+Seeds (`global_input_content.sql:53`-55): the AO term-only source (`docraptor-to-documenso-template/term-only/v1`, brand `active-operators`) and the rare-structure capital-origination source (`docraptor-to-documenso-template/capital-origination/v1`, brand `rare-structure`).
+
+### 11.7 Brand asset tree (rare-structure capital-origination)
+
+`apps/edge_api/content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/` holds the static-blank brand asset: `rare_structure_strategic_origination.html` (manifest slug `rare_structure_strategic_origination`, archetype `capital_origination`), `manifest.json`, and `styles/{plain,branded}.css`. The body is a static blank (field-slot blanks, no underscore-glyph fill lines) carrying an `§8.4 Authority` clause; signature/value fields are affixed in the Documenso editor after the TEMPLATE is created (render+push does no field placement — `documenso_client.create_template_from_pdf` docstring, `documenso_client.py:430`-433). The corresponding live Documenso template numeric id is a runtime fact in the Documenso workspace, not committed to this repo.
+
+### 11.8 Frontend (cross-repo — `rare-structure-hq`, NOT verifiable from `core-x`)
+
+The live SPA consumes the two originate lanes. From this repo only the contracts are verifiable; the SPA/BFF surface below is reported per the cross-repo handoff and should be confirmed in `rare-structure-hq` / `08-FRONTEND-AND-BFF.md`:
+
+- `DirectTemplateSignPage` mounts `EmbedDirectTemplate` with the `direct_token` from `originate-embed-template`; the signer self-identifies (name/email NOT locked).
+- Route `/p/t/:opportunityId/:directToken` with `?host=` threaded from `documenso_host`.
+- `MandateDraftShell` carries a third dispatch branch (prefill / embed-document / embed-template); `SignLink` is a discriminated union; a shared `DirectToDocumensoLane` literal mirrors the edge_api CHECK domain.
+- The BFF brokers `originate-embed-template` and threads the Documenso host via `?host=`.
+
+> **Documenso direct-link facts (live v2 API).** `/api/v2/template/direct/create {templateId, directRecipientId?}` → `{token, ...}`; the token is the `EmbedDirectTemplate` prop AND the public `/d/{token}` / iframe `/embed/direct/{token}`. The signer enters their own name + email. `typedSignatureEnabled` / `drawSignatureEnabled` / `uploadSignatureEnabled` are document/template-level meta settings. Field types: `SIGNATURE, FREE_SIGNATURE, INITIALS, NAME, EMAIL, DATE, TEXT, NUMBER, RADIO, CHECKBOX, DROPDOWN` — there is NO dedicated `TITLE` type (a title field is `TEXT`). `prefillFields` supports `text/number/radio/checkbox/dropdown/date` (NOT `name`/`signature`).
+
+---
+
+## Status: ACTIVE / REMOVED / RETIRED
 
 | Component | Status | Note |
 |---|---|---|
-| `POST /api/v1/proposals` (`create_proposal`) | ACTIVE | Mint DRAFT (`apps/edge_api/src/routers/proposals_v1.py:142`) |
-| `POST /api/v1/proposals/{ref}/confirm` (`confirm_proposal`) | ACTIVE | Originate entrypoint (`apps/edge_api/src/routers/proposals_v1.py:203`) |
-| `POST /api/v1/proposals/{ref}/provision` (`provision_proposal`) | ACTIVE | Re-provision; NO BFF broker (`apps/edge_api/src/routers/proposals_v1.py:254`) |
-| `GET /api/v1/proposals` (`list_proposals`) | ACTIVE | Operator list (`apps/edge_api/src/routers/proposals_v1.py:272`) |
-| `GET /api/v1/proposals/{ref}` (`get_proposal`) | ACTIVE | PUBLIC consumer read (`apps/edge_api/src/routers/proposals_v1.py:286`) |
-| `GET /api/v1/proposals/{ref}/document` (`get_signed_document`) | ACTIVE | PUBLIC sealed-PDF stream (`apps/edge_api/src/routers/proposals_v1.py:321`) |
-| `_provision` (through-docraptor branch) | ACTIVE | Render + envelope + bind (`apps/edge_api/src/routers/proposals_v1.py:104`) |
-| `_provision` (direct-to-documenso branch) | **STUB** | `'direct-to-documenso pathway not yet wired'` (`apps/edge_api/src/routers/proposals_v1.py:99`-103) |
-| `docraptor_client.render_pdf` | ACTIVE | LIVE mode `test=False` (`apps/edge_api/src/services/docraptor_client.py:27`) |
-| `documenso_client.create_signing_envelope` | ACTIVE | through-docraptor envelope creator (`apps/edge_api/src/services/documenso_client.py:198`) |
-| `documenso_client.download_signed_pdf` | ACTIVE | sealed PDF fetch (`apps/edge_api/src/services/documenso_client.py:762`) |
+| `POST /api/v1/proposals` (`create_proposal`) | **REMOVED** | Deleted in `b83e002`; live: `POST /api/v1/engagement-mandate-drafts` |
+| `POST /api/v1/proposals/{ref}/confirm` (`confirm_proposal`) | **REMOVED** | Deleted in `b83e002`; live: `originate-prefilled` |
+| `POST /api/v1/proposals/{ref}/provision` (`provision_proposal`) | **REMOVED** | Deleted in `b83e002`; no equivalent |
+| `GET /api/v1/proposals` (`list_proposals`) | **REMOVED** | Deleted in `b83e002` |
+| `GET /api/v1/proposals/{ref}` (`get_proposal`) | **REMOVED** | Deleted in `b83e002` |
+| `GET /api/v1/proposals/{ref}/document` (`get_signed_document`) | **REMOVED** | Deleted in `b83e002` |
+| `_provision` (through-docraptor + direct-to-documenso branches) | **REMOVED** | Lived in `proposals_v1.py`, deleted in `b83e002` |
+| `docraptor_client.render_pdf` | ACTIVE | LIVE mode `test=False`; now driven by the render+push lane (`apps/edge_api/src/services/docraptor_client.py`) |
+| `documenso_client.create_signing_envelope` | **REMOVED** | Deleted in `b83e002`; live: `create_direct_link` / `create_document_from_template` / `create_template_from_pdf` |
+| `documenso_client.create_document_from_template` | ACTIVE | Prefill/embed-document lane (`apps/edge_api/src/services/documenso_client.py:228`) |
+| `documenso_client.create_template_from_pdf` | ACTIVE | render+push terminal step, TEMPLATE create (`apps/edge_api/src/services/documenso_client.py:420`) |
+| `documenso_client.create_direct_link` / `toggle_direct_link` / `get_template_recipients` | ACTIVE | embed-template lane (`apps/edge_api/src/services/documenso_client.py:514`, `:542`, `:504`) |
+| `documenso_client.download_signed_pdf` | ACTIVE | sealed PDF fetch; survived `b83e002` (`apps/edge_api/src/services/documenso_client.py:711`) |
 | `POST /api/v1/documenso/webhook` (`documenso_webhooks_v1`) | ACTIVE | Live raw capture, system of record (`apps/edge_api/src/routers/documenso_webhooks_v1.py:39`) |
-| `POST /api/v1/proposals/webhook` (in-router) | **DEPRECATED** | Code intact; repointed away, no traffic (`apps/edge_api/src/routers/proposals_v1.py:337`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:5`) |
-| `queries.advance_status` | **CONDITIONAL** | Correct logic; reachable only from the deprecated webhook (`apps/edge_api/src/proposals/queries.py:192`) |
-| `render_mode == 'direct-to-documenso'` (in proposals_v1) | **STUB** | Live direct path is `engagement-mandate-drafts`, not this branch |
-| `business.engagement_proposals` | ACTIVE | E-signature grain + payment overlay (`apps/edge_api/sql/engagement_proposals.sql:21`) |
+| `POST /api/v1/proposals/webhook` (in-router) | **REMOVED** | Deleted in `b83e002` (not merely deprecated); live: `/api/v1/documenso/webhook` |
+| `queries.advance_status` (`proposals/queries.py`) | **REMOVED** | Deleted in `b83e002` with the proposals webhook |
+| `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-prefilled` | ACTIVE | DEFAULT direct lane (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:113`) |
+| `POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template` | ACTIVE | embed-template lane (`apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:172`) |
+| `POST /internal/engagement-templates/render-push` | ACTIVE | render+PUSH lane, trigger-secret (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:84`) |
+| `business.engagement_proposals` | INACTIVE (DDL present) | Data preserved; no `.py` references (`apps/edge_api/sql/engagement_proposals.sql`) |
+| `business.global_input_content` | ACTIVE | Content-source registry (`apps/edge_api/sql/global_input_content.sql:21`) |
+| `ops.engagement_template_push_runs` | ACTIVE | render+push ledger (`apps/edge_api/sql/ops_engagement_template_push_runs.sql:12`) |
 | `business.documenso_webhook_events` | ACTIVE | Raw Documenso capture, live signing-state SoR (`apps/edge_api/src/routers/documenso_webhooks_v1.py:7`) |
-| `proposal_templates_v1` (authoring) | ACTIVE | Markdown registry + preview (`apps/edge_api/src/routers/proposal_templates_v1.py:46`) |
-| Status-projection back onto `engagement_proposals.status` (proposals/ref lane, post-repoint) | **UNVERIFIED** | No projection path found this pass — see §6 open question |
+| `proposal_templates_v1` (authoring) | ACTIVE | Markdown storage + DocRaptor preview ONLY; no longer renders into signed proposals (`apps/edge_api/src/routers/proposal_templates_v1.py:47`) |
 
 ---
 
 ## Traps
 
-- **STALE COMMENT — the in-router webhook's docstring lies.** `apps/edge_api/src/routers/proposals_v1.py:341` reads `"Documenso → status advance. Source of truth (never the client embed callback)."` This is now FALSE: the route is DEPRECATED, Documenso is repointed to `POST /api/v1/documenso/webhook`, and the legacy route no longer receives deliveries (`apps/edge_api/src/routers/documenso_webhooks_v1.py:5`, `:8`). Do NOT treat the proposals webhook as the live status source. (A prior internal dossier made exactly this mistake.)
-- **`direct-to-documenso` is NOT wired in this router.** The `render_mode == 'direct-to-documenso'` branch in `_provision` is a STUB that returns `(False, 'direct-to-documenso pathway not yet wired')` (`apps/edge_api/src/routers/proposals_v1.py:99`-103). The LIVE direct path is the separate `engagement-mandate-drafts` flow (`create_document_from_template` / `create_document_from_template_with_custom_pdf`), selected by `operator_settings.direct_to_documenso_lane`. Do not conflate the two.
-- **`/provision` has no BFF caller.** It is a direct service-token-only re-provision/recovery endpoint. The SPA/BFF only broker create/confirm/list/read/send/payment. Searching the BFF for "provision" returns only the `provisioned`/`provision_error` field names.
-- **`quarterly_total_cents` is a misleading legacy column name.** It now carries `{{total}} = monthly_fee_cents * duration_months`, NOT a quarterly figure (`apps/edge_api/sql/engagement_proposals.sql:36`, `apps/edge_api/src/proposals/template_render.py:195`). The per-invoice quarterly amount comes from `charge_cents(..., 'quarterly')`, a different computation (`apps/edge_api/src/proposals/models.py:61`).
-- **`business.proposals` ≠ `business.engagement_proposals`.** `business.proposals` belongs to the DMaaS data-transfer subsystem; the e-signature table is `business.engagement_proposals` (`apps/edge_api/sql/engagement_proposals.sql:4`-6).
-- **Anchor grammar `[[…]]` vs merge grammar `{{…}}` are intentionally different.** `[[CLIENT_SIGNATURE]]` / `[[CLIENT_DATE]]` must survive token substitution untouched and land verbatim in the PDF text layer for Documenso `findText`. Do not "normalize" anchors to `{{…}}` or HTML-escape them — they ride in not-escaped (`apps/edge_api/src/proposals/agreement_template.py:52`).
-- **DocRaptor runs LIVE (`test=False`), not test mode** (`apps/edge_api/src/services/docraptor_client.py:37`). Every render bills against the live DocRaptor account.
-- **No script fonts in the rendered PDF.** Prince/DocRaptor blocks filesystem font access, so signatures are typed-name italic serif; naming a script font yields a 422 (`apps/edge_api/src/proposals/agreement_template.py:107`-110). Signature/date anchor text is real selectable text, never `display:none`/zero-size, or `findText` can't resolve it (`apps/edge_api/src/proposals/agreement_template.py:113`-117).
-- **The embed host must equal `DOCUMENSO_API_URL`.** The token is minted against `config.documenso_api_url()`; the SPA must embed against the SAME host (`shell.documensoHost`, default `https://app.documenso.com`). A mismatch silently breaks signing (`apps/edge_api/src/services/documenso_client.py:82`, `rare-structure-hq:apps/platform-api/src/lib/edge.ts:19`).
-- **`onDocumentCompleted` is UI navigation only**, never a status source (`rare-structure-hq:apps/platform-app/src/routes/p/SignPage.tsx:43`). Trust the webhook capture.
-- **Sign-token path-shape mismatch (carry-forward note).** The SPA calls `/documenso/sign/{opp}/{doc}/token` while the BFF/edge_api use `/documenso/sign-token/{opp}/{doc}` — different path shapes for the direct-lane embed token (`rare-structure-hq:apps/platform-app/src/proposals/api.ts:134`, `apps/edge_api/src/routers/documenso_webhooks_v1.py:105`). Out of scope for this through-docraptor lane but noted so an agent doesn't assume a single canonical shape.
-- **DISCREPANCY vs `DIRECT_TO_DOCUMENSO_PAYMENT_E2E.md`.** That reference covers ONLY the direct prefill lane + its payment. For THIS through-docraptor domain the authoritative behavior is: `through-docraptor` renders PDF → envelope (live), and the `direct-to-documenso` branch inside `proposals_v1._provision` is a non-functional stub (`apps/edge_api/src/routers/proposals_v1.py:96`-103). That markdown file was not opened this pass; the discrepancy is stated against its documented scope, with CODE treated as ground truth.
+- **THE WHOLE LANE IS REMOVED.** Do NOT treat any `proposals_v1` endpoint, `_provision`, `create_signing_envelope`, `render_agreement_html`, or `proposals/queries.py` function as live — all deleted in `b83e002`. The live engagement origination is `engagement-mandate-drafts` (§11). A prior internal dossier treated this lane as active; that is the exact mistake to avoid.
+- **`POST /api/v1/proposals/webhook` is REMOVED, not deprecated.** Older docs called it "deprecated, code intact, repointed away." The route was DELETED with `proposals_v1.py`. The live webhook is `POST /api/v1/documenso/webhook` (`documenso_webhooks_v1.py:39`). Status truth is the raw-capture `business.documenso_webhook_events`.
+- **`direct-to-documenso` is the LIVE flow, not a stub.** Earlier docs described a `render_mode == 'direct-to-documenso'` STUB branch inside `proposals_v1._provision`. That branch (and its router) no longer exists. The live direct flow is `engagement-mandate-drafts` with three sub-lanes selected by `operator_settings.direct_to_documenso_lane` (`prefill-document-from-template` default, `embed-template`, `envelope-distribute` retired — `apps/edge_api/sql/operator_settings.sql:85`).
+- **`business.engagement_proposals` DDL survives but is unused.** The table is not dropped (data preserved), but no `.py` reads or writes it (`grep -rn 'engagement_proposals' apps/edge_api/src/ --include='*.py'` → nothing). Do not assume a row there reflects live state.
+- **`business.proposals` ≠ `business.engagement_proposals`.** `business.proposals` belongs to the DMaaS data-transfer subsystem; the (now-unused) e-signature table is `business.engagement_proposals` (`apps/edge_api/sql/engagement_proposals.sql:4`-6).
+- **The render+push HTML is a STATIC BLANK body — no anchors, no field placement in-code.** `create_template_from_pdf` does NOT place fields; signature/value fields are affixed in the Documenso editor afterward (`apps/edge_api/src/services/documenso_client.py:430`-433). The legacy `[[CLIENT_SIGNATURE]]`/`[[CLIENT_DATE]]` anchor mechanism belonged to the removed `agreement_template.py`; `signing_anchors.py` survives but is no longer wired into an envelope creator on this lane.
+- **DocRaptor still runs LIVE (`test=False`).** Now via the render+push lane (`apps/edge_api/src/engagement_templates/render.py:80`). Every render bills against the live DocRaptor account.
+- **Documenso has no `TITLE` field type.** Field types are `SIGNATURE, FREE_SIGNATURE, INITIALS, NAME, EMAIL, DATE, TEXT, NUMBER, RADIO, CHECKBOX, DROPDOWN`; a title is a `TEXT` field. `prefillFields` supports `text/number/radio/checkbox/dropdown/date` — NOT `name`/`signature`. Do not attempt to prefill a signer's name or signature.
+- **The embed host must equal `DOCUMENSO_API_URL`.** Tokens are minted against `config.documenso_api_url()`; the SPA must embed against the SAME host. The originate responses now return `documenso_host` explicitly (`engagement_mandate_drafts_v1.py:164`, `:213`) and the SPA threads it via `?host=`. A mismatch silently breaks signing.
+- **Cross-repo SPA/BFF claims are NOT verifiable from `core-x`.** §10 and §11.8 describe the `rare-structure-hq` SPA/BFF; confirm those against that repo / `08-FRONTEND-AND-BFF.md` before relying on them.

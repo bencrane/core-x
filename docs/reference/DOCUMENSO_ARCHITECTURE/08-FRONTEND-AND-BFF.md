@@ -1,6 +1,6 @@
 # 08 — Frontend (platform-app SPA) and the DUMB BFF (platform-api)
 
-> STATUS BANNER — This file documents the **platform-side** of the Documenso flows: the React SPA prospect/operator surfaces, the dumb Hono BFF that brokers to `edge_api`, the shared settings schemas, and the full SPA → BFF → edge_api path map. It spans BOTH render modes: the **legacy `through-docraptor` proposal-ref lane** (`/p/:ref*`) and the **new `direct-to-documenso` pair-keyed lane** (`/p/m/:opportunityId/:documentId*`), and within direct-to-documenso, both lanes (`envelope-distribute` and `prefill-document-from-template`). The edge_api side of every cross-repo seam is documented in the sibling files (04-DOCUMENSO-INTEGRATION, 05-PAYMENTS, 07-DATA-STORES); this file stops at the BFF→edge fetch boundary and names the edge route it targets. Every platform claim carries a `rare-structure-hq:...:NN` citation; every edge claim carries an `apps/edge_api/...:NN` citation.
+> STATUS BANNER — This file documents the **platform-side** of the Documenso flows: the React SPA prospect/operator surfaces, the dumb Hono BFF that brokers to `edge_api`, the shared settings schemas, and the full SPA → BFF → edge_api path map. It spans BOTH render modes: the **legacy `through-docraptor` proposal-ref lane** (`/p/:ref*`) and the **new `direct-to-documenso` pair-keyed lane** (`/p/m/:opportunityId/:documentId*`), and within direct-to-documenso, all three lanes (`envelope-distribute` (retired), `prefill-document-from-template` (default), and `embed-template`). The edge_api side of every cross-repo seam is documented in the sibling files (04-DOCUMENSO-INTEGRATION, 05-PAYMENTS, 07-DATA-STORES); this file stops at the BFF→edge fetch boundary and names the edge route it targets. Every platform claim carries a `rare-structure-hq:...:NN` citation; every edge claim carries an `apps/edge_api/...:NN` citation.
 
 ---
 
@@ -307,6 +307,7 @@ Mounted at `/api/v1/engagement-mandate-drafts` AFTER the public alias (`rare-str
 | `PUT /by-opportunity/:id` | `requireUser` | staging-draft upsert | `rare-structure-hq:apps/platform-api/src/routes/engagement-mandate-drafts-admin.ts:98` |
 | `POST /:id/confirm` | `requireUser` | `edgeConfirmMandateDraft` (`edge.ts:409`) | `rare-structure-hq:apps/platform-api/src/routes/engagement-mandate-drafts-admin.ts:121` |
 | `POST /:id/originate-prefilled` | `requireUser` | `edgeOriginatePrefilled` (`edge.ts:438`) | `rare-structure-hq:apps/platform-api/src/routes/engagement-mandate-drafts-admin.ts:142` |
+| `POST /:id/originate-embed-template` | `requireUser` | `edgeOriginateEmbedTemplate` (cross-repo, unverified) | edge target `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169` |
 | `GET /document/:envelopeId` | **PUBLIC (no requireUser)** | `edgeGetMandateDraftDocument` (`edge.ts:506`) | `rare-structure-hq:apps/platform-api/src/routes/engagement-mandate-drafts-admin.ts:165` |
 
 The `/:id/originate-prefilled` handler calls `edgeOriginatePrefilled` (`:145`) and maps the edge snake_case response to camelCase `{ envelopeId=res.envelope_id (:148), documentId (:149), opportunityId (:151), signingToken (:152), documensoHost (:153), status (:154) }`. `opportunityId` is documented as the prospect-link capability for `/p/m/{opportunityId}/{documentId}` (comment at `:150`).
@@ -347,11 +348,11 @@ Reads `GET /api/v1/settings` and writes `PUT /api/v1/settings` (BFF) with the Su
 | Enum | String values | Default | Citation |
 |---|---|---|---|
 | `RenderMode` | `'through-docraptor'`, `'direct-to-documenso'` | `'through-docraptor'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:10` (type), `:13` (array), `:15` (default) |
-| `DirectToDocumensoLane` | `'envelope-distribute'`, `'prefill-document-from-template'` | `'envelope-distribute'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:27` (type), `:30-33` (array), `:35` (default) |
+| `DirectToDocumensoLane` | `'envelope-distribute'` (retired), `'prefill-document-from-template'`, `'embed-template'` | `'prefill-document-from-template'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:27` (type), `:30-33` (array), `:35` (default); canonical value set + default at `apps/edge_api/sql/operator_settings.sql:84-89` (CHECK), `:43` (column default) |
 | `StripeMode` | `'test'`, `'live'` | `'live'` | `rare-structure-hq:packages/shared/src/schemas/settings.ts:42` (type), `:45` (array), `:47` (default) |
 
 - `RenderMode` is resolved SERVER-SIDE by the BFF from `public.operator_settings` (via edge_api) and never trusted from the client at confirm time (schema doc comment `:4-6`).
-- `DirectToDocumensoLane` only applies when `renderMode === 'direct-to-documenso'`; it is ignored under `through-docraptor` (schema doc `:17-26`). Endpoint mapping: `'envelope-distribute'` → `.../{id}/confirm`; `'prefill-document-from-template'` → `.../{id}/originate-prefilled` (schema doc `:21-25`).
+- `DirectToDocumensoLane` only applies when `renderMode === 'direct-to-documenso'`; it is ignored under `through-docraptor` (schema doc `:17-26`). Endpoint mapping: `'envelope-distribute'` → `.../{id}/confirm` (RETIRED — value retained in the DDL CHECK so a pre-existing row never violates it, but no live edge path serves it; `apps/edge_api/sql/operator_settings.sql:31-34`, `:80`); `'prefill-document-from-template'` → `.../{id}/originate-prefilled` (the default; `apps/edge_api/sql/operator_settings.sql:43`); `'embed-template'` → `.../{id}/originate-embed-template` (the new direct-link lane — the signer self-identifies and the document is minted by Documenso at completion, source `TEMPLATE_DIRECT_LINK`; edge target `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169`, response `MandateEmbedTemplateOriginated` at `apps/edge_api/src/engagement_mandate_drafts/models.py:49`).
 - `StripeMode` AUGMENTS the `STRIPE_MODE` env so the operator can flip test↔live for document payments from the cockpit without a Doppler change + redeploy; edge_api reads it as the global single-operator selection at document-payment mint (schema doc `:37-40`). **The edge_api-side mint behavior is documented only via this shared-schema comment — out of this repo's citation scope; see 05-PAYMENTS for the edge side.**
 
 ### Settings page (`OriginationModeCard`)
@@ -401,11 +402,19 @@ OPERATOR ORIGINATE — prefill lane
   → edgeOriginatePrefilled (edge.ts:438, serviceHeaders)
   → edge_api originate-prefilled → returns (opportunityId, documentId) → SPA builds /p/m/{opp}/{doc}
 
-OPERATOR ORIGINATE — envelope-distribute lane
+OPERATOR ORIGINATE — envelope-distribute lane (RETIRED)
   MandateDraftShell.confirmMandateDraft (api.ts:78, Bearer)
   → BFF POST /api/v1/engagement-mandate-drafts/:id/confirm (admin.ts:121, requireUser)
   → edgeConfirmMandateDraft (edge.ts:409, serviceHeaders)
-  → edge_api confirm   [no pair link]
+  → edge_api confirm   [no pair link; lane retired — value kept in the DDL CHECK only, no live edge path]
+
+OPERATOR ORIGINATE — embed-template lane
+  MandateDraftShell.originateEmbedTemplate (api.ts:???, Bearer)   [cross-repo, line unverified]
+  → BFF POST /api/v1/engagement-mandate-drafts/:id/originate-embed-template (admin.ts:???, requireUser)   [cross-repo, line unverified]
+  → edgeOriginateEmbedTemplate (edge.ts:???, serviceHeaders)   [cross-repo, line unverified]
+  → edge_api POST /api/v1/engagement-mandate-drafts/{id}/originate-embed-template (engagement_mandate_drafts_v1.py:169)
+      → MandateEmbedTemplateOriginated { direct_token, documenso_host, embed_url, external_id, opportunity_id, direct_recipient_id, recipient_email, recipient_name, status } (models.py:49)
+      [NO document minted; enables a Documenso direct link on the template, signer self-identifies, document created at completion (source TEMPLATE_DIRECT_LINK)]
 
 OPERATOR SETTINGS
   useOriginationMode getSettings/putSettings (originationMode.ts:27/42, Bearer)
@@ -435,7 +444,8 @@ LEGACY PROPOSAL PAYMENT
 | `/p/:ref`, `/p/:ref/sign`, `/p/:ref/pay` (Summary/Sign/Payment) | ACTIVE (legacy generation) | Still served; `through-docraptor` proposal-ref lane. Embed-event advance, ACH-only pay. `App.tsx:96/105/107`. |
 | `/app/m/:ref` → `Mandate` → `MandateDraftShell` | CONDITIONAL | Shell only renders when `renderMode === 'direct-to-documenso'`; else `MandateEditor`. `Mandate.tsx:36`. |
 | `MandateDraftShell` prefill branch (`originatePrefilled`) | CONDITIONAL | Only when `directToDocumensoLane === 'prefill-document-from-template'`. Builds /p/m links. `MandateDraftShell.tsx:93`. |
-| `MandateDraftShell` envelope-distribute branch (`confirmMandateDraft`) | CONDITIONAL | The `else` lane; no pair link. `MandateDraftShell.tsx:101`. |
+| `MandateDraftShell` envelope-distribute branch (`confirmMandateDraft`) | DEPRECATED (lane retired) | The `else` lane; no pair link. Edge lane retired — value retained in the DDL CHECK only (`apps/edge_api/sql/operator_settings.sql:80`). `MandateDraftShell.tsx:101`. |
+| `MandateDraftShell` embed-template branch (`originateEmbedTemplate`) | CONDITIONAL | Only when `directToDocumensoLane === 'embed-template'`. Returns a reusable direct-link token (`direct_token`) for `<EmbedDirectTemplate>`, NOT a document id — no document until the signer completes. Edge: `engagement_mandate_drafts_v1.py:169` → `MandateEmbedTemplateOriginated` (`models.py:49`). Frontend dispatch branch is cross-repo — verify in rare-structure-hq. |
 | `DocumentSummaryScaffold` inline editing (operator) | CONDITIONAL / in-session prototype | NOT persisted, does not touch the live document. `MandateDraftShell.tsx:8-9/81-82`. |
 | BFF public router `documenso-public.ts` (token/state/payment-intent/payment) | ACTIVE | PUBLIC pass-throughs; no requireUser; no serviceHeaders. `documenso-public.ts:37/64/90/118`. |
 | BFF operator router `engagement-mandate-drafts-admin.ts` (confirm/originate/options/by-opportunity/POST `/`) | ACTIVE | `requireUser` + `serviceHeaders`. `admin.ts:31/56/75/98/121/142`. |
@@ -461,6 +471,7 @@ LEGACY PROPOSAL PAYMENT
 - **`signer=originator` is the operator's own link, not a separate flow.** `getMandateSignToken(..., 'originator')` selects the originator recipient token; `DocumentSignPage` skips the summary and shows "Your signature is recorded. Thank you." with NO payment CTA on completion. `DocumentSignPage.tsx:52/162/164`.
 - **The transitional double-mount means the same public router answers two prefixes.** `/api/v1/documenso` (primary) AND `/api/v1/engagement-mandate-drafts` (alias) both resolve to `documensoPublicRoutes`; the operator CRUD router mounts AFTER, on the same `engagement-mandate-drafts` prefix. `index.ts:123/124/126`.
 - **Two distinct lines in `MandateDraftShell`:** line 77 seeds `status='ready'` on localStorage hydration; line 89 is the re-originate guard. Citing one for the other inverts cause/effect.
+- **The `embed-template` lane is PARALLEL to the prefill lane, not a replacement, and returns a reusable direct-link TOKEN — not a document id.** `prefill-document-from-template` (`.../originate-prefilled`) mints a Documenso document NOW and returns `(opportunity_id, document_id)` for the `/p/m/{opp}/{doc}` link. `embed-template` (`.../originate-embed-template`) instead enables a Documenso direct link on the template and returns `MandateEmbedTemplateOriginated.direct_token` + `embed_url`; NO document exists until the signer self-identifies and completes (Documenso creates it then, source `TEMPLATE_DIRECT_LINK`). Do not expect a `documentId` off the embed-template originate. `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:172-221`, `apps/edge_api/src/engagement_mandate_drafts/models.py:49-71`.
 
 ---
 

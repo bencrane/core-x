@@ -1,6 +1,6 @@
 # 07 — Data Stores: the Table System-of-Record Map
 
-**STATUS:** Persistence-layer reference for the **edge_api HQX Postgres** (`HQX_DB_URL_POOLED`). Spans ALL render_modes and lanes — `through-docraptor`, `direct-to-documenso` (`envelope-distribute` + `prefill-document-from-template`), plus the parallel `ao_engagement_mandates` pathway and the GTM/company ingest tables. This is the cross-cutting ownership map; lane-specific control flow lives in the sibling docs.
+**STATUS:** Persistence-layer reference for the **edge_api HQX Postgres** (`HQX_DB_URL_POOLED`). Spans ALL render_modes and lanes — `through-docraptor`, `direct-to-documenso` (`envelope-distribute` RETIRED, `prefill-document-from-template` DEFAULT, `embed-template` NEW), the engagement-template render+PUSH lane, plus the parallel `ao_engagement_mandates` pathway and the GTM/company ingest tables. This is the cross-cutting ownership map; lane-specific control flow lives in the sibling docs.
 
 ## Orientation
 
@@ -55,7 +55,7 @@ The `document_payments` fee-resolution query uses BOTH ids on different join leg
 
 | Class | Means | Tables |
 |---|---|---|
-| **edge_api (defines + writes)** | `CREATE TABLE` in `sql/`; edge_api is the writer | `document_payments`, `document_payment_events`, `documenso_webhook_events`, `engagement_proposals`, `engagement_events`, `ao_engagement_mandates`, `engagement_archetypes`, `global_engagement_content`, `operator_settings`, `map_query_runs`, `company_profiles`, `company_profile_snapshots`, `clay_find_companies`, `clay_find_people` |
+| **edge_api (defines + writes)** | `CREATE TABLE` in `sql/`; edge_api is the writer | `document_payments`, `document_payment_events`, `documenso_webhook_events`, `engagement_proposals`, `engagement_events`, `ao_engagement_mandates`, `engagement_archetypes`, `global_engagement_content`, `global_input_content`, `engagement_template_push_runs`, `operator_settings`, `map_query_runs`, `company_profiles`, `company_profile_snapshots`, `clay_find_companies`, `clay_find_people` |
 | **upstream (hq-x defines; edge_api writes via upsert)** | NO `CREATE TABLE` in `sql/`; edge_api upserts to live partial-unique keys | `business.opportunities`, `business.accounts`, `business.contacts` |
 | **upstream (hq-x defines; edge_api READS only)** | NO `CREATE TABLE`, NO write anywhere | `business.opportunity_specific_content` |
 | **upstream/shared (ALTER-only by edge_api)** | base predates this repo's DDL; edge_api only ALTER-adds columns + reads/FK-references | `business.engagement_mandate_draft_content`, `business.documenso_templates`, `business.organizations` |
@@ -125,10 +125,26 @@ Proof that the upstream tables are NOT defined here: `grep -rniE 'create table.*
 - `organization_id uuid REFERENCES business.organizations (id) ON DELETE RESTRICT` is NULLABLE — "the in-app create path does not set it yet" (CONDITIONAL) (`apps/edge_api/sql/global_engagement_content.sql:100-102`).
 - **Name lineage** (comment): `proposal_templates → proposal_content_configs → engagement_content → global_engagement_content` (`apps/edge_api/sql/global_engagement_content.sql:15-17`). BUT the rename DO-block only converges TWO predecessors — it renames `engagement_content` OR `proposal_content_configs` in place (preserving data + inbound FKs + re-pointing inherited index/constraint names); `proposal_templates` is documented historical lineage, NOT a branch the block handles (`apps/edge_api/sql/global_engagement_content.sql:30-42`). See **Traps**.
 
+### `business.global_input_content` — content-source REGISTRY for the render+PUSH lane
+
+- PK = `id uuid DEFAULT gen_random_uuid()`; `path text NOT NULL UNIQUE`; `status text NOT NULL DEFAULT 'active'`. One row per repo-resident engagement-content asset (or DB-markdown source) the render+push lane "grabs from"; a row names WHERE to pull, the renderer resolves it to HTML → DocRaptor → Documenso TEMPLATE (`apps/edge_api/sql/global_input_content.sql:1-31`).
+- ALTER-adds two source-selection columns on the already-provisioned live table: `brand text NOT NULL DEFAULT 'active-operators'` (`'active-operators' | 'rare-structure'`) and `source_kind text NOT NULL DEFAULT 'repo-html'` constrained by `global_input_content_source_kind_chk CHECK (source_kind IN ('repo-html','db-markdown'))` (`apps/edge_api/sql/global_input_content.sql:33-49`). The table predates this file (hand-provisioned upstream: `id/path/name/status`); this DDL OWNS it going forward (`:6-8`).
+- `path` is BRAND-RELATIVE and encodes the catalog segments `<template-family>/<archetype>/<version>` for `repo-html` (e.g. `docraptor-to-documenso-template/term-only/v1`), OR the `business.global_engagement_content` slug for `db-markdown` (`apps/edge_api/sql/global_input_content.sql:12-18`).
+- Seeded idempotently (`ON CONFLICT (path) DO NOTHING`) with two `repo-html` assets: AO `docraptor-to-documenso-template/term-only/v1` (term-only) and rare-structure `docraptor-to-documenso-template/capital-origination/v1` (capital-origination) (`apps/edge_api/sql/global_input_content.sql:54-58`).
+
+### `ops.engagement_template_push_runs` — QA ledger for the render+PUSH lane
+
+- PK = `id bigint GENERATED ALWAYS AS IDENTITY`; one row per render+push attempt: which content source was pulled (`brand/path/archetype/version/source_kind`), the `style` (`'plain' | 'branded'`), the `documenso_template_id` + `documenso_numeric_id` minted, an audit `pdf_r2_key`, and `error` on failure. `status text NOT NULL` ∈ `'success' | 'error'`; `run_id` is the Trigger.dev run id (NULL for a direct/manual call) (`apps/edge_api/sql/ops_engagement_template_push_runs.sql:11-30`).
+- Written by `apps/edge_api/src/engagement_templates/push.py` on EVERY terminal state, fire-and-forget — a ledger error never blocks or fails the render-push response (`apps/edge_api/sql/ops_engagement_template_push_runs.sql:1-5`).
+
 ### `public.operator_settings` — per-operator cockpit config (PUBLIC schema, SAME HQX Postgres)
 
 - PK = `auth_user_id uuid` (the Supabase JWT `sub`); one row per operator (`apps/edge_api/sql/operator_settings.sql:39-45`).
-- `render_mode CHECK (… ANY (ARRAY['through-docraptor','direct-to-documenso']))` DEFAULT `'through-docraptor'`; `direct_to_documenso_lane CHECK (… ANY (ARRAY['envelope-distribute','prefill-document-from-template']))` DEFAULT `'envelope-distribute'` — the lane ONLY applies when `render_mode='direct-to-documenso'`; `stripe_mode CHECK (stripe_mode IS NULL OR … ANY (ARRAY['test','live']))`, NULL = follow the `STRIPE_MODE` env (`apps/edge_api/sql/operator_settings.sql:41-43`, `:60-94`; lane-conditionality `:23-34`, stripe_mode-NULL `:51-56`).
+- `render_mode CHECK (… ANY (ARRAY['through-docraptor','direct-to-documenso']))` DEFAULT `'through-docraptor'`; `direct_to_documenso_lane CHECK (… ANY (ARRAY['envelope-distribute','prefill-document-from-template','embed-template']))` DEFAULT `'prefill-document-from-template'` — the lane ONLY applies when `render_mode='direct-to-documenso'`; `stripe_mode CHECK (stripe_mode IS NULL OR … ANY (ARRAY['test','live']))`, NULL = follow the `STRIPE_MODE` env (`apps/edge_api/sql/operator_settings.sql:41-43`, `:71-94`; lane-conditionality + lane-domain `:23-34`, `:60-94`, stripe_mode-NULL `:51-56`).
+- **The three direct-to-documenso lanes** (CHECK domain DROP+re-ADDed every apply so new values converge, `apps/edge_api/sql/operator_settings.sql:60-94`):
+  - `'envelope-distribute'` — **RETIRED**. The `/envelope/use` + `.../{id}/confirm` lane was removed in code; the CHECK still accepts the value so a pre-existing row never violates it, but no live path serves it (`apps/edge_api/sql/operator_settings.sql:30-34`).
+  - `'prefill-document-from-template'` — **DEFAULT** (embed-document). `/api/v2/template/use` with the opportunity's field values prefilled, distribute(NONE) → PENDING (no email) → `POST .../{id}/originate-prefilled` → `create_document_from_template`. A document is minted NOW (`apps/edge_api/sql/operator_settings.sql:24-29`; `apps/edge_api/src/services/documenso_client.py:228`).
+  - `'embed-template'` — **NEW** (direct-link). Enables a reusable DIRECT LINK on the draft's template; **NO document minted here** — Documenso creates it at signer completion (source `TEMPLATE_DIRECT_LINK`). `POST .../{id}/originate-embed-template` → `MandateEmbedTemplateOriginated` (`direct_token`, `documenso_host`, `embed_url`, `external_id`, `opportunity_id`, `direct_recipient_id`, `recipient_email`, `recipient_name`, `status="ready"`). PARALLEL to originate-prefilled, not a replacement (`apps/edge_api/sql/operator_settings.sql:31-32`; `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169-223`; `apps/edge_api/src/engagement_mandate_drafts/models.py:49-70`). See **The embed-template direct-link lane** below.
 - `stripe_mode` is read by the document-payment flow as a SINGLE GLOBAL selection (latest non-null row wins, `ORDER BY updated_at DESC LIMIT 1`) because the single-operator platform's prospect-facing mint has no operator session (`apps/edge_api/src/document_payments/queries.py:64-80`).
 - RLS stays ENABLED as defense-in-depth but is "no longer load-bearing": edge_api connects via the pooled application role; the access boundary is the service token + the BFF's upstream Supabase session check (`apps/edge_api/sql/operator_settings.sql:96-99`).
 - **Gateway scope:** for the **Settings-tab persistence flow**, the platform-api BFF no longer touches this table directly — edge_api is the gateway (`GET/PUT /api/v1/operator-settings/{auth_user_id}`) (`apps/edge_api/sql/operator_settings.sql:5-13`). This is TRUE FOR THE SETTINGS-PERSISTENCE FLOW ONLY — a separate path (proposal-confirm) STILL reads `operator_settings` directly via Supabase. See **Cross-repo handoffs** and **Traps**.
@@ -237,6 +253,40 @@ cal.com webhook → Trigger.dev opportunity-materialize task
         idempotently from corex.bookings
 ```
 
+### The embed-template direct-link lane (`direct_to_documenso_lane='embed-template'`)
+
+```
+platform-app MandateDraftShell (3rd dispatch branch; rare-structure-hq, SEPARATE repo)
+  → BFF originate-embed-template
+    → edge_api  POST /api/v1/engagement-mandate-drafts/{draft_id}/originate-embed-template
+        → documenso_client.create_direct_link  POST /api/v2/template/direct/create {templateId, directRecipientId?}
+        → MandateEmbedTemplateOriginated {direct_token, documenso_host, embed_url, external_id, opportunity_id, ...}
+    SPA mounts EmbedDirectTemplate(token=direct_token, host) at route /p/t/{opportunityId}/{directToken}?host=
+      → public /d/{token} / iframe /embed/direct/{token}; SIGNER self-identifies (name+email NOT locked)
+        → on completion Documenso CREATES the document (source TEMPLATE_DIRECT_LINK)
+          → existing /sign-state/{opportunity_id}/{document_id} surface tracks it (gate: externalId == opportunity_id)
+```
+
+- **NO document is minted at originate** — unlike the prefill lane (which mints a document NOW and returns a per-document signing token), embed-template enables a reusable DIRECT LINK on the draft's template and returns the template's reusable `direct_token`; Documenso creates the document AT signer completion (`apps/edge_api/src/engagement_mandate_drafts/models.py:50-60`; endpoint `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169-223`, `status="ready"` at `:222`).
+- core-x contracts (THIS repo): `documenso_client` gained `DirectLinkResult` + `create_direct_link` / `toggle_direct_link` / `get_template_recipients` (`POST /api/v2/template/direct/{create,toggle}`) and `create_template_from_pdf` + `TemplateCreateResult` (`POST /api/v2/envelope/create` `type=TEMPLATE`); `create_document_from_template` (embed-document) is unchanged (`apps/edge_api/src/services/documenso_client.py:228,410-547`).
+- **Documenso direct-link facts (v2 OpenAPI):** `/template/direct/create {templateId, directRecipientId?}` → `{token,...}`; the `token` is BOTH the `EmbedDirectTemplate` prop AND the public `/d/{token}` (iframe `/embed/direct/{token}`). The signer enters their OWN name+email. `typedSignatureEnabled`/`drawSignatureEnabled`/`uploadSignatureEnabled` are document/template-level meta settings. Field types: `SIGNATURE,FREE_SIGNATURE,INITIALS,NAME,EMAIL,DATE,TEXT,NUMBER,RADIO,CHECKBOX,DROPDOWN` (NO dedicated `TITLE` — it's `TEXT`); `prefillFields` supports text/number/radio/checkbox/dropdown/date (NOT name/signature).
+- **Frontend (cross-repo, rare-structure-hq — verify there):** `DirectTemplateSignPage` (`EmbedDirectTemplate`; signer self-identifies, name/email NOT locked), route `/p/t/:opportunityId/:directToken` with `?host=`, `MandateDraftShell` 3rd dispatch branch, `SignLink` discriminated union, a shared `DirectToDocumensoLane` literal, the BFF `originate-embed-template` proxy, host threaded via `?host=`. Verifiable from THIS repo only via the `MandateEmbedTemplateOriginated` contract (`apps/edge_api/src/engagement_mandate_drafts/models.py:49-70`); the SPA/BFF source is in the separate repo.
+
+### Engagement-template render+PUSH lane (content source → DocRaptor → Documenso TEMPLATE)
+
+```
+Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_push.ts)
+  → callHqx  POST /internal/engagement-templates/render-push   (TRIGGER_SHARED_SECRET)
+    → edge_api  apps/edge_api/src/routers/internal_engagement_templates_v1.py:84  require_trigger_secret
+        → catalog.resolve(brand, path, archetype, version)   # apps/edge_api/src/engagement_templates/catalog.py:99
+        → push.py: render HTML → DocRaptor PDF → documenso_client.create_template_from_pdf (Documenso TEMPLATE)
+          → ledger: ops.engagement_template_push_runs (fire-and-forget, every terminal state)
+```
+
+- The brand-aware catalog resolves `<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` under `content/`; `_ALLOWED_BRANDS = {active-operators, rare-structure}` is enforced as an allowlist so an unvetted directory can never surface as a selectable template; `brand` defaults to `active-operators` so the original three-segment call sites keep working (`apps/edge_api/src/engagement_templates/catalog.py:21-28,99-112`).
+- The brand asset tree `content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/` carries static-blank HTML (field-slot blanks, NO underscore glyphs; §8.4 Authority; 1.6 leading) plus `styles/plain.css` + `styles/branded.css` and a `manifest.json` (archetype `capital_origination`) (`apps/edge_api/content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/manifest.json`). The minted live Documenso template numeric id (`14310`) is a runtime fact, not committed in this repo.
+- The internal endpoint is `/internal/*`-gated by `require_trigger_secret` (TRIGGER_SHARED_SECRET) — the same contract opportunity-materialize uses (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:1-6,84-85`).
+
 ---
 
 ## Payment-rail split (do-not-conflate)
@@ -259,14 +309,18 @@ cal.com webhook → Trigger.dev opportunity-materialize task
 - `business.ao_engagement_mandates` (parallel pathway) — `apps/edge_api/sql/ao_engagement_mandates.sql:17-66`
 - `business.engagement_archetypes` + `documenso_templates.archetype_id` ALTER/backfill — `apps/edge_api/sql/engagement_archetypes.sql:19-78`
 - `business.global_engagement_content` — `apps/edge_api/sql/global_engagement_content.sql:80-112`
-- `public.operator_settings` (settings-tab gateway via edge_api) — `apps/edge_api/sql/operator_settings.sql:39-99`
+- `business.global_input_content` (render+push content-source registry) — `apps/edge_api/sql/global_input_content.sql:21-58`
+- `ops.engagement_template_push_runs` (render+push QA ledger) — `apps/edge_api/sql/ops_engagement_template_push_runs.sql:11-30`
+- `public.operator_settings` (settings-tab gateway via edge_api; 3-lane domain) — `apps/edge_api/sql/operator_settings.sql:39-94`
+- Engagement-template render+PUSH lane (`/internal/engagement-templates/render-push`) — `apps/edge_api/src/routers/internal_engagement_templates_v1.py:84-85`, `apps/edge_api/src/engagement_templates/catalog.py:99-112`
+- embed-template direct-link lane (`/{draft_id}/originate-embed-template`) — `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169-223`, `apps/edge_api/src/services/documenso_client.py:410-547`
 - `ops.map_query_runs`, `business.company_profiles`, `business.company_profile_snapshots`, `gtm.clay_find_companies`, `gtm.clay_find_people`
 - Upstream-written: `business.accounts`, `business.contacts` (via `materialize.py`)
 - Upstream read-only: `business.opportunity_specific_content`
 - Upstream ALTER-only/shared: `business.documenso_templates`, `business.organizations`, `business.engagement_mandate_draft_content`
 
 **CONDITIONAL**
-- `operator_settings.direct_to_documenso_lane` — only meaningful when `render_mode='direct-to-documenso'` (`apps/edge_api/sql/operator_settings.sql:23-34`)
+- `operator_settings.direct_to_documenso_lane` — only meaningful when `render_mode='direct-to-documenso'`; DEFAULT now `'prefill-document-from-template'`; domain `{envelope-distribute(retired), prefill-document-from-template, embed-template}` (`apps/edge_api/sql/operator_settings.sql:23-34`, `:60-94`)
 - `operator_settings.stripe_mode` override — only when non-NULL; NULL falls back to `STRIPE_MODE` env (`apps/edge_api/sql/operator_settings.sql:51-56`)
 - `global_engagement_content.organization_id` — nullable; the in-app create path does not set it yet (`apps/edge_api/sql/global_engagement_content.sql:100-102`)
 - `EDGE_API_SKIP_DB_MIGRATE` — when set, the boot DDL apply is skipped (`apps/edge_api/src/migrate.py:67-72`)
@@ -275,6 +329,7 @@ cal.com webhook → Trigger.dev opportunity-materialize task
 **DEPRECATED**
 - The full row UUID as the externally-visible opportunity id — superseded by the 8-char `opportunity_id` handle (`apps/edge_api/sql/opportunities_opportunity_id.sql:7-10`). The UUID remains the internal PK/FK target.
 - `engagement_proposals.quarterly_total_cents` NAME — legacy; now carries `{{total}}` = monthly_fee × duration (`apps/edge_api/sql/engagement_proposals.sql:36`)
+- `direct_to_documenso_lane='envelope-distribute'` — RETIRED; the `/envelope/use` + `.../{id}/confirm` lane was removed in code; the CHECK still accepts the value so a pre-existing row never violates it, but no live path serves it (`apps/edge_api/sql/operator_settings.sql:30-34`)
 
 **STUB / nonexistent**
 - `mandate_payments`, `mandate_payment_events` — DO NOT EXIST (grep-zero across both repos; see "Proven-nonexistent tables" above)
