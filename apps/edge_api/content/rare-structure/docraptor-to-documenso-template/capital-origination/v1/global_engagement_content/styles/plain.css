@@ -30,6 +30,10 @@ strong { font-weight: 700; color: #000000; }
 p { margin: 0 0 8pt; text-align: justify; }
 .lead { color: #111111; }
 
+/* Inline fill-in zone — a ruled line a Documenso field is dropped onto and sized in the editor (like
+   the signature line). NO underscore glyphs; width is just the visual guide (min-width per slot). */
+.field-slot { display: inline-block; min-width: 120pt; border-bottom: 0.75pt solid #111111; vertical-align: baseline; }
+
 /* Execution block. page-break-inside: avoid keeps the signatures intact. Signature, date, name, and
    title fields are affixed in the Documenso editor — nothing is rendered into these slots. */
 .sig-wrap { margin-top: 30pt; page-break-inside: avoid; }
