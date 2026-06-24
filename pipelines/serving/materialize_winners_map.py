@@ -60,6 +60,8 @@ WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
 DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
 BTREE_INDEXES = ["winner_uei", "addr_hash",
+                 # range/recency filter axes ('$X+ won', 'award_count over N', recency window).
+                 "total_obligation", "award_count", "last_action_date",
                  # SUB-only teaming axis (range/threshold filters): null on prime rows.
                  "teaming_dollars_5y", "n_teaming_primes"]
 BITMAP_INDEXES = ["naics2", "state", "winner_type",

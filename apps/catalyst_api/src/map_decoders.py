@@ -144,10 +144,10 @@ WINNERS = Decoder(
         "winner_type":      FieldSpec("winner_type", "string", ("=", "in"),
                                       enum=("prime_recipient", "subawardee"), index="BITMAP"),
         "naics_code":       FieldSpec("naics_code", "string", ("=", "in")),
-        "total_obligation": FieldSpec("total_obligation", "float", (">=", "<=", "between")),
-        "award_count":      FieldSpec("award_count", "int", (">=", "<=", "between")),
-        # ISO-string action date; days_ago resolves to a DATE literal at request time.
-        "days_since_last_award": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between")),
+        "total_obligation": FieldSpec("total_obligation", "float", (">=", "<=", "between"), index="BTREE"),
+        "award_count":      FieldSpec("award_count", "int", (">=", "<=", "between"), index="BTREE"),
+        # ISO-string action date; days_ago resolves to a DATE literal at request time. BTREE serves ranges.
+        "days_since_last_award": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
         # ── PHASE-3 capability axis (gated: EXECUTE ANDs has_extracted_scope=true) ──
         # has_extracted_scope is the gate itself — filterable but NOT gated (no self-AND).
         "has_extracted_scope": FieldSpec("has_extracted_scope", "bool", ("=",), index="BITMAP"),
@@ -250,11 +250,11 @@ COMPANY = Decoder(
         # query-name `state` maps to the indexed column `physical_address_state`
         "state":              FieldSpec("physical_address_state", "string", ("=", "in"), index="BITMAP"),
         "has_federal_awards": FieldSpec("has_federal_awards", "bool", ("=",), index="BITMAP"),
-        "is_active":          FieldSpec("is_active", "bool", ("=",)),
+        "is_active":          FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
         "primary_naics":      FieldSpec("primary_naics", "string", ("=", "in"), index="BTREE"),
-        "founded_year":       FieldSpec("founded_year", "int", (">=", "<=", "between")),
-        "active_obligations": FieldSpec("total_active_obligations", "float", (">=", "<=", "between")),
-        "award_count":        FieldSpec("award_count", "int", (">=", "<=", "between")),
+        "founded_year":       FieldSpec("founded_year", "int", (">=", "<=", "between"), index="BTREE"),
+        "active_obligations": FieldSpec("total_active_obligations", "float", (">=", "<=", "between"), index="BTREE"),
+        "award_count":        FieldSpec("award_count", "int", (">=", "<=", "between"), index="BTREE"),
         # date32 most-recent prime/subaward action date (materialize_company_map.py recency
         # join); days_ago resolves to a DATE literal at request time. BTREE serves the ranges.
         "days_since_last_award": FieldSpec("latest_award_action_date", "days_ago",

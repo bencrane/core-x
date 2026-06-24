@@ -46,9 +46,11 @@ CAS_URI = f"{ACTIVE}/contractor_award_summary/"
 FRESH_PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 FRESH_SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 DATA_STORAGE_VERSION = "2.1"
-BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics", "latest_award_action_date"]
+BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics", "latest_award_action_date",
+                 # range filter axes (full-scan without these).
+                 "founded_year", "total_active_obligations", "award_count"]
 BITMAP_INDEXES = ["naics2", "industry", "employee_size_band", "company_type",
-                  "physical_address_state", "has_federal_awards"]
+                  "physical_address_state", "has_federal_awards", "is_active"]
 
 DUCK_MEM = os.environ.get("COMPANY_MAP_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("COMPANY_MAP_DUCKDB_TEMP_DIR", "/tmp/company_map_duckdb")
