@@ -123,9 +123,12 @@ def _schema():
 
 
 def _sql(where: str = "") -> str:
-    """UNION both work-email SoRs → most-recent-wins per contact_id. ``where`` (the append
-    watermark predicate) is injected into BOTH arms so the dedup ranks only fresh rows.
-    Column order matches _schema() exactly."""
+    """UNION both work-email SoRs → most-recent-wins per contact_id for the RESOLUTION fields
+    (email, verdict, provenance); IDENTITY/bridge fields (person_linkedin_url, company_domain)
+    coalesce to the most-recent NON-NULL across the contact's rows, so a newer verification row
+    that omits them never erases a known value. ``where`` is injected into BOTH arms; the append
+    scopes it to a contact's FULL history (not fresh rows only) so the coalesce can see prior
+    values. Column order matches _schema() exactly."""
     return f"""
     WITH unified AS (
         SELECT
@@ -149,10 +152,17 @@ def _sql(where: str = "") -> str:
         {where}
     ),
     ranked AS (
-        SELECT *, row_number() OVER (
-            PARTITION BY contact_id ORDER BY resolved_at DESC NULLS LAST
-        ) AS rn
+        SELECT *,
+            row_number() OVER w AS rn,
+            -- identity/bridge fields: most-recent NON-NULL wins, so a newer verification row
+            -- that omits person_linkedin_url / company_domain never erases a known value
+            -- (the full-frame first_value scans the contact's whole history, not just rn=1).
+            first_value(person_linkedin_url IGNORE NULLS)
+                OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS person_linkedin_url_keep,
+            first_value(company_domain IGNORE NULLS)
+                OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS company_domain_keep
         FROM unified
+        WINDOW w AS (PARTITION BY contact_id ORDER BY resolved_at DESC NULLS LAST)
     )
     SELECT
         contact_id,
@@ -162,7 +172,9 @@ def _sql(where: str = "") -> str:
         source_vendor,
         source_table,
         mv_resultcode, mv_result, mv_quality, mv_subresult,
-        certainty, company_domain, person_linkedin_url,
+        certainty,
+        company_domain_keep      AS company_domain,
+        person_linkedin_url_keep AS person_linkedin_url,
         batch_label, resolved_at,
         now() AS materialized_at
     FROM ranked
@@ -358,9 +370,12 @@ def ingest_work_emails(trigger_callback_url: str | None = None) -> dict:
 
 @app.function(secrets=_SECRETS, timeout=60 * 30, memory=8192, cpu=2.0)
 def append_work_emails(trigger_callback_url: str | None = None) -> dict:
-    """Incremental: watermark = max(resolved_at) already in Lance; pull rows strictly newer from
-    BOTH arms; merge_insert on contact_id with update + insert (a re-resolved contact bumps
-    resolved_at, so the watermark catches it and the existing Lance row updates)."""
+    """Incremental: watermark = max(resolved_at) already in Lance. Identify contacts with a row
+    strictly newer than the watermark in EITHER arm, then pull their FULL history (both arms) so
+    the most-recent-wins dedup AND the identity-field coalesce in _sql see prior values; one row
+    per contact → merge_insert on contact_id with update + insert. Full history per touched
+    contact (not fresh rows only) — a verification row that omits person_linkedin_url must not
+    null the value an earlier resolution row carried."""
     import datetime as dt
 
     import duckdb
@@ -379,7 +394,17 @@ def append_work_emails(trigger_callback_url: str | None = None) -> dict:
         watermark = wm
         if wm is None:
             raise RuntimeError("existing dataset has no resolved_at watermark; run a full overwrite first.")
-        where = f"WHERE resolved_at > TIMESTAMPTZ '{wm.isoformat()}'"
+        # Scope to contacts TOUCHED since the watermark, but pull their FULL history (both arms,
+        # all rows) so _sql's identity-field coalesce sees prior person_linkedin_url /
+        # company_domain — otherwise a fresh verification row (which omits them) nulls a known
+        # value on merge. The most-recent-wins dedup still emits exactly one row per contact.
+        wm_iso = wm.isoformat()
+        where = (
+            "WHERE contact_id IN ("
+            f"SELECT contact_id FROM hqx.ops.email_resolutions WHERE resolved_at > TIMESTAMPTZ '{wm_iso}' "
+            "UNION "
+            f"SELECT contact_id FROM hqx.ops.email_verifications WHERE resolved_at > TIMESTAMPTZ '{wm_iso}')"
+        )
         con = duckdb.connect(":memory:")
         try:
             _attach(con, _hqx_dsn())
