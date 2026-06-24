@@ -7,29 +7,30 @@ Endpoints (mounted at ``/api/v1/title-enrichment``, service-token gated):
 
 The PERSISTENCE sibling of the stateless ``/api/v1/titles/normalize`` gate (``title_normalize_v1``): that
 route compiles a raw scraped title into the strict 6×22 taxonomy in-flight; this surface LANDS an enriched
-title so the result is reusable and joinable to title-bearing records (``gtm.contacts.job_title``) via the
-normalized bridge key.
+title so the result is reusable.
 
 WIRE CONTRACT. ONE record per request, FLAT singular fields (no nested raw_payload on the wire). The ONLY
-required value is ``raw_job_title``; every enrichment attribute is OPTIONAL — a bare ``{"raw_job_title":
-"..."}`` is a valid landing (an as-yet-unenriched title)::
+required value is ``raw_job_title``; EVERY other field is OPTIONAL and may be sent null/omitted — a bare
+``{"raw_job_title": "..."}`` is a valid landing::
 
     {
-      "raw_job_title":       "VP of Making Things Go",   // required (the single mandatory field)
-      "normalized_level":    "VP",                       // optional — taxonomy seniority, verbatim
-      "normalized_function": "Operations",               // optional — taxonomy function, verbatim
-      "confidence":          "high",                     // optional
-      "model":               "claude-haiku-4-5",         // optional — enricher lineage
-      "reasoning":           "..."                       // optional — free text
+      "raw_job_title":        "VP of Making Things Go",                // required (the single mandatory field)
+      "normalized_job_title": "VP, Operations",                       // optional — caller-supplied normalized title
+      "normalized_level":     "VP",                                   // optional — taxonomy seniority, verbatim
+      "normalized_function":  "Operations",                           // optional — taxonomy function, verbatim
+      "confidence":           "high",                                 // optional
+      "model":                "claude-haiku-4-5",                     // optional — enricher lineage
+      "reasoning":            "...",                                  // optional — free text
+      "person_linkedin_url":  "https://www.linkedin.com/in/jane-doe"  // optional — stored verbatim
     }
 
-STORAGE. Dual: jsonb raw_payload (the flat body EXACTLY as sent — immutable SoT, drift-proof; extra keys
-survive verbatim) + flat typed columns. title_norm (lower + whitespace-collapsed raw_job_title) is the
-canonical bridge key, computed server-side and indexed. PK record_id = sha256(title_norm | normalized_level
-| normalized_function | confidence | model) — byte-identical resends idempotent (ON CONFLICT DO NOTHING);
-any change to the classification lands a DISTINCT historical row. reasoning is stored but EXCLUDED from
-record_id (free-text, non-deterministic — folding it in would defeat dedup). Readers take the latest by
-landed_at per title_norm.
+STORAGE. Dual: jsonb raw_payload (the flat body EXACTLY as sent — immutable SoT; extra keys survive
+verbatim) + flat typed columns. title_norm (lower + whitespace-collapsed raw_job_title) is the canonical
+bridge key, computed server-side and indexed. PK record_id = sha256(title_norm | normalized_level |
+normalized_function | confidence | model) — byte-identical resends idempotent (ON CONFLICT DO NOTHING); any
+change to the classification lands a DISTINCT historical row. reasoning is stored but EXCLUDED from
+record_id. normalized_job_title and person_linkedin_url are plain nullable passthrough columns — stored
+verbatim, and DELIBERATELY NOT indexed, NOT folded into record_id, and NOT linked to any other table.
 """
 from __future__ import annotations
 
@@ -61,7 +62,7 @@ _WS_RE = re.compile(r"\s+")
 
 def _title_norm(raw: str) -> str:
     """lower + whitespace-collapsed raw job title — the canonical bridge/dedup key. Deterministic and
-    caller-reproducible so a downstream record can resolve its enrichment via normalize(job_title)."""
+    caller-reproducible."""
     return _WS_RE.sub(" ", raw.strip().lower())
 
 
@@ -71,8 +72,9 @@ def _sha(s: str) -> str:
 
 # Column order is the single source of truth for the INSERT placeholders below.
 _COLS = (
-    "record_id", "raw_job_title", "title_norm",
+    "record_id", "raw_job_title", "title_norm", "normalized_job_title",
     "normalized_level", "normalized_function", "confidence", "model", "reasoning",
+    "person_linkedin_url",
     "source", "raw_payload",
 )
 _INSERT_SQL = (
@@ -105,14 +107,16 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
         return None
 
     title_norm = _title_norm(raw_job_title)
+    normalized_job_title = _s(rec.get("normalized_job_title"))
     normalized_level = _s(rec.get("normalized_level"))
     normalized_function = _s(rec.get("normalized_function"))
     confidence = _s(rec.get("confidence"))
     model = _s(rec.get("model"))
     reasoning = _s(rec.get("reasoning"))
+    person_linkedin_url = _s(rec.get("person_linkedin_url"))
 
-    # Append-only history key: title + every IDENTITY-bearing classification field. reasoning is
-    # excluded by design (non-deterministic free text → would spawn a new row on every re-run).
+    # Identity hash is UNCHANGED — normalized_job_title and person_linkedin_url are passthrough columns
+    # and are deliberately NOT folded into record_id.
     record_id = _sha("|".join([
         title_norm,
         normalized_level or "",
@@ -122,16 +126,18 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
     ]))
 
     return (
-        record_id, raw_job_title, title_norm,
+        record_id, raw_job_title, title_norm, normalized_job_title,
         normalized_level, normalized_function, confidence, model, reasoning,
+        person_linkedin_url,
         _SOURCE, Jsonb(rec),
     )
 
 
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: dict[str, Any]) -> dict[str, Any]:
-    """Land ONE enriched title. Required: raw_job_title (non-empty, ≤512 chars). Optional:
-    normalized_level, normalized_function, confidence, model, reasoning."""
+    """Land ONE enriched title. Required: raw_job_title (non-empty, ≤512 chars). Every other field is
+    optional and may be sent null/omitted: normalized_job_title, normalized_level, normalized_function,
+    confidence, model, reasoning, person_linkedin_url."""
     raw_input = body.get("raw_job_title")
     if not isinstance(raw_input, str) or not raw_input.strip():
         raise HTTPException(status_code=422, detail="raw_job_title is required (non-empty string)")
@@ -154,8 +160,10 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
         "record_id": row[0],
         "raw_job_title": row[1],
         "title_norm": row[2],
-        "normalized_level": row[3],
-        "normalized_function": row[4],
+        "normalized_job_title": row[3],
+        "normalized_level": row[4],
+        "normalized_function": row[5],
+        "person_linkedin_url": row[9],
     }
 
 

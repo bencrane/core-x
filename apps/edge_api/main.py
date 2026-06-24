@@ -291,9 +291,9 @@ app.include_router(map_ask_router)
 app.include_router(title_normalize_router)
 
 # title-enrichment: the PERSISTENCE sibling of titles/normalize — append-only landing of enriched job
-# titles into gtm.title_enrichment (verbatim raw_payload + flat projection of normalized_level/function/
-# confidence/model/reasoning). raw_job_title is the ONLY required value; all enrichment attrs nullable.
-# title_norm (lower+ws-collapsed) is the canonical bridge to title-bearing records. Service-token gated.
+# titles into gtm.title_enrichment (verbatim raw_payload + flat projection of normalized_job_title/
+# normalized_level/function/confidence/model/reasoning/person_linkedin_url). raw_job_title is the ONLY
+# required value; all other fields nullable. title_norm (lower+ws-collapsed) is the dedup key. Service-token gated.
 app.include_router(title_enrichment_router)
 
 # cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
