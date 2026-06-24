@@ -62,6 +62,7 @@ from .src.routers.equipment_finance_candidates_v1 import router as equipment_fin
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.title_normalize_v1 import router as title_normalize_router
+from .src.routers.title_enrichment_v1 import router as title_enrichment_router
 from .src.routers.proposal_templates_v1 import router as proposal_templates_router
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
@@ -289,6 +290,12 @@ app.include_router(map_ask_router)
 # ANTHROPIC_API_KEY. Service-token gated. Front-runs expensive enrichment with normalized keys.
 app.include_router(title_normalize_router)
 
+# title-enrichment: the PERSISTENCE sibling of titles/normalize — append-only landing of enriched job
+# titles into gtm.title_enrichment (verbatim raw_payload + flat projection of normalized_level/function/
+# confidence/model/reasoning). raw_job_title is the ONLY required value; all enrichment attrs nullable.
+# title_norm (lower+ws-collapsed) is the canonical bridge to title-bearing records. Service-token gated.
+app.include_router(title_enrichment_router)
+
 # cal.com webhook: RAW CAPTURE (Phase 1) — verbatim payload → public.cal_raw_events.
 # Signature-gated (X-Cal-Signature-256 / CAL_WEBHOOK_SECRET). NOT under /api/v1 — cal.com posts /webhooks/cal.
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
@@ -322,6 +329,7 @@ def _info() -> dict:
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "title_normalize": True,   # /api/v1/titles/normalize (raw title → forced-tool → {level, function})
+            "title_enrichment": True,  # /api/v1/title-enrichment/{land,check,stats} (enriched title → gtm.title_enrichment)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
