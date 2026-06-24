@@ -1,0 +1,184 @@
+"""Backfill active/companies with Blitz firmographics (idempotent, in-place).
+
+WHY THIS EXISTS. active/companies is the standalone Gen-3 SoR (dexarchive severed;
+companies_people_bulk.ingest retired), so there is no full-overwrite that would wipe an
+in-place enrichment. This worker affiliate-links each company row to the Blitz firmographic
+reference grain (s3://data-sink/active/firmographics_blitz/) and lands the high-value
+firmographic FILTER fields (employee_size_band, industry, company_type, founded_year, hq
+geography, …) directly onto the company row — so an audience built on active/companies can
+filter by size / industry / type / region without a downstream join.
+
+JOIN KEY (operator directive + coverage reality). The directive was "use company_linkedin_url
+since the firmo has that". But only ~791/9,008 companies carry a company_linkedin_url, so a
+linkedin-only join covers ~6%. firmographics_blitz's PRIMARY KEY is domain_norm (100% populated,
+unique), and active/companies carries normalized_domain — a domain join covers ~79%. So the
+join is LINKEDIN-PRIMARY, DOMAIN-FALLBACK: prefer the company_linkedin_url match (highest
+precision, honors the directive); fall back to normalized_domain where linkedin is absent or
+misses. ``firmo_match_key`` records which rail hit ('linkedin' | 'domain' | NULL).
+
+PRESERVATION. Every original column (company_id, company_name, normalized_domain,
+company_linkedin_url, source_platform) is carried through verbatim, the row set is byte-identical
+(PK company_id, 1:1), and ONLY the appended firmographic columns are new. Firmographic values are
+copied from the already-derived firmographics_blitz columns, not re-interpreted.
+
+INDEXES:
+    BTREE  : normalized_domain (existing), company_id (PK)
+    BITMAP : industry, employee_size_band, company_type, hq_region   (audience filters)
+
+    doppler run --project core-x --config prd -- python3 \\
+        pipelines/gtm/backfill_companies_firmographics_from_blitz.py
+"""
+from __future__ import annotations
+
+import datetime as dt
+import importlib.util
+import os
+import re
+
+import lance
+import pyarrow as pa
+
+# Reuse the canonical SoR constants + writer params (single source of truth).
+_spec = importlib.util.spec_from_file_location(
+    "cpb", os.path.join(os.path.dirname(__file__), "companies_people_bulk.py"))
+_cpb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_cpb)
+
+COMPANIES_URI = _cpb.DATASET_URI["companies"]
+FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", "s3://data-sink/active/firmographics_blitz/")
+DATA_STORAGE_VERSION = _cpb.DATA_STORAGE_VERSION
+MAX_ROWS_PER_FILE = _cpb.MAX_ROWS_PER_FILE
+MAX_BYTES_PER_FILE = _cpb.MAX_BYTES_PER_FILE
+
+# Firmographic fields pulled from firmographics_blitz (the audience-filter surface).
+FIRMO_FIELDS = [
+    "industry", "employee_size_band", "employees_on_linkedin", "company_type",
+    "founded_year", "followers", "specialties", "hq_city", "hq_state",
+    "hq_region", "hq_continent", "uei",
+]
+INT_FIELDS = {"employees_on_linkedin": pa.int64(), "founded_year": pa.int32(), "followers": pa.int64()}
+LIST_FIELDS = {"specialties": pa.list_(pa.string())}
+
+INDEX_BTREE = ["normalized_domain", "company_id"]
+INDEX_BITMAP = ["industry", "employee_size_band", "company_type", "hq_region"]
+
+_scheme = re.compile(r"^https?://"); _www = re.compile(r"^www\.")
+_locale = re.compile(r"^[a-z]{2}\.linkedin\.com/")
+
+
+def _norm_li(u: str | None) -> str | None:
+    s = (u or "").strip().lower()
+    if not s:
+        return None
+    s = _locale.sub("linkedin.com/", _www.sub("", _scheme.sub("", s))).rstrip("/")
+    return s if "linkedin.com/" in s else None
+
+
+def _norm_dom(d: str | None) -> str | None:
+    s = (d or "").strip().lower()
+    return s or None
+
+
+def main() -> None:
+    so = _cpb._r2_storage_options()
+
+    # 1) firmographics_blitz → linkedin/domain lookup over the firmographic field columns
+    firmo = lance.dataset(FIRMO_URI, storage_options=so)
+    fcols = firmo.to_table(columns=["linkedin_url", "domain_norm", *FIRMO_FIELDS]).to_pydict()
+    n_firmo = len(fcols["domain_norm"])
+    li_map: dict[str, int] = {}
+    dom_map: dict[str, int] = {}
+    for i in range(n_firmo):
+        ln = _norm_li(fcols["linkedin_url"][i])
+        if ln is not None and ln not in li_map:
+            li_map[ln] = i
+        dn = fcols["domain_norm"][i]
+        if dn and dn not in dom_map:
+            dom_map[dn] = i
+    print(f"firmo rows={n_firmo:,}  linkedin_keys={len(li_map):,}  domain_keys={len(dom_map):,}")
+
+    # 2) active/companies → join linkedin-primary, domain-fallback
+    comp = lance.dataset(COMPANIES_URI, storage_options=so)
+    orig = comp.to_table()
+    orig_cols = orig.column_names
+    n = orig.num_rows
+    comp_li_raw = orig.column("company_linkedin_url").to_pylist()
+    comp_dom_raw = orig.column("normalized_domain").to_pylist()
+
+    out_fields: dict[str, list] = {f: [] for f in FIRMO_FIELDS}
+    match_key: list = []
+    hit_li = hit_dom = 0
+    for i in range(n):
+        idx = None
+        key = None
+        ln = _norm_li(comp_li_raw[i])
+        if ln is not None and ln in li_map:
+            idx, key = li_map[ln], "linkedin"; hit_li += 1
+        else:
+            dn = _norm_dom(comp_dom_raw[i])
+            if dn is not None and dn in dom_map:
+                idx, key = dom_map[dn], "domain"; hit_dom += 1
+        match_key.append(key)
+        for f in FIRMO_FIELDS:
+            out_fields[f].append(fcols[f][idx] if idx is not None else None)
+
+    matched = hit_li + hit_dom
+    print(f"companies rows={n:,}  matched={matched:,} ({matched/n*100:.0f}%)  "
+          f"[linkedin={hit_li:,} domain={hit_dom:,} miss={n-matched:,}]")
+
+    # 3) assemble enriched table: original columns verbatim + firmographic columns + lineage
+    arrays = [orig.column(c) for c in orig_cols]
+    names = list(orig_cols)
+    for f in FIRMO_FIELDS:
+        if f in INT_FIELDS:
+            arrays.append(pa.array(out_fields[f], type=INT_FIELDS[f]))
+        elif f in LIST_FIELDS:
+            arrays.append(pa.array(out_fields[f], type=LIST_FIELDS[f]))
+        else:
+            arrays.append(pa.array(out_fields[f], type=pa.string()))
+        names.append(f)
+    arrays.append(pa.array(match_key, type=pa.string())); names.append("firmo_match_key")
+    now = dt.datetime.now(dt.timezone.utc)
+    arrays.append(pa.array([now] * n, type=pa.timestamp("us", tz="UTC"))); names.append("firmo_materialized_at")
+    enriched = pa.table(arrays, names=names)
+
+    # 4) Lance overwrite (canonical writer params) — same rows, +firmographic columns
+    lance.write_dataset(enriched, COMPANIES_URI, mode="overwrite",
+                        data_storage_version=DATA_STORAGE_VERSION,
+                        max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+                        storage_options=so)
+    print(f"wrote active/companies (overwrite) — {enriched.num_rows:,} rows, {enriched.num_columns} cols")
+
+    # 5) indexes — existing BTREE + new BITMAP filter accelerators
+    ds = lance.dataset(COMPANIES_URI, storage_options=so)
+    for col in INDEX_BTREE:
+        try:
+            ds.create_scalar_index(col, index_type="BTREE"); print(f"  BTREE  ✓ {col}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  BTREE  ✗ {col}: {exc}")
+    for col in INDEX_BITMAP:
+        try:
+            ds.create_scalar_index(col, index_type="BITMAP"); print(f"  BITMAP ✓ {col}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  BITMAP ✗ {col}: {exc}")
+
+    # 6) verify — row count preserved, PK unique, schema, indexes
+    import pyarrow.compute as pc
+    ds = lance.dataset(COMPANIES_URI, storage_options=so)
+    rn = ds.count_rows()
+    ids = ds.to_table(columns=["company_id"]).column("company_id")
+    distinct = pc.count_distinct(ids).as_py()
+    idx_names = sorted(
+        (ix.get("name", str(ix)) if isinstance(ix, dict) else getattr(ix, "name", str(ix)))
+        for ix in ds.list_indices())
+    print(f"VERIFY rows={rn:,} (was {n:,}) · distinct(company_id)={distinct:,} · cols={len(ds.schema.names)}")
+    print(f"  indexes={idx_names}")
+    if rn != n:
+        raise RuntimeError(f"row count changed: {rn} != {n} — aborting (data integrity)")
+    if distinct != rn:
+        raise RuntimeError(f"company_id not unique: {distinct} != {rn}")
+    print("OK")
+
+
+if __name__ == "__main__":
+    main()
