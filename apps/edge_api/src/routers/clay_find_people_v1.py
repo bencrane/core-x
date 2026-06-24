@@ -125,6 +125,20 @@ _STATS_SQL = """
 
 _SOURCE = "clay_find_people"
 
+# Person LinkedIn URL → that person's Clay find-people record(s). Keyed on person_id
+# (sha256(linkedin_url_norm), indexed) — the SAME derivation the land path writes, so the
+# read is parity-exact. Grain is (person × company), so one URL can return several rows
+# (the person observed at multiple companies); newest-first, hard-capped.
+_BY_LINKEDIN_SQL = """
+    SELECT record_id, domain_norm, matched_job_title, matched_company_name,
+           landed_at, raw_payload
+    FROM gtm.clay_find_people
+    WHERE person_id = %s
+    ORDER BY landed_at DESC
+    LIMIT %s
+"""
+_BY_LINKEDIN_CAP = 200
+
 
 def _to_row(rec: dict[str, Any]) -> tuple | None:
     """Project one Clay record → the full column tuple. None if it lacks a usable url."""
@@ -195,3 +209,52 @@ async def stats() -> dict[str, Any]:
             await cur.execute(_STATS_SQL)
             r = await cur.fetchone()
     return {"rows": r[0], "distinct_persons": r[1], "distinct_domains": r[2]}
+
+
+@router.post("/by-linkedin", dependencies=[Depends(require_service_token)])
+async def by_linkedin(body: dict[str, Any]) -> dict[str, Any]:
+    """Person LinkedIn URL (POST body) → that person's ENTIRE Clay find-people payload(s).
+
+    Body is ``{"url": "..."}`` (``linkedin_url`` accepted as an alias) — the value travels in
+    the body, never the path/query. The URL is normalized with the SAME ``_norm_linkedin`` the
+    land path uses and hashed to ``person_id = sha256(linkedin_url_norm)`` (the indexed
+    per-person key), so the lookup is parity-exact with how rows were keyed at landing.
+
+    Returns every (person × company) record newest-first, each carrying the verbatim
+    ``raw_payload`` (the Clay object EXACTLY as sent) plus its lossless discriminators
+    (domain_norm, matched_job_title, matched_company_name, landed_at). 404 when the person has
+    no Clay find-people record; 422 when the body carries no usable url."""
+    url = _s(body.get("url")) or _s(body.get("linkedin_url"))
+    if not url:
+        raise HTTPException(status_code=422, detail="missing/empty url (POST {\"url\": \"...\"})")
+    li_norm = _norm_linkedin(url)
+    if not li_norm:
+        raise HTTPException(status_code=422, detail="url did not normalize to a usable linkedin url")
+    person_id = _sha(li_norm)
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_BY_LINKEDIN_SQL, (person_id, _BY_LINKEDIN_CAP))
+            rows = await cur.fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="no clay find-people record for that linkedin url")
+
+    records = [
+        {
+            "record_id": r[0],
+            "domain_norm": r[1],
+            "matched_job_title": r[2],
+            "matched_company_name": r[3],
+            "landed_at": r[4].isoformat() if r[4] is not None else None,
+            "raw_payload": r[5],            # jsonb → dict, the Clay object verbatim
+        }
+        for r in rows
+    ]
+    return {
+        "linkedin_url": url,
+        "linkedin_url_norm": li_norm,
+        "person_id": person_id,
+        "count": len(records),
+        "records": records,
+    }

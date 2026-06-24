@@ -308,7 +308,7 @@ def _info() -> dict:
             "mcp": ["trigger", "doppler"],
             "agent_runs": True,        # /api/v1/agent-runs/* (SSE)
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
-            "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats}
+            "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats,by-linkedin}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "clay_enrich_companies": True,  # /api/v1/clay/enrich-companies/{land,stats}
             "contacts": True,          # /api/v1/contacts/{land,check,stats}
