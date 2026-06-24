@@ -143,7 +143,7 @@ def _sql(where: str = "") -> str:
             NULL AS source_vendor,
             'email_verifications' AS source_table,
             mv_resultcode, mv_result, mv_quality, mv_subresult,
-            NULL AS certainty, company_domain, NULL AS person_linkedin_url,
+            NULL AS certainty, company_domain, person_linkedin_url,
             batch_label, resolved_at
         FROM hqx.ops.email_verifications
         {where}
