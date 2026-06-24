@@ -627,3 +627,62 @@ class SubawardProfileResponse(_Model):
             poc=poc,
             subaward_history=[SubawardHistoryItem.from_row(h) for h in history],
         )
+
+
+# ── Person-by-LinkedIn surface (/api/v1/people/by-linkedin) ──────────────────
+class PersonMatch(_Model):
+    """One ``active/people`` row matched on the LinkedIn URL. A person URL can recur
+    (same person re-observed, or present at multiple companies), so every distinct match
+    is surfaced rather than collapsed — the caller sees title/company conflicts honestly."""
+
+    title: str | None = None
+    full_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    company_id: str | None = None
+    normalized_domain: str | None = None
+    contact_id: str | None = None
+    source_platform: str | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "PersonMatch":
+        return cls(
+            title=r.get("title"),
+            full_name=r.get("full_name"),
+            first_name=r.get("first_name"),
+            last_name=r.get("last_name"),
+            company_id=r.get("company_id"),
+            normalized_domain=r.get("normalized_domain"),
+            contact_id=r.get("contact_id"),
+            source_platform=r.get("source_platform"),
+        )
+
+
+class PersonByLinkedInResponse(_Model):
+    """LinkedIn URL → person payload from ``active/people``. ``title`` is the headline the
+    caller asked for (the first non-null title across matches); ``fullName`` is its
+    companion identity. ``matches`` carries every row the URL resolved to (with
+    ``matchCount``), so duplicate/conflicting observations stay visible. ``found`` is False
+    only on a 200 produced by a non-resolving (but well-formed) probe — the route 404s the
+    no-match case, so in practice ``found`` is always True on a 200."""
+
+    linkedin_url: str
+    found: bool
+    title: str | None = None
+    full_name: str | None = None
+    match_count: int = 0
+    matches: list[PersonMatch] = []
+
+    @classmethod
+    def from_rows(cls, linkedin_url: str, rows: list[dict[str, Any]]) -> "PersonByLinkedInResponse":
+        matches = [PersonMatch.from_row(r) for r in rows]
+        title = next((m.title for m in matches if m.title), None)
+        full_name = next((m.full_name for m in matches if m.full_name), None)
+        return cls(
+            linkedin_url=linkedin_url,
+            found=bool(matches),
+            title=title,
+            full_name=full_name,
+            match_count=len(matches),
+            matches=matches,
+        )

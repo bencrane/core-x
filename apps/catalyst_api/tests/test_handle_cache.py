@@ -153,7 +153,7 @@ def test_concurrent_first_callers_converge(cache):
 def test_prewarm_covers_the_dossier_surfaces(cache):
     timings = lance_store.prewarm_dossier_surfaces()
     assert set(timings) == {"entity_profile_gold", "contractor_award_summary",
-                            "usaspending_awards_map_serving"}
+                            "usaspending_awards_map_serving", "people"}
     # every prewarmed handle had its key BTREE probed
     for uri in lance_store._warm_key_columns():
         assert lance_store._handle_cache[uri][1].warmed is True

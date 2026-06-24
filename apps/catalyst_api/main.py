@@ -46,6 +46,7 @@ from .src.models import (
     MapQueryRequest,
     OverviewResponse,
     PastPerformanceResponse,
+    PersonByLinkedInResponse,
     RecentAward,
     SamProfileResponse,
     SubawardProfileResponse,
@@ -167,6 +168,7 @@ def _info() -> dict:
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
             "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
             "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
+            "person_by_linkedin": "/api/v1/people/by-linkedin?url=<linkedin /in/ url>",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
         },
         "map_datasets": list(DECODERS),
@@ -419,6 +421,30 @@ def subaward_profile(
     if profile is None and not hist:
         raise HTTPException(status_code=404, detail=f"no subaward profile or history for uei {uei!r}")
     return _envelope(SubawardProfileResponse.from_parts(uei, profile, hist))
+
+
+# ── Person surface (LinkedIn URL → active/people title + identity) ───────────
+@app.get("/api/v1/people/by-linkedin", response_model=None, dependencies=[Depends(require_operator)])
+def person_by_linkedin(
+    url: str = Query(..., description="A person's LinkedIn URL, e.g. https://www.linkedin.com/in/alexkigel/"),
+) -> JSONResponse:
+    """LinkedIn URL → the person's job title (+ identity) from ``active/people``.
+
+    A BTREE point-lookup on ``person_linkedin_url`` (canonical-variant ``IN`` pushdown —
+    tolerant of scheme/www/trailing-slash drift in the caller's URL). 400 when the input is
+    not a parseable ``linkedin.com`` ``/in/`` person URL; 404 when it parses but resolves to
+    no stored person. 200 returns the headline ``title`` plus every distinct match (a URL can
+    recur across re-observations / companies), so a title/company conflict is never hidden."""
+    slug = lance_store.linkedin_slug(url)
+    if not slug or not lance_store.valid_linkedin_slug(slug):
+        raise HTTPException(
+            status_code=400,
+            detail="invalid linkedin person url (expected a linkedin.com/in/<slug> url)",
+        )
+    rows = lance_store.person_by_linkedin_url(url)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no person found for linkedin url {url!r}")
+    return _envelope(PersonByLinkedInResponse.from_rows(url, rows))
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──

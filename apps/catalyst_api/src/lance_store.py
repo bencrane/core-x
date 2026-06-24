@@ -127,6 +127,7 @@ def _warm_key_columns() -> dict[str, str]:
         config.ENTITY_PROFILE_GOLD_URI: "uei",
         config.CONTRACTOR_AWARD_SUMMARY_URI: "recipient_uei",
         config.MAP_DATASET_URIS["awards"]: "winner_uei",
+        config.PEOPLE_URI: "person_linkedin_url",
     }
 
 
@@ -616,6 +617,74 @@ def subaward_history_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
     return rows[:cap]
 
 
+# ── Surface 5: person LinkedIn URL → active/people row (title + identity) ─────
+# The person point-lookup. active/people stores person_linkedin_url VERBATIM in the
+# canonical form ``https://www.linkedin.com/in/<slug>/`` (scheme + www + trailing slash;
+# 100% of the live non-null rows). A caller's URL may arrive in any form, so the slug is
+# extracted + lowercased, then matched against the reconstructed canonical variants with a
+# BTREE ``IN`` predicate — index pushdown, never a scan, and tolerant of scheme/www/slash
+# drift without re-normalizing the stored column. Multiple rows can share a URL (327 URLs
+# recur — re-observations across runs/companies), so the lookup returns the (capped) set and
+# the route surfaces every distinct (title, company) rather than silently collapsing them.
+_PEOPLE_COLS = [
+    "contact_id", "company_id", "normalized_domain", "full_name", "first_name",
+    "last_name", "title", "person_linkedin_url", "source_platform",
+]
+# A LinkedIn /in/ slug as stored: lowercase alnum + hyphen, with dot/underscore/%-encoding
+# tolerated. Validated before interpolation (defense-in-depth alongside _sql_str quoting).
+_LINKEDIN_SLUG_OK = re.compile(r"^[a-z0-9._%~-]{1,150}$")
+# Per-URL fan-out ceiling — a person URL maps to a handful of re-observation rows at most.
+_PEOPLE_HARD_CAP = 25
+
+
+def linkedin_slug(raw: str) -> str | None:
+    """Extract the lowercased ``/in/<slug>`` vanity slug from any LinkedIn person URL
+    form (scheme/www/country-subdomain/query/fragment/trailing-path all tolerated), or
+    ``None`` when the input is not a ``linkedin.com`` ``/in/`` person URL (a company /
+    school / malformed URL). The slug is the stable identity the stored canonical URL is
+    rebuilt from."""
+    s = (raw or "").strip().lower()
+    s = _SCHEME.sub("", s)
+    s = s.split("?", 1)[0].split("#", 1)[0]
+    host = s.split("/", 1)[0]
+    if not host.endswith("linkedin.com") or "/in/" not in s:
+        return None
+    slug = s.split("/in/", 1)[1].split("/", 1)[0].strip()
+    return slug or None
+
+
+def valid_linkedin_slug(slug: str) -> bool:
+    return bool(slug) and _LINKEDIN_SLUG_OK.match(slug) is not None
+
+
+def _linkedin_match_variants(slug: str) -> list[str]:
+    """The canonical stored-URL forms a slug could have been written as — scheme × host ×
+    trailing-slash. The dominant live form (``https://www.linkedin.com/in/<slug>/``) is
+    first; the rest make the BTREE ``IN`` match robust to source-form drift."""
+    out: list[str] = []
+    for host in ("www.linkedin.com", "linkedin.com"):
+        for scheme in ("https://", "http://"):
+            out.append(f"{scheme}{host}/in/{slug}/")
+            out.append(f"{scheme}{host}/in/{slug}")
+    return out
+
+
+def person_by_linkedin_url(url: str) -> list[dict[str, Any]]:
+    """BTREE point-lookup on ``people.person_linkedin_url`` → the person's row(s) (title +
+    identity), via the canonical-variant ``IN`` predicate. ``[]`` when the URL is not a
+    parseable LinkedIn ``/in/`` person URL OR resolves to no stored person. Capped
+    in-process (NOT via ``scanner(limit=)`` — the pylance limit-before-filter planner
+    under-returns; the per-URL fan-out is naturally tiny, so the filtered rows are fetched
+    whole and cut here)."""
+    slug = linkedin_slug(url)
+    if not slug or not valid_linkedin_slug(slug):
+        return []
+    in_list = ", ".join(_sql_str(v) for v in _linkedin_match_variants(slug))
+    rows = _scan(config.PEOPLE_URI, columns=_PEOPLE_COLS,
+                 filter=f"person_linkedin_url IN ({in_list})")
+    return rows[:_PEOPLE_HARD_CAP]
+
+
 # ── Map surface: compiled filter object → Lance scanner predicate → GeoJSON ──
 # The deterministic EXECUTE side of the portal map. No DuckDB, no SQL engine: a
 # decoder (map_decoders.py) names the allowlisted columns + ops + types, and the
@@ -862,6 +931,7 @@ _SURFACE_DATASETS = {
     "awards_map_serving": lambda: config.MAP_DATASET_URIS["awards"],
     "subawardee_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
     "contract_subaward": lambda: config.CONTRACT_SUBAWARD_URI,
+    "people": lambda: config.PEOPLE_URI,
 }
 
 
