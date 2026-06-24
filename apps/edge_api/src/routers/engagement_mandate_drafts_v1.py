@@ -15,14 +15,19 @@ prospect reads the document by the ``(opportunity_id, document_id)`` sign-token 
 """
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config
 from ..db import get_db_connection
 from ..engagement_mandate_drafts import queries
 from ..engagement_mandate_drafts.models import (
+    EmbedTemplateOriginateRequest,
     MandateDraftCreate,
     MandateDraftCreated,
+    MandateEmbedTemplateOriginated,
     MandatePrefilledOriginated,
     MandateStagingDraft,
     MandateStagingUpsert,
@@ -30,7 +35,33 @@ from ..engagement_mandate_drafts.models import (
 from ..service_token import require_service_token
 from ..services import documenso_client
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/engagement-mandate-drafts", tags=["engagement-mandate-drafts"])
+
+
+def _pick_direct_recipient_id(recipients: list[dict[str, Any]]) -> int | None:
+    """Designate the template recipient the public direct-link signer assumes — the COUNTERPARTY, i.e.
+    the recipient that is NOT the Rare Structure provider. Best-effort heuristic (overridable via the
+    request body): prefer an explicit participant/client recipient, else the first non-provider, else
+    the first recipient. Returns the recipient id, or None when the template has none."""
+    if not recipients:
+        return None
+
+    def _txt(r: dict[str, Any]) -> str:
+        return f"{r.get('email') or ''} {r.get('name') or ''}".lower()
+
+    def _is_provider(r: dict[str, Any]) -> bool:
+        t = _txt(r)
+        return "provider" in t or "rare structure" in t or "crane" in t
+
+    for r in recipients:
+        if "participant" in _txt(r) or "client" in _txt(r):
+            return r.get("id")
+    for r in recipients:
+        if not _is_provider(r):
+            return r.get("id")
+    return recipients[0].get("id")
 
 
 @router.post("", dependencies=[Depends(require_service_token)])
@@ -131,4 +162,60 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         signing_token=result.client_token,
         status="pending",
         documenso_host=config.documenso_api_url(),
+    )
+
+
+@router.post(
+    "/{draft_id}/originate-embed-template",
+    dependencies=[Depends(require_service_token)],
+)
+async def originate_embed_template(
+    draft_id: str, body: EmbedTemplateOriginateRequest = EmbedTemplateOriginateRequest()
+) -> MandateEmbedTemplateOriginated:
+    """Embed-template lane — PARALLEL to ``originate-prefilled`` (which is left untouched).
+
+    Enables a Documenso DIRECT LINK on the draft's template and returns its reusable token for the SPA
+    to mount ``<EmbedDirectTemplate>``. NO document is created here — the signer self-identifies in the
+    embed and Documenso creates the document (source ``TEMPLATE_DIRECT_LINK``) at completion. The
+    opportunity's PUBLIC 8-char handle is returned as ``external_id`` for the embed to stamp (and the
+    prospect (opportunity_id, document_id) gate, once the completed document id is captured client-side).
+
+    Kept distinct from the document path so the embed-document lane stays available for the
+    custom-PDF-as-custom-document case.
+    """
+    async with get_db_connection() as conn:
+        draft = await queries.get_draft(conn, draft_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="mandate draft not found")
+        opp = await queries.get_opportunity_ref_and_contact(conn, draft["opportunity_id"])
+    if not opp:
+        raise HTTPException(status_code=404, detail="opportunity not found for this draft")
+
+    template_id = draft["documenso_template_id"]
+    try:
+        recipients = await documenso_client.get_template_recipients(template_id)
+        direct_recipient_id = body.direct_recipient_id or _pick_direct_recipient_id(recipients)
+        link = await documenso_client.create_direct_link(
+            template_id, direct_recipient_id=direct_recipient_id
+        )
+    except documenso_client.DocumensoError as e:
+        raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
+    if not link.token:
+        raise HTTPException(status_code=502, detail="documenso direct link returned no token")
+
+    host = config.documenso_api_url()
+    logger.info(
+        "embed-template originate: draft=%s template=%s direct_recipient=%s token=%s",
+        draft_id, template_id, link.direct_template_recipient_id or direct_recipient_id, link.token[:8],
+    )
+    return MandateEmbedTemplateOriginated(
+        direct_token=link.token,
+        documenso_host=host,
+        embed_url=f"{host}/embed/direct/{link.token}",
+        external_id=opp["opportunity_ref"],
+        opportunity_id=opp["opportunity_ref"],
+        direct_recipient_id=link.direct_template_recipient_id or direct_recipient_id,
+        recipient_email=opp["recipient_email"],
+        recipient_name=opp["recipient_name"],
+        status="ready",
     )

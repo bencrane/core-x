@@ -456,6 +456,101 @@ async def create_template_from_pdf(
     )
 
 
+# ── Direct link (embed-template lane) ──────────────────────────────────────────────────────────────
+# A DIRECT LINK turns a template into a reusable, self-identifying signing surface: one token the
+# signer signs against (they enter their own name/email). The SAME token value is the API-response
+# token, the EmbedDirectTemplate ``token`` prop, the public ``/d/{token}`` URL, and the iframe
+# ``/embed/direct/{token}``. PARALLEL to the document path (create_document_from_template), which binds
+# a specific recipient and mints a document NOW; here the document is created BY DOCUMENSO at signer
+# completion (source TEMPLATE_DIRECT_LINK).
+
+
+@dataclass(frozen=True)
+class DirectLinkResult:
+    """A template's direct-link state. ``token`` is the reusable direct-template token (embed prop /
+    /d/{token}). ``direct_template_recipient_id`` is the template recipient the public signer assumes."""
+
+    token: str
+    enabled: bool
+    direct_template_recipient_id: int | None
+    envelope_id: str | None
+    template_id: int | None
+
+
+def _template_id_number(documenso_template_id: str | int) -> int:
+    """The NUMERIC template id /template/direct/* requires. ``business.documenso_templates`` stores the
+    numeric id as text; tolerate a prefixed handle by extracting its trailing digits."""
+    s = str(documenso_template_id)
+    if s.isdigit():
+        return int(s)
+    m = re.search(r"(\d+)", s)
+    if not m:
+        raise DocumensoError(f"template id is not numeric: {documenso_template_id!r}")
+    return int(m.group(1))
+
+
+def _direct_link_result(body: Any) -> DirectLinkResult:
+    tid = _dig(body, "templateId")
+    rid = _dig(body, "directTemplateRecipientId")
+    return DirectLinkResult(
+        token=str(_dig(body, "token") or ""),
+        enabled=bool(_dig(body, "enabled")),
+        direct_template_recipient_id=int(rid) if isinstance(rid, int) or (isinstance(rid, str) and rid.isdigit()) else None,
+        envelope_id=_str_or_none(_dig(body, "envelopeId")),
+        template_id=int(tid) if isinstance(tid, int) or (isinstance(tid, str) and tid.isdigit()) else None,
+    )
+
+
+async def get_template_recipients(documenso_template_id: str) -> list[dict[str, Any]]:
+    """The template's recipients (id/email/name/role) — used to designate the direct-link recipient."""
+    async with _client() as client:
+        resp = await client.get(f"/api/v2/template/{documenso_template_id}")
+        _raise_for_status(resp, "template/get")
+        body = resp.json()
+    recips = _dig(body, "recipients", "Recipient") or []
+    return [r for r in recips if isinstance(r, dict)]
+
+
+async def create_direct_link(
+    documenso_template_id: str, *, direct_recipient_id: int | None = None
+) -> DirectLinkResult:
+    """Enable a DIRECT LINK on a template and return its reusable token.
+
+    ``POST /api/v2/template/direct/create {templateId, directRecipientId?}``. ``direct_recipient_id``
+    designates which template recipient the public signer assumes (the counterparty); omit to let
+    Documenso create/choose one. Idempotent: if a direct link already exists, falls back to
+    ``/template/direct/toggle {enabled:true}`` to return the existing token rather than erroring.
+    """
+    template_id_num = _template_id_number(documenso_template_id)
+    payload: dict[str, Any] = {"templateId": template_id_num}
+    if direct_recipient_id is not None:
+        payload["directRecipientId"] = int(direct_recipient_id)
+    async with _client() as client:
+        resp = await client.post("/api/v2/template/direct/create", json=payload)
+        # An already-enabled link makes /create a 4xx; recover the existing token via toggle(on).
+        if resp.status_code // 100 == 4:
+            toggled = await client.post(
+                "/api/v2/template/direct/toggle",
+                json={"templateId": template_id_num, "enabled": True},
+            )
+            if toggled.status_code // 100 == 2:
+                return _direct_link_result(toggled.json())
+        _raise_for_status(resp, "template/direct/create")
+        return _direct_link_result(resp.json())
+
+
+async def toggle_direct_link(documenso_template_id: str, *, enabled: bool) -> DirectLinkResult:
+    """Enable/disable a template's direct link. ``POST /api/v2/template/direct/toggle``."""
+    template_id_num = _template_id_number(documenso_template_id)
+    async with _client() as client:
+        resp = await client.post(
+            "/api/v2/template/direct/toggle",
+            json={"templateId": template_id_num, "enabled": enabled},
+        )
+        _raise_for_status(resp, "template/direct/toggle")
+        return _direct_link_result(resp.json())
+
+
 @dataclass(frozen=True)
 class DocumentReadResult:
     """A live read of a Documenso document by its NUMERIC id (the (opportunity, document) sign-token

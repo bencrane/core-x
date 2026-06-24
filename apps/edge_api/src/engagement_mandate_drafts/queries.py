@@ -136,6 +136,39 @@ async def get_opportunity_prefill_and_contact(conn, opportunity_id: str) -> dict
     }
 
 
+async def get_opportunity_ref_and_contact(conn, opportunity_id: str) -> dict | None:
+    """For the embed-template lane: the opportunity's PUBLIC 8-char handle + the contact (for optional
+    embed prefill). Unlike ``get_opportunity_prefill_and_contact``, this does NOT require an
+    ``opportunity_specific_content`` row — the self-serve embed needs no prefilled per-deal values, only
+    the handle to stamp as ``externalId``. Returns ``{"opportunity_ref": str, "recipient_email":
+    str|None, "recipient_name": str|None}`` or ``None`` when the opportunity is unknown / not a UUID
+    (UUID-guarded so a garbage ref returns 404 rather than aborting the pooled transaction)."""
+    try:
+        UUID(str(opportunity_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT o.opportunity_id,
+                   c.email,
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
+              FROM business.opportunities o
+              LEFT JOIN business.contacts c ON c.id = o.contact_id
+             WHERE o.id = %s::uuid
+            """,
+            (opportunity_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "opportunity_ref": row[0] or str(opportunity_id)[:8],
+        "recipient_email": row[1],
+        "recipient_name": row[2],
+    }
+
+
 async def upsert_staging(
     conn, *, opportunity_id: str, documenso_template_id: str, prefill_values: dict
 ) -> str | None:

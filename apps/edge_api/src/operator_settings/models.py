@@ -13,7 +13,14 @@ from typing import Literal
 from pydantic import BaseModel
 
 RenderMode = Literal["through-docraptor", "direct-to-documenso"]
-DirectToDocumensoLane = Literal["envelope-distribute", "prefill-document-from-template"]
+# Lanes under render_mode='direct-to-documenso':
+#   prefill-document-from-template — mint a Documenso DOCUMENT now (embed-document; per-recipient token)
+#   embed-template                 — enable a DIRECT LINK on the template (embed-template; reusable token,
+#                                    signer self-identifies, document created at completion)
+#   envelope-distribute            — RETIRED (kept for pre-existing rows)
+DirectToDocumensoLane = Literal[
+    "envelope-distribute", "prefill-document-from-template", "embed-template"
+]
 # The document-payment Stripe mode toggle. NULLABLE (no DB default): null = "follow the STRIPE_MODE
 # env" (which is `live`); set = override. The document-payment mint resolves it as the global,
 # single-operator selection.
