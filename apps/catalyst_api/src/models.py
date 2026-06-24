@@ -632,9 +632,11 @@ class SubawardProfileResponse(_Model):
 # ── Person-by-LinkedIn surface (/api/v1/people/by-linkedin) ──────────────────
 class PersonByLinkedInRequest(_Model):
     """POST body for /api/v1/people/by-linkedin — the LinkedIn URL travels in the body
-    (no query string, no path value). ``url`` is the person's linkedin.com/in/<slug> URL."""
+    (no query string, no path value). ``url`` is the person's linkedin.com/in/<slug> URL.
+    Optional (defaults to empty) so a missing/blank value yields a 200 ``found: false`` rather
+    than a 422 — an enrichment row must never hard-fail on a bad input cell."""
 
-    url: str
+    url: str = ""
 
 
 class PersonMatch(_Model):

@@ -431,21 +431,15 @@ def person_by_linkedin(body: PersonByLinkedInRequest = Body(...)) -> JSONRespons
     from ``active/people``.
 
     A BTREE point-lookup on ``person_linkedin_url`` (canonical-variant ``IN`` pushdown —
-    tolerant of scheme/www/trailing-slash drift in the caller's URL). 400 when the input is
-    not a parseable ``linkedin.com`` ``/in/`` person URL; 404 when it parses but resolves to
-    no stored person. 200 returns the headline ``title`` plus every distinct match (a URL can
-    recur across re-observations / companies), so a title/company conflict is never hidden."""
-    url = body.url
-    slug = lance_store.linkedin_slug(url)
-    if not slug or not lance_store.valid_linkedin_slug(slug):
-        raise HTTPException(
-            status_code=400,
-            detail="invalid linkedin person url (expected a linkedin.com/in/<slug> url)",
-        )
-    rows = lance_store.person_by_linkedin_url(url)
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"no person found for linkedin url {url!r}")
-    return _envelope(PersonByLinkedInResponse.from_rows(url, rows))
+    tolerant of scheme/www/trailing-slash drift in the caller's URL). ALWAYS 200 (an
+    enrichment surface: a no-match is normal data, not an error — so a Clay/automation row
+    never fails on it). ``found`` is the flag: false when the URL is empty, not a parseable
+    ``linkedin.com/in/`` url, OR resolves to no stored person; true otherwise, with the
+    headline ``title`` + every distinct match (a URL can recur across re-observations /
+    companies), so a title/company conflict is never hidden. (``person_by_linkedin_url``
+    already returns [] for an unparseable/empty url, which composes to ``found: false``.)"""
+    rows = lance_store.person_by_linkedin_url(body.url)
+    return _envelope(PersonByLinkedInResponse.from_rows(body.url, rows))
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──

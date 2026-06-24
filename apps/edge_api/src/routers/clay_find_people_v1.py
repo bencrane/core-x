@@ -220,41 +220,38 @@ async def by_linkedin(body: dict[str, Any]) -> dict[str, Any]:
     land path uses and hashed to ``person_id = sha256(linkedin_url_norm)`` (the indexed
     per-person key), so the lookup is parity-exact with how rows were keyed at landing.
 
-    Returns every (person × company) record newest-first, each carrying the verbatim
-    ``raw_payload`` (the Clay object EXACTLY as sent) plus its lossless discriminators
-    (domain_norm, matched_job_title, matched_company_name, landed_at). 404 when the person has
-    no Clay find-people record; 422 when the body carries no usable url."""
+    ALWAYS 200 (an enrichment surface: a no-match is normal data, not an error — a Clay /
+    automation row never hard-fails on it). ``found`` is the flag: false when the body carries
+    no usable url OR the person has no Clay find-people record; true otherwise, with every
+    (person × company) record newest-first, each carrying the verbatim ``raw_payload`` (the
+    Clay object EXACTLY as sent) plus its lossless discriminators (domain_norm,
+    matched_job_title, matched_company_name, landed_at)."""
     url = _s(body.get("url")) or _s(body.get("linkedin_url"))
-    if not url:
-        raise HTTPException(status_code=422, detail="missing/empty url (POST {\"url\": \"...\"})")
-    li_norm = _norm_linkedin(url)
-    if not li_norm:
-        raise HTTPException(status_code=422, detail="url did not normalize to a usable linkedin url")
-    person_id = _sha(li_norm)
+    li_norm = _norm_linkedin(url) if url else None
+    person_id = _sha(li_norm) if li_norm else None
 
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(_BY_LINKEDIN_SQL, (person_id, _BY_LINKEDIN_CAP))
-            rows = await cur.fetchall()
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="no clay find-people record for that linkedin url")
-
-    records = [
-        {
-            "record_id": r[0],
-            "domain_norm": r[1],
-            "matched_job_title": r[2],
-            "matched_company_name": r[3],
-            "landed_at": r[4].isoformat() if r[4] is not None else None,
-            "raw_payload": r[5],            # jsonb → dict, the Clay object verbatim
-        }
-        for r in rows
-    ]
+    records: list[dict[str, Any]] = []
+    if person_id is not None:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(_BY_LINKEDIN_SQL, (person_id, _BY_LINKEDIN_CAP))
+                rows = await cur.fetchall()
+        records = [
+            {
+                "record_id": r[0],
+                "domain_norm": r[1],
+                "matched_job_title": r[2],
+                "matched_company_name": r[3],
+                "landed_at": r[4].isoformat() if r[4] is not None else None,
+                "raw_payload": r[5],        # jsonb → dict, the Clay object verbatim
+            }
+            for r in rows
+        ]
     return {
         "linkedin_url": url,
         "linkedin_url_norm": li_norm,
         "person_id": person_id,
+        "found": len(records) > 0,
         "count": len(records),
         "records": records,
     }
