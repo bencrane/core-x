@@ -185,6 +185,18 @@ def map_compiler_model() -> str:
     return os.environ.get("MAP_COMPILER_MODEL", "claude-opus-4-7")
 
 
+# ── Job-title normalizer (forced-tool Anthropic Messages → strict {level, function}) ──
+def title_normalizer_model() -> str:
+    """Model id for the job-title → taxonomy normalizer (one forced-tool extraction over a
+    cached taxonomy prompt, output pinned to closed enums). Reuses ``ANTHROPIC_API_KEY``.
+    Defaults to ``claude-haiku-4-5`` — the current Haiku: this is a high-volume,
+    low-complexity classification gate in front of expensive enrichment, so the cheapest
+    live model is the right default. (The original directive named ``claude-3-haiku-20240307``,
+    which retired 2026-04-19 and now 404s — a live id is required.) Override with
+    ``TITLE_NORMALIZER_MODEL``."""
+    return os.environ.get("TITLE_NORMALIZER_MODEL", "claude-haiku-4-5")
+
+
 # ── catalyst_api (the map EXECUTE tier edge_api delegates the read to) ───────
 def catalyst_base_url() -> str | None:
     """Base URL of the catalyst_api read-tier where the map EXECUTE endpoint lives
