@@ -16,9 +16,16 @@ join is LINKEDIN-PRIMARY, DOMAIN-FALLBACK: prefer the company_linkedin_url match
 precision, honors the directive); fall back to normalized_domain where linkedin is absent or
 misses. ``firmo_match_key`` records which rail hit ('linkedin' | 'domain' | NULL).
 
-PRESERVATION. Every original column (company_id, company_name, normalized_domain,
-company_linkedin_url, source_platform) is carried through verbatim, the row set is byte-identical
-(PK company_id, 1:1), and ONLY the appended firmographic columns are new. Firmographic values are
+COMPANY LINKEDIN BACKFILL. Blitz firmo enrichment is itself linkedin-keyed (Workflow B:
+company_linkedin_url -> firmographics), so firmographics_blitz.linkedin_url is 100% populated and
+authoritative. active/companies carries company_linkedin_url on only ~791/9,008 rows, so this
+worker COALESCES it: keep the company's own URL where present, else fill from the matched firmo
+linkedin_url — lifting company LinkedIn coverage to ~7,131 without ever overwriting a curated
+value. firmo_linkedin_url retains the firmo-sourced URL verbatim for provenance.
+
+PRESERVATION. company_id, company_name, normalized_domain, source_platform are carried verbatim;
+company_linkedin_url is null-filled from firmo (never overwritten); the row set is byte-identical
+(PK company_id, 1:1); only firmographic + provenance columns are new. Firmographic values are
 copied from the already-derived firmographics_blitz columns, not re-interpreted.
 
 INDEXES:
@@ -43,6 +50,11 @@ _spec = importlib.util.spec_from_file_location(
     "cpb", os.path.join(os.path.dirname(__file__), "companies_people_bulk.py"))
 _cpb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cpb)
+
+# The pristine active/companies base columns. Re-reading ONLY these makes the worker
+# idempotent: a prior run's appended firmographic columns are dropped and recomputed fresh
+# (otherwise an overwrite would duplicate field names).
+BASE_COLS = ["company_id", "company_name", "normalized_domain", "company_linkedin_url", "source_platform"]
 
 COMPANIES_URI = _cpb.DATASET_URI["companies"]
 FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", "s3://data-sink/active/firmographics_blitz/")
@@ -99,15 +111,18 @@ def main() -> None:
 
     # 2) active/companies → join linkedin-primary, domain-fallback
     comp = lance.dataset(COMPANIES_URI, storage_options=so)
-    orig = comp.to_table()
-    orig_cols = orig.column_names
+    orig = comp.to_table(columns=BASE_COLS)  # base only → idempotent re-runs
+    orig_cols = list(BASE_COLS)
     n = orig.num_rows
     comp_li_raw = orig.column("company_linkedin_url").to_pylist()
     comp_dom_raw = orig.column("normalized_domain").to_pylist()
 
     out_fields: dict[str, list] = {f: [] for f in FIRMO_FIELDS}
     match_key: list = []
+    firmo_li_col: list = []         # the authoritative firmo company LinkedIn (provenance)
+    company_li_coalesced: list = []  # company's own URL, else firmo's (fills nulls, never overwrites)
     hit_li = hit_dom = 0
+    filled_li = 0
     for i in range(n):
         idx = None
         key = None
@@ -119,16 +134,33 @@ def main() -> None:
             if dn is not None and dn in dom_map:
                 idx, key = dom_map[dn], "domain"; hit_dom += 1
         match_key.append(key)
+        firmo_li = fcols["linkedin_url"][idx] if idx is not None else None
+        firmo_li_col.append(firmo_li)
+        own = comp_li_raw[i]
+        if own:
+            company_li_coalesced.append(own)
+        else:
+            company_li_coalesced.append(firmo_li)
+            if firmo_li:
+                filled_li += 1
         for f in FIRMO_FIELDS:
             out_fields[f].append(fcols[f][idx] if idx is not None else None)
 
     matched = hit_li + hit_dom
     print(f"companies rows={n:,}  matched={matched:,} ({matched/n*100:.0f}%)  "
           f"[linkedin={hit_li:,} domain={hit_dom:,} miss={n-matched:,}]")
+    print(f"company_linkedin_url: filled {filled_li:,} nulls from firmo "
+          f"(791 own → {791 + filled_li:,} populated)")
 
-    # 3) assemble enriched table: original columns verbatim + firmographic columns + lineage
-    arrays = [orig.column(c) for c in orig_cols]
+    # 3) assemble enriched table: original columns (company_linkedin_url COALESCED with firmo) +
+    #    firmographic columns + firmo_linkedin_url provenance + lineage
+    arrays = []
     names = list(orig_cols)
+    for c in orig_cols:
+        if c == "company_linkedin_url":
+            arrays.append(pa.array(company_li_coalesced, type=pa.string()))
+        else:
+            arrays.append(orig.column(c))
     for f in FIRMO_FIELDS:
         if f in INT_FIELDS:
             arrays.append(pa.array(out_fields[f], type=INT_FIELDS[f]))
@@ -137,6 +169,7 @@ def main() -> None:
         else:
             arrays.append(pa.array(out_fields[f], type=pa.string()))
         names.append(f)
+    arrays.append(pa.array(firmo_li_col, type=pa.string())); names.append("firmo_linkedin_url")
     arrays.append(pa.array(match_key, type=pa.string())); names.append("firmo_match_key")
     now = dt.datetime.now(dt.timezone.utc)
     arrays.append(pa.array([now] * n, type=pa.timestamp("us", tz="UTC"))); names.append("firmo_materialized_at")
