@@ -57,6 +57,7 @@ from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.contacts_v1 import router as contacts_router
 from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
 from .src.routers.industries_served_v1 import router as industries_served_router
+from .src.routers.capital_providers_v1 import router as capital_providers_router
 from .src.routers.equipment_provider_v1 import router as equipment_provider_router
 from .src.routers.equipment_finance_candidates_v1 import router as equipment_finance_candidates_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
@@ -193,6 +194,14 @@ app.include_router(equipment_catalog_router)
 # + reasoning + sources/stepsTaken). Bridges to firmographics_blitz via domain_norm. Service-token gated.
 app.include_router(industries_served_router)
 
+# capital-providers: raw, append-only landing of the IN-HOUSE capital-provider LLM classification
+# (capitalType / providesCapital) into gtm.company_capital_providers — verbatim raw_payload jsonb
+# (immutable SoT) + flat projection (capital_provider_type_category, provides_capital, confidence,
+# reasoning, source_urls, evidence_phrases, steps_taken) + the wire business fields (company_name,
+# domain, company_linkedin_url, description). Bridges to firmographics_blitz via domain_norm.
+# /land only. Service-token gated.
+app.include_router(capital_providers_router)
+
 # equipment-provider: raw, append-only landing of company-is-equipment-provider classification
 # payloads into gtm.equipment_provider (verbatim raw_payload + flat projection of isEquipmentProvider,
 # mode, confidence, reasoning, stepsTaken, evidenceUrl, evidenceSnippet). Bridges to
@@ -314,6 +323,7 @@ def _info() -> dict:
             "contacts": True,          # /api/v1/contacts/{land,check,stats}
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}
+            "capital_providers": True,    # /api/v1/capital-providers/land (in-house capital LLM classification)
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
