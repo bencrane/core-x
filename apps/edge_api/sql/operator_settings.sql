@@ -70,17 +70,23 @@ DO $$ BEGIN
     END IF;
 END $$;
 
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'operator_settings_direct_to_documenso_lane_check'
-          AND conrelid = 'public.operator_settings'::regclass
-    ) THEN
-        ALTER TABLE public.operator_settings
-            ADD CONSTRAINT operator_settings_direct_to_documenso_lane_check
-            CHECK (direct_to_documenso_lane = ANY (ARRAY['envelope-distribute'::text, 'prefill-document-from-template'::text]));
-    END IF;
-END $$;
+-- Lane domain — DROP + re-ADD so newly-added lane values converge on every apply (the value set grows
+-- over time; a guarded add-if-missing would never widen an existing constraint). Guarded drop keeps
+-- re-runs clean; the migrate apply serializes replicas via an advisory lock so the brief
+-- within-transaction drop window is safe.
+--   prefill-document-from-template — embed-document lane (mint a document now).
+--   embed-template                 — embed-template lane (direct link on the template; signer self-
+--                                    identifies, document created at completion). PARALLEL to prefill.
+--   envelope-distribute            — RETIRED; value retained so a pre-existing row never violates.
+ALTER TABLE public.operator_settings
+    DROP CONSTRAINT IF EXISTS operator_settings_direct_to_documenso_lane_check;
+ALTER TABLE public.operator_settings
+    ADD CONSTRAINT operator_settings_direct_to_documenso_lane_check
+    CHECK (direct_to_documenso_lane = ANY (ARRAY[
+        'envelope-distribute'::text,
+        'prefill-document-from-template'::text,
+        'embed-template'::text
+    ]));
 
 DO $$ BEGIN
     IF NOT EXISTS (
