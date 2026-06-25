@@ -62,7 +62,7 @@ BTREE_INDEXES = ["action_date", "award_amount", "winner_uei", "addr_hash",
 # BITMAP: low-cardinality filter columns (state 57, agency 67, set_aside 18, type 2,
 # psc_category ~30 leading chars, fiscal_year a handful).
 BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agency",
-                  "set_aside", "is_active", "psc_category", "fiscal_year"]
+                  "set_aside", "is_active", "psc_category", "fiscal_year", "business_size"]
 
 DUCK_MEM = os.environ.get("AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("AWARDS_DUCKDB_TEMP_DIR", "/tmp/awards_map_duckdb")
@@ -114,7 +114,8 @@ def _assemble(so, window_days: int):
                  "federal_action_obligation", "awarding_agency_name", "awarding_sub_agency_name",
                  "type_of_set_aside_code", "primary_place_of_performance_state_code",
                  "primary_place_of_performance_city_name",
-                 "period_of_performance_current_end_date", "product_or_service_code"],
+                 "period_of_performance_current_end_date", "product_or_service_code",
+                 "contracting_officers_determination_of_business_size"],
         filter=f"action_date >= '{cutoff}'").to_reader())
     con.register("s", s.scanner(
         columns=["subaward_number", "prime_award_unique_key", "subawardee_uei", "subawardee_name",
@@ -139,7 +140,8 @@ def _assemble(so, window_days: int):
                primary_place_of_performance_state_code AS pop_state_raw,
                primary_place_of_performance_city_name AS pop_city_raw,
                try_cast(period_of_performance_current_end_date AS DATE) AS pop_end,
-               nullif(upper(trim(product_or_service_code)), '') AS psc_code_raw
+               nullif(upper(trim(product_or_service_code)), '') AS psc_code_raw,
+               nullif(trim(contracting_officers_determination_of_business_size), '') AS business_size_raw
         FROM p WHERE recipient_uei IS NOT NULL AND length(trim(recipient_uei)) > 0
         UNION ALL
         SELECT subaward_number || '|' || coalesce(prime_award_unique_key, ''),
@@ -148,7 +150,7 @@ def _assemble(so, window_days: int):
                prime_award_naics_code, try_cast(subaward_action_date AS DATE),
                try_cast(subaward_amount AS DOUBLE),
                prime_award_awarding_agency_name, prime_award_awarding_sub_agency_name,
-               NULL, NULL, NULL, NULL, NULL  -- set_aside / PoP state+city / pop_end / psc: empty at source for subawards (verified)
+               NULL, NULL, NULL, NULL, NULL, NULL  -- set_aside / PoP state+city / pop_end / psc / business_size: empty at source for subawards (verified)
         FROM s WHERE subawardee_uei IS NOT NULL AND length(trim(subawardee_uei)) > 0
     ),
     -- amount > 0 BEFORE dedupe: ">$X won" must never match a de-obligation or $0 mod.
@@ -165,6 +167,7 @@ def _assemble(so, window_days: int):
                -- US federal fiscal year of the action: Oct 1–Sep 30, so FY = year + (month >= Oct).
                (year(adt) + CASE WHEN month(adt) >= 10 THEN 1 ELSE 0 END) AS fiscal_year,
                agency AS awarding_agency, sub_agency AS awarding_sub_agency, set_aside,
+               business_size_raw AS business_size,
                psc_code_raw AS psc_code, nullif(substr(psc_code_raw, 1, 1), '') AS psc_category,
                upper(trim(pop_state_raw)) AS pop_state, upper(trim(pop_city_raw)) AS pop_city,
                pop_end, (pop_end >= current_date) AS is_active,
