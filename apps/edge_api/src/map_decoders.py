@@ -220,12 +220,13 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v5",
+        "version": "awards.v6",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
             "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
                                   "desc": "whole days since the award action (integer; 0 = today). 'won in the last N days' / 'this week' → days_since_action <= N"},
+            "fiscal_year":       {"type": "int", "ops": ("=", "in"), "desc": "US federal fiscal year of the action (Oct–Sep; FY2025 = Oct 2024–Sep 2025). EXPLICIT year only: 'FY2025' / 'fiscal year 2025' → fiscal_year = 2025; 'FY24 and FY25' → fiscal_year in [2024, 2025]. For a RELATIVE window ('in the last N days') use days_since_action, not fiscal_year. Group-by fiscal_year for a year-over-year spend trend"},
             "naics2":            {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction) — the vendor's INDUSTRY"},
             "naics_code":        {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
             "psc_category":      {"type": "string", "ops": ("=", "in"), "desc": "leading char of the Product/Service Code = WHAT THE CONTRACT BUYS (distinct from NAICS, the vendor's industry). 'V' = Transportation/Travel/Relocation services. Use for 'transportation/freight SERVICES' / 'PSC category V' — catches freight & logistics service contracts coded under a non-48/49 NAICS. Prime awards only"},
@@ -277,7 +278,7 @@ DECODERS: dict[str, dict] = {
         # dims+metrics match). Prompt-facing only — no Lance column names.
         "aggregate": {
             "measure": "award_amount",
-            "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
+            "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "winner_type"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],

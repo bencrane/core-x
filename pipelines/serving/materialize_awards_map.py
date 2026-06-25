@@ -60,9 +60,9 @@ DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["action_date", "award_amount", "winner_uei", "addr_hash",
                  "city", "county", "pop_city", "awarding_sub_agency", "psc_code"]
 # BITMAP: low-cardinality filter columns (state 57, agency 67, set_aside 18, type 2,
-# psc_category ~30 leading chars).
+# psc_category ~30 leading chars, fiscal_year a handful).
 BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agency",
-                  "set_aside", "is_active", "psc_category"]
+                  "set_aside", "is_active", "psc_category", "fiscal_year"]
 
 DUCK_MEM = os.environ.get("AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("AWARDS_DUCKDB_TEMP_DIR", "/tmp/awards_map_duckdb")
@@ -162,6 +162,8 @@ def _assemble(so, window_days: int):
                upper(trim(city_raw)) AS city, upper(trim(county_raw)) AS county,
                upper(trim(state_raw)) AS state, zip, naics AS naics_code,
                substr(naics, 1, 2) AS naics2, adt AS action_date, amt AS award_amount,
+               -- US federal fiscal year of the action: Oct 1–Sep 30, so FY = year + (month >= Oct).
+               (year(adt) + CASE WHEN month(adt) >= 10 THEN 1 ELSE 0 END) AS fiscal_year,
                agency AS awarding_agency, sub_agency AS awarding_sub_agency, set_aside,
                psc_code_raw AS psc_code, nullif(substr(psc_code_raw, 1, 1), '') AS psc_category,
                upper(trim(pop_state_raw)) AS pop_state, upper(trim(pop_city_raw)) AS pop_city,
@@ -266,6 +268,9 @@ def verify():
            "active_now": ds.count_rows(filter="is_active = true"),
            "with_psc_code": ds.count_rows(filter="psc_code IS NOT NULL"),
            "psc_category_V_transport": ds.count_rows(filter="psc_category = 'V'"),
+           "with_fiscal_year": ds.count_rows(filter="fiscal_year IS NOT NULL"),
+           "fy2025_actions": ds.count_rows(filter="fiscal_year = 2025"),
+           "fy2026_actions": ds.count_rows(filter="fiscal_year = 2026"),
            "columns": len(ds.schema.names), "indices": idx}
     out["acceptance_A_tx_construction_1m_30d"] = ds.count_rows(
         filter=f"naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
