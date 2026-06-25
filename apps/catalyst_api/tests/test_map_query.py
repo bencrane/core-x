@@ -337,6 +337,19 @@ def test_active_days_until_expiry_compiles_forward_window():
         _compile(ACTIVE, [{"field": "days_until_expiry", "op": "<=", "value": -5}])
 
 
+def test_awards_fiscal_year_axis_and_yoy_groupby():
+    # explicit FY filter (int) — single + multi-year
+    assert _compile(AWARDS, [{"field": "fiscal_year", "op": "=", "value": 2025}]) == "fiscal_year = 2025"
+    assert _compile(AWARDS, [{"field": "fiscal_year", "op": "in", "value": [2024, 2025]}]) == (
+        "fiscal_year IN (2024, 2025)")
+    # int-typed: a stringified year is rejected (the model must emit an integer)
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(AWARDS, [{"field": "fiscal_year", "op": "=", "value": "2025"}])
+    # group-by fiscal_year is the year-over-year spend trend
+    _, gb, _, _ = lance_store.validate_aggregate(AWARDS, "fiscal_year", ["count", "sum"], None)
+    assert gb == "fiscal_year"
+
+
 def test_active_business_size_enum_and_current_value_aggregate():
     assert _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "SMALL BUSINESS"}]) == (
         "business_size = 'SMALL BUSINESS'"

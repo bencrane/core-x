@@ -322,14 +322,16 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v5",   # v4→v5: add the AGGREGATE capability (group-by + count/sum/avg/median/p90,
+    version="awards.v6",   # v5→v6: add the fiscal_year axis (US federal FY of the action) — YoY
+                           # spend trend via group-by; explicit-year filter ('FY2025' → 2025).
+                           # v4→v5: add the AGGREGATE capability (group-by + count/sum/avg/median/p90,
                            # size-band histogram, top-N winners) over the same query-driven filter.
                            # v3→v4: add the PSC axis (psc_category/psc_code) — product/service
                            # bought, distinct from NAICS; surfaces transport/freight services
                            # (PSC 'V') coded under a non-48/49 NAICS that a NAICS-only filter misses.
     geometry=("longitude", "latitude"),
     properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
-                "action_date", "naics2", "naics_code", "psc_category", "psc_code",
+                "action_date", "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code",
                 "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
                 "set_aside", "is_active", "pop_end"),
@@ -338,6 +340,9 @@ AWARDS = Decoder(
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
         "award_amount":      FieldSpec("award_amount", "float", (">=", "<=", "between"), index="BTREE"),
         "days_since_action": FieldSpec("action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
+        # US federal fiscal year of the action (Oct–Sep). Explicit year only ('FY2025' → 2025);
+        # group-by fiscal_year is the YoY spend trend. A relative window uses days_since_action.
+        "fiscal_year":       FieldSpec("fiscal_year", "int", ("=", "in"), index="BITMAP"),
         "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "naics_code":        FieldSpec("naics_code", "string", ("=", "in")),
         # PSC = the product/service the contract BUYS (distinct from NAICS, the vendor's
@@ -390,6 +395,7 @@ AWARDS = Decoder(
     aggregate=AggregateSpec(
         measure="award_amount",
         dims={
+            "fiscal_year": "fiscal_year",   # group-by fiscal_year → the YoY spend trend
             "naics2": "naics2", "naics_code": "naics_code",
             "psc_category": "psc_category", "psc_code": "psc_code",
             "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
