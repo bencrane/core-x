@@ -14,7 +14,7 @@ from datetime import date, timedelta
 import pytest
 
 from apps.catalyst_api.src import config, lance_store
-from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, DECODERS, WINNERS, OPS
+from apps.catalyst_api.src.map_decoders import ACTIVE, AWARDS, COMPANY, DECODERS, WINNERS, OPS
 
 # Frozen anchor for days_ago clauses — injected so the expected DATE literals are stable.
 TODAY = date(2026, 6, 12)
@@ -307,6 +307,40 @@ def test_company_winners_have_no_aggregate_capability():
         lance_store.validate_aggregate(COMPANY, "naics2", ["count"], None)
 
 
+# ── active.v1: the forward-looking recompete axis (days_ahead) ───────────────
+def test_active_days_until_expiry_compiles_forward_window():
+    # "expiring in the next 180 days" → today <= pop_current_end <= today+180 (a FORWARD window).
+    pred = _compile(ACTIVE, [
+        {"field": "psc_category", "op": "=", "value": "V"},
+        {"field": "days_until_expiry", "op": "<=", "value": 180},
+    ])
+    assert pred == (f"psc_category = 'V' AND pop_current_end >= DATE '{TODAY.isoformat()}' "
+                    f"AND pop_current_end <= DATE '{(TODAY + timedelta(days=180)).isoformat()}'")
+    # ">= N" → at least N days of runway left (lower bound only).
+    assert _compile(ACTIVE, [{"field": "days_until_expiry", "op": ">=", "value": 365}]) == (
+        f"pop_current_end >= DATE '{(TODAY + timedelta(days=365)).isoformat()}'"
+    )
+    # between [lo, hi] → today+lo .. today+hi
+    assert _compile(ACTIVE, [{"field": "days_until_expiry", "op": "between", "value": [30, 90]}]) == (
+        f"pop_current_end >= DATE '{(TODAY + timedelta(days=30)).isoformat()}' AND "
+        f"pop_current_end <= DATE '{(TODAY + timedelta(days=90)).isoformat()}'"
+    )
+    # a negative day count is rejected (defense-in-depth alongside the schema)
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(ACTIVE, [{"field": "days_until_expiry", "op": "<=", "value": -5}])
+
+
+def test_active_business_size_enum_and_current_value_aggregate():
+    assert _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "SMALL BUSINESS"}]) == (
+        "business_size = 'SMALL BUSINESS'"
+    )
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "small"}])
+    # the active aggregate measure is current_value (award ceiling), not award_amount
+    spec, gb, _, _ = lance_store.validate_aggregate(ACTIVE, "business_size", ["count", "sum"], None)
+    assert spec.measure == "current_value" and gb == "business_size"
+
+
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
 def test_to_geojson_shape_and_axis_order():
     rows = [
@@ -341,7 +375,7 @@ def test_decoders_are_internally_consistent():
     for decoder in DECODERS.values():
         for name, spec in decoder.fields.items():
             assert set(spec.ops) <= set(OPS), f"{name}: ops outside global OPS"
-            assert spec.type in ("string", "int", "float", "bool", "days_ago", "list")
+            assert spec.type in ("string", "int", "float", "bool", "days_ago", "days_ahead", "list")
             # list ops are has/has_any only; non-list fields never use them.
             if spec.type == "list":
                 assert set(spec.ops) <= {"has", "has_any"}, f"{name}: list field uses scalar ops"

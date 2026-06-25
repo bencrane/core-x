@@ -382,4 +382,71 @@ AWARDS = Decoder(
 )
 
 
-DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY, "awards": AWARDS}
+# FPDS contracting-officer business-size determination + award/IDV flag (verified live on the
+# active-awards serving table; NULL on the ~unfilled tail, which an enum filter excludes honestly).
+_BUSINESS_SIZE = ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS")
+_AWARD_OR_IDV = ("AWARD", "IDV")
+
+ACTIVE = Decoder(
+    dataset_key="active",
+    version="active.v1",
+    geometry=("longitude", "latitude"),
+    properties=("award_id", "winner_uei", "winner_name", "current_value", "potential_value",
+                "obligated", "pop_current_end", "pop_potential_end", "has_option_tail",
+                "naics2", "naics_code", "psc_category", "psc_code", "state", "pop_state",
+                "awarding_agency", "awarding_sub_agency", "set_aside", "business_size",
+                "award_or_idv_flag"),
+    fields={
+        # THE forward axis — recompete radar. days_until_expiry <= N → pop_current_end in the next
+        # N days (today..today+N); >= N → at least N days of runway left. Award-grain (1 row/award),
+        # so a count/sum is an honest contract count, not an action count. Query-driven horizon.
+        "days_until_expiry": FieldSpec("pop_current_end", "days_ahead", ("<=", ">=", "between"), index="BTREE"),
+        "current_value":     FieldSpec("current_value", "float", (">=", "<=", "between"), index="BTREE"),
+        "potential_value":   FieldSpec("potential_value", "float", (">=", "<=", "between"), index="BTREE"),
+        "obligated":         FieldSpec("obligated", "float", (">=", "<=", "between"), index="BTREE"),
+        "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
+        "naics_code":        FieldSpec("naics_code", "string", ("=", "in"), index="BTREE"),
+        "psc_category":      FieldSpec("psc_category", "string", ("=", "in"), index="BITMAP"),
+        "psc_code":          FieldSpec("psc_code", "string", ("=", "in"), index="BTREE"),
+        "state":             FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
+        "pop_state":         FieldSpec("pop_state", "string", ("=", "in"), index="BITMAP"),
+        "awarding_agency":   FieldSpec("awarding_agency", "string", ("=", "in"), index="BITMAP"),
+        "awarding_sub_agency": FieldSpec("awarding_sub_agency", "string", ("=", "in"), index="BTREE"),
+        "set_aside":         FieldSpec("set_aside", "string", ("=", "in"), enum=_SET_ASIDE_CODES, index="BITMAP"),
+        "business_size":     FieldSpec("business_size", "string", ("=", "in"), enum=_BUSINESS_SIZE, index="BITMAP"),
+        "has_option_tail":   FieldSpec("has_option_tail", "bool", ("=",), index="BITMAP"),
+        "award_or_idv_flag": FieldSpec("award_or_idv_flag", "string", ("=", "in"), enum=_AWARD_OR_IDV, index="BITMAP"),
+    },
+    synonyms={
+        "construction": {"field": "naics2", "op": "=", "value": "23"},
+        "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
+        "freight services": {"field": "psc_category", "op": "=", "value": "V"},
+        # Recompete radar phrasings — the forward window the dataset exists for.
+        "expiring soon": {"field": "days_until_expiry", "op": "<=", "value": 90},
+        "expiring this quarter": {"field": "days_until_expiry", "op": "<=", "value": 90},
+        "recompete": {"field": "days_until_expiry", "op": "<=", "value": 180},
+        "up for recompete": {"field": "days_until_expiry", "op": "<=", "value": 180},
+        "small business": {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
+        "8(a)": {"field": "set_aside", "op": "in", "value": ["8A", "8AN"]},
+        "sdvosb": {"field": "set_aside", "op": "in", "value": ["SDVOSBC", "SDVOSBS"]},
+        "hubzone": {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
+        "woman-owned": {"field": "set_aside", "op": "in", "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+        "dod": {"field": "awarding_agency", "op": "in",
+                "value": ["Department of Defense", "Department of Defense (DOD)"]},
+    },
+    aggregate=AggregateSpec(
+        measure="current_value",
+        dims={
+            "naics2": "naics2", "naics_code": "naics_code",
+            "psc_category": "psc_category", "psc_code": "psc_code",
+            "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
+            "state": "state", "pop_state": "pop_state",
+            "set_aside": "set_aside", "business_size": "business_size",
+        },
+        winner_key=("winner_uei", "winner_name"),
+        size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),
+    ),
+)
+
+
+DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY, "awards": AWARDS, "active": ACTIVE}

@@ -207,6 +207,35 @@ def test_awards_prompt_mentions_aggregate_capability():
     assert "Aggregate (optional)" not in edge.render_decoder_prompt("company")
 
 
+# ── active.v1: the forward-looking recompete dataset ─────────────────────────
+def test_active_recompete_axis_present_both_sides():
+    assert "active" in cat.DECODERS and "active" in edge.DECODERS
+    # the forward expiry axis (days_ahead on pop_current_end) — the reason the dataset exists
+    assert cat.DECODERS["active"].fields["days_until_expiry"].type == "days_ahead"
+    assert cat.DECODERS["active"].fields["days_until_expiry"].column == "pop_current_end"
+    assert edge.DECODERS["active"]["fields"]["days_until_expiry"]["type"] == "days_ahead"
+    # business_size (the small/large split) + its enum, both sides
+    assert set(cat.DECODERS["active"].fields["business_size"].enum) == {
+        "SMALL BUSINESS", "OTHER THAN SMALL BUSINESS"}
+    # recompete synonyms route to the expiry axis, byte-identical
+    assert cat.DECODERS["active"].synonyms["recompete"] == {
+        "field": "days_until_expiry", "op": "<=", "value": 180}
+    assert edge.DECODERS["active"]["synonyms"]["recompete"] == {
+        "field": "days_until_expiry", "op": "<=", "value": 180}
+    # aggregate measure is the award value (current_value), dims match
+    assert cat.DECODERS["active"].aggregate.measure == "current_value"
+    assert set(edge.DECODERS["active"]["aggregate"]["dims"]) == set(cat.DECODERS["active"].aggregate.dims)
+
+
+def test_active_is_routable_with_expiry_in_tool_and_prompt():
+    assert "active" in edge.build_router_tool()["input_schema"]["properties"]["dataset"]["enum"]
+    tool = edge.build_emit_filter_tool("active")
+    field_enum = tool["input_schema"]["properties"]["filters"]["items"]["properties"]["field"]["enum"]
+    assert "days_until_expiry" in field_enum and "business_size" in field_enum
+    p = edge.render_decoder_prompt("active")
+    assert "days_until_expiry" in p and "recompete" in p.lower() and "Aggregate (optional)" in p
+
+
 # ── dataset routing (the AUTO surface) ────────────────────────────────────────
 def test_router_tool_dataset_enum_and_union_fields():
     tool = edge.build_router_tool()

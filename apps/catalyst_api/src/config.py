@@ -124,7 +124,14 @@ COMPANY_MAP_URI = os.environ.get(
 AWARDS_MAP_URI = os.environ.get(
     "AWARDS_MAP_LANCE_URI", "s3://data-sink/active/usaspending_awards_map_serving/"
 )
-MAP_DATASET_URIS = {"winners": WINNERS_MAP_URI, "company": COMPANY_MAP_URI, "awards": AWARDS_MAP_URI}
+# Active-award grain (1 row per active prime award), pre-geocoded — the FORWARD-looking read
+# model behind "incumbents about to recompete" (contracts whose period of performance ends in the
+# next N days). Carries pop_current_end as the query-driven expiry axis.
+ACTIVE_MAP_URI = os.environ.get(
+    "ACTIVE_MAP_LANCE_URI", "s3://data-sink/active/govcon_active_awards_map_serving/"
+)
+MAP_DATASET_URIS = {"winners": WINNERS_MAP_URI, "company": COMPANY_MAP_URI,
+                    "awards": AWARDS_MAP_URI, "active": ACTIVE_MAP_URI}
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────

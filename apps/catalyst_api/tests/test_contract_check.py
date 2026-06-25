@@ -7,7 +7,7 @@ violations abort boot under strict mode + flip /healthz to 503; soft notes are a
 """
 
 from apps.catalyst_api.src.lance_store import _live_stat_findings, verify_decoder_contract
-from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, WINNERS
+from apps.catalyst_api.src.map_decoders import ACTIVE, AWARDS, COMPANY, WINNERS
 
 # Live index inventory in the real list_indices() shape: dict per entry, 'fields' is the
 # physical-column list, 'type' is mixed-case. Includes the resolution-key indexes the
@@ -94,7 +94,48 @@ AWARDS_IDX = [
 ]
 
 
+ACTIVE_COLS = [
+    "award_id", "winner_uei", "winner_name", "current_value", "potential_value", "obligated",
+    "pop_current_end", "pop_potential_end", "has_option_tail", "naics2", "naics_code",
+    "psc_category", "psc_code", "state", "pop_state", "awarding_agency", "awarding_sub_agency",
+    "set_aside", "business_size", "award_or_idv_flag", "longitude", "latitude",
+]
+ACTIVE_IDX = [
+    # days_until_expiry → the pop_current_end BTREE (the forward recompete axis).
+    {"name": "pop_current_end_idx", "type": "BTree", "fields": ["pop_current_end"]},
+    {"name": "pop_potential_end_idx", "type": "BTree", "fields": ["pop_potential_end"]},  # extra
+    {"name": "current_value_idx", "type": "BTree", "fields": ["current_value"]},
+    {"name": "potential_value_idx", "type": "BTree", "fields": ["potential_value"]},
+    {"name": "obligated_idx", "type": "BTree", "fields": ["obligated"]},
+    {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},  # extra (resolution key)
+    {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},  # extra
+    {"name": "naics_code_idx", "type": "BTree", "fields": ["naics_code"]},
+    {"name": "psc_code_idx", "type": "BTree", "fields": ["psc_code"]},
+    {"name": "awarding_sub_agency_idx", "type": "BTree", "fields": ["awarding_sub_agency"]},
+    {"name": "naics2_idx", "type": "Bitmap", "fields": ["naics2"]},
+    {"name": "psc_category_idx", "type": "Bitmap", "fields": ["psc_category"]},
+    {"name": "state_idx", "type": "Bitmap", "fields": ["state"]},
+    {"name": "pop_state_idx", "type": "Bitmap", "fields": ["pop_state"]},
+    {"name": "set_aside_idx", "type": "Bitmap", "fields": ["set_aside"]},
+    {"name": "business_size_idx", "type": "Bitmap", "fields": ["business_size"]},
+    {"name": "has_option_tail_idx", "type": "Bitmap", "fields": ["has_option_tail"]},
+    {"name": "award_or_idv_flag_idx", "type": "Bitmap", "fields": ["award_or_idv_flag"]},
+    {"name": "awarding_agency_idx", "type": "Bitmap", "fields": ["awarding_agency"]},
+]
+
+
 # ── pure schema/index checker ────────────────────────────────────────────────
+
+def test_active_complete_contract_clean():
+    r = verify_decoder_contract(ACTIVE_COLS, ACTIVE_IDX, ACTIVE)
+    assert r["violations"] == [] and r["notes"] == []
+
+
+def test_active_missing_expiry_index_is_violation():
+    idx = [e for e in ACTIVE_IDX if e["fields"] != ["pop_current_end"]]
+    v = verify_decoder_contract(ACTIVE_COLS, idx, ACTIVE)["violations"]
+    assert any("NO live index covers" in x and "'pop_current_end'" in x for x in v)
+
 
 def test_winners_complete_contract_clean():
     r = verify_decoder_contract(WINNERS_COLS, WINNERS_IDX, WINNERS)
