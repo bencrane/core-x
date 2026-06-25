@@ -197,14 +197,16 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v3",
+        "version": "awards.v4",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
             "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
                                   "desc": "whole days since the award action (integer; 0 = today). 'won in the last N days' / 'this week' → days_since_action <= N"},
-            "naics2":            {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
+            "naics2":            {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction) — the vendor's INDUSTRY"},
             "naics_code":        {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
+            "psc_category":      {"type": "string", "ops": ("=", "in"), "desc": "leading char of the Product/Service Code = WHAT THE CONTRACT BUYS (distinct from NAICS, the vendor's industry). 'V' = Transportation/Travel/Relocation services. Use for 'transportation/freight SERVICES' / 'PSC category V' — catches freight & logistics service contracts coded under a non-48/49 NAICS. Prime awards only"},
+            "psc_code":          {"type": "string", "ops": ("=", "in"), "desc": "full Product/Service Code, UPPERCASE (e.g. 'V111' = motor freight, 'V112' = air freight). Prime awards only"},
             "state":             {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ/registration state, 2-letter — use for 'companies in <state>'"},
             "city":              {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ city, UPPERCASE (e.g. 'DALLAS') — use for 'companies in <city>'"},
             "county":            {"type": "string", "ops": ("=", "in"), "desc": "winner's HQ county name, UPPERCASE without the word 'County' (e.g. 'TARRANT'); prime awards only"},
@@ -234,12 +236,19 @@ DECODERS: dict[str, dict] = {
             "hubzone":        {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
             "woman-owned":    {"field": "set_aside", "op": "in",
                                "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+            "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
+            "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
+            "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
         },
         # Dataset-specific prompt rules (rendered under Rules).
         "notes": (
             "Geo disambiguation: 'companies/winners in <place>' → state/city/county (the"
             " winner's HQ). 'performing work in / projects in / work located in <place>' →"
             " pop_state/pop_city.",
+            "NAICS vs PSC: naics2/naics_code = the vendor's INDUSTRY; psc_category/psc_code ="
+            " WHAT THE CONTRACT BUYS. For 'transportation/freight SERVICES' or 'PSC category V'"
+            " use psc_category='V' (not a NAICS filter) — many transport/logistics service"
+            " awards carry a non-48/49 NAICS, so a NAICS-only filter misses them.",
         ),
     },
 }
@@ -343,13 +352,14 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v2"
+ROUTER_VERSION = "router.v3"   # v2→v3: awards routing cue gains the PSC / transportation-services axis
 
 # Routing cues rendered into the router system block, per dataset.
 _ROUTING_CUES = {
     "awards": "AWARD-EVENT questions: 'won an award/contract over $X', 'awards in the last"
               " N days', 'who won <agency> contracts this week', set-asides, place of"
-              " performance. DEFAULT for win/award phrasing.",
+              " performance, and PSC (what the contract BUYS — 'transportation/freight"
+              " SERVICES', 'PSC category V'). DEFAULT for win/award phrasing.",
     "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",

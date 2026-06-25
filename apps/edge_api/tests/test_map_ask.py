@@ -132,6 +132,24 @@ def test_awards_has_active_period_of_performance_axis_both_sides():
     assert edge.DECODERS["awards"]["synonyms"]["active"]["field"] == "is_active"
 
 
+def test_awards_has_psc_axis_both_sides():
+    # The PSC axis: what the contract BUYS (distinct from NAICS). Present on both sides as two
+    # string fields; psc_category is BITMAP-indexed (low cardinality) + emitted as a property so
+    # the boot contract covers the new column; psc_code is BTREE (full code). Prime-only signal.
+    for field, idx in (("psc_category", "BITMAP"), ("psc_code", "BTREE")):
+        assert field in cat.DECODERS["awards"].fields, f"catalyst awards missing {field}"
+        assert cat.DECODERS["awards"].fields[field].type == "string"
+        assert cat.DECODERS["awards"].fields[field].index == idx
+        assert field in edge.DECODERS["awards"]["fields"], f"edge awards missing {field}"
+        assert edge.DECODERS["awards"]["fields"][field]["type"] == "string"
+    # New filter columns must ride as properties (so verify_decoder_contract validates them live).
+    assert {"psc_category", "psc_code"} <= set(cat.DECODERS["awards"].properties)
+    # The headline NL win: "transportation services" → PSC category 'V', byte-identical both sides.
+    for term in ("transportation services", "freight services", "psc v"):
+        assert cat.DECODERS["awards"].synonyms[term] == {"field": "psc_category", "op": "=", "value": "V"}
+        assert edge.DECODERS["awards"]["synonyms"][term] == {"field": "psc_category", "op": "=", "value": "V"}
+
+
 # ── dataset routing (the AUTO surface) ────────────────────────────────────────
 def test_router_tool_dataset_enum_and_union_fields():
     tool = edge.build_router_tool()

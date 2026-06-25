@@ -54,8 +54,10 @@ COMPANY_IDX = [
 
 AWARDS_COLS = [
     "award_id", "winner_uei", "winner_name", "winner_type", "award_amount", "action_date",
-    "naics2", "naics_code", "state", "city", "county", "pop_state", "pop_city",
-    "awarding_agency", "awarding_sub_agency", "set_aside", "longitude", "latitude",
+    "naics2", "naics_code", "psc_category", "psc_code", "state", "city", "county",
+    "pop_state", "pop_city",
+    "awarding_agency", "awarding_sub_agency", "set_aside", "is_active", "pop_end",
+    "longitude", "latitude",
 ]
 AWARDS_IDX = [
     {"name": "action_date_idx", "type": "BTree", "fields": ["action_date"]},
@@ -66,12 +68,15 @@ AWARDS_IDX = [
     {"name": "county_idx", "type": "BTree", "fields": ["county"]},
     {"name": "pop_city_idx", "type": "BTree", "fields": ["pop_city"]},
     {"name": "awarding_sub_agency_idx", "type": "BTree", "fields": ["awarding_sub_agency"]},
+    {"name": "psc_code_idx", "type": "BTree", "fields": ["psc_code"]},
     {"name": "naics2_idx", "type": "Bitmap", "fields": ["naics2"]},
     {"name": "state_idx", "type": "Bitmap", "fields": ["state"]},
     {"name": "winner_type_idx", "type": "Bitmap", "fields": ["winner_type"]},
     {"name": "pop_state_idx", "type": "Bitmap", "fields": ["pop_state"]},
     {"name": "awarding_agency_idx", "type": "Bitmap", "fields": ["awarding_agency"]},
     {"name": "set_aside_idx", "type": "Bitmap", "fields": ["set_aside"]},
+    {"name": "is_active_idx", "type": "Bitmap", "fields": ["is_active"]},
+    {"name": "psc_category_idx", "type": "Bitmap", "fields": ["psc_category"]},
 ]
 
 

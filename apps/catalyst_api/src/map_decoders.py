@@ -279,10 +279,13 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v3",
+    version="awards.v4",   # v3→v4: add the PSC axis (psc_category/psc_code) — product/service
+                           # bought, distinct from NAICS; surfaces transport/freight services
+                           # (PSC 'V') coded under a non-48/49 NAICS that a NAICS-only filter misses.
     geometry=("longitude", "latitude"),
     properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
-                "action_date", "naics2", "naics_code", "state", "city", "county",
+                "action_date", "naics2", "naics_code", "psc_category", "psc_code",
+                "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
                 "set_aside", "is_active", "pop_end"),
     fields={
@@ -292,6 +295,11 @@ AWARDS = Decoder(
         "days_since_action": FieldSpec("action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
         "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "naics_code":        FieldSpec("naics_code", "string", ("=", "in")),
+        # PSC = the product/service the contract BUYS (distinct from NAICS, the vendor's
+        # industry). psc_category is the leading PSC char ('V' = Transportation/Travel/
+        # Relocation); psc_code is the full code. Prime-only (NULL on subawards).
+        "psc_category":      FieldSpec("psc_category", "string", ("=", "in"), index="BITMAP"),
+        "psc_code":          FieldSpec("psc_code", "string", ("=", "in"), index="BTREE"),
         # Recipient (HQ) geo vs PLACE OF PERFORMANCE geo — two distinct axes by design.
         "state":             FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
         "city":              FieldSpec("city", "string", ("=", "in"), index="BTREE"),
@@ -325,6 +333,11 @@ AWARDS = Decoder(
         "hubzone":        {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
         "woman-owned":    {"field": "set_aside", "op": "in",
                            "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+        # PSC category 'V' = Transportation/Travel/Relocation services — the freight/logistics
+        # SERVICE buys a NAICS-only (48/49) filter misses (often coded under a non-48/49 NAICS).
+        "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
+        "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
+        "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
     },
 )
 

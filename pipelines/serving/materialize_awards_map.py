@@ -17,7 +17,12 @@ DEDUPE the fresh feeds carry ~12% duplicate transactions across ingest pulls; ro
 GEO    state/city/county are RECIPIENT geo (company registration); pop_state/pop_city are
        PRIMARY PLACE OF PERFORMANCE (where the work happens; ~87% populated on prime,
        NULL on subawards — the sub feed's PoP columns are empty, verified live).
-       set_aside / county are prime-only signals (NULL on sub rows).
+       set_aside / county / psc are prime-only signals (NULL on sub rows).
+PSC    psc_code is the full Product/Service Code (what the contract BUYS, e.g. 'V111' motor
+       freight); psc_category is its leading character (the PSC top-level group — 'V' =
+       Transportation/Travel/Relocation). DISTINCT axis from NAICS (the vendor's industry):
+       transportation/freight SERVICES coded under PSC 'V' frequently carry a non-48/49 NAICS,
+       so a NAICS-only filter misses them. Prime-only (the sub feed carries no PSC).
 ACTIVE pop_end = period_of_performance_current_end_date (DATE); is_active = pop_end >= today
        (build-time; prime-only — NULL on subawards, so is_active=true excludes them honestly).
        The window must be wide enough to include older-dated actions whose contracts are still
@@ -50,14 +55,23 @@ SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 WINDOW_DAYS = int(os.environ.get("AWARDS_WINDOW_DAYS", "730"))
 DATA_STORAGE_VERSION = "2.1"
-# BTREE: range axes (action_date, award_amount) + resolution keys + high-cardinality geo.
+# BTREE: range axes (action_date, award_amount) + resolution keys + high-cardinality geo
+# + psc_code (full PSC, ~hundreds of distinct codes).
 BTREE_INDEXES = ["action_date", "award_amount", "winner_uei", "addr_hash",
-                 "city", "county", "pop_city", "awarding_sub_agency"]
-# BITMAP: low-cardinality filter columns (state 57, agency 67, set_aside 18, type 2).
-BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agency", "set_aside", "is_active"]
+                 "city", "county", "pop_city", "awarding_sub_agency", "psc_code"]
+# BITMAP: low-cardinality filter columns (state 57, agency 67, set_aside 18, type 2,
+# psc_category ~30 leading chars).
+BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agency",
+                  "set_aside", "is_active", "psc_category"]
 
 DUCK_MEM = os.environ.get("AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("AWARDS_DUCKDB_TEMP_DIR", "/tmp/awards_map_duckdb")
+# Lance scalar-index build = an external sort. The default DataFusion external-merge pool is tiny
+# and OOMs mid-build over R2 ("Resources exhausted: ExternalSorterMerge"), which on a mode=overwrite
+# rebuild leaves the live table HALF-INDEXED (data committed, only some indices built). The fleet
+# rule (ARCHITECTURE.md) is to sort in-RAM instead — set BEFORE any lance index call. setdefault so
+# an operator can still override on a small box.
+os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
 
 def log(m):
@@ -100,7 +114,7 @@ def _assemble(so, window_days: int):
                  "federal_action_obligation", "awarding_agency_name", "awarding_sub_agency_name",
                  "type_of_set_aside_code", "primary_place_of_performance_state_code",
                  "primary_place_of_performance_city_name",
-                 "period_of_performance_current_end_date"],
+                 "period_of_performance_current_end_date", "product_or_service_code"],
         filter=f"action_date >= '{cutoff}'").to_reader())
     con.register("s", s.scanner(
         columns=["subaward_number", "prime_award_unique_key", "subawardee_uei", "subawardee_name",
@@ -124,7 +138,8 @@ def _assemble(so, window_days: int):
                nullif(trim(type_of_set_aside_code), '') AS set_aside,
                primary_place_of_performance_state_code AS pop_state_raw,
                primary_place_of_performance_city_name AS pop_city_raw,
-               try_cast(period_of_performance_current_end_date AS DATE) AS pop_end
+               try_cast(period_of_performance_current_end_date AS DATE) AS pop_end,
+               nullif(upper(trim(product_or_service_code)), '') AS psc_code_raw
         FROM p WHERE recipient_uei IS NOT NULL AND length(trim(recipient_uei)) > 0
         UNION ALL
         SELECT subaward_number || '|' || coalesce(prime_award_unique_key, ''),
@@ -133,7 +148,7 @@ def _assemble(so, window_days: int):
                prime_award_naics_code, try_cast(subaward_action_date AS DATE),
                try_cast(subaward_amount AS DOUBLE),
                prime_award_awarding_agency_name, prime_award_awarding_sub_agency_name,
-               NULL, NULL, NULL, NULL  -- set_aside / PoP state+city / pop_end: empty at source for subawards (verified)
+               NULL, NULL, NULL, NULL, NULL  -- set_aside / PoP state+city / pop_end / psc: empty at source for subawards (verified)
         FROM s WHERE subawardee_uei IS NOT NULL AND length(trim(subawardee_uei)) > 0
     ),
     -- amount > 0 BEFORE dedupe: ">$X won" must never match a de-obligation or $0 mod.
@@ -148,6 +163,7 @@ def _assemble(so, window_days: int):
                upper(trim(state_raw)) AS state, zip, naics AS naics_code,
                substr(naics, 1, 2) AS naics2, adt AS action_date, amt AS award_amount,
                agency AS awarding_agency, sub_agency AS awarding_sub_agency, set_aside,
+               psc_code_raw AS psc_code, nullif(substr(psc_code_raw, 1, 1), '') AS psc_category,
                upper(trim(pop_state_raw)) AS pop_state, upper(trim(pop_city_raw)) AS pop_city,
                pop_end, (pop_end >= current_date) AS is_active,
                {hexpr} AS addr_hash
@@ -248,6 +264,8 @@ def verify():
            "with_set_aside": ds.count_rows(filter="set_aside IS NOT NULL"),
            "with_pop_end": ds.count_rows(filter="pop_end IS NOT NULL"),
            "active_now": ds.count_rows(filter="is_active = true"),
+           "with_psc_code": ds.count_rows(filter="psc_code IS NOT NULL"),
+           "psc_category_V_transport": ds.count_rows(filter="psc_category = 'V'"),
            "columns": len(ds.schema.names), "indices": idx}
     out["acceptance_A_tx_construction_1m_30d"] = ds.count_rows(
         filter=f"naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
