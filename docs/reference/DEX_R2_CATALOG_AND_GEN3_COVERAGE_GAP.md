@@ -179,6 +179,8 @@
 
 ## 3. DEX Lance warehouse catalog (`polaris-warehouse/<ns>/`)
 
+> **RETIRED — Gen-2.** `polaris-warehouse/` is the retired Gen-2 tier. The Gen-3 system of record is LanceDB under `s3://data-sink/active/`. This section is retained for migration archaeology only.
+
 | Namespace | Status | Size | Objs | Newest | Gen-3 |
 |---|---|---:|---:|---|---|
 | usaspending | COVERED | 691.6 GiB | 5042 | 2026-05-30 | usaspending |
@@ -346,7 +348,7 @@
 **`dex-db` (Gen-2 Postgres) is OUT of scope** — not an R2 object; untouched.
 
 Deleting the R2 bucket `dex-raw-landing-zone` is **irreversible** and severs a **still-live
-service**. The `polaris-warehouse/` tier (1.3 TiB) is the active Lance warehouse for
+service**. The `polaris-warehouse/` tier (1.3 TiB) was the Gen-2 Lance warehouse for
 **`data-engine-x` (DEX)** — newest write 2026-06-02. Code bound to it (will error on read/write
 once the bucket is gone):
 - `data-engine-x/app/services/lance_views.py` — GTM view materialize (writer)
