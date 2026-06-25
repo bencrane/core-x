@@ -60,6 +60,18 @@ hyphenated text, the fleet convention; string equality is the join semantics):
         title                 VARCHAR          (nullable)
         person_linkedin_url   VARCHAR          (nullable — the person's linkedin.com URL)
         source_platform       VARCHAR          (lineage)
+        ── LIVE DRIFT — NOT projected by _sql_people(); added in-place by the work-email
+           enrichment, confirmed on the live dataset 2026-06-24 (13 columns, 4 indices) ──
+        work_email            VARCHAR          (nullable — resolved work email)
+        work_email_norm       VARCHAR          (nullable — normalized work email)
+        verification_status   VARCHAR          (nullable — work-email verification verdict; BITMAP-indexed)
+        mv_resultcode         VARCHAR          (nullable — verifier raw result code)
+      DRIFT NOTE. _sql_people() below projects ONLY the original 9 columns. The ingest overwrite
+      path is RETIRED (people is severed/refused), but were it ever re-enabled it would WIPE these
+      4 drifted columns AND the verification_status BITMAP. In-place backfills round-trip
+      ds.to_table() so they preserve the columns — but they MUST rebuild the FULL INDEXES['people']
+      plan (BTREE + BITMAP) after their overwrite or the BITMAP is silently dropped, degrading the
+      work-email verification filter's bitmap pushdown until someone notices and reindexes.
 
     company_target_industries  (many-to-many edge grain — STRICT_SCHEMA-enforced types/nullability)
         UNION of two legacy sources, normalized into one canonical target_industry vocabulary:
@@ -91,9 +103,10 @@ grain, so it is not read. Likewise first/last name come straight from gtm.people
 (complete for all sfnet + csv people; the only people lacking split names are the 56 elfa
 rows, which have no counterpart in any raw sfnet source).
 
-INDEXES (directive's hard deliverable — scalar BTREE only, kept minimal):
+INDEXES (scalar — the live committed index set; BTREE everywhere + one BITMAP from the people drift):
     companies                 : BTREE(normalized_domain)
-    people                    : BTREE(company_id), BTREE(normalized_domain), BTREE(person_linkedin_url)
+    people                    : BTREE(company_id), BTREE(normalized_domain), BTREE(person_linkedin_url),
+                                BITMAP(verification_status)   ← work-email enrichment drift (see schema note)
     company_target_industries : BTREE(company_id), BTREE(normalized_domain), BTREE(target_industry)
 
 Control plane (Trigger v4 durable callback): the worker accepts ``trigger_callback_url`` and,
@@ -147,13 +160,23 @@ MAX_BYTES_PER_FILE = 90 * 1024**3  # 90 GiB — Lance's documented default
 # Net-new datasets → pin the current Lance default (directive: data_storage_version=2.1).
 DATA_STORAGE_VERSION = "2.1"
 
-# Scalar index plan — the directive's hard deliverable. BTREE only; no speculative BITMAPs.
+# Scalar index plan — the LIVE committed index set on each dataset (the directive's hard
+# deliverable + the work-email-verification drift that has since landed in-place on people).
+# This dict is the source of truth every reindex/overwrite rebuilds from; keep it == reality.
 INDEXES: dict[str, dict[str, list[str]]] = {
     "companies": {"BTREE": ["normalized_domain"]},
     # person_linkedin_url is a load-bearing resolution key (catalyst_api person-by-linkedin
     # point-lookup) → BTREE it so the lookup is index pushdown, not a scan, and so the index
     # is REBUILT on every overwrite (an out-of-band create_scalar_index would be dropped here).
-    "people": {"BTREE": ["company_id", "normalized_domain", "person_linkedin_url"]},
+    # verification_status BITMAP reflects the live DRIFT: the work-email enrichment added
+    # work_email / work_email_norm / verification_status / mv_resultcode columns + a
+    # verification_status BITMAP index (confirmed on the live dataset 2026-06-24: 13 cols, 4
+    # indices). Listed here so every reindex/overwrite REBUILDS it instead of silently dropping
+    # it — which would degrade the work-email verification filter's bitmap pushdown.
+    "people": {
+        "BTREE": ["company_id", "normalized_domain", "person_linkedin_url"],
+        "BITMAP": ["verification_status"],
+    },
     # Edge grain — BTREE both join keys + the industry, so gtm-mcp filters resolve
     # instantly from either direction (company→industries or industry→companies).
     "company_target_industries": {"BTREE": ["company_id", "normalized_domain", "target_industry"]},
@@ -252,6 +275,10 @@ FROM hqx.dexarchive.companies
 def _sql_people() -> str:
     # normalized_domain is denormalized from the person's company (LEFT JOIN on the FK, which
     # is verified complete — 0 orphans), so a person's anchor matches its company's exactly.
+    # DRIFT HAZARD: this projects ONLY the original 9 columns. The live dataset has since grown
+    # work_email / work_email_norm / verification_status / mv_resultcode (+ a verification_status
+    # BITMAP). This SQL feeds the RETIRED ingest overwrite (people is severed/refused) — if ever
+    # re-enabled it would WIPE those 4 columns + the BITMAP. See the module docstring's people note.
     return f"""
 SELECT
     CAST(p.id AS VARCHAR)                 AS contact_id,
@@ -390,21 +417,24 @@ def _write_lance(table, uri: str, so: dict) -> None:
 
 
 def _create_indexes(ds_name: str, so: dict) -> list[dict]:
-    """Build the mandated BTREE scalar indexes for one dataset across all fragments.
-    create_scalar_index defaults to replace=True → idempotent. Best-effort per index, but
-    logged loudly: an index miss must not silently pass."""
+    """Build the mandated scalar indexes (BTREE + BITMAP) for one dataset across all fragments.
+    Iterates EVERY index-type group in INDEXES[ds_name], so a plan carrying a BITMAP group
+    (people's verification_status) is rebuilt in full, not just its BTREEs. create_scalar_index
+    defaults to replace=True → idempotent. Best-effort per index, but logged loudly: an index
+    miss must not silently pass."""
     import lance
 
     ds = lance.dataset(DATASET_URI[ds_name], storage_options=so)
     out: list[dict] = []
-    for col in INDEXES[ds_name].get("BTREE", []):
-        try:
-            ds.create_scalar_index(col, index_type="BTREE")
-            print(f"  BTREE  ✓ {ds_name}.{col}")
-            out.append({"col": col, "type": "BTREE", "ok": True})
-        except Exception as exc:  # noqa: BLE001 — an index miss must not fail a good load
-            print(f"  BTREE  ✗ {ds_name}.{col}: {exc}")
-            out.append({"col": col, "type": "BTREE", "ok": False, "error": str(exc)})
+    for index_type, cols in INDEXES[ds_name].items():
+        for col in cols:
+            try:
+                ds.create_scalar_index(col, index_type=index_type)
+                print(f"  {index_type:<6} ✓ {ds_name}.{col}")
+                out.append({"col": col, "type": index_type, "ok": True})
+            except Exception as exc:  # noqa: BLE001 — an index miss must not fail a good load
+                print(f"  {index_type:<6} ✗ {ds_name}.{col}: {exc}")
+                out.append({"col": col, "type": index_type, "ok": False, "error": str(exc)})
     return out
 
 
