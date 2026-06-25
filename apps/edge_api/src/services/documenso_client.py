@@ -233,6 +233,7 @@ async def create_document_from_template(
     field_values_by_label: dict[str, str] | None = None,
     external_id: str | None = None,
     title: str | None = None,
+    prospect_recipient_id: int | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
     PREFILLED and LOCKED (readOnly), then distribute WITHOUT email so it lands ``PENDING`` (ready to
@@ -272,13 +273,33 @@ async def create_document_from_template(
             raise DocumensoError(
                 f"template/{documenso_template_id}: no recipients to instantiate"
             )
-        placeholder = next(
-            (r for r in recips if isinstance(r, dict) and not (_dig(r, "email") or "").strip()),
-            None,
-        ) or next(
-            (r for r in recips if isinstance(r, dict) and str(_dig(r, "role") or "").upper() == "SIGNER"),
-            recips[0],
-        )
+        if prospect_recipient_id is not None:
+            # DETERMINISTIC: bind the prospect to the EXPLICIT recipient id from the template's stored
+            # mapping (documenso_templates.recipients.prospect_recipient_id) — the source of truth. The
+            # email/role heuristic below mis-binds when BOTH recipients carry placeholder emails and the
+            # originator was added first (the prospect would land on the Provider slot and see the
+            # operator's fields). The stored id removes the ambiguity.
+            placeholder = next(
+                (r for r in recips
+                 if isinstance(r, dict) and str(_dig(r, "id")) == str(prospect_recipient_id)),
+                None,
+            )
+            if placeholder is None:
+                raise DocumensoError(
+                    f"template/{documenso_template_id}: stored prospect_recipient_id "
+                    f"{prospect_recipient_id} not among template recipients "
+                    f"{[_dig(r, 'id') for r in recips if isinstance(r, dict)]}"
+                )
+        else:
+            # FALLBACK (no stored mapping, e.g. older templates): the recipient with NO email is the
+            # placeholder; else the first SIGNER. Order-dependent — kept only for un-mapped templates.
+            placeholder = next(
+                (r for r in recips if isinstance(r, dict) and not (_dig(r, "email") or "").strip()),
+                None,
+            ) or next(
+                (r for r in recips if isinstance(r, dict) and str(_dig(r, "role") or "").upper() == "SIGNER"),
+                recips[0],
+            )
         recipient_id = _dig(placeholder if isinstance(placeholder, dict) else {}, "id")
         if recipient_id is None:
             raise DocumensoError(
