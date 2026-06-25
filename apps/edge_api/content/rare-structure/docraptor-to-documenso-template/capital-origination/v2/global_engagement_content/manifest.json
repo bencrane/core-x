@@ -1,0 +1,13 @@
+{
+  "rare_structure_strategic_origination": {
+    "slug": "rare_structure_strategic_origination",
+    "name": "Rare Structure — Strategic Origination Agreement (Capital Origination)",
+    "archetype": "capital_origination",
+    "document": "rare_structure_strategic_origination.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}
