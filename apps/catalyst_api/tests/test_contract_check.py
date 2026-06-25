@@ -13,8 +13,14 @@ from apps.catalyst_api.src.map_decoders import AWARDS, COMPANY, WINNERS
 # physical-column list, 'type' is mixed-case. Includes the resolution-key indexes the
 # decoder does NOT declare (winner_uei_idx, addr_hash_idx) to lock in declared-⊆-actual.
 WINNERS_IDX = [
-    {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},
-    {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},
+    {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},  # extra (resolution key)
+    {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},    # extra
+    {"name": "total_obligation_idx", "type": "BTree", "fields": ["total_obligation"]},
+    {"name": "award_count_idx", "type": "BTree", "fields": ["award_count"]},
+    {"name": "last_action_date_idx", "type": "BTree", "fields": ["last_action_date"]},
+    # winners.v7 SUB-only teaming BTREE indexes (teaming_dollars_5y / n_teaming_primes axes).
+    {"name": "teaming_dollars_5y_idx", "type": "BTree", "fields": ["teaming_dollars_5y"]},
+    {"name": "n_teaming_primes_idx", "type": "BTree", "fields": ["n_teaming_primes"]},
     {"name": "naics2_idx", "type": "Bitmap", "fields": ["naics2"]},
     {"name": "state_idx", "type": "Bitmap", "fields": ["state"]},
     {"name": "winner_type_idx", "type": "Bitmap", "fields": ["winner_type"]},
@@ -25,11 +31,15 @@ WINNERS_IDX = [
     {"name": "req_clearance_level_max_idx", "type": "Bitmap", "fields": ["req_clearance_level_max"]},
 ]
 WINNERS_COLS = [
-    "winner_uei", "winner_type", "winner_name", "naics_code", "naics2", "state",
-    "total_obligation", "award_count", "last_action_date", "longitude", "latitude",
-    # PHASE-3 capability columns (rolled from govcon_award_capability_profiles).
+    "winner_uei", "winner_name", "winner_type", "naics_code", "naics2", "state",
+    "total_obligation", "award_count", "last_action_date",
+    # PHASE-3 capability columns (rolled from govcon_award_solicitation_profiles).
     "has_extracted_scope", "requires_clearance", "req_clearance_level_max", "requires_cmmc",
-    "capability_tags", "labor_categories", "covered_award_count", "covered_award_keys",
+    "solicitation_scope_tags", "labor_categories", "covered_award_count", "covered_award_keys",
+    # winners.v7 SUB-only teaming + self-reported axes (null on prime rows).
+    "teaming_dollars_5y", "n_teaming_primes", "teaming_prime_names",
+    "subaward_description_tags", "req_cert_tags",
+    "longitude", "latitude",
 ]
 
 COMPANY_COLS = [
@@ -45,7 +55,11 @@ COMPANY_IDX = [
     {"name": "company_type_idx", "type": "Bitmap", "fields": ["company_type"]},
     {"name": "physical_address_state_idx", "type": "Bitmap", "fields": ["physical_address_state"]},
     {"name": "has_federal_awards_idx", "type": "Bitmap", "fields": ["has_federal_awards"]},
+    {"name": "is_active_idx", "type": "Bitmap", "fields": ["is_active"]},
     {"name": "primary_naics_idx", "type": "BTree", "fields": ["primary_naics"]},
+    {"name": "founded_year_idx", "type": "BTree", "fields": ["founded_year"]},
+    {"name": "total_active_obligations_idx", "type": "BTree", "fields": ["total_active_obligations"]},
+    {"name": "award_count_idx", "type": "BTree", "fields": ["award_count"]},
     {"name": "latest_award_action_date_idx", "type": "BTree", "fields": ["latest_award_action_date"]},
     {"name": "uei_idx", "type": "BTree", "fields": ["uei"]},  # extra (resolution key)
     {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},  # extra
