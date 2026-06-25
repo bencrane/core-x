@@ -301,10 +301,17 @@ def test_awards_aggregate_validation_allowlist():
         lance_store.validate_aggregate(AWARDS, "state", ["p99"], None)
 
 
-def test_company_winners_have_no_aggregate_capability():
-    assert COMPANY.aggregate is None and WINNERS.aggregate is None
+def test_winners_company_aggregate_measures():
+    # winners rolls up the per-entity obligation; company rolls up active obligations.
+    assert WINNERS.aggregate.measure == "total_obligation"
+    assert COMPANY.aggregate.measure == "total_active_obligations"
+    spec, gb, _, _ = lance_store.validate_aggregate(WINNERS, "state", ["count", "sum", "median"], None)
+    assert spec.measure == "total_obligation" and gb == "state"
+    spec2, gb2, _, _ = lance_store.validate_aggregate(COMPANY, "industry", ["sum"], None)
+    assert spec2.measure == "total_active_obligations" and gb2 == "industry"
+    # a winners field that is NOT a declared aggregate dim is rejected as a group_by
     with pytest.raises(lance_store.MapCompileError):
-        lance_store.validate_aggregate(COMPANY, "naics2", ["count"], None)
+        lance_store.validate_aggregate(WINNERS, "teaming_prime", ["count"], None)
 
 
 # ── active.v1: the forward-looking recompete axis (days_ahead) ───────────────

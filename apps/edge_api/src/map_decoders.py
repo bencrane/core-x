@@ -94,7 +94,7 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v7",
+        "version": "winners.v8",
         "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -169,9 +169,20 @@ DECODERS: dict[str, dict] = {
             "pmp":                 {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_PMP)},
             "osha 30":             {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_OSHA_30)},
         },
+        "aggregate": {
+            "measure": "total_obligation",
+            "dims": ["naics2", "naics_code", "state", "winner_type"],
+            "pseudo_dims": ["winner", "size_band"],
+            "metrics": ["count", "sum", "avg", "median", "p90"],
+            "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING over winners ('total won by"
+                     " state', 'top winners', 'winners by NAICS', 'distribution of winner sizes'),"
+                     " ALSO emit an aggregate object {group_by, metrics?, limit?}. group_by is a"
+                     " dim below, or 'winner' (top entities by $) or 'size_band' (obligation"
+                     " histogram). Omit aggregate for plain 'show me' rows."),
+        },
     },
     "company": {
-        "version": "company.v3",
+        "version": "company.v4",
         "description": "Companies in the firmographics target universe that are SAM-registered — one row per company.",
         "fields": {
             "naics2":             {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -194,6 +205,18 @@ DECODERS: dict[str, dict] = {
             "active":              {"field": "is_active", "op": "=", "value": True},
             "this week":           {"field": "days_since_last_award", "op": "<=", "value": 7},
             "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
+        },
+        "aggregate": {
+            "measure": "total_active_obligations",
+            "dims": ["naics2", "industry", "employee_size_band", "company_type", "state", "primary_naics"],
+            "pseudo_dims": ["winner", "size_band"],
+            "metrics": ["count", "sum", "avg", "median", "p90"],
+            "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING over companies ('total active"
+                     " obligations by industry', 'companies by employee size', 'top companies by"
+                     " active $', 'distribution by company size'), ALSO emit an aggregate object"
+                     " {group_by, metrics?, limit?}. group_by is a firmographic dim below, or"
+                     " 'winner' (top companies by $) or 'size_band' (obligation histogram). Omit"
+                     " aggregate for plain 'show me' rows."),
         },
     },
     "awards": {
@@ -479,7 +502,8 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v5"   # v4→v5: add the 'active' dataset (forward-looking recompete radar)
+ROUTER_VERSION = "router.v6"   # v5→v6: winners + company gain the aggregate capability
+                               # v4→v5: add the 'active' dataset (forward-looking recompete radar)
                                # v3→v4: aggregate capability rendered into the router prompt + tool
                                # v2→v3: awards routing cue gains the PSC / transportation-services axis
 

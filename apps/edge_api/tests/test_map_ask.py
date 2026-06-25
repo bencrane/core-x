@@ -174,9 +174,22 @@ def test_emit_filter_tool_aggregate_is_optional_and_enum_bounded():
     assert set(agg["metrics"]["items"]["enum"]) == set(edge.DECODERS["awards"]["aggregate"]["metrics"])
 
 
-def test_non_aggregate_datasets_expose_no_aggregate_tool_property():
-    for ds in ("company", "winners"):
-        assert "aggregate" not in edge.build_emit_filter_tool(ds)["input_schema"]["properties"]
+def test_all_datasets_expose_optional_aggregate_tool_property():
+    # Every map dataset now declares an aggregate (awards / active / winners / company).
+    for ds in edge.DECODERS:
+        schema = edge.build_emit_filter_tool(ds)["input_schema"]
+        assert "aggregate" in schema["properties"], f"{ds}: missing aggregate tool property"
+        assert "aggregate" not in schema["required"], f"{ds}: aggregate must stay optional"
+
+
+def test_winners_company_aggregate_parity_both_sides():
+    for ds, measure in (("winners", "total_obligation"), ("company", "total_active_obligations")):
+        cat_agg = cat.DECODERS[ds].aggregate
+        assert cat_agg is not None and cat_agg.measure == measure
+        edge_agg = edge.DECODERS[ds]["aggregate"]
+        assert set(edge_agg["dims"]) == set(cat_agg.dims)
+        assert set(edge_agg["metrics"]) == set(cat_agg.metrics)
+        assert set(edge_agg["pseudo_dims"]) == {"winner", "size_band"}
 
 
 def test_router_tool_carries_optional_aggregate_union():
@@ -185,26 +198,33 @@ def test_router_tool_carries_optional_aggregate_union():
     assert "aggregate" not in schema["required"]
 
 
-def test_reconcile_drops_aggregate_for_nonaggregate_dataset():
-    # An aggregate emitted while routed to company (no aggregate capability) must surface as
-    # unmapped, never execute silently against a table that can't aggregate.
-    filt = {"dataset": "company", "title": "t", "unmapped": [], "filters": [],
-            "aggregate": {"group_by": "awarding_agency"}}
-    out = edge.reconcile_routed_filters(filt)
+def test_reconcile_preserves_aggregate_for_every_real_dataset():
+    # Every map dataset is now aggregate-capable, so a routed aggregate is preserved, never dropped.
+    for ds in edge.DECODERS:
+        out = edge.reconcile_routed_filters(
+            {"dataset": ds, "title": "t", "unmapped": [], "filters": [],
+             "aggregate": {"group_by": "naics2"}})
+        assert out.get("aggregate") == {"group_by": "naics2"}, f"{ds}: aggregate wrongly dropped"
+
+
+def test_reconcile_drops_aggregate_for_a_dataset_without_aggregate(monkeypatch):
+    # Defensive (honesty contract): if a dataset that declares NO aggregate ever receives one —
+    # a future dataset, or a routing glitch — reconcile surfaces it as unmapped, never runs it
+    # against a table that cannot aggregate. Exercised via a synthetic no-aggregate dataset.
+    fake = {"version": "x", "description": "", "fields": {}, "synonyms": {}}
+    monkeypatch.setitem(edge.DECODERS, "_noagg", fake)
+    out = edge.reconcile_routed_filters(
+        {"dataset": "_noagg", "title": "t", "unmapped": [], "filters": [],
+         "aggregate": {"group_by": "awarding_agency"}})
     assert "aggregate" not in out
     assert any("aggregate by awarding_agency" in u for u in out["unmapped"])
-    # routed to awards (supports it) → aggregate is preserved
-    keep = edge.reconcile_routed_filters(
-        {"dataset": "awards", "title": "t", "unmapped": [], "filters": [],
-         "aggregate": {"group_by": "awarding_agency"}})
-    assert keep.get("aggregate") == {"group_by": "awarding_agency"}
 
 
-def test_awards_prompt_mentions_aggregate_capability():
-    p = edge.render_decoder_prompt("awards")
-    assert "Aggregate (optional)" in p and "group_by" in p and "size_band" in p
-    # non-aggregate datasets must not advertise an aggregate axis
-    assert "Aggregate (optional)" not in edge.render_decoder_prompt("company")
+def test_aggregate_capability_renders_in_every_dataset_prompt():
+    # Every dataset now carries an aggregate, so each prompt advertises the optional axis.
+    for ds in edge.DECODERS:
+        p = edge.render_decoder_prompt(ds)
+        assert "Aggregate (optional)" in p and "group_by" in p and "size_band" in p, f"{ds}: no aggregate in prompt"
 
 
 # ── active.v1: the forward-looking recompete dataset ─────────────────────────
