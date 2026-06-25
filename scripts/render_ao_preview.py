@@ -57,7 +57,7 @@ _STYLE = r"""
       font-size: 8pt; color: #777; } }
   * { box-sizing: border-box; }
   html, body { background: #ffffff; }
-  body { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.5;
+  body { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.6;
     color: #111111; margin: 0; }
   h1 { font-family: Georgia, serif; font-size: 17pt; font-weight: 700; margin: 0 0 6pt; color: #111; }
   h2 { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; letter-spacing: 0.08em;
