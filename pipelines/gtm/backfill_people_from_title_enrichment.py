@@ -26,11 +26,11 @@ source_platform='title_enrichment' tags the cohort so it is identifiable and rem
 predicate. These are identity stubs pending firmographic/name enrichment from a richer source.
 
 SCHEMA-DRIVEN WRITE. The new rows are assembled against the LIVE people dataset schema (read at
-runtime), not a hardcoded column list — active/people has drifted past companies_people_bulk.py's
-documented 9 columns (it now also carries work_email / work_email_norm / verification_status /
-mv_resultcode). Building from ds.schema means the insert matches whatever the spine currently is.
-Indexes are rebuilt to the LIVE index set (3 BTREE + verification_status BITMAP), not cpb's stale
-3-BTREE list, so the new fragment is fully covered.
+runtime), not a hardcoded column list — active/people carries the work-email-enrichment drift
+columns (work_email / work_email_norm / verification_status / mv_resultcode) on top of the original
+9. Building from ds.schema means the insert matches whatever the spine currently is. Indexes are
+rebuilt from cpb.INDEXES['people'] — the reconciled source of truth (3 BTREE + verification_status
+BITMAP as of #693) — so the new fragment is fully covered and the plan never forks from cpb's.
 
     doppler run -p core-x -c prd -- python3 pipelines/gtm/backfill_people_from_title_enrichment.py
 """
@@ -65,12 +65,10 @@ _PLI_NORM = (
     r"'^https?://', ''), '^www\.', ''), '/'), '')"
 )
 
-# Rebuild plan = the LIVE active/people index set (cpb's INDEXES['people'] is stale — it omits the
-# verification_status BITMAP added by the work-email enrichment). Keep new fragments fully covered.
-REINDEX: dict[str, list[str]] = {
-    "BTREE": ["company_id", "normalized_domain", "person_linkedin_url"],
-    "BITMAP": ["verification_status"],
-}
+# Rebuild plan = cpb.INDEXES['people'], the reconciled single source of truth (3 BTREE +
+# verification_status BITMAP as of #693). Consume it directly — no private copy to drift — so a
+# future index added to cpb's plan is rebuilt here too, keeping new fragments fully covered.
+REINDEX: dict[str, list[str]] = _cpb.INDEXES["people"]
 
 
 def main() -> None:
