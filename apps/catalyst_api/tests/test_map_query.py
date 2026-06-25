@@ -360,6 +360,26 @@ def test_awards_business_size_axis():
     assert gb == "business_size"
 
 
+def test_awards_option_exercise_axis():
+    # the mobilization-event flag (govt exercising a contract option)
+    assert _compile(AWARDS, [{"field": "is_option_exercise", "op": "=", "value": True}]) == (
+        "is_option_exercise = true")
+    # general action_type categorical axis
+    assert _compile(AWARDS, [{"field": "action_type", "op": "=", "value": "EXERCISE AN OPTION"}]) == (
+        "action_type = 'EXERCISE AN OPTION'")
+    # "option exercises in the last 30 days" — the recompete complement (award_amount = mobilization $)
+    pred = _compile(AWARDS, [
+        {"field": "is_option_exercise", "op": "=", "value": True},
+        {"field": "days_since_action", "op": "<=", "value": 30},
+    ])
+    assert pred == (
+        f"is_option_exercise = true AND action_date >= DATE '{(TODAY - timedelta(days=30)).isoformat()}'")
+    # action_type is a groupable aggregate dim (the action mix); the synonym targets the bool flag
+    _, gb, _, _ = lance_store.validate_aggregate(AWARDS, "action_type", ["count", "sum"], None)
+    assert gb == "action_type"
+    assert AWARDS.synonyms["option exercises"] == {"field": "is_option_exercise", "op": "=", "value": True}
+
+
 def test_active_business_size_enum_and_current_value_aggregate():
     assert _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "SMALL BUSINESS"}]) == (
         "business_size = 'SMALL BUSINESS'"

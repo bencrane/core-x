@@ -324,7 +324,10 @@ _BUSINESS_SIZE = ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS")
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v7",   # v6→v7: add the business_size axis (small vs other-than-small) — the
+    version="awards.v8",   # v7→v8: add the action_type axis + is_option_exercise flag — the FPDS
+                           # 'EXERCISE AN OPTION' event = a mobilization-capital trigger on an
+                           # already-invested contract (award_amount = the mobilization $).
+                           # v6→v7: add the business_size axis (small vs other-than-small) — the
                            # contracting officer's determination; prime-only.
                            # v5→v6: add the fiscal_year axis (US federal FY of the action) — YoY
                            # spend trend via group-by; explicit-year filter ('FY2025' → 2025).
@@ -338,7 +341,8 @@ AWARDS = Decoder(
                 "action_date", "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code",
                 "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
-                "set_aside", "business_size", "is_active", "pop_end"),
+                "set_aside", "business_size", "action_type", "is_option_exercise",
+                "is_active", "pop_end"),
     fields={
         # The single action's obligation — NEVER a lifetime or window rollup. The build
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
@@ -371,6 +375,11 @@ AWARDS = Decoder(
                                        enum=("prime_recipient", "subawardee"), index="BITMAP"),
         # Contract currently within its period of performance (pop_end >= today, build-time);
         # prime-only — NULL on subawards, so is_active=true excludes them honestly.
+        # FPDS action type of this action; is_option_exercise = the 'EXERCISE AN OPTION' event —
+        # the government committing the next work tranche on an existing contract (a mobilization-
+        # capital trigger). award_amount on such a row IS the mobilization $ (the aggregate measure).
+        "action_type":       FieldSpec("action_type", "string", ("=", "in"), index="BITMAP"),
+        "is_option_exercise": FieldSpec("is_option_exercise", "bool", ("=",), index="BITMAP"),
         "is_active":         FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
     },
     synonyms={
@@ -396,6 +405,11 @@ AWARDS = Decoder(
         "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
         "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
         "small business":          {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
+        # Option-exercise = the mobilization-capital event (govt committing the next work tranche).
+        "option exercise":         {"field": "is_option_exercise", "op": "=", "value": True},
+        "option exercises":        {"field": "is_option_exercise", "op": "=", "value": True},
+        "exercised option":        {"field": "is_option_exercise", "op": "=", "value": True},
+        "options exercised":       {"field": "is_option_exercise", "op": "=", "value": True},
     },
     # Aggregate over award_amount, grouped by any indexed dim (or the 'winner'/'size_band'
     # pseudo-dims). The window stays query-driven: the SAME days_since_action filter the row
@@ -409,6 +423,7 @@ AWARDS = Decoder(
             "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
             "state": "state", "pop_state": "pop_state",
             "set_aside": "set_aside", "business_size": "business_size", "winner_type": "winner_type",
+            "action_type": "action_type",   # group-by the action mix (new award / exercise / funding / mod)
         },
         winner_key=("winner_uei", "winner_name"),
         size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),
