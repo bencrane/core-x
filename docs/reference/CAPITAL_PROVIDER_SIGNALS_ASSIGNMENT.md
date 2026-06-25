@@ -93,6 +93,10 @@ independentFinancer 176 · bankOrCreditUnion 95 · generalLenderWithEquipmentPro
    Verdict field is `conclusion` ∈ {yes, no, unclear}; it has NO `providesEquipmentFinancing`/`financingMode`
    and is NOT part of the financing cluster. Identifies construction-equipment financiers specifically
    (e.g. `coastalkapital.com`). 220 domains: yes 83 · unclear 121 · no 16 (verified 2026-06-24).
+5. **`independent-equipment-financing-1`** → `independent_equip_financing` — **high-precision independent-
+   financier signal.** Verdict field is `isIndependentEquipmentFinancingProvider` (bool); the payload also
+   carries `oemOrSellerFlags {isOem, sellsOrRentsEquipment}` so OEMs/sellers are explicitly cleared (unlike
+   the noisy `equipment-provider-status-1`). 45 domains: true 41 · false 4 (verified 2026-06-25).
 
 ### IGNORE entirely (not lender-type, or unreliable)
 - `equipment-provider-status-1` — noisy; `equipmentProvider`/`mode` over-fires on real lenders.
@@ -116,6 +120,7 @@ One row per `normalized_domain`. All columns nullable except `normalized_domain`
 | `financing_mode` | string | normalized enum: `direct` \| `broker` \| `partner` \| `multi` \| `unclear` (see §5.3) |
 | `provides_equipment_financing` | bool | `true` if ANY financing-cluster payload has `providesEquipmentFinancing ∈ {yes,true}` |
 | `construction_equip_financing` | string (null) | `construction-equipment-financing-1.conclusion` → `yes` \| `no` \| `unclear`; null if not enriched |
+| `independent_equip_financing` | string (null) | `independent-equipment-financing-1.isIndependentEquipmentFinancingProvider` → `yes` \| `no`; null if not enriched |
 | `ef_classification` | string (null) | `equipment-finance-classification-one.classification` where present |
 | `confidence` | string | `capital-provider-json-1.confidence` (low/medium/high/very high) |
 | `signals` | list<string> | the `enrichment_payload_type` values that contributed to this row (provenance + gap analysis) |
@@ -136,6 +141,8 @@ Assoc, SFNet = Secured Finance Network) — emit them with `capital_type=NULL`, 
 PLUS every domain enriched by `construction-equipment-financing-1` (any `conclusion`) — **ledger
 completeness for the construction vertical**; any such domain not already in the universe lands with
 `capital_type=NULL`, its `construction_equip_financing` value, and `signals=['construction-equipment-financing-1']`.
+PLUS every domain enriched by `independent-equipment-financing-1` (any verdict) — **ledger completeness
+for the independent-financier vertical**; same NULL-capital handling for net-new domains.
 **Exclude** `providesCapital='false'` and the no-answer envelopes — those are a separate re-enrichment task (§9).
 ⚠ **Operator decision flag (§10-A):** confirm whether curated-origin-without-payload rows are in or out.
 
@@ -183,6 +190,12 @@ as `yes` / `no` / `unclear`; `NULL` when the domain was never run through this e
 distinct from `NULL` (enriched-but-uncertain ≠ not-enriched — the ledger distinction). This is a vertical
 specialization flag, orthogonal to `capital_type`; a `factoring` lender can still be `yes` here.
 
+### 5.8 `independent_equip_financing`
+From `independent-equipment-financing-1.isIndependentEquipmentFinancingProvider` (bool, dedup by
+confidence/latest): `true → yes`, `false → no`, `NULL` when never run. The payload also clears
+`oemOrSellerFlags` internally, so a `yes` here is a high-precision "true independent equipment financier"
+verdict — the cleanest equipment-finance refiner available, and trustworthy unlike `equipment-provider-status-1`.
+
 ---
 
 ## 6. Data hygiene (apply during the transform)
@@ -223,6 +236,8 @@ WHERE capital_type = 'factoring' AND NOT is_intermediary
 WHERE capital_type IN ('privateCredit','mezzanine','ventureDebt') AND NOT is_intermediary
 -- construction-equipment financiers (the vertical)
 WHERE construction_equip_financing = 'yes'
+-- verified INDEPENDENT equipment financiers (high precision, OEM/seller cleared)
+WHERE independent_equip_financing = 'yes'
 -- direct lenders only (drop brokers/partners)
 WHERE financing_mode = 'direct'
 -- GAP ANALYSIS: verified lenders missing the equipment-finance classifier → re-enrich queue
