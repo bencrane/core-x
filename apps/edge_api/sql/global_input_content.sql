@@ -52,5 +52,6 @@ CREATE INDEX IF NOT EXISTS global_input_content_status_idx ON business.global_in
 -- ── Seed the known repo-html assets (ON CONFLICT keeps any hand-provisioned row untouched) ────────
 INSERT INTO business.global_input_content (path, name, brand, source_kind, status) VALUES
     ('docraptor-to-documenso-template/term-only/v1',         'AO Term Plain v1',           'active-operators', 'repo-html', 'active'),
-    ('docraptor-to-documenso-template/capital-origination/v1','RS Capital Origination v1', 'rare-structure',   'repo-html', 'active')
+    ('docraptor-to-documenso-template/capital-origination/v1','RS Capital Origination v1', 'rare-structure',   'repo-html', 'active'),
+    ('docraptor-to-documenso-template/capital-origination/v2','RS Capital Origination v2', 'rare-structure',   'repo-html', 'active')
 ON CONFLICT (path) DO NOTHING;
