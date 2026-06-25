@@ -70,7 +70,7 @@ AWARDS_COLS = [
     "award_id", "winner_uei", "winner_name", "winner_type", "award_amount", "action_date",
     "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "state", "city", "county",
     "pop_state", "pop_city",
-    "awarding_agency", "awarding_sub_agency", "set_aside", "is_active", "pop_end",
+    "awarding_agency", "awarding_sub_agency", "set_aside", "business_size", "is_active", "pop_end",
     "longitude", "latitude",
 ]
 AWARDS_IDX = [
@@ -92,6 +92,7 @@ AWARDS_IDX = [
     {"name": "is_active_idx", "type": "Bitmap", "fields": ["is_active"]},
     {"name": "psc_category_idx", "type": "Bitmap", "fields": ["psc_category"]},
     {"name": "fiscal_year_idx", "type": "Bitmap", "fields": ["fiscal_year"]},
+    {"name": "business_size_idx", "type": "Bitmap", "fields": ["business_size"]},
 ]
 
 

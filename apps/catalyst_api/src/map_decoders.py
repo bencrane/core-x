@@ -319,10 +319,14 @@ COMPANY = Decoder(
 _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WOSB",
                     "WOSBSS", "EDWOSB", "EDWOSBSS", "HZC", "HZS", "ISBEE", "BI", "IEE",
                     "VSA", "VSS")
+# FPDS contracting-officer business-size determination (shared by awards + active decoders).
+_BUSINESS_SIZE = ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS")
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v6",   # v5→v6: add the fiscal_year axis (US federal FY of the action) — YoY
+    version="awards.v7",   # v6→v7: add the business_size axis (small vs other-than-small) — the
+                           # contracting officer's determination; prime-only.
+                           # v5→v6: add the fiscal_year axis (US federal FY of the action) — YoY
                            # spend trend via group-by; explicit-year filter ('FY2025' → 2025).
                            # v4→v5: add the AGGREGATE capability (group-by + count/sum/avg/median/p90,
                            # size-band histogram, top-N winners) over the same query-driven filter.
@@ -334,7 +338,7 @@ AWARDS = Decoder(
                 "action_date", "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code",
                 "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
-                "set_aside", "is_active", "pop_end"),
+                "set_aside", "business_size", "is_active", "pop_end"),
     fields={
         # The single action's obligation — NEVER a lifetime or window rollup. The build
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
@@ -360,6 +364,9 @@ AWARDS = Decoder(
         "awarding_sub_agency": FieldSpec("awarding_sub_agency", "string", ("=", "in"), index="BTREE"),
         "set_aside":         FieldSpec("set_aside", "string", ("=", "in"),
                                        enum=_SET_ASIDE_CODES, index="BITMAP"),
+        # Contracting officer's small/large determination (prime-only — NULL on subawards).
+        "business_size":     FieldSpec("business_size", "string", ("=", "in"),
+                                       enum=_BUSINESS_SIZE, index="BITMAP"),
         "winner_type":       FieldSpec("winner_type", "string", ("=", "in"),
                                        enum=("prime_recipient", "subawardee"), index="BITMAP"),
         # Contract currently within its period of performance (pop_end >= today, build-time);
@@ -388,6 +395,7 @@ AWARDS = Decoder(
         "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
         "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
         "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
+        "small business":          {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
     },
     # Aggregate over award_amount, grouped by any indexed dim (or the 'winner'/'size_band'
     # pseudo-dims). The window stays query-driven: the SAME days_since_action filter the row
@@ -400,7 +408,7 @@ AWARDS = Decoder(
             "psc_category": "psc_category", "psc_code": "psc_code",
             "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
             "state": "state", "pop_state": "pop_state",
-            "set_aside": "set_aside", "winner_type": "winner_type",
+            "set_aside": "set_aside", "business_size": "business_size", "winner_type": "winner_type",
         },
         winner_key=("winner_uei", "winner_name"),
         size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),
@@ -408,9 +416,8 @@ AWARDS = Decoder(
 )
 
 
-# FPDS contracting-officer business-size determination + award/IDV flag (verified live on the
-# active-awards serving table; NULL on the ~unfilled tail, which an enum filter excludes honestly).
-_BUSINESS_SIZE = ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS")
+# FPDS award/IDV flag (verified live on the active-awards serving table; NULL on the ~unfilled
+# tail, which an enum filter excludes honestly). _BUSINESS_SIZE is defined above (shared w/ awards).
 _AWARD_OR_IDV = ("AWARD", "IDV")
 
 ACTIVE = Decoder(

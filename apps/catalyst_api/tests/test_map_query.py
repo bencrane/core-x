@@ -350,6 +350,16 @@ def test_awards_fiscal_year_axis_and_yoy_groupby():
     assert gb == "fiscal_year"
 
 
+def test_awards_business_size_axis():
+    assert _compile(AWARDS, [{"field": "business_size", "op": "=", "value": "SMALL BUSINESS"}]) == (
+        "business_size = 'SMALL BUSINESS'")
+    with pytest.raises(lance_store.MapCompileError):
+        _compile(AWARDS, [{"field": "business_size", "op": "=", "value": "small"}])
+    # business_size is a groupable aggregate dim — the small/large $ split
+    _, gb, _, _ = lance_store.validate_aggregate(AWARDS, "business_size", ["count", "sum"], None)
+    assert gb == "business_size"
+
+
 def test_active_business_size_enum_and_current_value_aggregate():
     assert _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "SMALL BUSINESS"}]) == (
         "business_size = 'SMALL BUSINESS'"

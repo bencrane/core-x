@@ -220,7 +220,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v6",
+        "version": "awards.v7",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
@@ -240,6 +240,7 @@ DECODERS: dict[str, dict] = {
             "awarding_sub_agency": {"type": "string", "ops": ("=", "in"), "desc": "EXACT sub-tier awarding agency name, e.g. 'Federal Acquisition Service', 'Federal Aviation Administration', 'U.S. Coast Guard', 'National Institutes of Health'"},
             "set_aside":         {"type": "string", "ops": ("=", "in"), "enum": _SET_ASIDE_CODES,
                                   "desc": "set-aside code: 8A/8AN = 8(a); SDVOSBC/SDVOSBS = service-disabled-veteran-owned; WOSB/WOSBSS/EDWOSB/EDWOSBSS = woman-owned; HZC/HZS = HUBZone; SBA/SBP = small-business; 'NONE' = explicitly no set-aside. Partial coverage: many actions carry no signal"},
+            "business_size":     {"type": "string", "ops": ("=", "in"), "enum": ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS"), "desc": "contracting officer's business-size determination. 'small business' → 'SMALL BUSINESS'. Prime actions only"},
             "winner_type":       {"type": "string", "ops": ("=", "in"), "enum": ("prime_recipient", "subawardee")},
             "is_active":         {"type": "bool", "ops": ("=",), "desc": "true = the contract is currently within its period of performance (active). Prime actions only — subawards carry no PoP and are excluded. 'active contracts' / 'currently active' → is_active = true"},
         },
@@ -263,6 +264,7 @@ DECODERS: dict[str, dict] = {
             "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
             "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
             "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
+            "small business":          {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
         },
         # Dataset-specific prompt rules (rendered under Rules).
         "notes": (
@@ -279,7 +281,7 @@ DECODERS: dict[str, dict] = {
         "aggregate": {
             "measure": "award_amount",
             "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
-                     "awarding_sub_agency", "state", "pop_state", "set_aside", "winner_type"],
+                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size", "winner_type"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING questions ('break down by"
