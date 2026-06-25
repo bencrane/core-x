@@ -129,6 +129,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         prospect_rid = await queries.get_prospect_recipient_id(
             conn, draft["documenso_template_id"]
         )
+        template_defaults = await queries.get_template_default_field_values(
+            conn, draft["documenso_template_id"]
+        )
     if not prefill:
         raise HTTPException(
             status_code=404, detail="no opportunity_specific_content for this opportunity"
@@ -141,12 +144,15 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
     # UUID. This is the externally-visible opportunity id: stamped as the envelope's externalId and
     # carried in the prospect link, so the signing gate matches it exactly on the read side.
     opportunity_ref = prefill["opportunity_ref"]
+    # Template-level DEFAULT prefill values (e.g. the success-fee % ``amt%='2'``) UNDER the
+    # opportunity's per-deal values — a specific opportunity overrides a standing template default.
+    field_values = {**template_defaults, **(prefill["field_values"] or {})}
     try:
         result = await documenso_client.create_document_from_template(
             draft["documenso_template_id"],
             recipient_email=prefill["recipient_email"],
             recipient_name=prefill["recipient_name"] or prefill["recipient_email"],
-            field_values_by_label=prefill["field_values"],
+            field_values_by_label=field_values,
             # Stamp the opportunity's 8-char handle as the envelope's externalId — the durable anchor
             # the Documenso webhook capture carries back, and the prospect-link access capability.
             external_id=opportunity_ref,
