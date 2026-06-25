@@ -116,6 +116,7 @@ One row per `normalized_domain`. All columns nullable except `normalized_domain`
 | `normalized_domain` | string (NOT NULL, BTREE) | join key to `active/companies.normalized_domain` |
 | `capital_type` | string | `capital-provider-json-1.capitalType` — **native, verbatim** (the primary outbound filter) |
 | `provides_capital` | bool | `capital-provider-json-1.providesCapital` |
+| `is_capital_provider` | bool | **the outbound gate** — `true` on ANY positive lender signal: `provides_capital=true` OR curated origin (elfa/sfnet/exa/exa-all) OR `provides_equipment_financing` OR construction/independent EF = `yes` OR a lender `ef_classification` |
 | `is_intermediary` | bool | `true` when `capital_type ∈ {brokerOrMarketplace, advisoryOnly, notCapitalProvider}` (exclude-from-outbound flag) |
 | `financing_mode` | string | normalized enum: `direct` \| `broker` \| `partner` \| `multi` \| `unclear` (see §5.3) |
 | `provides_equipment_financing` | bool | `true` if ANY financing-cluster payload has `providesEquipmentFinancing ∈ {yes,true}` |
@@ -135,7 +136,7 @@ filters on the native columns directly (see §8).
 
 ### 5.1 Row universe (which domains get a row)
 **Default:** every domain with `capital-provider-json-1.providesCapital='true'` (≈7,344) — the verified
-lenders. PLUS curated-origin lender domains from `active/companies` where `source_platform ∈ {elfa, sfnet}`
+lenders. PLUS curated-origin lender domains from `active/companies` where `source_platform ∈ {elfa, sfnet, exa, exa-all}`
 that lack a capital payload (these are association-verified lenders: ELFA = Equipment Leasing & Finance
 Assoc, SFNet = Secured Finance Network) — emit them with `capital_type=NULL`, `signals=['source:elfa']` etc.
 PLUS every domain enriched by `construction-equipment-financing-1` (any `conclusion`) — **ledger
@@ -227,6 +228,8 @@ verdict — the cleanest equipment-finance refiner available, and trustworthy un
 
 ## 8. How the operator uses it (acceptance of "useful")
 ```sql
+-- ALL capital providers (claygent-verified + curated elfa/sfnet/exa/exa-all), clean for outbound
+WHERE is_capital_provider AND NOT is_intermediary
 -- equipment-finance lenders (native + cross-signal)
 WHERE (capital_type IN ('equipmentFinancing','assetBasedLender') OR provides_equipment_financing)
   AND NOT is_intermediary
@@ -258,9 +261,10 @@ Join to `active/companies` on `normalized_domain` for firmographics/outreach fie
 ---
 
 ## 10. Operator decision flags (resolve or accept the default)
-- **A. Curated-origin rows:** include `elfa`/`sfnet` (and `exa`/`exa-all`?) domains that have no capital
-  payload, as rows with `capital_type=NULL`? **Default: include elfa+sfnet, exclude exa/exa-all** (generic
-  discovery, no lender prior).
+- **A. Curated-origin rows: RESOLVED (2026-06-25) — include ALL FOUR** (`elfa`/`sfnet`/`exa`/`exa-all`),
+  as rows with `capital_type=NULL` + `source:<platform>` in `signals` + `is_capital_provider=true`. The
+  operator treats all four origins as verified capital providers; they surface via the `is_capital_provider`
+  gate even though `capital_type` is NULL. (elfa 43 · sfnet 165 · exa 40 · exa-all 259 = 507 domains.)
 - **B. `nonBankLender` (3,611):** kept as a native coarse value. It is your largest single segment and the
   prime candidate for a refinement re-enrich pass. No action here beyond keeping it.
 - **C. Intermediaries (`is_intermediary`, ~337):** kept-and-flagged (default) vs dropped. Default keeps them.

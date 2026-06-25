@@ -51,7 +51,9 @@ FMODE_MAP = {
     "through-partner": "partner", "partner/referral": "partner",
     "multi-lender": "multi", "unclear": "unclear",
 }
-CURATED = ("elfa", "sfnet")
+CURATED = ("elfa", "sfnet", "exa", "exa-all")  # association/discovery lender lists → trusted capital-provider origins
+# ef_classification values that ARE a lender (positive capital-provider signal)
+LENDER_EF = {"independentFinancer", "bankOrCreditUnion", "generalLenderWithEquipmentProduct", "captiveOemFinancingArm"}
 
 
 def crank(c) -> int:
@@ -75,6 +77,7 @@ SCHEMA = pa.schema([
     pa.field("normalized_domain", pa.string(), nullable=False),
     pa.field("capital_type", pa.string()),
     pa.field("provides_capital", pa.bool_()),
+    pa.field("is_capital_provider", pa.bool_()),
     pa.field("is_intermediary", pa.bool_()),
     pa.field("financing_mode", pa.string()),
     pa.field("provides_equipment_financing", pa.bool_()),
@@ -206,7 +209,7 @@ def main() -> None:
             if valid(dd):
                 curated.setdefault(dd, s)
 
-    # 6. universe = capital-true ∪ curated{elfa,sfnet} ∪ construction-enriched ∪ independent-ef-enriched
+    # 6. universe = capital-true ∪ curated{elfa,sfnet,exa,exa-all} ∪ construction-enriched ∪ independent-ef-enriched
     universe = set(cap) | set(curated) | set(constr) | indep_domains
 
     rows = []
@@ -214,6 +217,14 @@ def main() -> None:
         capj = cap.get(d)
         ct = capj[1] if capj else None
         conf = capj[2] if capj else None
+        cef = constr[d][1] if d in constr else None
+        ief = indep[d][1] if d in indep else None
+        efcl = efc[d][1] if d in efc else None
+        pef = pef_bool(d)
+        # is_capital_provider — the single outbound gate. TRUE on ANY positive lender signal:
+        # claygent providesCapital=true, OR a curated lender origin (elfa/sfnet/exa/exa-all),
+        # OR provides_equipment_financing, OR construction/independent EF = yes, OR a lender ef_classification.
+        is_cp = bool(capj) or (d in curated) or (pef is True) or (cef == "yes") or (ief == "yes") or (efcl in LENDER_EF)
         sig = sorted(touched.get(d, set()))
         if d in curated:
             sig = sorted(set(sig) | {f"source:{curated[d]}"})
@@ -221,12 +232,13 @@ def main() -> None:
             "normalized_domain": d,
             "capital_type": ct,
             "provides_capital": True if capj else None,
+            "is_capital_provider": is_cp,
             "is_intermediary": (ct in INTERMEDIARY) if ct else False,
             "financing_mode": fmode_best[d][1] if d in fmode_best else None,
-            "provides_equipment_financing": pef_bool(d),
-            "construction_equip_financing": constr[d][1] if d in constr else None,
-            "independent_equip_financing": indep[d][1] if d in indep else None,
-            "ef_classification": efc[d][1] if d in efc else None,
+            "provides_equipment_financing": pef,
+            "construction_equip_financing": cef,
+            "independent_equip_financing": ief,
+            "ef_classification": efcl,
             "confidence": conf,
             "signals": sig,
             "materialized_at": mat_at,
@@ -244,7 +256,9 @@ def main() -> None:
     print(f"WROTE {ds.count_rows():,} rows → {DATASET_URI}")
     print(f"distinct normalized_domain: {len({r['normalized_domain'] for r in rows}):,}")
     print(f"universe parts: capital-true={len(cap):,} curated={len(curated):,} construction={len(constr):,} independent-ef={len(indep_domains):,}")
+    print(f"is_capital_provider=true: {sum(1 for r in rows if r['is_capital_provider']):,}  (outbound after NOT is_intermediary: {sum(1 for r in rows if r['is_capital_provider'] and not r['is_intermediary']):,})")
     print(f"is_intermediary=true: {sum(1 for r in rows if r['is_intermediary']):,}")
+    print("curated origins in universe:", dict(Counter(curated.values())))
     if unmapped:
         print(f"!! UNMAPPED financingMode values (mapped to unclear): {sorted(unmapped)}")
     print("capital_type:", dict(Counter(r["capital_type"] for r in rows).most_common()))
