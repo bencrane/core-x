@@ -149,7 +149,8 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v7",   # v6→v7: drop stale ~90-day window claim from prompt-facing copy (data spans full history)
+    version="winners.v8",   # v7→v8: add the AGGREGATE capability (rollup total_obligation by dim / top winners / distribution)
+                            # v6→v7: drop stale ~90-day window claim from prompt-facing copy (data spans full history)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "total_obligation", "award_count", "last_action_date",
@@ -250,12 +251,21 @@ WINNERS = Decoder(
         "pmp":                 {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_PMP)},
         "osha 30":             {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_OSHA_30)},
     },
+    # Aggregate over the per-winner rolled-up obligation. group-by any indexed dim (or 'winner'
+    # top-N / 'size_band' histogram); measure = total_obligation.
+    aggregate=AggregateSpec(
+        measure="total_obligation",
+        dims={"naics2": "naics2", "naics_code": "naics_code", "state": "state",
+              "winner_type": "winner_type"},
+        winner_key=("winner_uei", "winner_name"),
+        size_band_edges=(100_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0, 1_000_000_000.0),
+    ),
 )
 
 
 COMPANY = Decoder(
     dataset_key="company",
-    version="company.v3",
+    version="company.v4",   # v3→v4: add the AGGREGATE capability (rollup active obligations by firmographic dim)
     geometry=("longitude", "latitude"),
     properties=("uei", "company_name", "industry", "employee_size_band", "company_type",
                 "naics2", "primary_naics", "hq_city", "hq_state", "has_federal_awards",
@@ -290,6 +300,16 @@ COMPANY = Decoder(
         "this week":           {"field": "days_since_last_award", "op": "<=", "value": 7},
         "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
     },
+    # Aggregate over total active federal obligations. group-by any firmographic dim (or 'winner'
+    # top-N companies / 'size_band' histogram); measure = total_active_obligations.
+    aggregate=AggregateSpec(
+        measure="total_active_obligations",
+        dims={"naics2": "naics2", "industry": "industry", "employee_size_band": "employee_size_band",
+              "company_type": "company_type", "state": "physical_address_state",
+              "primary_naics": "primary_naics"},
+        winner_key=("uei", "company_name"),
+        size_band_edges=(100_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0, 1_000_000_000.0),
+    ),
 )
 
 
