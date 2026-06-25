@@ -5,7 +5,7 @@ operator-org (by email domain), resolving each to the underlying content-config 
 selected value still drives origination unchanged.
 
     mapping ──▶ documenso_templates ──▶ global_engagement_content (slug)
-              (m.documenso_template_id)   (dt.source_config_id)
+              (m.documenso_template_uuid)  (dt.source_config_id)
 
 The org filter is on the MAPPING's organization (its ``metadata->>'domain'``).
 """
@@ -23,7 +23,7 @@ _SQL = """
            a.performance_fee_basis             AS performance_fee_basis,
            COALESCE(dt.recipients->'text_fields', '[]'::jsonb) AS text_fields
       FROM business.engagement_documenso_template_mappings m
-      JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_id
+      JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_uuid
       JOIN business.organizations o              ON o.id = m.organization_id
       LEFT JOIN business.engagement_archetypes a ON a.id = dt.archetype_id
      WHERE m.is_visible = true

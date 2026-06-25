@@ -72,7 +72,7 @@ SELECT dt.documenso_template_id AS id,          -- the numeric Documenso templat
        a.performance_fee_basis  AS performance_fee_basis,
        COALESCE(dt.recipients->'text_fields', '[]'::jsonb) AS text_fields  -- stored FALLBACK
   FROM business.engagement_documenso_template_mappings m
-  JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_id   -- FK -> surrogate PK
+  JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_uuid  -- FK -> surrogate PK
   JOIN business.organizations o              ON o.id = m.organization_id
   LEFT JOIN business.engagement_archetypes a ON a.id = dt.archetype_id
  WHERE m.is_visible = true AND m.status = 'active'
@@ -82,7 +82,7 @@ SELECT dt.documenso_template_id AS id,          -- the numeric Documenso templat
 
 `queries.py:19`-`32`. An **empty `org_domain` short-circuits to `[]`** (`if not org_domain: return []`, `queries.py:38`).
 
-> **DO-NOT-CONFLATE the two id columns.** The FK `m.documenso_template_id` joins to `dt.id` (the **surrogate PK**), but the returned option `id` is `dt.documenso_template_id` (the **numeric Documenso template id** — the value origination uses). `queries.py:19`, `:26`.
+> **DO-NOT-CONFLATE the two id columns.** The FK `m.documenso_template_uuid` joins to `dt.id` (the **surrogate PK**), but the returned option `id` is `dt.documenso_template_id` (the **numeric Documenso template id** — the value origination uses). The mapping FK was renamed from `documenso_template_id` (uuid) to `documenso_template_uuid` precisely to kill this collision. `queries.py:19`, `:26`.
 
 `EngagementMappingOption` fields: `id`, `label` (=`m.name`), `archetype_key`, `archetype_name`, `performance_fee_basis`, `text_fields` (`engagement_mappings/models.py:13`-`23`; `queries.py:20`-`24`, `:28`).
 
