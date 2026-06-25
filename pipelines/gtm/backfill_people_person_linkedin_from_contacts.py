@@ -8,9 +8,16 @@ in-place enrichment. The operator-curated person LinkedIn URLs landed in gtm.con
 MECHANICS. Read active/people (tiny, one fragment) → for every row whose person_linkedin_url is
 NULL, fill it from gtm.contacts deduped to the LATEST url per (company-domain × first+last name)
 → Lance overwrite (canonical writer params, imported from companies_people_bulk) → rebuild the
-people BTREE indexes. COALESCE never overwrites an existing url, so re-running is a safe no-op
-once converged. The people row set and every other column are byte-identical — only NULL
-person_linkedin_url cells change.
+FULL people index plan — every BTREE + BITMAP group in cpb.INDEXES['people']. COALESCE never
+overwrites an existing url, so re-running is a safe no-op once converged. The people row set and
+every other column are byte-identical — only NULL person_linkedin_url cells change.
+
+INDEX REBUILD (the overwrite drops ALL indices — the new dataset version starts with none). cpb's
+INDEXES['people'] now carries the live committed set: 3 BTREE (company_id, normalized_domain,
+person_linkedin_url) + the verification_status BITMAP added by the work-email enrichment. Both
+groups are rebuilt. A DRIFT TRIPWIRE snapshots the live committed index names BEFORE the overwrite
+and diffs them against what was rebuilt — if a live index is NOT covered by cpb's plan it is logged
+loudly (reconcile cpb.INDEXES['people'] + reindex) instead of being silently dropped.
 
     doppler run -- python3 pipelines/gtm/backfill_people_person_linkedin_from_contacts.py
 """
@@ -91,6 +98,10 @@ def main() -> None:
         print("nothing to fill — already converged. No write.")
         return
 
+    # Snapshot the LIVE committed index names BEFORE the overwrite (the overwrite drops them all);
+    # the rebuilt set is diffed against this to catch any index cpb's plan fails to cover.
+    live_idx = set(_cpb._committed_index_names("people", so))
+
     # 3. Overwrite with the canonical writer params (schema byte-identical, only the column changes).
     idx = tbl.schema.get_field_index("person_linkedin_url")
     out = tbl.set_column(idx, tbl.schema.field(idx), pa.array(new_url, type=pa.string()))
@@ -102,9 +113,24 @@ def main() -> None:
     )
     ds2 = lance.dataset(PEOPLE_URI, storage_options=so)
     print(f"wrote active/people (overwrite, v{_cpb.DATA_STORAGE_VERSION}) — {ds2.count_rows():,} rows")
-    for col in _cpb.INDEXES["people"]["BTREE"]:
-        ds2.create_scalar_index(col, index_type="BTREE")
-        print(f"  BTREE ✓ {col}")
+
+    # Rebuild the FULL live index plan — every BTREE + BITMAP group (cpb.INDEXES['people'] now
+    # carries the verification_status BITMAP). Best-effort per index: the data write is already
+    # committed, so an index miss must not crash the run — it is logged loudly instead.
+    for index_type, cols in _cpb.INDEXES["people"].items():
+        for col in cols:
+            try:
+                ds2.create_scalar_index(col, index_type=index_type)
+                print(f"  {index_type:<6} ✓ {col}")
+            except Exception as exc:  # noqa: BLE001 — an index miss must not fail a good write
+                print(f"  {index_type:<6} ✗ {col}: {exc}")
+
+    # DRIFT TRIPWIRE: any live index NOT rebuilt by cpb's plan was just silently dropped.
+    dropped = live_idx - set(_cpb._committed_index_names("people", so))
+    if dropped:
+        print(f"  ⚠️  DRIFT — live indices NOT covered by cpb.INDEXES['people'], now DROPPED: "
+              f"{sorted(dropped)}. Reconcile companies_people_bulk.INDEXES['people'] and reindex.")
+
     after = ds2.to_table(columns=["person_linkedin_url"]).column(0).to_pylist()
     print(f"VERIFY person_linkedin_url populated: {sum(1 for v in after if v):,} / {ds2.count_rows():,}")
 
