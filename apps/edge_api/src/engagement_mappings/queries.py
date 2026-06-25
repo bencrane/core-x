@@ -28,6 +28,7 @@ _SQL = """
       LEFT JOIN business.engagement_archetypes a ON a.id = dt.archetype_id
      WHERE m.is_visible = true
        AND m.status = 'active'
+       AND dt.status = 'active'          -- never surface an engagement whose underlying template is archived/draft
        AND lower(o.metadata->>'domain') = lower(%s)
      ORDER BY a.name NULLS LAST, m.name
 """
