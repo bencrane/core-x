@@ -79,6 +79,7 @@ SCHEMA = pa.schema([
     pa.field("financing_mode", pa.string()),
     pa.field("provides_equipment_financing", pa.bool_()),
     pa.field("construction_equip_financing", pa.string()),
+    pa.field("independent_equip_financing", pa.string()),
     pa.field("ef_classification", pa.string()),
     pa.field("confidence", pa.string()),
     pa.field("signals", pa.list_(pa.string())),
@@ -174,6 +175,25 @@ def main() -> None:
         val = c if c in ("yes", "no", "unclear") else "unclear"
         if d not in constr or key > constr[d][0]:
             constr[d] = (key, val)
+
+    # 4b. independent-equipment-financing — high-precision independent-financier verdict
+    # (isIndependentEquipmentFinancingProvider bool; the payload also clears OEM/seller flags).
+    cur.execute("""SELECT domain_norm, lower(raw_payload->>'isIndependentEquipmentFinancingProvider'),
+                          raw_payload->>'confidence', landed_at
+        FROM gtm.existing_claygent_payloads
+        WHERE enrichment_payload_type='independent-equipment-financing-1' AND domain_norm IS NOT NULL""")
+    indep: dict[str, tuple] = {}
+    indep_domains: set = set()
+    for d, v, conf, la in cur.fetchall():
+        if not valid(d):
+            continue
+        touch(d, "independent-equipment-financing-1")
+        indep_domains.add(d)
+        val = "yes" if v == "true" else ("no" if v == "false" else None)
+        if val is not None:
+            key = (crank(conf), la)
+            if d not in indep or key > indep[d][0]:
+                indep[d] = (key, val)
     pg.close()
 
     # 5. curated lender origins from active/companies (elfa/sfnet)
@@ -186,8 +206,8 @@ def main() -> None:
             if valid(dd):
                 curated.setdefault(dd, s)
 
-    # 6. universe = capital-true ∪ curated{elfa,sfnet} ∪ construction-enriched
-    universe = set(cap) | set(curated) | set(constr)
+    # 6. universe = capital-true ∪ curated{elfa,sfnet} ∪ construction-enriched ∪ independent-ef-enriched
+    universe = set(cap) | set(curated) | set(constr) | indep_domains
 
     rows = []
     for d in sorted(universe):
@@ -205,6 +225,7 @@ def main() -> None:
             "financing_mode": fmode_best[d][1] if d in fmode_best else None,
             "provides_equipment_financing": pef_bool(d),
             "construction_equip_financing": constr[d][1] if d in constr else None,
+            "independent_equip_financing": indep[d][1] if d in indep else None,
             "ef_classification": efc[d][1] if d in efc else None,
             "confidence": conf,
             "signals": sig,
@@ -222,13 +243,14 @@ def main() -> None:
     from collections import Counter
     print(f"WROTE {ds.count_rows():,} rows → {DATASET_URI}")
     print(f"distinct normalized_domain: {len({r['normalized_domain'] for r in rows}):,}")
-    print(f"universe parts: capital-true={len(cap):,} curated={len(curated):,} construction={len(constr):,}")
+    print(f"universe parts: capital-true={len(cap):,} curated={len(curated):,} construction={len(constr):,} independent-ef={len(indep_domains):,}")
     print(f"is_intermediary=true: {sum(1 for r in rows if r['is_intermediary']):,}")
     if unmapped:
         print(f"!! UNMAPPED financingMode values (mapped to unclear): {sorted(unmapped)}")
     print("capital_type:", dict(Counter(r["capital_type"] for r in rows).most_common()))
     print("financing_mode:", dict(Counter(r["financing_mode"] for r in rows).most_common()))
     print("construction_equip_financing:", dict(Counter(r["construction_equip_financing"] for r in rows).most_common()))
+    print("independent_equip_financing:", dict(Counter(r["independent_equip_financing"] for r in rows).most_common()))
     print("provides_equipment_financing:", dict(Counter(r["provides_equipment_financing"] for r in rows).most_common()))
     print("indices:", [ix.get("name") if isinstance(ix, dict) else getattr(ix, "name", str(ix)) for ix in ds.list_indices()])
 
