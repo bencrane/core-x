@@ -15,9 +15,11 @@ every other column are byte-identical — only NULL person_linkedin_url cells ch
 INDEX REBUILD (the overwrite drops ALL indices — the new dataset version starts with none). cpb's
 INDEXES['people'] now carries the live committed set: 3 BTREE (company_id, normalized_domain,
 person_linkedin_url) + the verification_status BITMAP added by the work-email enrichment. Both
-groups are rebuilt. A DRIFT TRIPWIRE snapshots the live committed index names BEFORE the overwrite
-and diffs them against what was rebuilt — if a live index is NOT covered by cpb's plan it is logged
-loudly (reconcile cpb.INDEXES['people'] + reindex) instead of being silently dropped.
+groups are rebuilt. A DRIFT TRIPWIRE snapshots which COLUMNS the live dataset indexes BEFORE the
+overwrite and diffs them against what was rebuilt — any column that lost coverage is logged loudly,
+with the diagnosis SPLIT so the remediation is correct: a column cpb's plan tried but failed to
+rebuild is a transient build error (re-run), whereas a column cpb's plan never lists is genuine
+drift (reconcile cpb.INDEXES['people'] + reindex).
 
     doppler run -- python3 pipelines/gtm/backfill_people_person_linkedin_from_contacts.py
 """
@@ -54,6 +56,19 @@ def _name_key(full_name: str | None) -> str | None:
 def _source_dsn() -> str:
     dsn = os.environ["HQX_DB_URL_POOLED"]
     return dsn if "sslmode=" in dsn else dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
+
+
+def _indexed_columns(dataset) -> set[str]:
+    """Columns carrying at least one committed scalar index. Derived from lance's default index
+    name ('{col}_idx'); tolerates list_indices() returning dicts or objects. Used to detect
+    coverage LOSS — a column going indexed → unindexed — which is the exact bug this guards
+    against, independent of index type."""
+    cols: set[str] = set()
+    for ix in dataset.list_indices():
+        name = ix.get("name") if isinstance(ix, dict) else getattr(ix, "name", None)
+        if name:
+            cols.add(name[:-4] if name.endswith("_idx") else name)
+    return cols
 
 
 def main() -> None:
@@ -98,9 +113,11 @@ def main() -> None:
         print("nothing to fill — already converged. No write.")
         return
 
-    # Snapshot the LIVE committed index names BEFORE the overwrite (the overwrite drops them all);
-    # the rebuilt set is diffed against this to catch any index cpb's plan fails to cover.
-    live_idx = set(_cpb._committed_index_names("people", so))
+    # Snapshot the columns the LIVE dataset indexes BEFORE the overwrite (which drops every index —
+    # the new version starts with none). Read from the pinned pre-overwrite handle so it reflects
+    # the live state. Diffed post-rebuild to catch any column that lost coverage.
+    live_cols = _indexed_columns(ds)
+    print(f"live indexed columns (to be rebuilt): {sorted(live_cols)}")
 
     # 3. Overwrite with the canonical writer params (schema byte-identical, only the column changes).
     idx = tbl.schema.get_field_index("person_linkedin_url")
@@ -116,7 +133,8 @@ def main() -> None:
 
     # Rebuild the FULL live index plan — every BTREE + BITMAP group (cpb.INDEXES['people'] now
     # carries the verification_status BITMAP). Best-effort per index: the data write is already
-    # committed, so an index miss must not crash the run — it is logged loudly instead.
+    # committed, so an index miss must not crash the run — it is logged loudly and tracked instead.
+    rebuild_failed: set[str] = set()
     for index_type, cols in _cpb.INDEXES["people"].items():
         for col in cols:
             try:
@@ -124,12 +142,20 @@ def main() -> None:
                 print(f"  {index_type:<6} ✓ {col}")
             except Exception as exc:  # noqa: BLE001 — an index miss must not fail a good write
                 print(f"  {index_type:<6} ✗ {col}: {exc}")
+                rebuild_failed.add(col)
 
-    # DRIFT TRIPWIRE: any live index NOT rebuilt by cpb's plan was just silently dropped.
-    dropped = live_idx - set(_cpb._committed_index_names("people", so))
-    if dropped:
-        print(f"  ⚠️  DRIFT — live indices NOT covered by cpb.INDEXES['people'], now DROPPED: "
-              f"{sorted(dropped)}. Reconcile companies_people_bulk.INDEXES['people'] and reindex.")
+    # DRIFT TRIPWIRE — any column indexed live but unindexed after the rebuild just lost coverage.
+    # Split the diagnosis so the remediation is correct, not misleading: a column cpb's plan tried
+    # and FAILED to rebuild is a transient build/R2 error (re-run), NOT plan drift; a column cpb's
+    # plan never lists is genuine drift (reconcile the plan).
+    lost = live_cols - _indexed_columns(lance.dataset(PEOPLE_URI, storage_options=so))
+    if lost & rebuild_failed:
+        print(f"  ⚠️  index BUILD FAILED for {sorted(lost & rebuild_failed)} (these ARE in cpb's "
+              f"plan) — transient build/R2 error, NOT drift. Re-run or investigate R2; do NOT edit INDEXES.")
+    drift = lost - rebuild_failed
+    if drift:
+        print(f"  ⚠️  DRIFT — columns indexed live but NOT in cpb.INDEXES['people'], now DROPPED: "
+              f"{sorted(drift)}. Reconcile companies_people_bulk.INDEXES['people'] and reindex.")
 
     after = ds2.to_table(columns=["person_linkedin_url"]).column(0).to_pylist()
     print(f"VERIFY person_linkedin_url populated: {sum(1 for v in after if v):,} / {ds2.count_rows():,}")
