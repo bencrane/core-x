@@ -72,8 +72,8 @@ for the snapshot-partitioned entity-360 datasets.
 
 ## 3. The real use case
 
-The gateway is consumed by **one interactive Anthropic Managed Agent** (gtm-agent, wired as the `polaris`
-MCP server via `config.py:198-209` + `services/managed_agents.py` → SSE `/v1/sessions`). The access shape
+The gateway is consumed by **one interactive Anthropic Managed Agent** (gtm-agent, wired as the `gtm`
+MCP server — `mcp_servers[].name = "gtm"`, url `https://gtm-mcp-8pru.onrender.com/mcp` — via `services/managed_agents.py` → SSE `/v1/sessions`). The access shape
 is **interactive / sequential / exploratory**: a reason→tool→observe→reason loop emitting many small tool
 calls per task, not batch.
 

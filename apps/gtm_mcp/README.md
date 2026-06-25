@@ -28,7 +28,7 @@ first use the gateway lists `s3://data-sink/active/` and resolves every committe
 Lance dataset (~100+) into an in-memory `name → uri` registry. A dataset's name is
 its path relative to `active/`:
 
-- flat root → bare name: `companies`, `people`, `firmographics_blitz`
+- flat root → bare name: `companies`, `people`, `title_enrichment`, `firmographics_blitz`
 - nested under a namespace → quoted path: `"usaspending/award_search"`, `"fmcsa/carrier"`, `"ca_ucc/filings"`
 
 The three **indexed core datasets** that power the typed point-lookups carry a
@@ -38,7 +38,7 @@ if a scoped token can read objects but not list the bucket):
 | Relation               | URI                                              | BTREE anchor(s)                   |
 |------------------------|--------------------------------------------------|-----------------------------------|
 | `companies`            | `s3://data-sink/active/companies/`               | `normalized_domain`               |
-| `people`               | `s3://data-sink/active/people/`                  | `normalized_domain`, `company_id` |
+| `people`               | `s3://data-sink/active/people/`                  | `normalized_domain`, `company_id`, `person_linkedin_url` |
 | `awards` (alias →      | `s3://data-sink/active/contractor_award_summary/`| `recipient_uei`                   |
 | `contractor_award_summary`) |                                             |                                   |
 
@@ -51,6 +51,12 @@ if a scoped token can read objects but not list the bucket):
 
 Surfaced by the **Provider 360** targeting tools below. Snapshot auto-resolves to the newest partition (override with `PROVIDER_360_SNAPSHOT` / `PRACTICE_GROUP_360_SNAPSHOT`).
 
+**Audience-support datasets** (auto-discovered, not seeded):
+
+- `people` carries `work_email` / `work_email_norm` / `verification_status` / `mv_resultcode` (13 cols total); `verification_status='verified'` (= `mv_resultcode` 1, BITMAP-indexed) is the mail-ready gate, and `enroll_leads_from_audience` sources the verified email from ops state keyed by `contact_id`.
+- `companies` carries firmographics for segmentation — `industry`, `employee_size_band`, `company_type`, `hq_region` (each BITMAP-indexed), plus `employees_on_linkedin`, `founded_year`, `specialties`, `hq_city`/`hq_state`/`hq_continent`, and `uei` (federal-spend bridge key).
+- `title_enrichment` — person-grain normalized seniority/function (`normalized_level`, `normalized_function`, `title_norm`, `normalized_job_title`, `confidence`), joined to `people` on the RAW LinkedIn URL: `people.person_linkedin_url = title_enrichment.person_linkedin_url`. Do NOT join on `person_linkedin_url_norm` — `people` has no normalized LinkedIn column and `_norm` has zero overlap.
+
 ## Tools
 
 **Audience** ([`src/tools/audience.py`](src/tools/audience.py))
@@ -59,6 +65,19 @@ Surfaced by the **Provider 360** targeting tools below. Snapshot auto-resolves t
 - `lookup_awards_by_uei(recipient_uei)` — BTREE pushdown on `awards.recipient_uei` (federal-spend resume)
 - `search_company_by_name(name)` — canonical blocking-key match via `core.name_norm` (applied as a DuckDB SQL literal)
 - `execute_audience_query(sql)` — arbitrary ANSI SQL over the full discovered plane (+ raw `s3://` Parquet); **JIT registration** binds only the datasets the SQL references, so cross-layer joins open two manifests, not ~100; capped at 1000 rows
+
+**Audience stamping & enrollment** ([`src/tools/corex.py`](src/tools/corex.py))
+- `define_audience(name, source_sql, gtm_side=None, result_key='company_id', run=True)` — stamp a reusable audience (SQL selection + `{row_count, last_run_at}`). `result_key` is the 4th param ('contact_id' | 'company_id' | 'recipient_uei'); call with keyword args so it is not bound positionally to `gtm_side`.
+- `define_audience_pair(initiative_id, demand_sql, supply_sql, thesis, demand_name, supply_name, demand_result_key='company_id', supply_result_key='recipient_uei', run=True)` — bind a demand + supply audience as an initiative thesis.
+- `enroll_leads_from_audience(campaign_id, audience_id=None, limit=1000)` — re-run the stamped audience over the live lake, resolve each row to a contact (companies → most-senior person via the `people` graph), upsert `corex.contact` + `corex.lead`; verified email sourced from `ops.email_resolutions`. Idempotent.
+
+**Batched point-lookups** ([`src/tools/batch_lookups.py`](src/tools/batch_lookups.py))
+- `search_companies_by_domains([...])` / `search_people_by_domains([...])` — one IN(...) BTREE scan, de-duped and capped at 1000, results grouped by domain.
+
+**Federal / GovCon / SAM** ([`src/tools/federal.py`](src/tools/federal.py), [`govcon.py`](src/tools/govcon.py), [`sub_capability.py`](src/tools/sub_capability.py), [`capability.py`](src/tools/capability.py), [`sam_entities.py`](src/tools/sam_entities.py))
+- `federal_spend_by_agency` / `federal_spend_by_industry` / `federal_spend_by_state`, `federal_entities_by_filter` — federal-spend rollups over the `awards` plane.
+- `govcon_companies_by_requirements`, `govcon_requirement_facets`, `search_govcon_scopes`, `search_subawardee_capabilities` — GovCon requirement matching.
+- `lookup_sam_entity_by_uei` / `lookup_sam_entity_by_cage` / `lookup_sam_entities_by_ueis` / `lookup_sam_contacts_by_uei`, `search_sam_entities_by_naics`, `lookup_awards_by_uei` / `lookup_awards_by_ueis` — SAM/UEI/CAGE entity and award lookups.
 
 **Catalog** ([`src/tools/catalog.py`](src/tools/catalog.py)) — two-level, mirroring the Postgres introspection
 - `list_datasets()` — cheap "look around": every runtime-discovered dataset name + a column count (no column detail; one `active/catalog.json` GET, no Lance opens). The entry point.
