@@ -267,6 +267,60 @@ DECODERS: dict[str, dict] = {
                      " never assume a window. Omit aggregate entirely for plain 'show me' rows."),
         },
     },
+    "active": {
+        "version": "active.v1",
+        "description": "ACTIVE prime awards still in performance — one row per award (award grain). The FORWARD-looking table: it carries the period-of-performance end date, so you can find incumbents about to RECOMPETE (contracts whose performance ends in the next N days). Use for 'expiring / up for recompete / runway' questions; amounts are the award's current/potential value, not a single action.",
+        "fields": {
+            "days_until_expiry": {"type": "days_ahead", "ops": ("<=", ">=", "between"), "desc": "whole days until the award's period of performance ends. 'expiring in the next N days' / 'recompete within N days' → days_until_expiry <= N; 'at least N days of runway' → days_until_expiry >= N. THE recompete axis"},
+            "current_value": {"type": "float", "ops": (">=", "<=", "between"), "desc": "current total value of the award, USD ('contracts over $1M' → current_value >= 1000000)"},
+            "potential_value": {"type": "float", "ops": (">=", "<=", "between"), "desc": "potential total value incl. unexercised options, USD"},
+            "obligated": {"type": "float", "ops": (">=", "<=", "between"), "desc": "total dollars obligated to date, USD"},
+            "naics2": {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction) — the vendor's INDUSTRY"},
+            "naics_code": {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
+            "psc_category": {"type": "string", "ops": ("=", "in"), "desc": "leading PSC char = WHAT THE CONTRACT BUYS. 'V' = Transportation/Travel/Relocation services (catches transport/freight services coded under a non-48/49 NAICS)"},
+            "psc_code": {"type": "string", "ops": ("=", "in"), "desc": "full Product/Service Code, UPPERCASE (e.g. 'V111')"},
+            "state": {"type": "string", "ops": ("=", "in"), "desc": "winner HQ state, 2-letter — 'companies in <state>'"},
+            "pop_state": {"type": "string", "ops": ("=", "in"), "desc": "2-letter state where the WORK IS PERFORMED — 'work in <state>'"},
+            "awarding_agency": {"type": "string", "ops": ("=", "in"), "desc": "EXACT top-tier awarding department name, e.g. 'Department of Defense', 'Department of Homeland Security'"},
+            "awarding_sub_agency": {"type": "string", "ops": ("=", "in"), "desc": "EXACT sub-tier awarding agency name"},
+            "set_aside": {"type": "string", "ops": ("=", "in"), "enum": _SET_ASIDE_CODES, "desc": "set-aside code: 8A/8AN=8(a); SDVOSBC/SDVOSBS=service-disabled-veteran-owned; WOSB/WOSBSS/EDWOSB/EDWOSBSS=woman-owned; HZC/HZS=HUBZone; 'NONE'=no set-aside"},
+            "business_size": {"type": "string", "ops": ("=", "in"), "enum": ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS"), "desc": "contracting officer's business-size determination. 'small business' → 'SMALL BUSINESS'"},
+            "has_option_tail": {"type": "bool", "ops": ("=",), "desc": "true = the govt holds an unexercised option beyond the current end (extra runway before a hard recompete)"},
+            "award_or_idv_flag": {"type": "string", "ops": ("=", "in"), "enum": ("AWARD", "IDV"), "desc": "'AWARD' = a definitive contract; 'IDV' = an indefinite-delivery vehicle"},
+        },
+        "synonyms": {
+            "construction": {"field": "naics2", "op": "=", "value": "23"},
+            "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
+            "freight services": {"field": "psc_category", "op": "=", "value": "V"},
+            "expiring soon": {"field": "days_until_expiry", "op": "<=", "value": 90},
+            "expiring this quarter": {"field": "days_until_expiry", "op": "<=", "value": 90},
+            "recompete": {"field": "days_until_expiry", "op": "<=", "value": 180},
+            "up for recompete": {"field": "days_until_expiry", "op": "<=", "value": 180},
+            "small business": {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
+            "8(a)": {"field": "set_aside", "op": "in", "value": ["8A", "8AN"]},
+            "sdvosb": {"field": "set_aside", "op": "in", "value": ["SDVOSBC", "SDVOSBS"]},
+            "hubzone": {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
+            "woman-owned": {"field": "set_aside", "op": "in", "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+            "dod": {"field": "awarding_agency", "op": "in", "value": ["Department of Defense", "Department of Defense (DOD)"]},
+        },
+        "notes": (
+            "FORWARD-looking: this table is who is ABOUT to recompete (period-of-performance end window), not who won. 'expiring / up for recompete / runway / performance ends' → days_until_expiry.",
+            "NAICS vs PSC: naics2/naics_code = vendor industry; psc_category/psc_code = what the contract buys ('transportation services' / 'PSC V' → psc_category='V').",
+        ),
+        "aggregate": {
+            "measure": "current_value",
+            "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
+                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size"],
+            "pseudo_dims": ["winner", "size_band"],
+            "metrics": ["count", "sum", "avg", "median", "p90"],
+            "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING over expiring/active awards"
+                     " ('expiring $ by agency', 'top incumbents up for recompete', 'recompete value"
+                     " by PSC', 'distribution of expiring contract sizes'), ALSO emit an aggregate"
+                     " object {group_by, metrics?, limit?}. group_by is a dim below, or 'winner'"
+                     " (top incumbents by $) or 'size_band' (value histogram). The expiry window"
+                     " STILL rides in filters via days_until_expiry. Omit aggregate for 'show me' rows."),
+        },
+    },
 }
 
 
@@ -342,7 +396,7 @@ def _union_aggregate_schema() -> dict | None:
 _OUTPUT_RULES = (
     "- Use ONLY the listed fields and their listed ops. For an enum field use only its allowed values.",
     "- Numeric value for >= and <=; [lo, hi] for between; an array for in; bare true/false for bool.",
-    "- A days_ago field takes a whole-day INTEGER count, never a calendar date.",
+    "- A days_ago / days_ahead field takes a whole-day INTEGER count, never a calendar date.",
     "- Combine multiple conditions as separate filter clauses (they are AND-combined).",
     "- NEVER silently drop part of the query. Any constraint you cannot express with the"
     " listed fields goes into the unmapped array as a short verbatim phrase from the query.",
@@ -425,7 +479,8 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v4"   # v3→v4: aggregate capability rendered into the router prompt + tool
+ROUTER_VERSION = "router.v5"   # v4→v5: add the 'active' dataset (forward-looking recompete radar)
+                               # v3→v4: aggregate capability rendered into the router prompt + tool
                                # v2→v3: awards routing cue gains the PSC / transportation-services axis
 
 # Routing cues rendered into the router system block, per dataset.
@@ -444,6 +499,10 @@ _ROUTING_CUES = {
                " TEAMING axis: 'subs that have teamed with <prime>', '$X+ teaming', 'subs that"
                " teamed with N+ primes'. ALSO the SUBAWARDEE SELF-REPORTED axis: 'subs that"
                " self-report <capability>', 'subs with an ISO 9001 / CMMC / AS9100 certification'.",
+    "active": "FORWARD-LOOKING / RECOMPETE questions: contracts EXPIRING / up for recompete /"
+              " whose period of performance ends in the next N days, runway left, incumbents about"
+              " to lose a contract. DEFAULT for 'expiring', 'recompete', 'renewal', 'runway',"
+              " 'active contracts ending'. (awards = who already won; active = who's about to rebuy.)",
 }
 
 

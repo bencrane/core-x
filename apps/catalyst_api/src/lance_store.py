@@ -160,7 +160,7 @@ def _warm_probe_predicate(col: str, type_: str) -> "str | None":
         return f"{col} = -987654321"
     if type_ == "float":
         return f"{col} = -987654321.0"
-    if type_ == "days_ago":            # underlying DATE column; literal coerces date32 + ISO-string
+    if type_ in ("days_ago", "days_ahead"):  # underlying DATE column; literal coerces date32 + ISO-string
         return f"{col} = DATE '2999-12-31'"
     return None                        # bool (and anything unexpected) → count_rows path
 
@@ -761,6 +761,32 @@ def _map_days_ago_sql(spec, op: str, value: Any, today: "dt_date") -> str:
     raise MapCompileError(f"op {op!r} not allowed for a days_ago field")
 
 
+def _days_ahead_literal(value: Any, today: "dt_date") -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MapCompileError("expected a non-negative whole-day count")
+    return f"DATE '{(today + timedelta(days=value)).isoformat()}'"
+
+
+def _map_days_ahead_sql(spec, op: str, value: Any, today: "dt_date") -> str:
+    """The FORWARD relative-time axis — for a future date column (e.g. pop_current_end). 'within
+    the next N days' (days_until <= N) → today <= col <= today+N (an expiry/recompete window);
+    days_until >= N → col >= today+N (at least N days of runway left); between [lo, hi] → today+lo
+    <= col <= today+hi. Resolved against ``today`` at REQUEST time (memo-safe). A NULL date never
+    matches — correct for an expiry predicate (no period of performance end = not expiring)."""
+    today_lit = f"DATE '{today.isoformat()}'"
+    if op == "<=":
+        return f"{spec.column} >= {today_lit} AND {spec.column} <= {_days_ahead_literal(value, today)}"
+    if op == ">=":
+        return f"{spec.column} >= {_days_ahead_literal(value, today)}"
+    if op == "between":
+        if not (isinstance(value, list) and len(value) == 2):
+            raise MapCompileError("'between' needs a [lo, hi] array value")
+        lo, hi = value
+        return (f"{spec.column} >= {_days_ahead_literal(lo, today)} AND "
+                f"{spec.column} <= {_days_ahead_literal(hi, today)}")
+    raise MapCompileError(f"op {op!r} not allowed for a days_ahead field")
+
+
 def _map_list_sql(spec, op: str, value: Any) -> str:
     """Compile a ``list`` clause (set membership over a list<string> column — e.g. the
     PHASE-3 solicitation_scope_tags / labor_categories controlled-vocab columns). ``has`` →
@@ -791,6 +817,8 @@ def _map_clause_sql(spec, op: str, value: Any, today: "dt_date") -> str:
         raise MapCompileError(f"op {op!r} not allowed for this field")
     if spec.type == "days_ago":
         return _map_days_ago_sql(spec, op, value, today)
+    if spec.type == "days_ahead":
+        return _map_days_ahead_sql(spec, op, value, today)
     if spec.type == "list":
         return _map_list_sql(spec, op, value)
     if op in ("=", ">=", "<="):
