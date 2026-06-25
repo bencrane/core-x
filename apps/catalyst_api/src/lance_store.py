@@ -876,6 +876,127 @@ def map_count(decoder, predicate: str | None) -> int:
     return _dataset(config.MAP_DATASET_URIS[decoder.dataset_key]).count_rows(filter=predicate)
 
 
+# ── Map AGGREGATE surface: compiled predicate + group-by → metric rows ────────
+# The "how much / breakdown / top-N / distribution" side of the map. It runs the SAME
+# compiled predicate as the row path — so the time window stays QUERY-DRIVEN (a
+# days_since_action clause), never a hardcoded lookback — then a pyarrow hash-aggregate
+# over the FILTERED cohort (index pushdown does the selection; the projection is 2–3
+# narrow columns, so even an unfiltered full-table aggregate is cheap). group/measure
+# COLUMNS come ONLY from the decoder's AggregateSpec; metrics are a fixed allowlist. No
+# DuckDB, no SQL engine — same stance as the rest of EXECUTE.
+_AGG_DEFAULT_METRICS = ("count", "sum")
+
+
+def validate_aggregate(decoder, group_by, metrics, limit):
+    """PURE allowlist gate for an aggregate request (unit-testable, no I/O). Returns
+    ``(spec, group_by, metrics, limit)`` or raises ``MapCompileError``. A ``size_band``
+    histogram is count/sum per bucket (distribution metrics don't apply per band)."""
+    spec = getattr(decoder, "aggregate", None)
+    if spec is None:
+        raise MapCompileError(f"aggregation not supported for dataset {decoder.dataset_key!r}")
+    if not isinstance(group_by, str) or not group_by:
+        raise MapCompileError("aggregate.group_by is required")
+    if group_by not in spec.dims and group_by not in ("winner", "size_band"):
+        raise MapCompileError(f"group_by {group_by!r} not in the aggregate allowlist")
+    if group_by == "winner" and spec.winner_key is None:
+        raise MapCompileError("group_by 'winner' not supported for this dataset")
+    if group_by == "size_band" and not spec.size_band_edges:
+        raise MapCompileError("group_by 'size_band' not supported for this dataset")
+    mets = [m for m in (metrics or _AGG_DEFAULT_METRICS)]
+    for m in mets:
+        if m not in spec.metrics:
+            raise MapCompileError(f"metric {m!r} not in the aggregate allowlist")
+    if not mets:
+        raise MapCompileError("at least one metric is required")
+    if group_by == "size_band":
+        mets = [m for m in mets if m in ("count", "sum")] or ["count", "sum"]
+    lim = spec.default_limit if not limit else int(limit)
+    lim = max(1, min(lim, spec.max_limit))
+    return spec, group_by, mets, lim
+
+
+def _arrow_aggs(measure: str, mets: list[str]):
+    """(metric -> result-column-name) + the pyarrow hash-agg tuple list. tdigest carries
+    the q=[0.9] option; the rest are bare (target, kind) pairs."""
+    import pyarrow.compute as pc
+    kind = {"count": "count", "sum": "sum", "avg": "mean", "median": "approximate_median"}
+    aggs, names = [], {}
+    for m in mets:
+        if m == "p90":
+            aggs.append((measure, "tdigest", pc.TDigestOptions(q=[0.9])))
+            names[m] = f"{measure}_tdigest"
+        else:
+            aggs.append((measure, kind[m]))
+            names[m] = f"{measure}_{kind[m]}"
+    return aggs, names
+
+
+def _metric_value(m: str, row: dict, names: dict):
+    v = row.get(names[m])
+    if m == "p90":                       # tdigest result is a list of the requested quantiles
+        return float(v[0]) if v else None
+    if v is None:
+        return None
+    return int(v) if m == "count" else float(v)
+
+
+def map_aggregate(decoder, predicate: str | None, group_by: str, metrics, limit) -> dict[str, Any]:
+    """Aggregate the filtered cohort. ``predicate`` is the SAME compiled filter the row
+    path uses (caller compiles it via ``compile_map_filter`` — so the window is query-
+    driven). Returns ``{group_by, measure, metrics, matched_rows, total_groups, groups}``;
+    ``groups`` is the top-``limit`` by the primary metric (or every size_band, ascending)."""
+    import pyarrow as pa  # noqa: F401  (kept for parity / future typing)
+    spec, group_by, mets, lim = validate_aggregate(decoder, group_by, metrics, limit)
+    uri = config.MAP_DATASET_URIS[decoder.dataset_key]
+    ds = _dataset(uri)
+    measure = spec.measure
+
+    # ── size_band: a measure histogram (numpy digitize over the filtered measure column) ──
+    if group_by == "size_band":
+        import numpy as np
+        amounts = ds.scanner(columns=[measure], filter=predicate).to_table().column(measure)
+        arr = amounts.to_numpy(zero_copy_only=False)
+        arr = arr[~np.isnan(arr)] if arr.dtype.kind == "f" else arr
+        edges = list(spec.size_band_edges)
+        bands = np.digitize(arr, edges, right=False)      # 0..len(edges)
+        groups = []
+        for b in range(len(edges) + 1):
+            sel = arr[bands == b]
+            groups.append({
+                "key": b,
+                "lo": (edges[b - 1] if b > 0 else None),
+                "hi": (edges[b] if b < len(edges) else None),
+                "count": int(sel.size),
+                "sum": float(sel.sum()) if sel.size else 0.0,
+            })
+        return {"group_by": group_by, "measure": measure, "metrics": ["count", "sum"],
+                "matched_rows": int(arr.size), "total_groups": len(groups), "groups": groups}
+
+    # ── dim / winner: pyarrow hash-aggregate over the filtered cohort ──
+    if group_by == "winner":
+        gcols = list(spec.winner_key)                      # (uei_col, name_col)
+    else:
+        gcols = [spec.dims[group_by]]
+    tbl = ds.scanner(columns=list(dict.fromkeys([*gcols, measure])), filter=predicate).to_table()
+    matched = tbl.num_rows
+    aggs, names = _arrow_aggs(measure, mets)
+    grouped = tbl.group_by(gcols).aggregate(aggs)
+    total_groups = grouped.num_rows
+    primary = names["sum" if "sum" in mets else mets[0]]
+    grouped = grouped.sort_by([(primary, "descending")]).slice(0, lim)
+    out = []
+    for row in grouped.to_pylist():
+        rec = {m: _metric_value(m, row, names) for m in mets}
+        if group_by == "winner":
+            rec["key"] = row.get(gcols[1])                 # winner_name
+            rec["uei"] = row.get(gcols[0])
+        else:
+            rec["key"] = row.get(gcols[0])
+        out.append(rec)
+    return {"group_by": group_by, "measure": measure, "metrics": mets,
+            "matched_rows": matched, "total_groups": total_groups, "groups": out}
+
+
 def _map_jsonable(v: Any) -> Any:
     """Lance ``date32[day]`` → ISO ``YYYY-MM-DD``; everything else (str/num/bool/None)
     passes through. Mirrors models._iso so the wire shape is consistent."""

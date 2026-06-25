@@ -43,6 +43,28 @@ class FieldSpec:
     gated: bool = False               # PHASE 3: capability axis — EXECUTE ANDs has_extracted_scope=true
 
 
+# ── Aggregate capability (the GROUP-BY allowlist, authoritative) ──────────────
+# An AGGREGATE answers "how much / distribution / breakdown / top-N" over the SAME
+# compiled filter predicate the row path uses — so the time window stays QUERY-DRIVEN
+# (a days_since_action clause), never a hardcoded lookback. EXECUTE (lance_store.
+# map_aggregate) rejects any dim/metric not declared here; the group/measure COLUMNS
+# come ONLY from this spec, never from the caller. Metrics are computed over `measure`
+# (e.g. award_amount) with pyarrow hash-aggregates (no SQL engine in EXECUTE).
+AGG_METRICS = ("count", "sum", "avg", "median", "p90")  # over the measure column
+
+@dataclass(frozen=True)
+class AggregateSpec:
+    measure: str                      # hardcoded numeric column the metrics aggregate (e.g. award_amount)
+    dims: dict[str, str]              # group-by query-name -> hardcoded column (BITMAP/BTREE indexed)
+    metrics: tuple[str, ...] = AGG_METRICS
+    # Pseudo-dims computed at EXECUTE (not raw columns): 'winner' (top entities by measure)
+    # and 'size_band' (a measure histogram). winner_key = (uei_col, name_col).
+    winner_key: tuple[str, str] | None = None
+    size_band_edges: tuple[float, ...] = ()   # ascending bucket boundaries for 'size_band'
+    default_limit: int = 25           # top-N groups returned (ordered by the primary metric desc)
+    max_limit: int = 500
+
+
 @dataclass(frozen=True)
 class Decoder:
     dataset_key: str                  # key into config.MAP_DATASET_URIS
@@ -51,6 +73,7 @@ class Decoder:
     properties: tuple[str, ...]       # thin property set emitted per GeoJSON feature
     fields: dict[str, FieldSpec]      # query-name -> spec
     synonyms: dict[str, dict]         # NL term -> {"field","op","value"} (canned + prompt rows)
+    aggregate: "AggregateSpec | None" = None   # GROUP-BY allowlist; None = aggregation unsupported
 
 
 # ── PHASE-3 capability controlled vocabularies (frozen from govcon_award_solicitation_profiles,
@@ -279,7 +302,9 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v4",   # v3→v4: add the PSC axis (psc_category/psc_code) — product/service
+    version="awards.v5",   # v4→v5: add the AGGREGATE capability (group-by + count/sum/avg/median/p90,
+                           # size-band histogram, top-N winners) over the same query-driven filter.
+                           # v3→v4: add the PSC axis (psc_category/psc_code) — product/service
                            # bought, distinct from NAICS; surfaces transport/freight services
                            # (PSC 'V') coded under a non-48/49 NAICS that a NAICS-only filter misses.
     geometry=("longitude", "latitude"),
@@ -339,6 +364,21 @@ AWARDS = Decoder(
         "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
         "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
     },
+    # Aggregate over award_amount, grouped by any indexed dim (or the 'winner'/'size_band'
+    # pseudo-dims). The window stays query-driven: the SAME days_since_action filter the row
+    # path uses scopes the aggregate — no hardcoded lookback. The serving table spans ~2y.
+    aggregate=AggregateSpec(
+        measure="award_amount",
+        dims={
+            "naics2": "naics2", "naics_code": "naics_code",
+            "psc_category": "psc_category", "psc_code": "psc_code",
+            "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
+            "state": "state", "pop_state": "pop_state",
+            "set_aside": "set_aside", "winner_type": "winner_type",
+        },
+        winner_key=("winner_uei", "winner_name"),
+        size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),
+    ),
 )
 
 

@@ -282,6 +282,31 @@ def test_awards_psc_axis_compiles():
     assert pred == f"psc_category = 'V' AND action_date >= DATE '{(TODAY - timedelta(days=30)).isoformat()}'"
 
 
+# ── aggregate allowlist gate (pure; no R2) ───────────────────────────────────
+def test_awards_aggregate_validation_allowlist():
+    spec, gb, mets, lim = lance_store.validate_aggregate(
+        AWARDS, "awarding_agency", ["count", "sum", "median", "p90"], None)
+    assert gb == "awarding_agency" and mets == ["count", "sum", "median", "p90"]
+    assert lim == AWARDS.aggregate.default_limit
+    # pseudo-dims accepted; explicit limit honored + clamped to the spec max
+    assert lance_store.validate_aggregate(AWARDS, "winner", ["sum"], 5)[3] == 5
+    assert lance_store.validate_aggregate(AWARDS, "state", ["count"], 10**9)[3] == AWARDS.aggregate.max_limit
+    # empty metrics → default count/sum; size_band coerces distribution metrics to count/sum
+    assert lance_store.validate_aggregate(AWARDS, "state", [], None)[2] == ["count", "sum"]
+    assert lance_store.validate_aggregate(AWARDS, "size_band", ["median"], None)[2] == ["count", "sum"]
+    # off-allowlist group_by / metric rejected
+    with pytest.raises(lance_store.MapCompileError):
+        lance_store.validate_aggregate(AWARDS, "winner_name", ["count"], None)
+    with pytest.raises(lance_store.MapCompileError):
+        lance_store.validate_aggregate(AWARDS, "state", ["p99"], None)
+
+
+def test_company_winners_have_no_aggregate_capability():
+    assert COMPANY.aggregate is None and WINNERS.aggregate is None
+    with pytest.raises(lance_store.MapCompileError):
+        lance_store.validate_aggregate(COMPANY, "naics2", ["count"], None)
+
+
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
 def test_to_geojson_shape_and_axis_order():
     rows = [
