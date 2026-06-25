@@ -9,7 +9,7 @@ route), never reach Lance.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -267,6 +267,19 @@ def test_awards_amount_equality_rejected():
     # '=' on a dollar amount is not a supported axis (range ops only).
     with pytest.raises(lance_store.MapCompileError):
         _compile(AWARDS, [{"field": "award_amount", "op": "=", "value": 1000000}])
+
+
+def test_awards_psc_axis_compiles():
+    # PSC category 'V' (Transportation/Travel/Relocation) — the freight/logistics SERVICE axis
+    # a NAICS-only filter misses. Distinct column from naics2; ANDs cleanly alongside it.
+    assert _compile(AWARDS, [{"field": "psc_category", "op": "=", "value": "V"}]) == "psc_category = 'V'"
+    assert _compile(AWARDS, [{"field": "psc_code", "op": "in", "value": ["V111", "V112"]}]) \
+        == "psc_code IN ('V111', 'V112')"
+    pred = _compile(AWARDS, [
+        {"field": "psc_category", "op": "=", "value": "V"},
+        {"field": "days_since_action", "op": "<=", "value": 30},
+    ])
+    assert pred == f"psc_category = 'V' AND action_date >= DATE '{(TODAY - timedelta(days=30)).isoformat()}'"
 
 
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
