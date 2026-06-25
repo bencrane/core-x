@@ -45,6 +45,26 @@ async def get_prospect_recipient_id(conn, documenso_template_id: str) -> int | N
     return row[0] if row and row[0] is not None else None
 
 
+async def get_template_default_field_values(conn, documenso_template_id: str) -> dict:
+    """Template-level DEFAULT prefill values (label→value) from
+    ``business.documenso_templates.recipients->'default_field_values'``. Merged UNDER the opportunity's
+    per-deal ``opportunity_specific_content`` values at originate (the opportunity overrides), so a
+    template carries a standing default (e.g. the success-fee % ``amt%`` = ``'2'``) without any
+    per-opportunity data. Returns ``{}`` when unset. Read-only (no commit)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT recipients->'default_field_values'
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    val = row[0] if row else None
+    return val if isinstance(val, dict) else {}
+
+
 async def get_draft(conn, draft_id: str) -> dict | None:
     """Resolve a draft to what confirm needs — its Documenso template id (+ org / opportunity for
     context). Returns None when the id is unknown OR not a well-formed UUID.
