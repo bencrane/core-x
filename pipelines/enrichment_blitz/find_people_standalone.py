@@ -283,6 +283,73 @@ def run_find_people(companies: list[dict], batch_label: str | None = None, run_i
     return _run(companies, batch_label, run_id, priority, trigger_callback_url)
 
 
+# ── Reverse enrich: email/phone → FULL person profile (same grain as find-people) ──
+REVERSE_EMAIL_PATH = "/v2/enrichment/email-to-person"   # {email}  → {found, person{...}}
+REVERSE_PHONE_PATH = "/v2/enrichment/phone-to-person"   # {phone}  → {found, person{...}}
+
+
+def _reverse_run(contacts, batch_label, run_id, priority, trigger_callback_url) -> dict:
+    """Pull the full Blitz profile for a known person via reverse lookup — email-to-person
+    (preferred) or phone-to-person — and upsert into ops.blitz_find_people (same person grain,
+    keyed record_id=md5(linkedin_norm|company_domain)). Gateway-routed, free on Unlimited."""
+    started_at = dt.datetime.now(dt.timezone.utc)
+    priority = priority if priority in VALID_PRIORITIES else "low"
+    counts = {"companies": 0, "resolved": 0, "no_linkedin": 0, "people_found": 0,
+              "people_upserted": 0, "gateway_calls": 0, "failed": 0}
+    status, error = "error", None
+    gw = _gateway()
+    try:
+        contacts = [c for c in (contacts or []) if isinstance(c, dict)]
+        counts["companies"] = len(contacts)   # 'companies' slot reused = contacts processed
+        with _open_conn(_hqx_dsn()) as conn:
+            cur = conn.cursor()
+            cur.execute(OPS_DDL)
+            for c in contacts:
+                dom = _norm_domain(c.get("company_domain"))
+                email = (c.get("email") or "").strip() or None
+                phone = (c.get("phone") or "").strip() or None
+                if email:
+                    ep, pl = REVERSE_EMAIL_PATH, {"email": email}
+                elif phone:
+                    ep, pl = REVERSE_PHONE_PATH, {"phone": phone}
+                else:
+                    counts["no_linkedin"] += 1
+                    continue
+                counts["gateway_calls"] += 1
+                rb = gw.remote(endpoint=ep, payload=pl, priority=priority)
+                if not (isinstance(rb, dict) and rb.get("ok")):
+                    counts["failed"] += 1
+                    continue
+                data = rb.get("data") or {}
+                person = data.get("person") if isinstance(data, dict) else None
+                if not (data.get("found") and isinstance(person, dict) and person.get("linkedin_url")):
+                    continue   # reverse miss
+                counts["people_found"] += 1
+                if _upsert_person(cur, person, None, dom, batch_label):
+                    counts["people_upserted"] += 1
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc); status = "error"
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        try:
+            with _open_conn(_hqx_dsn()) as conn2:
+                _record_run(conn2.cursor(), batch_label, run_id, priority, counts, status, error, started_at, completed_at)
+        except Exception as exc:  # noqa: BLE001
+            print(f"run-ledger write failed: {exc}")
+        _post_callback(trigger_callback_url, {"status": status, "feed": FEED, "batch_label": batch_label,
+                                              "mode": "reverse", "error": error, **counts})
+    return {"feed": FEED, "mode": "reverse", "status": status, "batch_label": batch_label, **counts}
+
+
+@app.function(secrets=SECRETS, timeout=60 * 60, memory=2048, cpu=1.0)
+def run_reverse_enrich(contacts: list[dict], batch_label: str | None = None, run_id: str | None = None,
+                       priority: str = "low", trigger_callback_url: str | None = None) -> dict:
+    """Reverse-enrich known people → full Blitz profile from email (email-to-person, preferred)
+    or phone (phone-to-person). contacts: [{"company_domain","email","phone"}]."""
+    return _reverse_run(contacts, batch_label, run_id, priority, trigger_callback_url)
+
+
 @app.function(secrets=SECRETS, timeout=60 * 5)
 def apply_ops_ddl() -> dict:
     with _open_conn(_hqx_dsn()) as conn:
