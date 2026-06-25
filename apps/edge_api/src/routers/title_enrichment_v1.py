@@ -26,11 +26,14 @@ required value is ``raw_job_title``; EVERY other field is OPTIONAL and may be se
 
 STORAGE. Dual: jsonb raw_payload (the flat body EXACTLY as sent — immutable SoT; extra keys survive
 verbatim) + flat typed columns. title_norm (lower + whitespace-collapsed raw_job_title) is the canonical
-bridge key, computed server-side and indexed. PK record_id = sha256(title_norm | normalized_level |
-normalized_function | confidence | model) — byte-identical resends idempotent (ON CONFLICT DO NOTHING); any
-change to the classification lands a DISTINCT historical row. reasoning is stored but EXCLUDED from
-record_id. normalized_job_title and person_linkedin_url are plain nullable passthrough columns — stored
-verbatim, and DELIBERATELY NOT indexed, NOT folded into record_id, and NOT linked to any other table.
+title bridge key, computed server-side and indexed. PK record_id = sha256(person_linkedin_url(norm) |
+title_norm | normalized_level | normalized_function | confidence | model) — PERSON-grain: two DIFFERENT
+people with the SAME normalized title BOTH land (the person is in the key). A re-classification of the same
+person appends a DISTINCT historical row; a byte-identical resend is idempotent (ON CONFLICT DO NOTHING).
+person_linkedin_url is normalized (lower/scheme/www/trailing-slash) for the KEY ONLY — the stored column
+stays verbatim — and is indexed for tie-back. A record with no person_linkedin_url falls back to
+title-grain dedup (empty person key). reasoning and normalized_job_title are stored but EXCLUDED from
+record_id.
 """
 from __future__ import annotations
 
@@ -64,6 +67,20 @@ def _title_norm(raw: str) -> str:
     """lower + whitespace-collapsed raw job title — the canonical bridge/dedup key. Deterministic and
     caller-reproducible."""
     return _WS_RE.sub(" ", raw.strip().lower())
+
+
+_SCHEME_RE = re.compile(r"^https?://", re.I)
+_WWW_RE = re.compile(r"^www\.", re.I)
+_TRAIL_SLASH_RE = re.compile(r"/+$")
+
+
+def _person_li_norm(url: str | None) -> str:
+    """Normalize person_linkedin_url for the identity hash ONLY (the stored column stays verbatim):
+    lower → strip scheme → strip leading www. → strip trailing slash. Empty string when absent, so a
+    title-only record (no person) falls back to title-grain dedup."""
+    if not url:
+        return ""
+    return _TRAIL_SLASH_RE.sub("", _WWW_RE.sub("", _SCHEME_RE.sub("", url.strip().lower())))
 
 
 def _sha(s: str) -> str:
@@ -115,9 +132,12 @@ def _to_row(rec: dict[str, Any]) -> tuple | None:
     reasoning = _s(rec.get("reasoning"))
     person_linkedin_url = _s(rec.get("person_linkedin_url"))
 
-    # Identity hash is UNCHANGED — normalized_job_title and person_linkedin_url are passthrough columns
-    # and are deliberately NOT folded into record_id.
+    # PERSON-grain identity: the (normalized) person_linkedin_url is folded into record_id FIRST so two
+    # DIFFERENT people with the same normalized title both land. A re-classification of the SAME person
+    # still appends history (level/function/confidence/model in the hash); a byte-identical resend is a
+    # no-op. A record without a person LinkedIn falls back to title-grain dedup (empty person key).
     record_id = _sha("|".join([
+        _person_li_norm(person_linkedin_url),
         title_norm,
         normalized_level or "",
         normalized_function or "",
@@ -155,7 +175,7 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
         await conn.commit()
 
     return {
-        "landed": landed,                 # False ⇒ this exact (title, level, function, confidence, model) was already present
+        "landed": landed,                 # False ⇒ this exact (person, title, level, function, confidence, model) was already present
         "already_present": not landed,
         "record_id": row[0],
         "raw_job_title": row[1],
