@@ -191,8 +191,14 @@ async def ask(dataset: str, body: AskRequest) -> JSONResponse:
                           status="translate_error", error=(exc.message or "")[:500], latency_ms=_ms())
         raise HTTPException(status_code=502, detail="translation failed")
     routed = filt["dataset"]                      # == dataset unless the router picked one
+    # An aggregate intent (breakdown/total/distribution/top-N) routes to the aggregate EXECUTE;
+    # otherwise the row path. The time window rides in `filters` either way (query-driven).
+    is_aggregate = bool(filt.get("aggregate"))
     try:
-        envelope = await catalyst_client.execute(routed, filt)
+        envelope = await (
+            catalyst_client.execute_aggregate(routed, filt) if is_aggregate
+            else catalyst_client.execute(routed, filt)
+        )
     except catalyst_client.CatalystError as exc:
         log.warning("map /ask execute failed: %s", exc.message)
         _record_query_run(dataset=routed, q=q, filt=filt, meta=None,

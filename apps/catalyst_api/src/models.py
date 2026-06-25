@@ -46,6 +46,26 @@ class MapQueryRequest(_Model):
     limit: int | None = None          # caller hint, clamped to MAP_HARD_ROW_CAP
 
 
+class AggregateIntent(_Model):
+    """The group-by + metrics of an aggregate request. ``group_by`` is a dataset dim or a
+    pseudo-dim ('winner' | 'size_band'); ``metrics`` ⊆ the decoder's allowlist. Validated
+    in ``lance_store.validate_aggregate`` — NOT here (Pydantic checks JSON shape only)."""
+
+    group_by: str
+    metrics: list[str] = []           # empty → EXECUTE defaults (count, sum)
+    limit: int | None = None          # top-N groups, clamped to the spec's max
+
+
+class MapAggregateRequest(_Model):
+    """Compiled filter + aggregate intent. The filter allowlist is identical to
+    ``MapQueryRequest`` — the time window rides as a ``days_since_action`` clause inside
+    ``filters`` (query-driven), never as a hardcoded lookback in EXECUTE."""
+
+    title: str | None = None
+    filters: list[MapFilterClause] = []
+    aggregate: AggregateIntent
+
+
 class DossierBatchRequest(_Model):
     """POST body for /api/v1/entities/dossiers — the eager-prefetch batch read.
     ``ueis`` is validated/deduped/bounded by ``dossier.prepare_batch`` (not here:

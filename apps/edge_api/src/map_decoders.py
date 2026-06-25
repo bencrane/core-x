@@ -197,7 +197,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v4",
+        "version": "awards.v5",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
@@ -250,6 +250,22 @@ DECODERS: dict[str, dict] = {
             " use psc_category='V' (not a NAICS filter) — many transport/logistics service"
             " awards carry a non-48/49 NAICS, so a NAICS-only filter misses them.",
         ),
+        # Aggregate capability (mirrors catalyst_api AggregateSpec; the parity test asserts
+        # dims+metrics match). Prompt-facing only — no Lance column names.
+        "aggregate": {
+            "measure": "award_amount",
+            "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
+                     "awarding_sub_agency", "state", "pop_state", "set_aside", "winner_type"],
+            "pseudo_dims": ["winner", "size_band"],
+            "metrics": ["count", "sum", "avg", "median", "p90"],
+            "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING questions ('break down by"
+                     " X', 'total $ of', 'how much', 'by agency/state/PSC', 'top N winners',"
+                     " 'distribution of award sizes / by size'), ALSO emit an aggregate object"
+                     " {group_by, metrics?, limit?}. group_by is a dim below, or 'winner' (top"
+                     " entities by $) or 'size_band' (award-amount histogram). The time window"
+                     " STILL rides in filters via days_since_action — the aggregate respects it;"
+                     " never assume a window. Omit aggregate entirely for plain 'show me' rows."),
+        },
     },
 }
 
@@ -268,6 +284,59 @@ def _render_fields(d: dict) -> list[str]:
 
 def _render_synonyms(d: dict) -> list[str]:
     return [f'- "{term}" → {clause}' for term, clause in d["synonyms"].items()]
+
+
+def _render_aggregate(d: dict) -> list[str]:
+    """Render the optional aggregate capability into the prompt (only when declared)."""
+    agg = d.get("aggregate")
+    if not agg:
+        return []
+    dims = list(agg["dims"]) + list(agg.get("pseudo_dims", []))
+    return [
+        "",
+        f"Aggregate (optional): {agg['desc']}",
+        f"- aggregate.group_by ∈ {dims}",
+        f"- aggregate.metrics ⊆ {list(agg['metrics'])} (default: count, sum)",
+    ]
+
+
+def _aggregate_schema(agg: dict) -> dict:
+    """The optional ``aggregate`` tool property — enum-bounded group_by + metrics (the
+    first gate; EXECUTE's typed allowlist is authoritative)."""
+    dims = list(agg["dims"]) + list(agg.get("pseudo_dims", []))
+    return {
+        "type": "object",
+        "description": ("OPTIONAL — present ONLY for breakdown/total/distribution/ranking"
+                        " queries; omit for row queries."),
+        "properties": {
+            "group_by": {"type": "string", "enum": dims,
+                         "description": "dimension to group by (or 'winner' / 'size_band')"},
+            "metrics": {"type": "array", "items": {"type": "string", "enum": list(agg["metrics"])},
+                        "description": "metrics over the measure (default: count, sum)"},
+            "limit": {"type": "integer", "description": "top-N groups (optional)"},
+        },
+        "required": ["group_by"],
+    }
+
+
+def _union_aggregate_schema() -> dict | None:
+    """Union aggregate schema across every dataset that declares one (for the router tool).
+    group_by/metrics enums are the union; EXECUTE re-validates against the routed dataset."""
+    dims: list[str] = []
+    mets: list[str] = []
+    for d in DECODERS.values():
+        agg = d.get("aggregate")
+        if not agg:
+            continue
+        for v in list(agg["dims"]) + list(agg.get("pseudo_dims", [])):
+            if v not in dims:
+                dims.append(v)
+        for m in agg["metrics"]:
+            if m not in mets:
+                mets.append(m)
+    if not dims:
+        return None
+    return _aggregate_schema({"dims": dims, "pseudo_dims": [], "metrics": mets})
 
 
 _OUTPUT_RULES = (
@@ -295,6 +364,7 @@ def render_decoder_prompt(dataset: str) -> str:
         "",
         "Known phrase → filter mappings (apply when the phrase appears):",
         *_render_synonyms(d),
+        *_render_aggregate(d),
         "",
         "Rules:",
         "- Emit ONLY via the emit_filter tool. Never prose.",
@@ -333,16 +403,19 @@ def build_emit_filter_tool(dataset: str) -> dict:
     """The forced tool: ``field`` + ``op`` are enum-bounded at the schema level (the
     first gate; EXECUTE's typed allowlist is the authoritative one)."""
     d = DECODERS[dataset]
+    props = {
+        "title": {"type": "string", "description": "a short human label for the query"},
+        "filters": _filters_schema(list(d["fields"])),
+        "unmapped": _UNMAPPED_SCHEMA,
+    }
+    if d.get("aggregate"):
+        props["aggregate"] = _aggregate_schema(d["aggregate"])   # optional — not in `required`
     return {
         "name": "emit_filter",
         "description": "Translate the user's map query into a constrained filter object.",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "a short human label for the query"},
-                "filters": _filters_schema(list(d["fields"])),
-                "unmapped": _UNMAPPED_SCHEMA,
-            },
+            "properties": props,
             "required": ["title", "filters", "unmapped"],
         },
     }
@@ -352,14 +425,17 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v3"   # v2→v3: awards routing cue gains the PSC / transportation-services axis
+ROUTER_VERSION = "router.v4"   # v3→v4: aggregate capability rendered into the router prompt + tool
+                               # v2→v3: awards routing cue gains the PSC / transportation-services axis
 
 # Routing cues rendered into the router system block, per dataset.
 _ROUTING_CUES = {
     "awards": "AWARD-EVENT questions: 'won an award/contract over $X', 'awards in the last"
               " N days', 'who won <agency> contracts this week', set-asides, place of"
               " performance, and PSC (what the contract BUYS — 'transportation/freight"
-              " SERVICES', 'PSC category V'). DEFAULT for win/award phrasing.",
+              " SERVICES', 'PSC category V'). The ONLY dataset with AGGREGATE: breakdown /"
+              " total $ / distribution / top-N-winners / by-agency|state|PSC|size questions"
+              " over award actions. DEFAULT for win/award phrasing.",
     "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",
@@ -395,6 +471,7 @@ def render_router_prompt() -> str:
             *_render_fields(d),
             "Phrase → filter mappings:",
             *_render_synonyms(d),
+            *_render_aggregate(d),
         ]
         lines += [f"Note: {note}" for note in d.get("notes", ())]
     lines += [
@@ -429,6 +506,12 @@ def reconcile_routed_filters(filt: dict) -> dict:
                 if isinstance(clause, dict) else str(clause)
             )
     filt["filters"] = kept
+    # An aggregate emitted while routed to a dataset that does NOT support aggregation cannot
+    # run — surface it (honesty contract), never execute it silently against the wrong table.
+    if filt.get("aggregate") and not DECODERS[dataset].get("aggregate"):
+        agg = filt.pop("aggregate")
+        gb = agg.get("group_by") if isinstance(agg, dict) else agg
+        moved.append(f"aggregate by {gb} (not supported for dataset {dataset})")
     if moved:
         filt["unmapped"] = list(filt.get("unmapped") or []) + moved
     return filt
@@ -444,18 +527,26 @@ def build_router_tool() -> dict:
         for name in d["fields"]:
             if name not in union:
                 union.append(name)
+    props = {
+        "dataset": {"type": "string", "enum": list(DECODERS),
+                    "description": "the ONE dataset this query runs against"},
+        "title": {"type": "string", "description": "a short human label for the query"},
+        "filters": _filters_schema(union),
+        "unmapped": _UNMAPPED_SCHEMA,
+    }
+    agg_schema = _union_aggregate_schema()
+    if agg_schema is not None:
+        # Optional; only valid when the routed dataset declares an aggregate (reconcile drops
+        # it otherwise). EXECUTE re-validates group_by/metrics against the routed dataset.
+        agg_schema = {**agg_schema, "description": agg_schema["description"]
+                      + " Valid only when dataset routes to one that supports aggregation."}
+        props["aggregate"] = agg_schema
     return {
         "name": "emit_filter",
         "description": "Route the user's market query to one dataset and translate it into a constrained filter object.",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "dataset": {"type": "string", "enum": list(DECODERS),
-                            "description": "the ONE dataset this query runs against"},
-                "title": {"type": "string", "description": "a short human label for the query"},
-                "filters": _filters_schema(union),
-                "unmapped": _UNMAPPED_SCHEMA,
-            },
+            "properties": props,
             "required": ["dataset", "title", "filters", "unmapped"],
         },
     }

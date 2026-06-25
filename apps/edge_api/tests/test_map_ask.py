@@ -150,6 +150,63 @@ def test_awards_has_psc_axis_both_sides():
         assert edge.DECODERS["awards"]["synonyms"][term] == {"field": "psc_category", "op": "=", "value": "V"}
 
 
+# ── aggregate capability: parity + tool schema + routing honesty ─────────────
+def test_awards_aggregate_axis_parity_both_sides():
+    cat_agg = cat.DECODERS["awards"].aggregate
+    assert cat_agg is not None, "catalyst awards must declare an AggregateSpec"
+    edge_agg = edge.DECODERS["awards"]["aggregate"]
+    # dims + metrics value-sets must match edge↔catalyst (the model's output space == EXECUTE's gate)
+    assert set(edge_agg["dims"]) == set(cat_agg.dims)
+    assert set(edge_agg["metrics"]) == set(cat_agg.metrics)
+    assert set(edge_agg["pseudo_dims"]) == {"winner", "size_band"}
+    assert cat_agg.measure == "award_amount"
+    assert cat_agg.winner_key == ("winner_uei", "winner_name") and cat_agg.size_band_edges
+
+
+def test_emit_filter_tool_aggregate_is_optional_and_enum_bounded():
+    tool = edge.build_emit_filter_tool("awards")
+    schema = tool["input_schema"]
+    assert "aggregate" in schema["properties"]
+    assert "aggregate" not in schema["required"]              # optional — row queries omit it
+    agg = schema["properties"]["aggregate"]["properties"]
+    gb = set(agg["group_by"]["enum"])
+    assert {"awarding_agency", "psc_category", "winner", "size_band"} <= gb
+    assert set(agg["metrics"]["items"]["enum"]) == set(edge.DECODERS["awards"]["aggregate"]["metrics"])
+
+
+def test_non_aggregate_datasets_expose_no_aggregate_tool_property():
+    for ds in ("company", "winners"):
+        assert "aggregate" not in edge.build_emit_filter_tool(ds)["input_schema"]["properties"]
+
+
+def test_router_tool_carries_optional_aggregate_union():
+    schema = edge.build_router_tool()["input_schema"]
+    assert "aggregate" in schema["properties"]
+    assert "aggregate" not in schema["required"]
+
+
+def test_reconcile_drops_aggregate_for_nonaggregate_dataset():
+    # An aggregate emitted while routed to company (no aggregate capability) must surface as
+    # unmapped, never execute silently against a table that can't aggregate.
+    filt = {"dataset": "company", "title": "t", "unmapped": [], "filters": [],
+            "aggregate": {"group_by": "awarding_agency"}}
+    out = edge.reconcile_routed_filters(filt)
+    assert "aggregate" not in out
+    assert any("aggregate by awarding_agency" in u for u in out["unmapped"])
+    # routed to awards (supports it) → aggregate is preserved
+    keep = edge.reconcile_routed_filters(
+        {"dataset": "awards", "title": "t", "unmapped": [], "filters": [],
+         "aggregate": {"group_by": "awarding_agency"}})
+    assert keep.get("aggregate") == {"group_by": "awarding_agency"}
+
+
+def test_awards_prompt_mentions_aggregate_capability():
+    p = edge.render_decoder_prompt("awards")
+    assert "Aggregate (optional)" in p and "group_by" in p and "size_band" in p
+    # non-aggregate datasets must not advertise an aggregate axis
+    assert "Aggregate (optional)" not in edge.render_decoder_prompt("company")
+
+
 # ── dataset routing (the AUTO surface) ────────────────────────────────────────
 def test_router_tool_dataset_enum_and_union_fields():
     tool = edge.build_router_tool()

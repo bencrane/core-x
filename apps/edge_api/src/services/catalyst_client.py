@@ -22,14 +22,11 @@ class CatalystError(Exception):
         self.message = message
 
 
-async def execute(dataset: str, filter_obj: dict[str, Any], timeout: float = 12.0) -> dict[str, Any]:
-    """POST the compiled filter object to catalyst EXECUTE; return its JSON envelope
-    (``{"data": <FeatureCollection>, "meta": {...}}``). Raises ``CatalystError`` on a
-    transport failure or a non-2xx from catalyst."""
+async def _post(dataset: str, suffix: str, filter_obj: dict[str, Any], timeout: float) -> dict[str, Any]:
     base = config.catalyst_base_url()
     if not base:
         raise CatalystError(status_code=None, message="CATALYST_API_BASE_URL is not configured")
-    url = f"{base}/api/v1/map/{dataset}/query"
+    url = f"{base}/api/v1/map/{dataset}/{suffix}"
     headers = {"content-type": "application/json"}
     token = config.catalyst_service_token()
     if token:
@@ -43,3 +40,18 @@ async def execute(dataset: str, filter_obj: dict[str, Any], timeout: float = 12.
         raise CatalystError(status_code=resp.status_code,
                             message=f"catalyst EXECUTE HTTP {resp.status_code}: {resp.text[:500]}")
     return resp.json()
+
+
+async def execute(dataset: str, filter_obj: dict[str, Any], timeout: float = 12.0) -> dict[str, Any]:
+    """POST the compiled filter object to catalyst EXECUTE (``/query``); return its JSON
+    envelope (``{"data": <FeatureCollection>, "meta": {...}}``). Raises ``CatalystError``
+    on a transport failure or a non-2xx from catalyst."""
+    return await _post(dataset, "query", filter_obj, timeout)
+
+
+async def execute_aggregate(dataset: str, filter_obj: dict[str, Any], timeout: float = 20.0) -> dict[str, Any]:
+    """POST the compiled filter + aggregate intent to catalyst's ``/aggregate`` EXECUTE;
+    return its envelope (``{"data": {"aggregate": {...}}, "meta": {...}}``). A slightly
+    longer default timeout than ``execute`` — a broad-cohort group-by scans more rows than
+    a point-filtered row query."""
+    return await _post(dataset, "aggregate", filter_obj, timeout)

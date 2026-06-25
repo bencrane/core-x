@@ -43,6 +43,7 @@ from .src.models import (
     Company,
     DossierBatchRequest,
     EntityDossierResponse,
+    MapAggregateRequest,
     MapQueryRequest,
     OverviewResponse,
     PastPerformanceResponse,
@@ -484,6 +485,42 @@ def map_query(
             "plottable": sum(1 for f in fc["features"] if f["geometry"] is not None),
             "total": total,
             "capped": total > limit,
+        },
+    })
+
+
+@app.post("/api/v1/map/{dataset}/aggregate", response_model=None, dependencies=[Depends(require_operator)])
+def map_aggregate(
+    dataset: str = Path(..., description="Map serving table (must declare an AggregateSpec; 'awards')"),
+    body: MapAggregateRequest = Body(...),
+) -> JSONResponse:
+    """Compiled filter + group-by → metric rows. The aggregate EXECUTE surface: the SAME
+    ``{filters:[{field,op,value}]}`` allowlist as ``/query`` (so the time window is a
+    query-driven ``days_since_action`` clause, never hardcoded), plus an ``aggregate``
+    intent ``{group_by, metrics, limit}``. ``group_by`` is a dataset dim or a pseudo-dim
+    ('winner' top-N | 'size_band' histogram); ``metrics`` ⊆ the decoder allowlist
+    (count/sum/avg/median/p90). Off-allowlist filter OR aggregate → 422; unknown or
+    aggregation-unsupported dataset → 404/422. Response: ``{"data": {"aggregate": {...}},
+    "meta": {...}}`` — groups are top-``limit`` by the primary metric (size_band ascending)."""
+    decoder = DECODERS.get(dataset)
+    if decoder is None:
+        raise HTTPException(status_code=404, detail=f"unknown map dataset {dataset!r}")
+    try:
+        predicate = lance_store.compile_map_filter(decoder, [c.model_dump() for c in body.filters])
+        result = lance_store.map_aggregate(
+            decoder, predicate, body.aggregate.group_by, body.aggregate.metrics, body.aggregate.limit
+        )
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid aggregate: {exc}")
+    return JSONResponse({
+        "data": {"aggregate": result},
+        "meta": {
+            "dataset": dataset,
+            "decoderVersion": decoder.version,
+            "groupBy": result["group_by"],
+            "matchedRows": result["matched_rows"],
+            "totalGroups": result["total_groups"],
+            "returned": len(result["groups"]),
         },
     })
 
