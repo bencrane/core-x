@@ -53,6 +53,9 @@ SERVING_URI = os.environ.get("AWARDS_MAP_SERVING_URI", f"{ACTIVE}/usaspending_aw
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
 SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
+# Stage-1 (naics_code, psc_code) -> vertical / work_type / equipment_intensity classification
+# (the top-$ 279 combos). LEFT-JOINed per action so the labels become filterable columns here.
+NAICS_PSC_MAP_URI = os.environ.get("NAICS_PSC_VERTICAL_MAP_URI", f"{ACTIVE}/naics_psc_vertical_map/")
 WINDOW_DAYS = int(os.environ.get("AWARDS_WINDOW_DAYS", "730"))
 DATA_STORAGE_VERSION = "2.1"
 # BTREE: range axes (action_date, award_amount) + resolution keys + high-cardinality geo
@@ -63,7 +66,9 @@ BTREE_INDEXES = ["action_date", "award_amount", "winner_uei", "addr_hash",
 # psc_category ~30 leading chars, fiscal_year a handful).
 BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agency",
                   "set_aside", "is_active", "psc_category", "fiscal_year", "business_size",
-                  "action_type", "is_option_exercise"]
+                  "action_type", "is_option_exercise",
+                  # label axes joined from naics_psc_vertical_map (classified-dictionary bridge).
+                  "vertical", "work_type", "equipment_intensity"]
 
 DUCK_MEM = os.environ.get("AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("AWARDS_DUCKDB_TEMP_DIR", "/tmp/awards_map_duckdb")
@@ -127,6 +132,9 @@ def _assemble(so, window_days: int):
                  "prime_award_awarding_sub_agency_name"],
         filter=f"subaward_action_date >= '{cutoff}'").to_reader())
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
+    vmap = lance.dataset(NAICS_PSC_MAP_URI, storage_options=so)
+    con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
+                                            "work_type", "equipment_intensity"]).to_reader())
     hexpr = addr_hash_sql("street", "city_raw", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -183,9 +191,12 @@ def _assemble(so, window_days: int):
         FROM deduped
     )
     SELECT k.*, x.latitude, x.longitude, x.match_type,
+           v.vertical, v.work_type, v.equipment_intensity,
            'usaspending_awards_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
-    FROM keyed k LEFT JOIN x USING (addr_hash)
+    FROM keyed k
+    LEFT JOIN x USING (addr_hash)
+    LEFT JOIN v ON k.naics_code = v.naics_code AND k.psc_code = v.psc_code
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
@@ -283,6 +294,8 @@ def verify():
            "fy2025_actions": ds.count_rows(filter="fiscal_year = 2025"),
            "fy2026_actions": ds.count_rows(filter="fiscal_year = 2026"),
            "option_exercises": ds.count_rows(filter="is_option_exercise = true"),
+           "with_vertical_label": ds.count_rows(filter="vertical IS NOT NULL"),
+           "vertical_aerospace_defense": ds.count_rows(filter="vertical = 'Aerospace & Defense'"),
            "with_action_type": ds.count_rows(filter="action_type IS NOT NULL"),
            "columns": len(ds.schema.names), "indices": idx}
     out["acceptance_A_tx_construction_1m_30d"] = ds.count_rows(
