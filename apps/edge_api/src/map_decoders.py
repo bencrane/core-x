@@ -220,7 +220,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v7",
+        "version": "awards.v8",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
@@ -242,6 +242,8 @@ DECODERS: dict[str, dict] = {
                                   "desc": "set-aside code: 8A/8AN = 8(a); SDVOSBC/SDVOSBS = service-disabled-veteran-owned; WOSB/WOSBSS/EDWOSB/EDWOSBSS = woman-owned; HZC/HZS = HUBZone; SBA/SBP = small-business; 'NONE' = explicitly no set-aside. Partial coverage: many actions carry no signal"},
             "business_size":     {"type": "string", "ops": ("=", "in"), "enum": ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS"), "desc": "contracting officer's business-size determination. 'small business' → 'SMALL BUSINESS'. Prime actions only"},
             "winner_type":       {"type": "string", "ops": ("=", "in"), "enum": ("prime_recipient", "subawardee")},
+            "action_type":       {"type": "string", "ops": ("=", "in"), "desc": "FPDS action type of this action, e.g. 'EXERCISE AN OPTION', 'FUNDING ONLY ACTION', 'CHANGE ORDER', 'SUPPLEMENTAL AGREEMENT FOR WORK WITHIN SCOPE'. Group-by action_type for the action mix. Prefer is_option_exercise for the option-exercise case"},
+            "is_option_exercise": {"type": "bool", "ops": ("=",), "desc": "true = this action EXERCISED A CONTRACT OPTION — the government committing the next work tranche on an existing contract (a mobilization-capital trigger; the entity is already invested). 'option exercise' / 'exercised option' / 'mobilization' → is_option_exercise = true; award_amount is then the mobilization $"},
             "is_active":         {"type": "bool", "ops": ("=",), "desc": "true = the contract is currently within its period of performance (active). Prime actions only — subawards carry no PoP and are excluded. 'active contracts' / 'currently active' → is_active = true"},
         },
         "synonyms": {
@@ -265,6 +267,10 @@ DECODERS: dict[str, dict] = {
             "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
             "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
             "small business":          {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
+            "option exercise":         {"field": "is_option_exercise", "op": "=", "value": True},
+            "option exercises":        {"field": "is_option_exercise", "op": "=", "value": True},
+            "exercised option":        {"field": "is_option_exercise", "op": "=", "value": True},
+            "options exercised":       {"field": "is_option_exercise", "op": "=", "value": True},
         },
         # Dataset-specific prompt rules (rendered under Rules).
         "notes": (
@@ -281,7 +287,8 @@ DECODERS: dict[str, dict] = {
         "aggregate": {
             "measure": "award_amount",
             "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
-                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size", "winner_type"],
+                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
+                     "action_type", "winner_type"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING questions ('break down by"
@@ -505,7 +512,9 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v6"   # v5→v6: winners + company gain the aggregate capability
+ROUTER_VERSION = "router.v7"   # v6→v7: awards gains the option-exercise / action_type axis; drop a
+                               # stale 'awards is the only aggregate dataset' claim (all 4 aggregate)
+                               # v5→v6: winners + company gain the aggregate capability
                                # v4→v5: add the 'active' dataset (forward-looking recompete radar)
                                # v3→v4: aggregate capability rendered into the router prompt + tool
                                # v2→v3: awards routing cue gains the PSC / transportation-services axis
@@ -514,10 +523,10 @@ ROUTER_VERSION = "router.v6"   # v5→v6: winners + company gain the aggregate c
 _ROUTING_CUES = {
     "awards": "AWARD-EVENT questions: 'won an award/contract over $X', 'awards in the last"
               " N days', 'who won <agency> contracts this week', set-asides, place of"
-              " performance, and PSC (what the contract BUYS — 'transportation/freight"
-              " SERVICES', 'PSC category V'). The ONLY dataset with AGGREGATE: breakdown /"
-              " total $ / distribution / top-N-winners / by-agency|state|PSC|size questions"
-              " over award actions. DEFAULT for win/award phrasing.",
+              " performance, PSC (what the contract BUYS — 'transportation/freight SERVICES',"
+              " 'PSC category V'), and OPTION EXERCISES (the govt exercising a contract option"
+              " = a mobilization event — 'options exercised', 'mobilization'). DEFAULT for"
+              " win/award phrasing.",
     "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",
