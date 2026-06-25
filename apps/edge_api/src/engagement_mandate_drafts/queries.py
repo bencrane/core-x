@@ -28,6 +28,23 @@ async def insert_draft(conn, *, opportunity_id: str, documenso_template_id: str)
     return row[0] if row else None
 
 
+async def get_prospect_recipient_id(conn, documenso_template_id: str) -> int | None:
+    """The Documenso recipient id the prospect must bind to, from the template's STORED mapping
+    (``business.documenso_templates.recipients->>'prospect_recipient_id'``). ``None`` when not stored
+    (older templates) → the caller falls back to its email/role heuristic. Read-only (no commit)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT (recipients->>'prospect_recipient_id')::int
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
 async def get_draft(conn, draft_id: str) -> dict | None:
     """Resolve a draft to what confirm needs — its Documenso template id (+ org / opportunity for
     context). Returns None when the id is unknown OR not a well-formed UUID.

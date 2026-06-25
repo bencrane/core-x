@@ -126,6 +126,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         prefill = await queries.get_opportunity_prefill_and_contact(
             conn, draft["opportunity_id"]
         )
+        prospect_rid = await queries.get_prospect_recipient_id(
+            conn, draft["documenso_template_id"]
+        )
     if not prefill:
         raise HTTPException(
             status_code=404, detail="no opportunity_specific_content for this opportunity"
@@ -150,6 +153,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
             # Prospect-facing title for the derived document — replaces the template's raw filename
             # ("AO_Term_Plain_v1.pdf") in the signer's confirmation modal + the downloaded PDF.
             title="Engagement Agreement",
+            # Bind the prospect to the template's STORED prospect_recipient_id (deterministic). Falls
+            # back to the email/role heuristic inside the client when no mapping is stored.
+            prospect_recipient_id=prospect_rid,
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
@@ -188,13 +194,18 @@ async def originate_embed_template(
         if not draft:
             raise HTTPException(status_code=404, detail="mandate draft not found")
         opp = await queries.get_opportunity_ref_and_contact(conn, draft["opportunity_id"])
+        prospect_rid = await queries.get_prospect_recipient_id(conn, draft["documenso_template_id"])
     if not opp:
         raise HTTPException(status_code=404, detail="opportunity not found for this draft")
 
     template_id = draft["documenso_template_id"]
     try:
         recipients = await documenso_client.get_template_recipients(template_id)
-        direct_recipient_id = body.direct_recipient_id or _pick_direct_recipient_id(recipients)
+        # Prefer the template's STORED prospect_recipient_id (deterministic) over the name heuristic;
+        # an explicit body override still wins for manual control.
+        direct_recipient_id = (
+            body.direct_recipient_id or prospect_rid or _pick_direct_recipient_id(recipients)
+        )
         link = await documenso_client.create_direct_link(
             template_id, direct_recipient_id=direct_recipient_id
         )
