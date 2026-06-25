@@ -98,8 +98,10 @@ async def create_document_payment_intent(
         if config.stripe_secret_key_for_mode(mode) is None or not publishable_key:
             raise HTTPException(status_code=503, detail="Stripe is not configured")
 
-        # GATE: the document must be signed (DOCUMENT_COMPLETED for the pair). This also enforces the
-        # pair — a document that does not belong to this opportunity is not "signed" for it → 409.
+        # GATE: the COUNTERPARTY (prospect) must have signed. read_sign_state.signed flips on a SIGNED
+        # recipient whose email domain is NOT a provider domain — INDEPENDENT of the provider's own
+        # countersignature, so the prospect can pay right after they sign. This also enforces the pair
+        # — a document that does not belong to this opportunity has no matching rows → not signed → 409.
         state = await sign_queries.read_sign_state(
             conn, opportunity_id=opportunity_id, document_id=document_id
         )

@@ -79,10 +79,12 @@ async def read_sign_state(opportunity_id: str, document_id: str) -> dict[str, An
     PAIR carried in the signing link (``/p/m/{opportunity_id}/{document_id}``).
 
     FULLY OFFLINE — ZERO Documenso calls. ``signed`` is derived at read time from the RAW webhook
-    capture (``business.documenso_webhook_events``): true iff a terminal ``DOCUMENT_COMPLETED`` row
-    has landed for the pair ``external_id = {opportunity_id} AND envelope_id = {document_id}``. The
-    prospect-facing ``MandateSignPage`` polls this on a fixed interval while the embed is shown and
-    advances to the signed-confirmation view when ``signed`` flips true.
+    capture (``business.documenso_webhook_events``) for the pair ``external_id = {opportunity_id} AND
+    envelope_id = {document_id}``: true once the COUNTERPARTY (the prospect) has signed — a captured
+    payload shows a SIGNED recipient whose email DOMAIN is not a provider domain — INDEPENDENT of
+    whether the provider has countersigned (a terminal ``DOCUMENT_COMPLETED`` row also satisfies it).
+    The prospect-facing ``MandateSignPage`` polls this while the embed is shown and advances to the
+    signed-confirmation view when ``signed`` flips true.
 
     Security: the read requires the PAIR. ``opportunity_id`` is the opportunity's public 8-char handle
     (the access capability — 8 hex = 32 bits); ``document_id`` is Documenso's sequential/guessable

@@ -40,6 +40,19 @@ async def insert_event(
 # presence of a terminal-event ROW, never from a projection.
 _TERMINAL_EVENTS = ("DOCUMENT_COMPLETED",)
 
+# PROVIDER-side signing domains. A SIGNED recipient whose email domain is NONE of these is the
+# COUNTERPARTY (the prospect) — and a counterparty signature is what flips ``signed``, INDEPENDENT of
+# whether the provider has countersigned. Keyed on the email DOMAIN (not the booked-contact address)
+# so a DIFFERENT person at the counterparty's company can be the one who signs and the gate still
+# trips. SAFETY: this set MUST list every domain a provider-side signer can use — a domain missing
+# here would let a prospect reach the payment step before they themselves signed (fail-open).
+_PROVIDER_SIGNING_DOMAINS = (
+    "substrate.build",
+    "rarestructure.com",
+    "activeoperators.com",
+    "governmentcontracted.com",
+)
+
 
 async def get_opportunity_contact_email(conn, opportunity_id: str) -> str | None:
     """The opportunity's contact email by its 8-char PUBLIC handle — the email bound to the CLIENT
@@ -75,7 +88,12 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
     (``external_id='7bbf1081-…', envelope_id='1462137'``) carries a ``DOCUMENT_COMPLETED`` row.
 
     Returns ``{signed, latest_event, status, received_at}``:
-      * ``signed``       — a terminal (DOCUMENT_COMPLETED) row has landed for this pair.
+      * ``signed``       — the COUNTERPARTY (the prospect) has signed: ANY captured webhook payload for
+                           the pair shows a recipient with ``signingStatus='SIGNED'`` (or a non-null
+                           ``signedAt``) whose email DOMAIN is NOT a provider domain
+                           (``_PROVIDER_SIGNING_DOMAINS``). INDEPENDENT of whether the provider has
+                           countersigned — this is what advances the prospect to payment. A terminal
+                           ``DOCUMENT_COMPLETED`` row also satisfies it (the prospect necessarily signed).
       * ``latest_event`` — the most recent event name seen (by received_at), or None if no rows.
       * ``status``       — the ``payload->payload->>status`` of the latest row (PENDING/COMPLETED/…),
                            the envelope-level Documenso status carried verbatim in the raw body.
@@ -87,7 +105,18 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
         await cur.execute(
             """
             SELECT
-              bool_or(event = ANY(%(terminal)s))                         AS signed,
+              bool_or(
+                event = ANY(%(terminal)s)
+                OR EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(
+                    COALESCE(payload->'payload'->'Recipient', payload->'payload'->'recipients', '[]'::jsonb)
+                  ) AS r
+                  WHERE COALESCE(r->>'email', '') <> ''
+                    AND (r->>'signingStatus' = 'SIGNED' OR (r->>'signedAt') IS NOT NULL)
+                    AND lower(split_part(r->>'email', '@', 2)) <> ALL(%(provider_domains)s)
+                )
+              )                                                          AS signed,
               (array_agg(event ORDER BY received_at DESC))[1]            AS latest_event,
               (array_agg(payload->'payload'->>'status' ORDER BY received_at DESC))[1] AS status,
               max(received_at)                                           AS received_at
@@ -97,6 +126,7 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
             """,
             {
                 "terminal": list(_TERMINAL_EVENTS),
+                "provider_domains": [d.lower() for d in _PROVIDER_SIGNING_DOMAINS],
                 "opportunity_id": opportunity_id,
                 "document_id": document_id,
             },
