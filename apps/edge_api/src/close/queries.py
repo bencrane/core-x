@@ -51,36 +51,43 @@ _ACTIVE_WINDOW_SECONDS = 180
 async def read_active_call(conn) -> dict[str, Any]:
     """The CURRENT outbound Close call, DERIVED at read time — FULLY OFFLINE, NOT operator-scoped.
 
-    Single-operator reality ("all users are me"): the latest outbound ``activity.call`` inside the
-    active window IS the current call, whatever platform account is viewing it — mirroring Documenso
-    ``/sign-state``, which is keyed by document, not operator. Resolved to the briefing anchor
-    (normalized_domain) via public.close_crosswalk (by contact, falling back to lead). Returns
-    ``{active: false}`` when idle. (business.close_operator_map is left in place, unused, for a
-    future multi-operator world.)
+    Single-operator reality ("all users are me"): the latest RESOLVING outbound ``activity.call``
+    inside the active window IS the current call, whatever platform account is viewing it —
+    mirroring Documenso ``/sign-state`` (keyed by content, not operator).
+
+    RESOLUTION is on the DIALED NUMBER first: Close does NOT reliably put lead_id/contact_id on call
+    webhooks (and "personal number" bridge legs carry the operator's own number with no lead at all).
+    So we match the event's ``remote_phone`` (digits) to ``close_crosswalk.contact_phone`` — the exact
+    number we pushed to the contact, i.e. what Close dials — falling back to close_contact_id /
+    close_lead_id when those ARE present (softphone calls). The crosswalk match is REQUIRED (INNER
+    LATERAL), so unresolved bridge legs are skipped and only a real prospect call surfaces. Returns
+    ``{active: false}`` when nothing in the window resolves.
     """
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            WITH latest AS (
-                SELECT e.*
+            WITH resolved AS (
+                SELECT e.close_lead_id, e.close_contact_id, e.status, e.remote_phone, e.received_at,
+                       x.normalized_domain, x.company_name, x.resolved_contact_id
                 FROM business.close_webhook_events e
+                JOIN LATERAL (
+                    SELECT normalized_domain, company_name, resolved_contact_id
+                    FROM public.close_crosswalk x
+                    WHERE (x.contact_phone IS NOT NULL
+                           AND x.contact_phone = regexp_replace(COALESCE(e.remote_phone, ''), '[^0-9]', '', 'g'))
+                       OR (e.close_contact_id IS NOT NULL AND x.close_contact_id = e.close_contact_id)
+                       OR (e.close_lead_id IS NOT NULL AND x.close_lead_id = e.close_lead_id)
+                    LIMIT 1
+                ) x ON TRUE
                 WHERE e.object_type = 'activity.call'
                   AND e.direction = 'outbound'
                   AND e.received_at > now() - make_interval(secs => %(window)s)
                 ORDER BY e.received_at DESC
                 LIMIT 1
             )
-            SELECT
-                l.close_lead_id, l.close_contact_id, l.status, l.remote_phone, l.received_at,
-                COALESCE(xc.normalized_domain, xl.normalized_domain)  AS normalized_domain,
-                COALESCE(xc.company_name,      xl.company_name)       AS company_name,
-                COALESCE(xc.resolved_contact_id, xl.resolved_contact_id) AS resolved_contact_id
-            FROM latest l
-            LEFT JOIN public.close_crosswalk xc ON xc.close_contact_id = l.close_contact_id
-            LEFT JOIN LATERAL (
-                SELECT normalized_domain, company_name, resolved_contact_id
-                FROM public.close_crosswalk WHERE close_lead_id = l.close_lead_id LIMIT 1
-            ) xl ON TRUE
+            SELECT close_lead_id, close_contact_id, status, remote_phone, received_at,
+                   normalized_domain, company_name, resolved_contact_id
+            FROM resolved
             """,
             {"window": _ACTIVE_WINDOW_SECONDS},
         )
