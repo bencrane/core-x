@@ -73,7 +73,9 @@ async def get_opportunity_contact_email(conn, opportunity_id: str) -> str | None
     return row[0] if row and row[0] else None
 
 
-async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dict[str, Any]:
+async def read_sign_state(
+    conn, *, opportunity_id: str, document_id: str, signer: str = "client"
+) -> dict[str, Any]:
     """Project signing state for an ``(opportunity_id, document_id)`` PAIR at read time from the raw
     webhook rows — FULLY OFFLINE (no projection table, no live Documenso call).
 
@@ -88,12 +90,15 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
     (``external_id='7bbf1081-…', envelope_id='1462137'``) carries a ``DOCUMENT_COMPLETED`` row.
 
     Returns ``{signed, latest_event, status, received_at}``:
-      * ``signed``       — the COUNTERPARTY (the prospect) has signed: ANY captured webhook payload for
-                           the pair shows a recipient with ``signingStatus='SIGNED'`` (or a non-null
-                           ``signedAt``) whose email DOMAIN is NOT a provider domain
-                           (``_PROVIDER_SIGNING_DOMAINS``). INDEPENDENT of whether the provider has
-                           countersigned — this is what advances the prospect to payment. A terminal
-                           ``DOCUMENT_COMPLETED`` row also satisfies it (the prospect necessarily signed).
+      * ``signed``       — the REQUESTED ``signer`` has signed (recipient-scoped):
+                             - ``signer='client'`` (default) — a captured payload shows a recipient with
+                               ``signingStatus='SIGNED'`` (or a non-null ``signedAt``) whose email DOMAIN
+                               is NOT a provider domain (``_PROVIDER_SIGNING_DOMAINS``): the prospect.
+                             - ``signer='originator'`` — the same, but whose DOMAIN IS a provider domain:
+                               you (the countersigner). This is what the operator's ``?signer=originator``
+                               signing link polls so it advances only once YOU sign — not when the
+                               prospect did (the bug this fixes).
+                           A terminal ``DOCUMENT_COMPLETED`` row satisfies EITHER (both parties signed).
       * ``latest_event`` — the most recent event name seen (by received_at), or None if no rows.
       * ``status``       — the ``payload->payload->>status`` of the latest row (PENDING/COMPLETED/…),
                            the envelope-level Documenso status carried verbatim in the raw body.
@@ -114,7 +119,10 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
                   ) AS r
                   WHERE COALESCE(r->>'email', '') <> ''
                     AND (r->>'signingStatus' = 'SIGNED' OR (r->>'signedAt') IS NOT NULL)
-                    AND lower(split_part(r->>'email', '@', 2)) <> ALL(%(provider_domains)s)
+                    AND CASE WHEN %(originator)s
+                             THEN lower(split_part(r->>'email', '@', 2)) = ANY(%(provider_domains)s)
+                             ELSE lower(split_part(r->>'email', '@', 2)) <> ALL(%(provider_domains)s)
+                        END
                 )
               )                                                          AS signed,
               (array_agg(event ORDER BY received_at DESC))[1]            AS latest_event,
@@ -127,6 +135,7 @@ async def read_sign_state(conn, *, opportunity_id: str, document_id: str) -> dic
             {
                 "terminal": list(_TERMINAL_EVENTS),
                 "provider_domains": [d.lower() for d in _PROVIDER_SIGNING_DOMAINS],
+                "originator": signer == "originator",
                 "opportunity_id": opportunity_id,
                 "document_id": document_id,
             },
