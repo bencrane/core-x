@@ -161,12 +161,15 @@ def _resolve_company_li(gw, company: dict, priority: str, counts: dict) -> str |
     return None
 
 
-def _find_people_for_company(gw, company_li: str, priority: str, counts: dict) -> list[dict]:
-    """Paginate POST /v2/search/people for one company, NO person filters → every person."""
+def _find_people_for_company(gw, company_li: str, priority: str, counts: dict,
+                             people_filter: dict) -> list[dict]:
+    """Paginate POST /v2/search/people for one company with the given person filter (job_title /
+    job_level / job_function …). Cursor-paginated. The title filter is the lid: a big company
+    returns only its titled matches, not its whole org. Pass EMPTY_PEOPLE for the legacy all-people."""
     people: list[dict] = []
     cursor = None
     for _ in range(MAX_PAGES):
-        payload = {"company": {"linkedin_url": [company_li]}, "people": EMPTY_PEOPLE,
+        payload = {"company": {"linkedin_url": [company_li]}, "people": people_filter,
                    "max_results": PAGE, "cursor": cursor}
         counts["gateway_calls"] += 1
         rb = gw.remote(endpoint=SEARCH_PATH, payload=payload, priority=priority)
@@ -236,7 +239,7 @@ def _post_callback(url, body):
         print(f"callback POST failed: {exc}")
 
 
-def _run(companies: list[dict], batch_label, run_id, priority, trigger_callback_url) -> dict:
+def _run(companies: list[dict], batch_label, run_id, priority, trigger_callback_url, people_filter) -> dict:
     started_at = dt.datetime.now(dt.timezone.utc)
     priority = priority if priority in VALID_PRIORITIES else "low"
     counts = {"companies": 0, "resolved": 0, "no_linkedin": 0, "people_found": 0,
@@ -255,7 +258,7 @@ def _run(companies: list[dict], batch_label, run_id, priority, trigger_callback_
                     counts["no_linkedin"] += 1
                     continue
                 dom = _norm_domain(c.get("domain"))
-                ppl = _find_people_for_company(gw, company_li, priority, counts)
+                ppl = _find_people_for_company(gw, company_li, priority, counts, people_filter)
                 counts["people_found"] += len(ppl)
                 for p in ppl:
                     if _upsert_person(cur, p, company_li, dom, batch_label):
@@ -277,10 +280,14 @@ def _run(companies: list[dict], batch_label, run_id, priority, trigger_callback_
 
 @app.function(secrets=SECRETS, timeout=60 * 60, memory=2048, cpu=1.0)
 def run_find_people(companies: list[dict], batch_label: str | None = None, run_id: str | None = None,
-                    priority: str = "low", trigger_callback_url: str | None = None) -> dict:
-    """Find every person at each company (no person filters), upsert ops.blitz_find_people.
+                    priority: str = "low", trigger_callback_url: str | None = None,
+                    people_filter: dict | None = None) -> dict:
+    """Find people at each company matching ``people_filter`` (the find-people person block:
+    job_title / job_level / job_function / location …), upsert ops.blitz_find_people.
+    people_filter=None → EMPTY_PEOPLE (legacy all-people, unbounded).
     companies: [{"domain": str|None, "company_linkedin_url": str|None}, ...]."""
-    return _run(companies, batch_label, run_id, priority, trigger_callback_url)
+    return _run(companies, batch_label, run_id, priority, trigger_callback_url,
+                people_filter if people_filter is not None else EMPTY_PEOPLE)
 
 
 # ── Reverse enrich: email/phone → FULL person profile (same grain as find-people) ──
