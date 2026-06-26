@@ -67,7 +67,7 @@ COMPANY_IDX = [
 
 
 AWARDS_COLS = [
-    "award_id", "winner_uei", "winner_name", "winner_type", "award_amount", "action_date",
+    "award_id", "winner_uei", "winner_name", "winner_type", "action_obligated_usd", "action_date",
     "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "state", "city", "county",
     "pop_state", "pop_city",
     "awarding_agency", "awarding_sub_agency", "set_aside", "business_size",
@@ -78,7 +78,7 @@ AWARDS_COLS = [
 ]
 AWARDS_IDX = [
     {"name": "action_date_idx", "type": "BTree", "fields": ["action_date"]},
-    {"name": "award_amount_idx", "type": "BTree", "fields": ["award_amount"]},
+    {"name": "action_obligated_usd_idx", "type": "BTree", "fields": ["action_obligated_usd"]},
     {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},
     {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},  # extra
     {"name": "city_idx", "type": "BTree", "fields": ["city"]},

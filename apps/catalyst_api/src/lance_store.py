@@ -506,7 +506,7 @@ def entity_dossier_gold(uei: str) -> dict[str, Any] | None:
 
 
 _RECENT_ACTION_COLS = [
-    "award_id", "action_date", "award_amount", "awarding_agency", "awarding_sub_agency",
+    "award_id", "action_date", "action_obligated_usd", "awarding_agency", "awarding_sub_agency",
     "winner_type", "pop_state", "pop_city", "set_aside", "naics_code",
 ]
 # Drawer fan-out ceiling — the rolling-90d table naturally bounds a UEI's actions.
@@ -527,7 +527,7 @@ def recent_award_actions_by_uei(uei: str, limit: int = 10) -> list[dict[str, Any
     rows = _scan(config.MAP_DATASET_URIS["awards"], columns=_RECENT_ACTION_COLS,
                  filter=f"winner_uei = {_sql_str(uei)}")
     rows.sort(key=lambda r: (r.get("action_date") or dt_date.min,
-                             r.get("award_amount") or 0.0), reverse=True)
+                             r.get("action_obligated_usd") or 0.0), reverse=True)
     return rows[:cap]
 
 

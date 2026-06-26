@@ -1,23 +1,22 @@
-"""Serving worker — usaspending_awards_map_serving: ONE ROW PER AWARD ACTION from the
+"""Serving worker — usaspending_awards_map_serving: ONE ROW PER PRIME AWARD ACTION from the
 rolling fresh feeds, joined to the address-keyed geocode crosswalk. The award-EVENT read
 model behind "won an award over $X in the last N days" — the grain neither rollup table
 (company = lifetime, winners = window SUM) can express.
 
-GRAIN  1 row per positive-dollar award action: prime contract transactions
-       (contract_transaction_unique_key) ∪ subaward actions (subaward_number|prime key).
+GRAIN  1 row per positive-dollar PRIME award action (contract_transaction_unique_key).
+       PRIME-ONLY — subaward actions are excluded (tiny + under-reported at source; teaming
+       intelligence lives on the winners serving table, not here).
 SoR    s3://data-sink/active/usaspending_awards_map_serving/  (Lance v2.1; derived, overwrite)
-INPUTS usaspending_api_fresh contract_prime_txn + contract_subaward (windowed ~730d/2y by
-       action_date; ~5-day posting lag at source) ⋈ geocode_xwalk (addr_hash).
-AMOUNT SEMANTICS — load-bearing: award_amount is the SINGLE action's obligation
-       (federal_action_obligation / subaward_amount). De-obligations (< 0) and $0 admin
+INPUTS usaspending_api_fresh contract_prime_txn (windowed ~730d/2y by action_date; ~5-day
+       posting lag at source) ⋈ geocode_xwalk (addr_hash).
+AMOUNT SEMANTICS — load-bearing: action_obligated_usd is the SINGLE prime action's obligation
+       (federal_action_obligation). De-obligations (< 0) and $0 admin
        mods are EXCLUDED at build: ">$X won" must never match a de-obligation, and a
        multi-action award does NOT aggregate — each action stands alone.
 DEDUPE the fresh feeds carry ~12% duplicate transactions across ingest pulls; rows are
        deduped on the transaction key (arbitrary survivor — duplicates are identical).
 GEO    state/city/county are RECIPIENT geo (company registration); pop_state/pop_city are
-       PRIMARY PLACE OF PERFORMANCE (where the work happens; ~87% populated on prime,
-       NULL on subawards — the sub feed's PoP columns are empty, verified live).
-       set_aside / county / psc are prime-only signals (NULL on sub rows).
+       PRIMARY PLACE OF PERFORMANCE (where the work happens; ~87% populated).
 PSC    psc_code is the full Product/Service Code (what the contract BUYS, e.g. 'V111' motor
        freight); psc_category is its leading character (the PSC top-level group — 'V' =
        Transportation/Travel/Relocation). DISTINCT axis from NAICS (the vendor's industry):
@@ -51,7 +50,6 @@ from pipelines._shared.addr_hash import addr_hash_sql  # noqa: E402
 ACTIVE = "s3://data-sink/active"
 SERVING_URI = os.environ.get("AWARDS_MAP_SERVING_URI", f"{ACTIVE}/usaspending_awards_map_serving/")
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
-SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # Stage-1 (naics_code, psc_code) -> vertical / work_type / equipment_intensity classification
 # (the top-$ 279 combos). LEFT-JOINed per action so the labels become filterable columns here.
@@ -60,7 +58,7 @@ WINDOW_DAYS = int(os.environ.get("AWARDS_WINDOW_DAYS", "730"))
 DATA_STORAGE_VERSION = "2.1"
 # BTREE: range axes (action_date, award_amount) + resolution keys + high-cardinality geo
 # + psc_code (full PSC, ~hundreds of distinct codes).
-BTREE_INDEXES = ["action_date", "award_amount", "winner_uei", "addr_hash",
+BTREE_INDEXES = ["action_date", "action_obligated_usd", "winner_uei", "addr_hash",
                  "city", "county", "pop_city", "awarding_sub_agency", "psc_code"]
 # BITMAP: low-cardinality filter columns (state 57, agency 67, set_aside 18, type 2,
 # psc_category ~30 leading chars, fiscal_year a handful).
@@ -110,7 +108,6 @@ def _assemble(so, window_days: int):
     import lance
     cutoff = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=window_days)).isoformat()
     p = lance.dataset(PRIME_URI, storage_options=so)
-    s = lance.dataset(SUB_URI, storage_options=so)
     x = lance.dataset(XWALK_URI, storage_options=so)
     con = _duck()
     con.register("p", p.scanner(
@@ -124,13 +121,6 @@ def _assemble(so, window_days: int):
                  "contracting_officers_determination_of_business_size",
                  "action_type", "action_type_code"],
         filter=f"action_date >= '{cutoff}'").to_reader())
-    con.register("s", s.scanner(
-        columns=["subaward_number", "prime_award_unique_key", "subawardee_uei", "subawardee_name",
-                 "subawardee_address_line_1", "subawardee_city_name", "subawardee_state_code",
-                 "subawardee_zip_code", "prime_award_naics_code", "subaward_action_date",
-                 "subaward_amount", "prime_award_awarding_agency_name",
-                 "prime_award_awarding_sub_agency_name"],
-        filter=f"subaward_action_date >= '{cutoff}'").to_reader())
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
     vmap = lance.dataset(NAICS_PSC_MAP_URI, storage_options=so)
     con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
@@ -156,15 +146,6 @@ def _assemble(so, window_days: int):
                nullif(trim(action_type), '') AS action_type_raw,
                nullif(trim(action_type_code), '') AS action_type_code_raw
         FROM p WHERE recipient_uei IS NOT NULL AND length(trim(recipient_uei)) > 0
-        UNION ALL
-        SELECT subaward_number || '|' || coalesce(prime_award_unique_key, ''),
-               subawardee_uei, 'subawardee', subawardee_name, subawardee_address_line_1,
-               subawardee_city_name, NULL, subawardee_state_code, subawardee_zip_code,
-               prime_award_naics_code, try_cast(subaward_action_date AS DATE),
-               try_cast(subaward_amount AS DOUBLE),
-               prime_award_awarding_agency_name, prime_award_awarding_sub_agency_name,
-               NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL  -- set_aside / PoP / pop_end / psc / business_size / action_type(+code): empty at source for subawards
-        FROM s WHERE subawardee_uei IS NOT NULL AND length(trim(subawardee_uei)) > 0
     ),
     -- amount > 0 BEFORE dedupe: ">$X won" must never match a de-obligation or $0 mod.
     pos AS (SELECT * FROM u WHERE amt > 0 AND adt IS NOT NULL),
@@ -176,7 +157,7 @@ def _assemble(so, window_days: int):
         SELECT award_id, winner_uei, winner_type, winner_name, street,
                upper(trim(city_raw)) AS city, upper(trim(county_raw)) AS county,
                upper(trim(state_raw)) AS state, zip, naics AS naics_code,
-               substr(naics, 1, 2) AS naics2, adt AS action_date, amt AS award_amount,
+               substr(naics, 1, 2) AS naics2, adt AS action_date, amt AS action_obligated_usd,
                -- US federal fiscal year of the action: Oct 1–Sep 30, so FY = year + (month >= Oct).
                (year(adt) + CASE WHEN month(adt) >= 10 THEN 1 ELSE 0 END) AS fiscal_year,
                agency AS awarding_agency, sub_agency AS awarding_sub_agency, set_aside,
@@ -284,7 +265,7 @@ def verify():
            "with_coords": ds.count_rows(filter="latitude IS NOT NULL"),
            "prime": ds.count_rows(filter="winner_type = 'prime_recipient'"),
            "subaward": ds.count_rows(filter="winner_type = 'subawardee'"),
-           "negative_or_zero_amounts": ds.count_rows(filter="award_amount <= 0"),
+           "negative_or_zero_amounts": ds.count_rows(filter="action_obligated_usd <= 0"),
            "with_pop_state": ds.count_rows(filter="pop_state IS NOT NULL"),
            "with_set_aside": ds.count_rows(filter="set_aside IS NOT NULL"),
            "with_pop_end": ds.count_rows(filter="pop_end IS NOT NULL"),
@@ -301,7 +282,7 @@ def verify():
            "with_action_type": ds.count_rows(filter="action_type IS NOT NULL"),
            "columns": len(ds.schema.names), "indices": idx}
     out["acceptance_A_tx_construction_1m_30d"] = ds.count_rows(
-        filter=f"naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
+        filter=f"naics2 = '23' AND state = 'TX' AND action_obligated_usd >= 1000000.0 "
                f"AND action_date >= DATE '{cutoff30}'")
     print(json.dumps(out, indent=2, default=str))
 
@@ -313,10 +294,10 @@ def demo(window_days: int = WINDOW_DAYS):
     limit = int(os.environ.get("DEMO_LIMIT", "8"))
     cutoff = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=30)).isoformat()
     ds = lance.dataset(SERVING_URI, storage_options=so)
-    flt = (f"naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
+    flt = (f"naics2 = '23' AND state = 'TX' AND action_obligated_usd >= 1000000.0 "
            f"AND action_date >= DATE '{cutoff}'")
     total = ds.count_rows(filter=flt)
-    rows = ds.scanner(columns=["winner_name", "winner_uei", "award_amount", "action_date",
+    rows = ds.scanner(columns=["winner_name", "winner_uei", "action_obligated_usd", "action_date",
                                "city", "state", "awarding_agency", "latitude", "longitude"],
                       filter=flt, limit=limit).to_table().to_pylist()
     print(json.dumps({"demo_filter": flt, "matched_total": total, "showing": len(rows),

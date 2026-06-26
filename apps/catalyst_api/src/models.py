@@ -419,7 +419,7 @@ class RecentAwardAction(_Model):
         return cls(
             award_id=r.get("award_id"),
             action_date=_iso(r.get("action_date")),
-            amount=r.get("award_amount"),
+            amount=r.get("action_obligated_usd"),
             awarding_agency=r.get("awarding_agency"),
             awarding_sub_agency=r.get("awarding_sub_agency"),
             winner_type=r.get("winner_type"),
