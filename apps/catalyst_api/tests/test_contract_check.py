@@ -110,7 +110,10 @@ ACTIVE_COLS = [
     "award_id", "winner_uei", "winner_name", "current_value", "potential_value", "obligated",
     "pop_current_end", "pop_potential_end", "has_option_tail", "naics2", "naics_code",
     "psc_category", "psc_code", "state", "pop_state", "awarding_agency", "awarding_sub_agency",
-    "set_aside", "business_size", "award_or_idv_flag", "longitude", "latitude",
+    "set_aside", "business_size", "award_or_idv_flag",
+    # active.v2 GTM label axes (BITMAP) + what_was_done display column (free-text, NOT indexed).
+    "vertical", "work_type", "equipment_intensity", "what_was_done",
+    "longitude", "latitude",
 ]
 ACTIVE_IDX = [
     # days_until_expiry → the pop_current_end BTREE (the forward recompete axis).
@@ -133,6 +136,11 @@ ACTIVE_IDX = [
     {"name": "has_option_tail_idx", "type": "Bitmap", "fields": ["has_option_tail"]},
     {"name": "award_or_idv_flag_idx", "type": "Bitmap", "fields": ["award_or_idv_flag"]},
     {"name": "awarding_agency_idx", "type": "Bitmap", "fields": ["awarding_agency"]},
+    # active.v2 GTM label axes — BITMAP (low cardinality), award-grain. what_was_done is a
+    # free-text DISPLAY column and is intentionally NOT indexed (no entry here).
+    {"name": "vertical_idx", "type": "Bitmap", "fields": ["vertical"]},
+    {"name": "work_type_idx", "type": "Bitmap", "fields": ["work_type"]},
+    {"name": "equipment_intensity_idx", "type": "Bitmap", "fields": ["equipment_intensity"]},
 ]
 
 

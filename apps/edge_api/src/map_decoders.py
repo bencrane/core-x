@@ -446,7 +446,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "active": {
-        "version": "active.v1",
+        "version": "active.v2",
         "description": "ACTIVE prime awards still in performance — one row per award (award grain). The FORWARD-looking table: it carries the period-of-performance end date, so you can find incumbents about to RECOMPETE (contracts whose performance ends in the next N days). Use for 'expiring / up for recompete / runway' questions; amounts are the award's current/potential value, not a single action.",
         "fields": {
             "days_until_expiry": {"type": "days_ahead", "ops": ("<=", ">=", "between"), "desc": "whole days until the award's period of performance ends. 'expiring in the next N days' / 'recompete within N days' → days_until_expiry <= N; 'at least N days of runway' → days_until_expiry >= N. THE recompete axis"},
@@ -455,6 +455,17 @@ DECODERS: dict[str, dict] = {
             "obligated": {"type": "float", "ops": (">=", "<=", "between"), "desc": "total dollars obligated to date, USD"},
             "naics2": {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction) — the vendor's INDUSTRY"},
             "naics_code": {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
+            # ── GTM label axes (active.v2): the award's (NAICS, PSC) pair → a rich VERTICAL, a
+            # WORK_TYPE (make vs resell vs build), and an EQUIPMENT_INTENSITY band. All three live
+            # as BITMAP columns; head-coverage (~38% of active awards labeled) so unlabeled rows
+            # surface in 'not applied', never silently filtered. award grain. (what_was_done is a
+            # DISPLAY-only gloss surfaced in notes — NOT a filter field.) ──
+            "vertical":          {"type": "string", "ops": ("=", "in"), "enum": _VERTICALS,
+                                  "desc": "the award's INDUSTRY VERTICAL — a 24-name GTM taxonomy derived from the (NAICS, PSC) pair (distinct from naics2, the raw 2-digit sector). 'the IT vertical' / 'aerospace contracts' / 'healthcare sector' (up for recompete) → vertical = the matching name. Partial coverage: only the labeled head (~38% of active awards); unlabeled rows carry no signal (surface as not-applied)"},
+            "work_type":         {"type": "string", "ops": ("=", "in"), "enum": _WORK_TYPES,
+                                  "desc": "WHAT THE VENDOR DOES on the award (the make-vs-resell axis). services_labor = labor/services; manufacture = makes the goods; distribute_resell = resells/distributes; construct = construction work; RnD = research & development; maintain_repair = maintenance/repair. 'manufacturers'/'makers' → 'manufacture'; 'resellers'/'distributors' → 'distribute_resell'"},
+            "equipment_intensity": {"type": "string", "ops": ("=", "in"), "enum": _EQUIP_INTENSITY,
+                                  "desc": "how EQUIPMENT-HEAVY the work is (a mobilization-capital / financing signal). 'equipment-heavy'/'capital-intensive' → 'high'; 'asset-light'/'labor-only' → 'low'"},
             "psc_category": {"type": "string", "ops": ("=", "in"), "desc": "leading PSC char = WHAT THE CONTRACT BUYS. 'V' = Transportation/Travel/Relocation services (catches transport/freight services coded under a non-48/49 NAICS)"},
             "psc_code": {"type": "string", "ops": ("=", "in"), "desc": "full Product/Service Code, UPPERCASE (e.g. 'V111')"},
             "state": {"type": "string", "ops": ("=", "in"), "desc": "winner HQ state, 2-letter — 'companies in <state>'"},
@@ -480,15 +491,134 @@ DECODERS: dict[str, dict] = {
             "hubzone": {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
             "woman-owned": {"field": "set_aside", "op": "in", "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
             "dod": {"field": "awarding_agency", "op": "in", "value": ["Department of Defense", "Department of Defense (DOD)"]},
+            # ── GTM label-axis lexicon (active.v2). Plain-English → vertical / work_type /
+            # equipment_intensity. Byte-identical to the catalyst mirror + the awards decoder.
+            # Head-coverage only; bare "construction" stays on naics2 above (broad recall). Ambiguous
+            # bare tokens (security, engineering, manufacturing, logistics, defense) deliberately NOT mapped. ──
+            "it contracts":            {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "software contracts":      {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "software vendors":        {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "cybersecurity":           {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "cyber contracts":         {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "information technology":  {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "aerospace":               {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "aerospace contracts":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "defense contractors":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "aerospace and defense":   {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "weapons systems":         {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "construction industry":   {"field": "vertical", "op": "=", "value": "Construction"},
+            "building contractors":    {"field": "vertical", "op": "=", "value": "Construction"},
+            "general contractors":     {"field": "vertical", "op": "=", "value": "Construction"},
+            "r&d vertical":            {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "research and development": {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "research labs":           {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "professional services":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "management consulting":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "management services":     {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "consulting firms":        {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "healthcare":              {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "healthcare contracts":    {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "medical services":        {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "life sciences":           {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "pharma":                  {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "facilities management":   {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "janitorial":              {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "custodial services":      {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "facilities maintenance":  {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "engineering and architecture": {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "architecture firms":      {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "a&e firms":               {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "architectural services":  {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "transportation and logistics": {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "logistics contractors":   {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "trucking":                {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "freight carriers":        {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "food and agriculture":    {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "food services vertical":  {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "agriculture":             {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "food and beverage":       {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "wholesale and supply":    {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "supply contractors":      {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "wholesalers":             {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "commodity suppliers":     {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "environmental":           {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "environmental remediation": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "remediation contractors": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "environmental cleanup":   {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "electronics":             {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "electronics and instruments": {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "instrumentation":         {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "telecom":                 {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "telecommunications":      {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "telecom contractors":     {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "energy and utilities":    {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "utilities":               {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "power and energy":        {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "energy contractors":      {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "industrial manufacturing": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "manufacturing vertical":  {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "industrial manufacturers": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "financial services":      {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "financial and insurance": {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "insurance contractors":   {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "guard services":          {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "security guards":         {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "physical security":       {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "armed guard services":    {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "public administration":   {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+            "government administration": {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+            "education and training":  {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "training contractors":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "educational services":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "real estate":             {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "real estate services":    {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "leasing services":        {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "media and publishing":    {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "publishing":              {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "media services":          {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "mining":                  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "mining and extraction":   {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "extraction contractors":  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "aec":                     {"field": "vertical", "op": "in",
+                                        "value": ["Engineering & Architecture", "Construction"]},
+            "manufacturers":           {"field": "work_type", "op": "=", "value": "manufacture"},
+            "makers":                  {"field": "work_type", "op": "=", "value": "manufacture"},
+            "product manufacturers":   {"field": "work_type", "op": "=", "value": "manufacture"},
+            "resellers":               {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "distributors":            {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "value-added resellers":   {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "vars":                    {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "warehousing":             {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "maintenance and repair":  {"field": "work_type", "op": "=", "value": "maintain_repair"},
+            "repair services":         {"field": "work_type", "op": "=", "value": "maintain_repair"},
+            "services firms":          {"field": "work_type", "op": "=", "value": "services_labor"},
+            "labor services":          {"field": "work_type", "op": "=", "value": "services_labor"},
+            "r&d work":                {"field": "work_type", "op": "=", "value": "RnD"},
+            "research work":           {"field": "work_type", "op": "=", "value": "RnD"},
+            "equipment-heavy":         {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "equipment-intensive":     {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "capital-intensive":       {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "asset-heavy":             {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "asset-light":             {"field": "equipment_intensity", "op": "=", "value": "low"},
+            "labor-only":              {"field": "equipment_intensity", "op": "=", "value": "low"},
         },
         "notes": (
             "FORWARD-looking: this table is who is ABOUT to recompete (period-of-performance end window), not who won. 'expiring / up for recompete / runway / performance ends' → days_until_expiry.",
             "NAICS vs PSC: naics2/naics_code = vendor industry; psc_category/psc_code = what the contract buys ('transportation services' / 'PSC V' → psc_category='V').",
+            "Industry axes: naics2/naics_code = the RAW federal sector code; vertical = the 24-name"
+            " GTM taxonomy over the (NAICS, PSC) pair. 'the <name> vertical/sector/industry'"
+            " (e.g. 'aerospace contracts up for recompete', 'IT vertical expiring this quarter') →"
+            " vertical, AND-ed with the days_until_expiry recompete window. work_type (make vs"
+            " resell vs construct vs services vs RnD vs maintain_repair) and equipment_intensity"
+            " (low/medium/high financing signal) are PEER filters. All three have partial coverage"
+            " (~38% of active awards) — unlabeled rows surface in 'not applied', never silently"
+            " filtered. what_was_done is a free-text DISPLAY field (shown for context, not filterable).",
         ),
         "aggregate": {
             "measure": "current_value",
             "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
-                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size"],
+                     "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
+                     "vertical", "work_type", "equipment_intensity"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING over expiring/active awards"
@@ -689,7 +819,11 @@ _ROUTING_CUES = {
     "active": "FORWARD-LOOKING / RECOMPETE questions: contracts EXPIRING / up for recompete /"
               " whose period of performance ends in the next N days, runway left, incumbents about"
               " to lose a contract. DEFAULT for 'expiring', 'recompete', 'renewal', 'runway',"
-              " 'active contracts ending'. (awards = who already won; active = who's about to rebuy.)",
+              " 'active contracts ending'. ALSO carries the GTM LABEL axes (INDUSTRY / VERTICAL /"
+              " SECTOR → vertical; make-vs-resell → work_type; equipment-heavy → equipment_intensity):"
+              " a vertical/work_type/equipment clause AND-ed with an expiring/recompete window"
+              " ('aerospace contracts up for recompete', 'IT vertical expiring this quarter') routes"
+              " HERE, not awards. (awards = who already won; active = who's about to rebuy.)",
 }
 
 
