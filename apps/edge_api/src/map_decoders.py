@@ -110,7 +110,7 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v8",
+        "version": "winners.v9",
         "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -186,7 +186,7 @@ DECODERS: dict[str, dict] = {
             "osha 30":             {"field": "req_cert_tag", "op": "has_any", "value": list(_CERT_OSHA_30)},
         },
         "aggregate": {
-            "measure": "total_obligation",
+            "measure": "entity_obligated_usd",
             "dims": ["naics2", "naics_code", "state", "winner_type"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],

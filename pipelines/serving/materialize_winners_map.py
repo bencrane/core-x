@@ -7,7 +7,7 @@ SoR    s3://data-sink/active/usaspending_winners_map_serving/  (Lance v2.1; deri
 INPUTS prime + subaward fresh feeds (rolling 90d by action_date) ⋈ geocode_xwalk (addr_hash)
        ⋈ govcon_award_solicitation_profiles (award grain) rolled to the prime winner (PHASE 3).
        The window lives HERE (a WHERE), not in the crosswalk — extend it freely.
-SIGNALS total_obligation (Σ federal_action_obligation / subaward_amount), award_count, naics,
+SIGNALS entity_obligated_usd (Σ federal_action_obligation / subaward_amount), award_count, naics,
        state — the demo filters ("construction NAICS 23, > $150k") — PLUS the PHASE-3 capability
        axis rolled from govcon_award_solicitation_profiles to the PRIME winner (recipient_uei =
        winner_uei). Subawardee rows carry capability defaults (scope is extracted from the prime's
@@ -61,7 +61,7 @@ DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
 BTREE_INDEXES = ["winner_uei", "addr_hash",
                  # range/recency filter axes ('$X+ won', 'award_count over N', recency window).
-                 "total_obligation", "award_count", "last_action_date",
+                 "entity_obligated_usd", "award_count", "last_action_date",
                  # SUB-only teaming axis (range/threshold filters): null on prime rows.
                  "teaming_dollars_5y", "n_teaming_primes"]
 BITMAP_INDEXES = ["naics2", "state", "winner_type",
@@ -157,7 +157,7 @@ def _assemble(so, window_days: int):
                try_cast(subaward_amount AS DOUBLE), subaward_number
         FROM s WHERE subawardee_uei IS NOT NULL AND length(trim(subawardee_uei)) > 0
     ),
-    -- "honest won" $: total_obligation / award_count sum ONLY positive in-window obligations
+    -- "honest won" $: entity_obligated_usd / award_count sum ONLY positive in-window obligations
     -- (mirrors the awards map's `amt > 0` semantics) so de-obligation correction mods (negative)
     -- and $0 admin mods can't poison the dollar signal. Negative-poisoned winners read $0, never
     -- < 0. Unlike the awards map we do NOT drop rows here: identity / recency below aggregate over
@@ -167,7 +167,7 @@ def _assemble(so, window_days: int):
     pos_agg AS (
         SELECT winner_uei, winner_type,
                count(DISTINCT award_key) AS award_count,
-               sum(amt) AS total_obligation,
+               sum(amt) AS entity_obligated_usd,
                max(adt) AS last_positive_action_date
         FROM pos GROUP BY winner_uei, winner_type
     ),
@@ -178,7 +178,7 @@ def _assemble(so, window_days: int):
                arg_max(u.state, u.adt) AS state, arg_max(u.zip, u.adt) AS zip,
                arg_max(u.naics, u.adt) AS naics_code,
                coalesce(any_value(pa.award_count), 0) AS award_count,
-               coalesce(any_value(pa.total_obligation), 0) AS total_obligation,
+               coalesce(any_value(pa.entity_obligated_usd), 0) AS entity_obligated_usd,
                coalesce(max(pa.last_positive_action_date), max(u.adt)) AS last_action_date
         FROM u LEFT JOIN pos_agg pa USING (winner_uei, winner_type)
         GROUP BY u.winner_uei, u.winner_type
@@ -258,7 +258,7 @@ def _assemble(so, window_days: int):
     )
     SELECT k.winner_uei, k.winner_type, k.winner_name, k.street, k.city,
            upper(trim(k.state)) AS state, k.zip, k.naics_code, k.naics2,
-           k.award_count, k.total_obligation, k.last_action_date, k.addr_hash,
+           k.award_count, k.entity_obligated_usd, k.last_action_date, k.addr_hash,
            x.latitude, x.longitude, x.match_type,
            -- capability: prime winners roll from award profiles (cap*); subawardee winners from the
            -- sub profiles (cap_sub). The join conds are winner_type-exclusive, so at most one side is
@@ -368,11 +368,11 @@ def verify():
            "prime": ds.count_rows(filter="winner_type = 'prime_recipient'"),
            "subaward": ds.count_rows(filter="winner_type = 'subawardee'"),
            # "honest won" $ invariants: no winner may read < 0; report the ≤$0 / <$0 tails.
-           "negative_obligation": ds.count_rows(filter="total_obligation < 0"),
-           "zero_or_negative_obligation": ds.count_rows(filter="total_obligation <= 0"),
+           "negative_obligation": ds.count_rows(filter="entity_obligated_usd < 0"),
+           "zero_or_negative_obligation": ds.count_rows(filter="entity_obligated_usd <= 0"),
            "columns": len(ds.schema.names), "indices": idx}
     out["demo_construction_gt_150k"] = ds.count_rows(
-        filter="naics2 = '23' AND total_obligation >= 150000 AND latitude IS NOT NULL")
+        filter="naics2 = '23' AND entity_obligated_usd >= 150000 AND latitude IS NOT NULL")
     # ── PHASE-3 capability coverage (the map∩scope denominator + the safety-gate sanity) ──
     cap_cols = set(ds.schema.names)
     if "has_extracted_scope" in cap_cols:
@@ -415,17 +415,17 @@ def demo(window_days: int = WINDOW_DAYS):
     min_obl = float(os.environ.get("DEMO_MIN_OBL", "150000"))
     limit = int(os.environ.get("DEMO_LIMIT", "10"))
     ds = lance.dataset(SERVING_URI, storage_options=so)
-    flt = f"naics2 = '{naics2}' AND total_obligation >= {min_obl} AND latitude IS NOT NULL"
+    flt = f"naics2 = '{naics2}' AND entity_obligated_usd >= {min_obl} AND latitude IS NOT NULL"
     total = ds.count_rows(filter=flt)
     tbl = ds.scanner(columns=["winner_name", "winner_type", "state", "naics_code",
-                              "total_obligation", "award_count", "latitude", "longitude"],
+                              "entity_obligated_usd", "award_count", "latitude", "longitude"],
                      filter=flt, limit=limit).to_table().to_pylist()
     fc = {"type": "FeatureCollection",
           "demo_filter": flt, "matched_total": total, "showing": len(tbl),
           "features": [{"type": "Feature",
                         "geometry": {"type": "Point", "coordinates": [r["longitude"], r["latitude"]]},
                         "properties": {k: r[k] for k in ("winner_name", "winner_type", "state",
-                                                         "naics_code", "total_obligation", "award_count")}}
+                                                         "naics_code", "entity_obligated_usd", "award_count")}}
                        for r in tbl]}
     print(json.dumps(fc, indent=2, default=str))
 
