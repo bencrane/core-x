@@ -304,11 +304,11 @@ def test_awards_aggregate_validation_allowlist():
 def test_winners_company_aggregate_measures():
     # winners rolls up the per-entity obligation; company rolls up active obligations.
     assert WINNERS.aggregate.measure == "entity_obligated_usd"
-    assert COMPANY.aggregate.measure == "total_active_obligations"
+    assert COMPANY.aggregate.measure == "entity_active_obligated_usd"
     spec, gb, _, _ = lance_store.validate_aggregate(WINNERS, "state", ["count", "sum", "median"], None)
     assert spec.measure == "entity_obligated_usd" and gb == "state"
     spec2, gb2, _, _ = lance_store.validate_aggregate(COMPANY, "industry", ["sum"], None)
-    assert spec2.measure == "total_active_obligations" and gb2 == "industry"
+    assert spec2.measure == "entity_active_obligated_usd" and gb2 == "industry"
     # a winners field that is NOT a declared aggregate dim is rejected as a group_by
     with pytest.raises(lance_store.MapCompileError):
         lance_store.validate_aggregate(WINNERS, "teaming_prime", ["count"], None)

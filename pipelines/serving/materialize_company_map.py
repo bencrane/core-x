@@ -11,7 +11,7 @@ INPUTS firmographics_blitz (domain firmographics) ⋈ sam_master_domains (domain
        daily — summary_as_of) ∪ usaspending_api_fresh prime/subaward feeds (rolling 90d),
        max()'d per UEI into latest_award_action_date (DATE).
 SIGNALS industry, employee_size_band, company_type (firmographics) + naics, has_federal_awards,
-       total_active_obligations, award_count, latest_award_action_date (govcon) — the
+       entity_active_obligated_usd, award_count, latest_award_action_date (govcon) — the
        prospecting filters. latest_award_action_date STALENESS: as fresh as the most recent
        contractor_award_summary / fresh-feed ingest (NOT request-time); the decoder's
        days_since_last_award axis resolves against it at query time.
@@ -48,7 +48,7 @@ FRESH_SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics", "latest_award_action_date",
                  # range filter axes (full-scan without these).
-                 "founded_year", "total_active_obligations", "award_count"]
+                 "founded_year", "entity_active_obligated_usd", "award_count"]
 BITMAP_INDEXES = ["naics2", "industry", "employee_size_band", "company_type",
                   "physical_address_state", "has_federal_awards", "is_active"]
 
@@ -142,7 +142,8 @@ def _assemble(so):
                l.industry, l.employee_size_band, l.employees_on_linkedin, l.company_type,
                l.founded_year, l.followers, l.hq_city, l.hq_state, l.hq_region, l.linkedin_url,
                l.specialties, e.primary_naics, substr(e.primary_naics, 1, 2) AS naics2,
-               e.is_active, e.has_federal_awards, e.total_active_obligations,
+               e.is_active, e.has_federal_awards,
+               e.total_active_obligations AS entity_active_obligated_usd,
                e.total_lifetime_obligations, e.award_count, e.active_award_count,
                e.physical_address_line_1, e.physical_address_city,
                upper(trim(e.physical_address_state)) AS physical_address_state,
@@ -256,7 +257,7 @@ def demo():
     total = ds.count_rows(filter=flt)
     rows = ds.scanner(columns=["company_name", "industry", "employee_size_band", "company_type",
                                "physical_address_state", "primary_naics", "has_federal_awards",
-                               "total_active_obligations", "latitude", "longitude"],
+                               "entity_active_obligated_usd", "latitude", "longitude"],
                       filter=flt, limit=limit).to_table().to_pylist()
     fc = {"type": "FeatureCollection", "demo_filter": flt, "matched_total": total, "showing": len(rows),
           "features": [{"type": "Feature",
@@ -264,7 +265,7 @@ def demo():
                         "properties": {k: r[k] for k in ("company_name", "industry", "employee_size_band",
                                                          "company_type", "physical_address_state",
                                                          "primary_naics", "has_federal_awards",
-                                                         "total_active_obligations")}}
+                                                         "entity_active_obligated_usd")}}
                        for r in rows]}
     print(json.dumps(fc, indent=2, default=str))
 

@@ -268,11 +268,15 @@ WINNERS = Decoder(
 
 COMPANY = Decoder(
     dataset_key="company",
-    version="company.v4",   # v3→v4: add the AGGREGATE capability (rollup active obligations by firmographic dim)
+    version="company.v5",   # v4→v5: rename money column total_active_obligations →
+                            # entity_active_obligated_usd (physical column only; the LLM-facing
+                            # query-name 'active_obligations' is unchanged). EPG source column name
+                            # is untouched — only the company serving OUTPUT renames.
+                            # v3→v4: add the AGGREGATE capability (rollup active obligations by firmographic dim)
     geometry=("longitude", "latitude"),
     properties=("uei", "company_name", "industry", "employee_size_band", "company_type",
                 "naics2", "primary_naics", "hq_city", "hq_state", "has_federal_awards",
-                "total_active_obligations", "award_count", "latest_award_action_date"),
+                "entity_active_obligated_usd", "award_count", "latest_award_action_date"),
     fields={
         "naics2":             FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "industry":           FieldSpec("industry", "string", ("=", "in"), index="BITMAP"),
@@ -289,7 +293,8 @@ COMPANY = Decoder(
         "is_active":          FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
         "primary_naics":      FieldSpec("primary_naics", "string", ("=", "in"), index="BTREE"),
         "founded_year":       FieldSpec("founded_year", "int", (">=", "<=", "between"), index="BTREE"),
-        "active_obligations": FieldSpec("total_active_obligations", "float", (">=", "<=", "between"), index="BTREE"),
+        # query-name 'active_obligations' (LLM-facing, unchanged) → physical column entity_active_obligated_usd.
+        "active_obligations": FieldSpec("entity_active_obligated_usd", "float", (">=", "<=", "between"), index="BTREE"),
         "award_count":        FieldSpec("award_count", "int", (">=", "<=", "between"), index="BTREE"),
         # date32 most-recent prime/subaward action date (materialize_company_map.py recency
         # join); days_ago resolves to a DATE literal at request time. BTREE serves the ranges.
@@ -304,9 +309,9 @@ COMPANY = Decoder(
         "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
     },
     # Aggregate over total active federal obligations. group-by any firmographic dim (or 'winner'
-    # top-N companies / 'size_band' histogram); measure = total_active_obligations.
+    # top-N companies / 'size_band' histogram); measure = entity_active_obligated_usd.
     aggregate=AggregateSpec(
-        measure="total_active_obligations",
+        measure="entity_active_obligated_usd",
         dims={"naics2": "naics2", "industry": "industry", "employee_size_band": "employee_size_band",
               "company_type": "company_type", "state": "physical_address_state",
               "primary_naics": "primary_naics"},
