@@ -110,14 +110,14 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 DECODERS: dict[str, dict] = {
     "winners": {
-        "version": "winners.v9",
+        "version": "winners.v10",
         "description": "Federal-contract WINNERS — one row per entity that won a prime contract or a subaward. PRIME winners may also carry CAPABILITY signals extracted from their awards' solicitation documents (clearance, CMMC, what work they do, what trades they staff) — use these for 'companies that do X and require Y' questions. SUBAWARDEE winners additionally carry a TEAMING axis: which primes they have subcontracted under (last 5y), total teaming dollars, and how many distinct primes — use these for 'subs that have teamed with <prime>' and '$X+ teaming' questions. SUBAWARDEE winners also carry a SELF-REPORTED axis (the long tail of ~13.8k subs that assert their own capability/certifications, independent of any extracted solicitation scope): subaward_description_tag (what work the sub says it does) and req_cert_tag (certifications it holds, e.g. ISO 9001 / CMMC / AS9100) — use these for 'subs that self-report X' and 'subs with a <cert> certification' questions.",
         "fields": {
             "naics2":           {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
             "state":            {"type": "string", "ops": ("=", "in"), "desc": "2-letter US state of the winner"},
             "winner_type":      {"type": "string", "ops": ("=", "in"), "enum": ("prime_recipient", "subawardee")},
             "naics_code":       {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
-            "total_obligation": {"type": "float",  "ops": (">=", "<=", "between"), "desc": "summed federal obligation, USD"},
+            "total_obligation": {"type": "float",  "ops": (">=", "<=", "between"), "desc": "summed federal obligation (USD) per entity over the table's ~730-day (≈2y) coverage window — a rolled-up snapshot, not a lifetime total. For an entity total bounded to a SPECIFIC recent window, prefer the awards dataset aggregated by winner with days_since_action"},
             "award_count":      {"type": "int",    "ops": (">=", "<=", "between")},
             "days_since_last_award": {"type": "days_ago", "ops": ("<=", ">=", "between"),
                                       "desc": "whole days since the entity's most recent award action (integer; 0 = today). Time windows map here: 'won in the last N days' / 'past week' / 'this month' → days_since_last_award <= N"},
