@@ -609,7 +609,14 @@ _AWARD_OR_IDV = ("AWARD", "IDV")
 
 ACTIVE = Decoder(
     dataset_key="active",
-    version="active.v3",   # v2→v3: rename the money columns current_value/potential_value/obligated
+    version="active.v4",   # v3→v4: LEFT-JOIN the award-grain capability profile
+                           # (govcon_award_solicitation_profiles) by the award key → expose the gated
+                           # capability axes (clearance / CMMC / solicitation scope tag / labor) on the
+                           # FORWARD recompete dataset. Lifted byte-identical from the winners decoder;
+                           # the gate (has_extracted_scope=true) is inherited from the shared compiler.
+                           # ~15% of active awards carry a profile (measured 2026-06-26); unlabeled rows
+                           # surface as 'not applied' on ungated queries, never silently filtered.
+                           # v2→v3: rename the money columns current_value/potential_value/obligated
                            # → contract_current_value_usd / contract_potential_value_usd /
                            # contract_obligated_usd (physical columns only; LLM-facing query-names
                            # current_value/potential_value/obligated unchanged). value family =
@@ -630,7 +637,10 @@ ACTIVE = Decoder(
                 "award_or_idv_flag",
                 # GTM-attribute label axes + the free-text gloss. what_was_done is DISPLAY-only —
                 # NOT a filter field, NOT indexed (it rides here so the feature self-describes).
-                "vertical", "work_type", "equipment_intensity", "what_was_done"),
+                "vertical", "work_type", "equipment_intensity", "what_was_done",
+                # Phase-3 capability surface (active.v4) — structured only (NO chunk-derived verbatim text).
+                "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
+                "requires_cmmc", "solicitation_scope_tags", "labor_categories"),
     fields={
         # THE forward axis — recompete radar. days_until_expiry <= N → pop_current_end in the next
         # N days (today..today+N); >= N → at least N days of runway left. Award-grain (1 row/award),
@@ -662,6 +672,21 @@ ACTIVE = Decoder(
         "business_size":     FieldSpec("business_size", "string", ("=", "in"), enum=_BUSINESS_SIZE, index="BITMAP"),
         "has_option_tail":   FieldSpec("has_option_tail", "bool", ("=",), index="BITMAP"),
         "award_or_idv_flag": FieldSpec("award_or_idv_flag", "string", ("=", "in"), enum=_AWARD_OR_IDV, index="BITMAP"),
+        # ── Phase-3 capability axes (active.v4), lifted byte-identical from the winners decoder.
+        # Award-grain, joined 1:1 by the award key. has_extracted_scope is the GATE itself —
+        # filterable but NOT gated (no self-AND); the gated axes self-AND has_extracted_scope=true
+        # in EXECUTE so a capability clause only ever spans the scope-extracted slice. ──
+        "has_extracted_scope": FieldSpec("has_extracted_scope", "bool", ("=",), index="BITMAP"),
+        "requires_clearance":  FieldSpec("requires_clearance", "bool", ("=",), index="BITMAP",
+                                         gated=True),
+        "req_clearance_level_max": FieldSpec("req_clearance_level_max", "string", ("=", "in"),
+                                             enum=_CLEARANCE_LEVELS, index="BITMAP", gated=True),
+        "requires_cmmc":       FieldSpec("requires_cmmc", "bool", ("=",), index="BITMAP", gated=True),
+        # list<string> capability columns — set membership via Lance array_has / array_has_any.
+        "solicitation_scope_tag":      FieldSpec("solicitation_scope_tags", "list", ("has", "has_any"),
+                                         enum=_CAPABILITY_TAGS, gated=True),
+        "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
+                                         enum=_LABOR_CATEGORIES, gated=True),
     },
     synonyms={
         "construction": {"field": "naics2", "op": "=", "value": "23"},
@@ -679,6 +704,16 @@ ACTIVE = Decoder(
         "woman-owned": {"field": "set_aside", "op": "in", "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
         "dod": {"field": "awarding_agency", "op": "in",
                 "value": ["Department of Defense", "Department of Defense (DOD)"]},
+        # ── Phase-3 capability phrasings (active.v4), byte-identical to the winners decoder + edge
+        # mirror. These route to the gated capability axes; EXECUTE ANDs has_extracted_scope=true. ──
+        "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+        "secret clearance": {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+        "top secret":       {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["TOP_SECRET", "TS_SCI"]},
+        "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+        "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
+        "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
         # ── GTM label-axis lexicon (active.v2). Plain-English → vertical / work_type /
         # equipment_intensity. Byte-identical to the awards decoder + the edge mirror. Targets are
         # byte-exact enum values. Head-coverage only (~78% of recompete $, ~38% of rows); bare
@@ -806,6 +841,9 @@ ACTIVE = Decoder(
             "set_aside": "set_aside", "business_size": "business_size",
             # GTM-attribute breakdowns: $ by industry vertical / work_type / equipment_intensity.
             "vertical": "vertical", "work_type": "work_type", "equipment_intensity": "equipment_intensity",
+            # Phase-3 capability breakdown: recompete-$ by required clearance level (active.v4). Gated
+            # axis → a group-by that includes it AND-s has_extracted_scope=true in EXECUTE (scope slice).
+            "req_clearance_level_max": "req_clearance_level_max",
         },
         winner_key=("winner_uei", "winner_name"),
         size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),

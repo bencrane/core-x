@@ -43,6 +43,13 @@ XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # (the top-$ 279 combos). LEFT-JOINed per award so the GTM label axes become filterable columns
 # here too — mirrors the awards serving build (materialize_awards_map.py).
 NAICS_PSC_MAP_URI = os.environ.get("NAICS_PSC_VERTICAL_MAP_URI", f"{ACTIVE}/naics_psc_vertical_map/")
+# Phase-3 award-grain capability profiles (clearance / CMMC / solicitation scope tags / labor).
+# LEFT-JOINed by the award key so the capability axes become filterable on the FORWARD recompete
+# dataset too — mirrors the winners rollup join (materialize_winners_map.py), but 1:1 here (the active
+# grain IS the award key). Project ONLY structured / controlled-vocab columns (scope_summary is the
+# CUI column and is NEVER scanned — CUI egress invariant).
+CAPABILITY_PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
+                                         f"{ACTIVE}/govcon_award_solicitation_profiles/")
 DATA_STORAGE_VERSION = "2.1"
 
 # BTREE: range axes (pop_current_end — the forward recompete axis — + value/obligation) + resolution
@@ -54,7 +61,11 @@ BTREE_INDEXES = ["pop_current_end", "pop_potential_end", "contract_current_value
 BITMAP_INDEXES = ["naics2", "psc_category", "state", "pop_state", "set_aside", "business_size",
                   "has_option_tail", "award_or_idv_flag", "awarding_agency",
                   # label axes joined from naics_psc_vertical_map (classified-dictionary bridge).
-                  "vertical", "work_type", "equipment_intensity"]
+                  "vertical", "work_type", "equipment_intensity",
+                  # Phase-3 capability axes joined from govcon_award_solicitation_profiles (active.v4).
+                  # Low-cardinality bool/enum → BITMAP pushdown. The list axes (solicitation_scope_tags,
+                  # labor_categories) are NOT scalar-indexed — matches the winners precedent + decoder.
+                  "has_extracted_scope", "requires_clearance", "requires_cmmc", "req_clearance_level_max"]
 
 DUCK_MEM = os.environ.get("ACTIVE_MAP_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("ACTIVE_MAP_DUCKDB_TEMP_DIR", "/tmp/active_awards_map_duckdb")
@@ -107,6 +118,13 @@ def _assemble(so):
     con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
                                             "work_type", "equipment_intensity",
                                             "what_was_done"]).to_reader())
+    # Phase-3 award-grain capability bridge → re-scannable TABLE (.to_table(), NOT a single-pass
+    # reader). Project ONLY structured / controlled-vocab columns; scope_summary (CUI) is never scanned.
+    prof = lance.dataset(CAPABILITY_PROFILES_URI, storage_options=so)
+    con.register("prof", prof.scanner(columns=[
+        "contract_award_unique_key", "has_extracted_scope", "requires_clearance",
+        "req_clearance_level_max", "requires_cmmc", "solicitation_scope_tags",
+        "top_labor_categories"]).to_table())
     hexpr = addr_hash_sql("street", "city_raw", "state_raw", "zip")
     sql = f"""
     WITH base AS (
@@ -139,11 +157,24 @@ def _assemble(so):
     )
     SELECT k.*, x.latitude, x.longitude, x.match_type,
            v.vertical, v.work_type, v.equipment_intensity, v.what_was_done,
+           -- Phase-3 capability axes (active.v4), 1:1 by the award key (the bridge is unique on
+           -- contract_award_unique_key). Unmatched awards (no extracted profile) get
+           -- has_extracted_scope=FALSE → the gate (has_extracted_scope=true, ANDed in EXECUTE for any
+           -- gated clause) excludes them; on ungated queries they surface as 'not applied', never
+           -- silently filtered. labor: bridge top_labor_categories → serving labor_categories (the
+           -- physical name the decoder + winners table share).
+           COALESCE(prof.has_extracted_scope, FALSE) AS has_extracted_scope,
+           COALESCE(prof.requires_clearance, FALSE) AS requires_clearance,
+           prof.req_clearance_level_max AS req_clearance_level_max,
+           COALESCE(prof.requires_cmmc, FALSE) AS requires_cmmc,
+           prof.solicitation_scope_tags AS solicitation_scope_tags,
+           prof.top_labor_categories AS labor_categories,
            'govcon_active_awards_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
     LEFT JOIN x USING (addr_hash)
     LEFT JOIN v ON k.naics_code = v.naics_code AND k.psc_code = v.psc_code
+    LEFT JOIN prof ON k.award_id = prof.contract_award_unique_key
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
