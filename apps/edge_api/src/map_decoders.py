@@ -236,8 +236,8 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v9",
-        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
+        "version": "awards.v10",
+        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar PRIME contract action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
             "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
@@ -429,7 +429,7 @@ DECODERS: dict[str, dict] = {
         # Aggregate capability (mirrors catalyst_api AggregateSpec; the parity test asserts
         # dims+metrics match). Prompt-facing only — no Lance column names.
         "aggregate": {
-            "measure": "award_amount",
+            "measure": "action_obligated_usd",
             "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
                      "action_type", "winner_type",

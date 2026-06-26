@@ -49,7 +49,7 @@ CAS = {
 }
 
 ACTIONS = [
-    {"award_id": "A1", "action_date": date(2026, 5, 28), "award_amount": 271419.0,
+    {"award_id": "A1", "action_date": date(2026, 5, 28), "action_obligated_usd": 271419.0,
      "awarding_agency": "Department of Health and Human Services",
      "awarding_sub_agency": "Indian Health Service", "winner_type": "prime_recipient",
      "pop_state": "CA", "pop_city": "SACRAMENTO", "set_aside": None, "naics_code": "237110"},

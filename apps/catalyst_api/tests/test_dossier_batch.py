@@ -26,7 +26,7 @@ GOLD = {
 }
 CAS = {"prime_most_recent_action_date": date(2026, 5, 28),
        "top_agency_1_name": "HHS", "top_agency_1_dollars": 8185278.85}
-ACTIONS = [{"award_id": "A1", "action_date": date(2026, 5, 28), "award_amount": 271419.0,
+ACTIONS = [{"award_id": "A1", "action_date": date(2026, 5, 28), "action_obligated_usd": 271419.0,
             "awarding_agency": "HHS", "awarding_sub_agency": "IHS",
             "winner_type": "prime_recipient", "pop_state": "CA", "pop_city": "SACRAMENTO",
             "set_aside": None, "naics_code": "237110"}]

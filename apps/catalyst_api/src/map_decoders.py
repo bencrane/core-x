@@ -348,7 +348,11 @@ _EQUIP_INTENSITY = ("low", "medium", "high")
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v9",   # v8→v9: expose the GTM-attribute label axes vertical/work_type/
+    version="awards.v10",  # v9→v10: rename the money column award_amount → action_obligated_usd
+                           # (physical column only; the LLM-facing query-name stays 'award_amount').
+                           # Awards map is now PRIME-ONLY (subaward rows dropped at build). Part of
+                           # the federal money-column rename ({grain}_obligated_usd / value family).
+                           # v8→v9: expose the GTM-attribute label axes vertical/work_type/
                            # equipment_intensity (filter fields + aggregate dims, all BITMAP) and
                            # carry what_was_done as a self-describing DISPLAY property (PR #715
                            # vertical labels, #720 what_was_done gloss). Head-coverage only.
@@ -365,7 +369,7 @@ AWARDS = Decoder(
                            # bought, distinct from NAICS; surfaces transport/freight services
                            # (PSC 'V') coded under a non-48/49 NAICS that a NAICS-only filter misses.
     geometry=("longitude", "latitude"),
-    properties=("award_id", "winner_uei", "winner_name", "winner_type", "award_amount",
+    properties=("award_id", "winner_uei", "winner_name", "winner_type", "action_obligated_usd",
                 "action_date", "fiscal_year", "naics2", "naics_code", "psc_category", "psc_code",
                 "state", "city", "county",
                 "pop_state", "pop_city", "awarding_agency", "awarding_sub_agency",
@@ -377,7 +381,8 @@ AWARDS = Decoder(
     fields={
         # The single action's obligation — NEVER a lifetime or window rollup. The build
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
-        "award_amount":      FieldSpec("award_amount", "float", (">=", "<=", "between"), index="BTREE"),
+        # query-name 'award_amount' (LLM-facing, unchanged) → physical column action_obligated_usd.
+        "award_amount":      FieldSpec("action_obligated_usd", "float", (">=", "<=", "between"), index="BTREE"),
         "days_since_action": FieldSpec("action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
         # US federal fiscal year of the action (Oct–Sep). Explicit year only ('FY2025' → 2025);
         # group-by fiscal_year is the YoY spend trend. A relative window uses days_since_action.
@@ -566,11 +571,11 @@ AWARDS = Decoder(
         "asset-light":             {"field": "equipment_intensity", "op": "=", "value": "low"},
         "labor-only":              {"field": "equipment_intensity", "op": "=", "value": "low"},
     },
-    # Aggregate over award_amount, grouped by any indexed dim (or the 'winner'/'size_band'
+    # Aggregate over action_obligated_usd, grouped by any indexed dim (or the 'winner'/'size_band'
     # pseudo-dims). The window stays query-driven: the SAME days_since_action filter the row
     # path uses scopes the aggregate — no hardcoded lookback. The serving table spans ~2y.
     aggregate=AggregateSpec(
-        measure="award_amount",
+        measure="action_obligated_usd",
         dims={
             "fiscal_year": "fiscal_year",   # group-by fiscal_year → the YoY spend trend
             "naics2": "naics2", "naics_code": "naics_code",

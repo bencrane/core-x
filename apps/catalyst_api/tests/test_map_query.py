@@ -50,7 +50,7 @@ def test_warm_probe_predicate_by_type():
     # Type-aware no-match predicates page each scalar index without materializing rows.
     assert lance_store._warm_probe_predicate("naics2", "string") == "naics2 = '__warm__'"
     assert lance_store._warm_probe_predicate("award_count", "int") == "award_count = -987654321"
-    assert lance_store._warm_probe_predicate("award_amount", "float") == "award_amount = -987654321.0"
+    assert lance_store._warm_probe_predicate("action_obligated_usd", "float") == "action_obligated_usd = -987654321.0"
     assert lance_store._warm_probe_predicate("action_date", "days_ago") == "action_date = DATE '2999-12-31'"
     # bool has no no-match value → None signals the caller to page the BITMAP via count_rows.
     assert lance_store._warm_probe_predicate("is_active", "bool") is None
@@ -66,7 +66,7 @@ def test_map_filter_probes_cover_every_indexed_scalar_column():
     assert awards.get("is_active") == "bool"
     assert awards.get("naics2") == "string"
     assert awards.get("action_date") == "days_ago"
-    assert awards.get("award_amount") == "float"
+    assert awards.get("action_obligated_usd") == "float"
     # list/array_has columns (no scalar index) are never warmed
     for cols in probes.values():
         assert all(t != "list" for _, t in cols)
@@ -237,7 +237,7 @@ def test_awards_acceptance_sentence_compiles():
         {"field": "award_amount", "op": ">=", "value": 1000000},
         {"field": "days_since_action", "op": "<=", "value": 30},
     ])
-    assert pred == ("naics2 = '23' AND state = 'TX' AND award_amount >= 1000000.0 "
+    assert pred == ("naics2 = '23' AND state = 'TX' AND action_obligated_usd >= 1000000.0 "
                     "AND action_date >= DATE '2026-05-13'")
 
 

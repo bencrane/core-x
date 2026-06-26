@@ -238,7 +238,7 @@ def test_awards_aggregate_axis_parity_both_sides():
     assert set(edge_agg["dims"]) == set(cat_agg.dims)
     assert set(edge_agg["metrics"]) == set(cat_agg.metrics)
     assert set(edge_agg["pseudo_dims"]) == {"winner", "size_band"}
-    assert cat_agg.measure == "award_amount"
+    assert cat_agg.measure == "action_obligated_usd"
     assert cat_agg.winner_key == ("winner_uei", "winner_name") and cat_agg.size_band_edges
 
 
