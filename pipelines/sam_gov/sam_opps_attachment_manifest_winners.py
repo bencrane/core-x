@@ -42,12 +42,12 @@ files ≥10 MB; see ``sam_attachment_manifest.py``) — enforce real size at fet
     # 1-2 offline bridge → winners.parquet
     doppler run --project core-x --config prd -- \
       uv run --with pylance --with pyarrow --with 'duckdb>=1.5,<2' \
-      python pipelines/sam_gov/sam_opps_attachment_manifest_90day_winners.py bridge
+      python pipelines/sam_gov/sam_opps_attachment_manifest_winners.py bridge
     # 3 live harvest (resumable + self-detaching for the multi-hour sweep)
-    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ... python ...90day_winners.py harvest --daemon
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ... python ...winners.py harvest --daemon
     # 4 sink + index + verify
-    ... python ...90day_winners.py sink
-    ... python ...90day_winners.py verify
+    ... python ...winners.py sink
+    ... python ...winners.py verify
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ MANIFEST_URI = os.environ.get(
     "s3://data-sink/active/sam_opps_attachment_manifest_winners/",
 )
 
-WORKDIR = os.environ.get("WINNERS_WORKDIR", "/tmp/sam_90day_winners")
+WORKDIR = os.environ.get("WINNERS_WORKDIR", "/tmp/sam_winners")
 WINNERS_PARQUET = os.path.join(WORKDIR, "winners.parquet")
 HARVEST_CKPT = os.path.join(WORKDIR, "harvest_ckpt.jsonl")
 

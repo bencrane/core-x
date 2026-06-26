@@ -17,11 +17,11 @@ GRAIN   1 row per distinct EXPLODED `contract_award_unique_key` over the resourc
         fan-out got dropped).
 
 SoR     s3://data-sink/active/govcon_award_solicitation_profiles/  (Lance v2.1; derived, OVERWRITE).
-        **No window suffix (operator naming decision 2026-06-14, overrides the plan's _90day):** the
+        **No window suffix (operator naming decision 2026-06-14):** the
         window is DATA — `award_last_modified_date` (the canonical window column) + `award_action_
         date` + the `built_at` run stamp. "last 90 days" is a column filter; widening the window is
         an append, not a new table. Frozen schema + assert_schema (govcon_gtm_schemas.py) BEFORE the
-        first commit; the empty `_90day` P0 shell is dropped (see `drop_legacy_shell`).
+        first commit; the empty legacy P0 shell is dropped (see `drop_legacy_shell`).
 
 IDEMPOTENT  overwrite-mode snapshot; deterministic rollups (no Math.random, no wall-clock in the
         data except the run stamps). `verify --content-hash` hashes every business column EXCLUDING
@@ -48,7 +48,7 @@ INDICES  BTREE(contract_award_unique_key, recipient_uei); BITMAP(requires_cleara
       verify              row count, exploded-key parity, txn resolution, CUI checks, index list
       verify --content-hash   + business-column content hash (idempotency proof)
       query               north-star degraded acceptance query (do X ∧ require A ∧ B → cited companies)
-      drop_legacy_shell   delete the empty `..._90day` P0 shell (guarded: refuses if rows > 0)
+      drop_legacy_shell   delete the empty legacy P0 shell (guarded: refuses if rows > 0)
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     CAPABILITY_PROFILES_URI, capability_profiles_schema, assert_schema)
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     _r2_storage_options, _dataset_exists)
 
 ACTIVE = "s3://data-sink/active"
@@ -599,7 +599,7 @@ def query():
 
 
 def drop_legacy_shell():
-    """Delete every object under the empty `..._90day` P0 shell prefix via boto3 (R2). Guarded:
+    """Delete every object under the empty legacy P0 shell prefix via boto3 (R2). Guarded:
     refuses if the shell has any rows (it is not the empty shell it was described as)."""
     import lance
     import boto3

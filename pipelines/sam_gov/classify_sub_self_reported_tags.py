@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from pipelines.sam_gov.sam_attachment_extract_90day import _r2_storage_options  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _r2_storage_options  # noqa: E402
 
 ACTIVE = "s3://data-sink/active"
 SOURCE_URI = os.environ.get("GOVCON_SUBAWARD_SOURCE_URI", f"{ACTIVE}/usaspending_api_fresh/contract_subaward/")

@@ -1,4 +1,4 @@
-"""Unit tests for the PHASE-2 LLM lane (sam_labor_demand_extract_90day) — pure functions only, no
+"""Unit tests for the PHASE-2 LLM lane (sam_labor_demand_extract) — pure functions only, no
 R2/Lance. Covers the mandate's required set: selection determinism, bracket exclusion (operator
 decision A), validator accept/reject (incl. quote-mismatch rejection and out-of-vocab tag
 rejection), and delete-before-merge scoping. Plus: marked-chunk staging hard-assert, stratified
@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pipelines.sam_gov.sam_attachment_extract_90day import _chunk_text, _normalize_ws  # noqa: E402
-from pipelines.sam_gov.sam_labor_demand_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _chunk_text, _normalize_ws  # noqa: E402
+from pipelines.sam_gov.sam_labor_demand_extract import (  # noqa: E402
     DOC_TOKEN_BUDGET, EXCLUDED_MARKED, EXCLUDED_OUT_OF_SCOPE, LLM_CONF_NORM, LLM_CONF_RAW,
     LLM_PROMPT_VERSION, N_OPENING_CHUNKS,
     bracket_target, build_task_payload, compute_input_set, estimate_tokens, llm_delete_predicate,
@@ -208,7 +208,7 @@ def test_validator_boundary_straddling_quote_passes_via_shared_reassembly():
     body = _normalize_ws(" ".join(f"Scope item {i} covers electrical distribution upgrades."
                                   for i in range(0)))  # noqa: F841 (clarity only)
     # quote spanning the c0/c1 boundary: last 60 chars of c0 + continuation from c1 beyond overlap
-    from pipelines.sam_gov.sam_labor_demand_extract_90day import reassemble_with_offsets
+    from pipelines.sam_gov.sam_labor_demand_extract import reassemble_with_offsets
     joined, _ = reassemble_with_offsets([(c0["chunk_ix"], c0["chunk_id"], c0["text"]),
                                          (c1["chunk_ix"], c1["chunk_id"], c1["text"])])
     cut = len(c0["text"]) - 30

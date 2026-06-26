@@ -59,7 +59,7 @@ import time
 
 MANIFEST_URI = os.environ.get(
     "SAM_ATTACH_MANIFEST_90DAY_URI",
-    "s3://data-sink/active/sam_opps_attachment_manifest_90day_winners/",
+    "s3://data-sink/active/sam_opps_attachment_manifest_winners/",
 )
 TEN_MB = 10_000_000  # the corruption modulus is decimal 10 MB, not 10*2**20
 RAW_OUT = os.environ.get("PROBE_RAW_OUT", "/tmp/sam_size_probe_raw.jsonl")

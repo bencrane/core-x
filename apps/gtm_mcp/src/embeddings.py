@@ -3,7 +3,7 @@
 WHY A LOCAL MODEL, NOT AN EXTERNAL API. The vectors stored in
 ``s3://data-sink/active/govcon_scope_vectors/`` (column ``embedding`` =
 ``list_<float32>[1024]``) are written by the Phase-4 embedder of
-``pipelines/sam_gov/sam_attachment_extract_90day.py``, specified in
+``pipelines/sam_gov/sam_attachment_extract.py``, specified in
 ``docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC_V2.md`` §9 as a **self-hosted
 instruction-retrieval model, ``BAAI/bge-large-en-v1.5`` (D=1024), run locally — no
 external API** (nothing is sent off-host). A query vector is comparable to the stored

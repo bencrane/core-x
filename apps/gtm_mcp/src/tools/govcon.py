@@ -3,7 +3,7 @@
 
 Dataset: ``s3://data-sink/active/govcon_scope_vectors/`` (auto-registered by the
 dynamic registry as ``govcon_scope_vectors``). Written by Phase 2 of
-``pipelines/sam_gov/sam_attachment_extract_90day.py`` — one row per ~1,200-char scope
+``pipelines/sam_gov/sam_attachment_extract.py`` — one row per ~1,200-char scope
 chunk (SOW/PWS/SOO text) with the join keys and the Phase-4 ``embedding``
 (``list<float32>[1024]``, ``BAAI/bge-large-en-v1.5``, cosine, IVF_PQ).
 
@@ -170,7 +170,7 @@ def search_govcon_scopes(
             "query": q,
             "detail": (
                 "the embedding column / IVF_PQ vector index is not built yet (Phase 4 of "
-                "sam_attachment_extract_90day pending) — scopes are not semantically searchable. "
+                "sam_attachment_extract pending) — scopes are not semantically searchable. "
                 "Scalar columns remain queryable via execute_audience_query in the meantime."
             ),
         }

@@ -55,7 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     SUB_CAPABILITY_PROFILES_URI, subawardee_capability_profiles_schema, assert_schema)
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     _r2_storage_options, _dataset_exists)
 
 ACTIVE = "s3://data-sink/active"

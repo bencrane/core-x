@@ -16,7 +16,7 @@ SEMANTICS (promotion-only — the hard safety rule):
   * Full-body acronym matching is UPPERCASE-ONLY for the bare acronyms `EAR` and `CUI` (the 2,000-char
     head window tolerated IGNORECASE; over a multi-MB body, lowercase "ear"/"cui" inside ordinary
     words/phrases would over-mark wholesale). Spelled-out phrases stay case-insensitive, matching
-    `sam_attachment_extract_90day._MARKING_PATTERNS` otherwise.
+    `sam_attachment_extract._MARKING_PATTERNS` otherwise.
 
 MECHANICS (probed live 2026-06-12, lance 7.0.0):
   * Reassembly: chunks concatenated in `chunk_ix` order joined with "\\n" (preserves \\b word
@@ -40,7 +40,7 @@ MECHANICS (probed live 2026-06-12, lance 7.0.0):
   * The embedding column is NEVER read, never written.
 
 Run (heavy scan — background it; progress streams to --log; every phase is resumable):
-    doppler run -- python pipelines/sam_gov/sam_marking_fullbody_90day.py --phase all --daemon
+    doppler run -- python pipelines/sam_gov/sam_marking_fullbody.py --phase all --daemon
     ... --phase scan        # full-body detection -> decisions JSONL (read-only)
     ... --phase writeback   # promotions -> chunk rows (merge_insert) + ledger audit events
     ... --phase reconcile   # write-back == expansion assert + post-state distribution
@@ -58,24 +58,24 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     EXTRACTION_URI, PRICING_URI, SCOPE_URI, UNKNOWN_URI,
     SinkCommitLease, _append_dataset, _dataset_exists,
     _extraction_schema, _ledger_row, _r2_storage_options, _daemonize,
 )
 
-FEED = "sam_marking_fullbody_90day"
-EXTRACTOR_TAG = "sam_marking_fullbody_90day@v1"
+FEED = "sam_marking_fullbody"
+EXTRACTOR_TAG = "sam_marking_fullbody@v1"
 
-DECISIONS_PATH = os.environ.get("SAM90_MARKING_DECISIONS", "/tmp/sam_marking_fullbody_decisions.jsonl")
-WB_CKPT_PATH = os.environ.get("SAM90_MARKING_WB_CKPT", "/tmp/sam_marking_fullbody_wb_ckpt.jsonl")
-REPORT_PATH = os.environ.get("SAM90_MARKING_REPORT", "/tmp/sam_marking_fullbody_report.json")
-LOG_PATH = os.environ.get("SAM90_MARKING_LOG", "/tmp/sam_marking_fullbody.log")
-SCAN_BATCH_ROWS = int(os.environ.get("SAM90_MARKING_SCAN_BATCH", "8192"))
-WB_BATCH_ROWS = int(os.environ.get("SAM90_MARKING_WB_BATCH", "50000"))
+DECISIONS_PATH = os.environ.get("SAM_MARKING_DECISIONS", "/tmp/sam_marking_fullbody_decisions.jsonl")
+WB_CKPT_PATH = os.environ.get("SAM_MARKING_WB_CKPT", "/tmp/sam_marking_fullbody_wb_ckpt.jsonl")
+REPORT_PATH = os.environ.get("SAM_MARKING_REPORT", "/tmp/sam_marking_fullbody_report.json")
+LOG_PATH = os.environ.get("SAM_MARKING_LOG", "/tmp/sam_marking_fullbody.log")
+SCAN_BATCH_ROWS = int(os.environ.get("SAM_MARKING_SCAN_BATCH", "8192"))
+WB_BATCH_ROWS = int(os.environ.get("SAM_MARKING_WB_BATCH", "50000"))
 
 # ── Full-body per-caveat patterns. Source of truth: _MARKING_PATTERNS/_DIST_STMT_RX in
-#    sam_attachment_extract_90day.py (spec §7.4), with the single mandated deviation: the bare
+#    sam_attachment_extract.py (spec §7.4), with the single mandated deviation: the bare
 #    acronyms EAR and CUI match UPPERCASE-ONLY (case-sensitive) in the full-body pass; spelled-out
 #    phrases stay case-insensitive. Caveat names and Distribution-Statement letter capture identical.
 _FULLBODY_MARKING_PATTERNS: tuple[tuple[str, tuple[re.Pattern, ...]], ...] = (
@@ -263,7 +263,7 @@ def _assert_marking_writeback_safe(ds, uri: str) -> None:
     """The full-body marking write-back is a SUBSET-column merge_insert('chunk_id')
     .when_matched_update_all() — it rewrites ONLY (chunk_id, content_marking), never `text`/`embedding`,
     and lance 7.0.0 leaves the vector index covering all unmatched rows (the same index-safe path as
-    sam_attachment_embed_90day._flush). This path is therefore SAFE on a vector-indexed sink; the broad
+    sam_attachment_embed._flush). This path is therefore SAFE on a vector-indexed sink; the broad
     `_assert_no_vector_index` guard is for the overwrite/compaction path only (and stays intact there).
     No-op here — kept as the single documented deviation point so the swap is greppable and explained."""
     return

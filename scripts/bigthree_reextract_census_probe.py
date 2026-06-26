@@ -6,7 +6,7 @@ Corrects the naive "feed the whole 101,950-chunk inventory" model: the LLM lane
 stages a Decision-A input set (scope-ALL ∪ pricing-ALL ∪ (unknown ∩ lexicon/regex
 hit)) MINUS marked resources, and caps each doc at DOC_TOKEN_BUDGET (8,000 tok) via
 tiered select_chunks(). Imports select_chunks / compute_input_set / estimate_tokens
-from sam_labor_demand_extract_90day so the numbers match a real `--phase census`.
+from sam_labor_demand_extract so the numbers match a real `--phase census`.
 
     doppler run -p core-x -c prd -- \
       uv run --no-project --with boto3 --with pylance --with duckdb \
@@ -26,7 +26,7 @@ import lance
 sys.path.insert(0, "pipelines/sam_gov")
 sys.path.insert(0, "pipelines")
 sys.path.insert(0, ".")
-M = importlib.import_module("sam_labor_demand_extract_90day")
+M = importlib.import_module("sam_labor_demand_extract")
 
 A = "s3://data-sink/active"
 GAA = f"{A}/govcon_active_awards/"
