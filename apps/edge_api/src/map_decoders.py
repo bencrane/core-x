@@ -198,7 +198,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "company": {
-        "version": "company.v4",
+        "version": "company.v5",
         "description": "Companies in the firmographics target universe that are SAM-registered — one row per company.",
         "fields": {
             "naics2":             {"type": "string", "ops": ("=", "in"), "desc": "2-digit NAICS sector ('23' = construction)"},
@@ -223,7 +223,7 @@ DECODERS: dict[str, dict] = {
             "won recently":        {"field": "days_since_last_award", "op": "<=", "value": 30},
         },
         "aggregate": {
-            "measure": "total_active_obligations",
+            "measure": "entity_active_obligated_usd",
             "dims": ["naics2", "industry", "employee_size_band", "company_type", "state", "primary_naics"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],

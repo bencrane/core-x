@@ -44,7 +44,7 @@ WINNERS_COLS = [
 
 COMPANY_COLS = [
     "uei", "company_name", "industry", "employee_size_band", "company_type", "naics2",
-    "primary_naics", "hq_city", "hq_state", "has_federal_awards", "total_active_obligations",
+    "primary_naics", "hq_city", "hq_state", "has_federal_awards", "entity_active_obligated_usd",
     "award_count", "physical_address_state", "is_active", "founded_year",
     "latest_award_action_date", "longitude", "latitude",
 ]
@@ -58,7 +58,7 @@ COMPANY_IDX = [
     {"name": "is_active_idx", "type": "Bitmap", "fields": ["is_active"]},
     {"name": "primary_naics_idx", "type": "BTree", "fields": ["primary_naics"]},
     {"name": "founded_year_idx", "type": "BTree", "fields": ["founded_year"]},
-    {"name": "total_active_obligations_idx", "type": "BTree", "fields": ["total_active_obligations"]},
+    {"name": "entity_active_obligated_usd_idx", "type": "BTree", "fields": ["entity_active_obligated_usd"]},
     {"name": "award_count_idx", "type": "BTree", "fields": ["award_count"]},
     {"name": "latest_award_action_date_idx", "type": "BTree", "fields": ["latest_award_action_date"]},
     {"name": "uei_idx", "type": "BTree", "fields": ["uei"]},  # extra (resolution key)
