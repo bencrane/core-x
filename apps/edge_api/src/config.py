@@ -51,6 +51,15 @@ def cal_webhook_secret() -> str | None:
     return os.environ.get("CAL_WEBHOOK_SECRET")
 
 
+def close_webhook_secret() -> str | None:
+    """Signature key Close.com signs each webhook delivery with — HMAC-SHA256 over
+    ``{timestamp}{raw_body}``, hex digest in ``Close-Sig-Hash`` with ``Close-Sig-Timestamp``.
+    The key is the hex ``signature_key`` returned when the webhook subscription is created.
+    When unset, ``/webhooks/close`` refuses (503) rather than accepting unverified events.
+    From ``core-x/prd`` (``CLOSE_WEBHOOK_SECRET``)."""
+    return os.environ.get("CLOSE_WEBHOOK_SECRET")
+
+
 def docraptor_api_key() -> str | None:
     """DocRaptor API key. Used in LIVE mode (``test=false``) — test output is watermarked."""
     return os.environ.get("DOCRAPTOR_API_KEY")

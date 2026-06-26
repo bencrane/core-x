@@ -69,6 +69,8 @@ from .src.routers.proposal_templates_v1 import router as proposal_templates_rout
 from .src.routers.webhooks_cal import router as webhooks_cal_router
 from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
+from .src.routers.close_webhooks_v1 import webhook_router as close_webhook_router
+from .src.routers.close_webhooks_v1 import read_router as close_read_router
 from .src.routers.document_payments_v1 import router as document_payments_router
 from .src.routers.operator_settings_v1 import router as operator_settings_router
 from .src.service_token import require_service_token
@@ -131,6 +133,12 @@ async def lifespan(app_: FastAPI):
         log.warning(
             "STRIPE_WEBHOOK_SECRET unset -- /webhooks/stripe refuses (503), so ACH payment status will "
             "NOT advance server-side. Set it in core-x/prd and register the Stripe webhook with it."
+        )
+    if config.close_webhook_secret() is None:
+        log.warning(
+            "CLOSE_WEBHOOK_SECRET unset -- /webhooks/close refuses (503), so Close call events will NOT "
+            "be captured and the Insights call-sync stays idle. Set it in core-x/prd to match the Close "
+            "webhook subscription signature_key."
         )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
@@ -323,6 +331,13 @@ app.include_router(webhooks_cal_router)
 # Signature-gated (Stripe-Signature / STRIPE_WEBHOOK_SECRET). NOT under /api/v1 — Stripe posts /webhooks/stripe.
 app.include_router(webhooks_stripe_router)
 
+# close.com webhook: RAW capture of Close call events → business.close_webhook_events.
+# Signature-gated (Close-Sig-Hash/Timestamp / CLOSE_WEBHOOK_SECRET). NOT under /api/v1 — Close posts /webhooks/close.
+# The Insights "now dialing" briefing derives OFFLINE from these rows + public.close_crosswalk; the
+# service-token-gated read is /api/v1/close/active-call/{auth_user_id} (the BFF brokers it).
+app.include_router(close_webhook_router)
+app.include_router(close_read_router)
+
 
 def _info() -> dict:
     return {
@@ -353,6 +368,8 @@ def _info() -> dict:
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
+            "close_webhook": True,     # /webhooks/close (Close call events RAW capture → business.close_webhook_events)
+            "close_active_call": True, # /api/v1/close/active-call/{auth_user_id} (offline "now dialing" derivation)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
         },
     }
