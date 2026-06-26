@@ -369,7 +369,7 @@ def _info() -> dict:
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
             "close_webhook": True,     # /webhooks/close (Close call events RAW capture → business.close_webhook_events)
-            "close_active_call": True, # /api/v1/close/active-call/{auth_user_id} (offline "now dialing" derivation)
+            "close_active_call": True, # /api/v1/close/active-call (offline "now dialing" derivation, not operator-scoped)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
         },
     }

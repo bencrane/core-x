@@ -48,24 +48,22 @@ async def insert_event(
 _ACTIVE_WINDOW_SECONDS = 180
 
 
-async def read_active_call(conn, *, auth_user_id: str) -> dict[str, Any]:
-    """The operator's CURRENT outbound call, DERIVED at read time — FULLY OFFLINE (no Close call).
+async def read_active_call(conn) -> dict[str, Any]:
+    """The CURRENT outbound Close call, DERIVED at read time — FULLY OFFLINE, NOT operator-scoped.
 
-    Resolves the operator (auth_user_id) → their Close user via business.close_operator_map, takes
-    the most recent outbound ``activity.call`` event inside the active window, and joins
-    public.close_crosswalk (by contact, falling back to lead) to surface the briefing anchor
-    (normalized_domain) + company/contact identity. Returns ``{active: false}`` when idle.
+    Single-operator reality ("all users are me"): the latest outbound ``activity.call`` inside the
+    active window IS the current call, whatever platform account is viewing it — mirroring Documenso
+    ``/sign-state``, which is keyed by document, not operator. Resolved to the briefing anchor
+    (normalized_domain) via public.close_crosswalk (by contact, falling back to lead). Returns
+    ``{active: false}`` when idle. (business.close_operator_map is left in place, unused, for a
+    future multi-operator world.)
     """
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            WITH op AS (
-                SELECT close_user_id FROM business.close_operator_map WHERE auth_user_id = %(auth)s
-            ),
-            latest AS (
+            WITH latest AS (
                 SELECT e.*
                 FROM business.close_webhook_events e
-                JOIN op ON op.close_user_id = e.close_user_id
                 WHERE e.object_type = 'activity.call'
                   AND e.direction = 'outbound'
                   AND e.received_at > now() - make_interval(secs => %(window)s)
@@ -84,7 +82,7 @@ async def read_active_call(conn, *, auth_user_id: str) -> dict[str, Any]:
                 FROM public.close_crosswalk WHERE close_lead_id = l.close_lead_id LIMIT 1
             ) xl ON TRUE
             """,
-            {"auth": auth_user_id, "window": _ACTIVE_WINDOW_SECONDS},
+            {"window": _ACTIVE_WINDOW_SECONDS},
         )
         row = await cur.fetchone()
     if row is None:

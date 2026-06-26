@@ -98,9 +98,10 @@ def _s(v: Any) -> str | None:
     return str(v) if v is not None else None
 
 
-@read_router.get("/active-call/{auth_user_id}")
-async def active_call(auth_user_id: str) -> dict[str, Any]:
-    """The operator's current outbound call, derived offline from the raw events + crosswalk.
-    The Insights tab polls this (through platform-api) and loads the briefing on domain change."""
+@read_router.get("/active-call")
+async def active_call() -> dict[str, Any]:
+    """The current outbound Close call, derived offline (NOT operator-scoped — single operator,
+    "all users are me"). The Insights tab polls this (through platform-api) and loads the briefing
+    on domain change. Still service-token gated: only the BFF, with a validated session, reaches it."""
     async with get_db_connection() as conn:
-        return await queries.read_active_call(conn, auth_user_id=auth_user_id)
+        return await queries.read_active_call(conn)
