@@ -150,6 +150,46 @@ def test_awards_has_psc_axis_both_sides():
         assert edge.DECODERS["awards"]["synonyms"][term] == {"field": "psc_category", "op": "=", "value": "V"}
 
 
+def test_awards_has_label_axes_both_sides():
+    # awards.v9 GTM label axes: vertical / work_type / equipment_intensity — all three live as
+    # BITMAP columns on usaspending_awards_map_serving, award-grain (they describe the award's
+    # (NAICS, PSC) pair). Present on both sides as enum'd string fields; emitted as properties so
+    # the boot contract (verify_decoder_contract) validates the new columns live.
+    for field in ("vertical", "work_type", "equipment_intensity"):
+        assert field in cat.DECODERS["awards"].fields, f"catalyst awards missing {field}"
+        assert cat.DECODERS["awards"].fields[field].type == "string"
+        assert cat.DECODERS["awards"].fields[field].index == "BITMAP"
+        assert field in edge.DECODERS["awards"]["fields"], f"edge awards missing {field}"
+        assert edge.DECODERS["awards"]["fields"][field]["type"] == "string"
+        # Enum parity is bidirectional and byte-exact (a drift → EXECUTE 422 or silent loss).
+        cat_enum = cat.DECODERS["awards"].fields[field].enum
+        edge_enum = edge.DECODERS["awards"]["fields"][field].get("enum")
+        assert cat_enum is not None and edge_enum is not None, f"{field}: enum must exist both sides"
+        assert set(edge_enum) == set(cat_enum), f"{field}: enum value-set drift edge vs catalyst"
+    # The 24-name vertical taxonomy must carry the comma-bearing labels byte-exact (a wrong comma
+    # or & → zero rows on a Lance BITMAP scan).
+    cat_vertical = set(cat.DECODERS["awards"].fields["vertical"].enum)
+    assert "Facilities, Maintenance & Janitorial" in cat_vertical
+    assert "Food, Agriculture & Beverage" in cat_vertical
+    assert "Staffing & Human Capital" in cat_vertical
+    assert len(cat_vertical) == 24
+    assert set(cat.DECODERS["awards"].fields["work_type"].enum) == {
+        "services_labor", "manufacture", "distribute_resell", "construct", "RnD", "maintain_repair"}
+    assert set(cat.DECODERS["awards"].fields["equipment_intensity"].enum) == {"low", "medium", "high"}
+    # All three label columns + the what_was_done display gloss ride as properties so
+    # verify_decoder_contract validates them live; what_was_done is a DISPLAY column ONLY —
+    # never a filter field (would become emittable + demand a non-existent index), never indexed.
+    assert {"vertical", "work_type", "equipment_intensity", "what_was_done"} <= set(
+        cat.DECODERS["awards"].properties)
+    assert "what_was_done" not in cat.DECODERS["awards"].fields
+    assert "what_was_done" not in edge.DECODERS["awards"]["fields"]
+    # Headline NL wins compile byte-identically both sides (the lexicon is mirrored).
+    assert cat.DECODERS["awards"].synonyms["aerospace"] == {
+        "field": "vertical", "op": "=", "value": "Aerospace & Defense"}
+    assert edge.DECODERS["awards"]["synonyms"]["aerospace"] == {
+        "field": "vertical", "op": "=", "value": "Aerospace & Defense"}
+
+
 # ── aggregate capability: parity + tool schema + routing honesty ─────────────
 def test_awards_aggregate_axis_parity_both_sides():
     cat_agg = cat.DECODERS["awards"].aggregate
