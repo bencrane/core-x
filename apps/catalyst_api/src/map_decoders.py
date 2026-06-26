@@ -600,7 +600,8 @@ ACTIVE = Decoder(
                            # awards.v9 change (PR #715 vertical labels, #720 what_was_done gloss) onto
                            # the FORWARD recompete dataset so "aerospace contracts up for recompete" /
                            # "IT vertical expiring this quarter" route on vertical. Head-coverage only
-                           # (~38% of active awards labeled); unlabeled rows surface in 'not applied'.
+                           # (~78% of recompete $ but ~38% of rows — the unlabeled tail is small-dollar);
+                           # unlabeled rows surface in 'not applied', never silently filtered.
     geometry=("longitude", "latitude"),
     properties=("award_id", "winner_uei", "winner_name", "current_value", "potential_value",
                 "obligated", "pop_current_end", "pop_potential_end", "has_option_tail",
@@ -658,7 +659,7 @@ ACTIVE = Decoder(
                 "value": ["Department of Defense", "Department of Defense (DOD)"]},
         # ── GTM label-axis lexicon (active.v2). Plain-English → vertical / work_type /
         # equipment_intensity. Byte-identical to the awards decoder + the edge mirror. Targets are
-        # byte-exact enum values. Head-coverage only (~38% of active awards labeled); bare
+        # byte-exact enum values. Head-coverage only (~78% of recompete $, ~38% of rows); bare
         # "construction" stays on naics2 above (broad recall, no regression). Ambiguous bare tokens
         # (security, engineering, manufacturing, logistics, defense) are deliberately NOT mapped —
         # only disambiguated phrasings, so a clause is never a coin-flip.

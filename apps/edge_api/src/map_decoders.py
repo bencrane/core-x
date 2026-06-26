@@ -457,11 +457,11 @@ DECODERS: dict[str, dict] = {
             "naics_code": {"type": "string", "ops": ("=", "in"), "desc": "full NAICS code"},
             # ── GTM label axes (active.v2): the award's (NAICS, PSC) pair → a rich VERTICAL, a
             # WORK_TYPE (make vs resell vs build), and an EQUIPMENT_INTENSITY band. All three live
-            # as BITMAP columns; head-coverage (~38% of active awards labeled) so unlabeled rows
+            # as BITMAP columns; head-coverage (~78% of recompete $, ~38% of rows) so unlabeled rows
             # surface in 'not applied', never silently filtered. award grain. (what_was_done is a
             # DISPLAY-only gloss surfaced in notes — NOT a filter field.) ──
             "vertical":          {"type": "string", "ops": ("=", "in"), "enum": _VERTICALS,
-                                  "desc": "the award's INDUSTRY VERTICAL — a 24-name GTM taxonomy derived from the (NAICS, PSC) pair (distinct from naics2, the raw 2-digit sector). 'the IT vertical' / 'aerospace contracts' / 'healthcare sector' (up for recompete) → vertical = the matching name. Partial coverage: only the labeled head (~38% of active awards); unlabeled rows carry no signal (surface as not-applied)"},
+                                  "desc": "the award's INDUSTRY VERTICAL — a 24-name GTM taxonomy derived from the (NAICS, PSC) pair (distinct from naics2, the raw 2-digit sector). 'the IT vertical' / 'aerospace contracts' / 'healthcare sector' (up for recompete) → vertical = the matching name. Partial coverage: the labeled head is ~78% of recompete $ (the unlabeled tail is small-dollar — ~38% of rows); unlabeled rows carry no signal (surface as not-applied)"},
             "work_type":         {"type": "string", "ops": ("=", "in"), "enum": _WORK_TYPES,
                                   "desc": "WHAT THE VENDOR DOES on the award (the make-vs-resell axis). services_labor = labor/services; manufacture = makes the goods; distribute_resell = resells/distributes; construct = construction work; RnD = research & development; maintain_repair = maintenance/repair. 'manufacturers'/'makers' → 'manufacture'; 'resellers'/'distributors' → 'distribute_resell'"},
             "equipment_intensity": {"type": "string", "ops": ("=", "in"), "enum": _EQUIP_INTENSITY,
@@ -611,8 +611,9 @@ DECODERS: dict[str, dict] = {
             " vertical, AND-ed with the days_until_expiry recompete window. work_type (make vs"
             " resell vs construct vs services vs RnD vs maintain_repair) and equipment_intensity"
             " (low/medium/high financing signal) are PEER filters. All three have partial coverage"
-            " (~38% of active awards) — unlabeled rows surface in 'not applied', never silently"
-            " filtered. what_was_done is a free-text DISPLAY field (shown for context, not filterable).",
+            " (~78% of recompete $, ~38% of rows — the unlabeled tail is small-dollar) — unlabeled"
+            " rows surface in 'not applied', never silently filtered. what_was_done is a free-text"
+            " DISPLAY field (shown for context, not filterable).",
         ),
         "aggregate": {
             "measure": "current_value",
