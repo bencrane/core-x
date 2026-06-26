@@ -234,6 +234,7 @@ async def create_document_from_template(
     external_id: str | None = None,
     title: str | None = None,
     prospect_recipient_id: int | None = None,
+    editable_labels: set[str] | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
     PREFILLED and LOCKED (readOnly), then distribute WITHOUT email so it lands ``PENDING`` (ready to
@@ -308,6 +309,18 @@ async def create_document_from_template(
 
         # label -> [(field id, lowercased type), …] — a label can appear on MULTIPLE fields, so this
         # is a fan-out, not a 1:1 map. SIGNATURE/DATE carry no label and are excluded here implicitly.
+        # Position key (page + rounded x/y) to re-identify a template field on the DERIVED document,
+        # which keeps the same geometry but gets NEW ids and NO labels. Used at step 4 to leave the
+        # operator-designated ``editable_labels`` fields UNLOCKED.
+        def _pos_key(f: dict[str, Any]) -> tuple[int, float, float]:
+            return (
+                int(f.get("page") or 0),
+                round(float(f.get("positionX") or 0), 2),
+                round(float(f.get("positionY") or 0), 2),
+            )
+
+        _editable = editable_labels or set()
+        editable_positions: set[tuple[int, float, float]] = set()
         by_label: dict[str, list[tuple[Any, str]]] = {}
         for fld in tmpl.get("fields") or []:
             if not isinstance(fld, dict):
@@ -315,6 +328,8 @@ async def create_document_from_template(
             lab = (fld.get("fieldMeta") or {}).get("label")
             if not lab:
                 continue
+            if lab in _editable:
+                editable_positions.add(_pos_key(fld))
             by_label.setdefault(lab, []).append(
                 (fld.get("id"), str(fld.get("type") or "").lower())
             )
@@ -383,6 +398,10 @@ async def create_document_from_template(
             meta = fld.get("fieldMeta") or {}
             value = meta.get("text") if ftype == "TEXT" else meta.get("value") if ftype == "NUMBER" else None
             if ftype not in ("TEXT", "NUMBER") or not str(value or "").strip():
+                continue
+            # Leave operator-designated editable fields UNLOCKED so the signer can correct them (e.g.
+            # their own Full Name / Title). Re-identified by geometry — derived fields drop their labels.
+            if editable_positions and _pos_key(fld) in editable_positions:
                 continue
             locked_meta = {k: v for k, v in meta.items() if v is not None}
             locked_meta["readOnly"] = True

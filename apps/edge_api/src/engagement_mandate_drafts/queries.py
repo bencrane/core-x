@@ -65,6 +65,24 @@ async def get_template_default_field_values(conn, documenso_template_id: str) ->
     return val if isinstance(val, dict) else {}
 
 
+async def get_template_editable_field_labels(conn, documenso_template_id: str) -> set[str]:
+    """Field LABELS (``documenso_templates.recipients->'editable_field_labels'``) left UNLOCKED after
+    prefill — the prospect's own facts (e.g. Full Name, Title) they may correct before signing.
+    Everything else prefilled stays locked (operator terms). Empty/unset → lock all (default)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT recipients->'editable_field_labels'
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    val = row[0] if row else None
+    return {str(x) for x in val} if isinstance(val, list) else set()
+
+
 async def get_draft(conn, draft_id: str) -> dict | None:
     """Resolve a draft to what confirm needs — its Documenso template id (+ org / opportunity for
     context). Returns None when the id is unknown OR not a well-formed UUID.
