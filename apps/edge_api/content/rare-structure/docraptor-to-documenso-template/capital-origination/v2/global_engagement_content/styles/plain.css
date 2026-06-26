@@ -28,7 +28,7 @@ h2 {
 }
 strong { font-weight: 700; color: #000000; }
 p { margin: 0 0 8pt; text-align: justify; }
-.lead { color: #111111; }
+.lead { color: #111111; text-align: left; }
 
 /* Inline fill-in zone — a ruled line a Documenso field is dropped onto and sized in the editor (like
    the signature line). NO underscore glyphs; width is just the visual guide (min-width per slot). */
