@@ -74,6 +74,9 @@ AWARDS_COLS = [
     "action_type", "is_option_exercise", "is_active", "pop_end",
     # awards.v9 GTM label axes (BITMAP) + what_was_done display column (free-text, NOT indexed).
     "vertical", "work_type", "equipment_intensity", "what_was_done",
+    # awards.v11 capability axes: 4 BITMAP (bool/enum) + 2 list columns (NOT indexed — see AWARDS_IDX).
+    "has_extracted_scope", "requires_clearance", "req_clearance_level_max", "requires_cmmc",
+    "solicitation_scope_tags", "labor_categories",
     "longitude", "latitude",
 ]
 AWARDS_IDX = [
@@ -103,6 +106,12 @@ AWARDS_IDX = [
     {"name": "vertical_idx", "type": "Bitmap", "fields": ["vertical"]},
     {"name": "work_type_idx", "type": "Bitmap", "fields": ["work_type"]},
     {"name": "equipment_intensity_idx", "type": "Bitmap", "fields": ["equipment_intensity"]},
+    # awards.v11 capability axes — 4 BITMAP (bool/enum). The list columns solicitation_scope_tags /
+    # labor_categories are intentionally NOT scalar-indexed (matches the decoder + winners/active precedent).
+    {"name": "has_extracted_scope_idx", "type": "Bitmap", "fields": ["has_extracted_scope"]},
+    {"name": "requires_clearance_idx", "type": "Bitmap", "fields": ["requires_clearance"]},
+    {"name": "requires_cmmc_idx", "type": "Bitmap", "fields": ["requires_cmmc"]},
+    {"name": "req_clearance_level_max_idx", "type": "Bitmap", "fields": ["req_clearance_level_max"]},
 ]
 
 

@@ -358,7 +358,15 @@ _EQUIP_INTENSITY = ("low", "medium", "high")
 
 AWARDS = Decoder(
     dataset_key="awards",
-    version="awards.v10",  # v9→v10: rename the money column award_amount → action_obligated_usd
+    version="awards.v11",  # v10→v11: LEFT-JOIN the award-grain capability profile
+                           # (govcon_award_solicitation_profiles) by the award key (MANY:1 — every
+                           # action of an award inherits its solicitation profile) → expose the gated
+                           # capability axes (clearance / CMMC / solicitation scope tag / labor) on the
+                           # action-grain awards dataset. Lifted byte-identical from winners/active.v4;
+                           # the gate (has_extracted_scope=true) is inherited from the shared compiler.
+                           # ~2.9% of award actions carry a profile (measured 2026-06-26); unlabeled
+                           # rows surface as 'not applied' on ungated queries, never silently filtered.
+                           # v9→v10: rename the money column award_amount → action_obligated_usd
                            # (physical column only; the LLM-facing query-name stays 'award_amount').
                            # Awards map is now PRIME-ONLY (subaward rows dropped at build). Part of
                            # the federal money-column rename ({grain}_obligated_usd / value family).
@@ -387,7 +395,10 @@ AWARDS = Decoder(
                 "is_active", "pop_end",
                 # GTM-attribute label axes + the free-text gloss. what_was_done is DISPLAY-only —
                 # NOT a filter field, NOT indexed (it rides here so the feature self-describes).
-                "vertical", "work_type", "equipment_intensity", "what_was_done"),
+                "vertical", "work_type", "equipment_intensity", "what_was_done",
+                # Phase-3 capability surface (awards.v11) — structured only (NO chunk-derived verbatim text).
+                "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
+                "requires_cmmc", "solicitation_scope_tags", "labor_categories"),
     fields={
         # The single action's obligation — NEVER a lifetime or window rollup. The build
         # excludes de-obligations and $0 admin mods, so ">= X" is honest "won" semantics.
@@ -436,6 +447,21 @@ AWARDS = Decoder(
         "action_type":       FieldSpec("action_type", "string", ("=", "in"), index="BITMAP"),
         "is_option_exercise": FieldSpec("is_option_exercise", "bool", ("=",), index="BITMAP"),
         "is_active":         FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
+        # ── Phase-3 capability axes (awards.v11), lifted byte-identical from the winners/active.v4
+        # decoders. Award-grain (joined MANY:1 by the award key — each action inherits its award's
+        # solicitation profile). has_extracted_scope is the GATE itself — filterable but NOT gated;
+        # the gated axes self-AND has_extracted_scope=true in EXECUTE (the scope-extracted slice). ──
+        "has_extracted_scope": FieldSpec("has_extracted_scope", "bool", ("=",), index="BITMAP"),
+        "requires_clearance":  FieldSpec("requires_clearance", "bool", ("=",), index="BITMAP",
+                                         gated=True),
+        "req_clearance_level_max": FieldSpec("req_clearance_level_max", "string", ("=", "in"),
+                                             enum=_CLEARANCE_LEVELS, index="BITMAP", gated=True),
+        "requires_cmmc":       FieldSpec("requires_cmmc", "bool", ("=",), index="BITMAP", gated=True),
+        # list<string> capability columns — set membership via Lance array_has / array_has_any.
+        "solicitation_scope_tag":      FieldSpec("solicitation_scope_tags", "list", ("has", "has_any"),
+                                         enum=_CAPABILITY_TAGS, gated=True),
+        "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
+                                         enum=_LABOR_CATEGORIES, gated=True),
     },
     synonyms={
         "construction":   {"field": "naics2", "op": "=", "value": "23"},
@@ -465,6 +491,16 @@ AWARDS = Decoder(
         "option exercises":        {"field": "is_option_exercise", "op": "=", "value": True},
         "exercised option":        {"field": "is_option_exercise", "op": "=", "value": True},
         "options exercised":       {"field": "is_option_exercise", "op": "=", "value": True},
+        # ── Phase-3 capability phrasings (awards.v11), byte-identical to the winners/active decoders
+        # + edge mirror. Route to the gated capability axes; EXECUTE ANDs has_extracted_scope=true. ──
+        "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+        "secret clearance": {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+        "top secret":       {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["TOP_SECRET", "TS_SCI"]},
+        "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+        "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
+        "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
         # ── GTM label-axis lexicon (awards.v9). Plain-English → vertical / work_type /
         # equipment_intensity. Targets are byte-exact enum values. Head-coverage only (~80% of
         # both-codes $); bare "construction" stays on naics2 above (broad recall, no regression).
@@ -596,6 +632,9 @@ AWARDS = Decoder(
             "action_type": "action_type",   # group-by the action mix (new award / exercise / funding / mod)
             # GTM-attribute breakdowns: $ by industry vertical / work_type / equipment_intensity.
             "vertical": "vertical", "work_type": "work_type", "equipment_intensity": "equipment_intensity",
+            # Phase-3 capability breakdown: won-$ by required clearance level (awards.v11). Gated axis →
+            # a group-by that includes it ANDs has_extracted_scope=true in EXECUTE (the scope slice).
+            "req_clearance_level_max": "req_clearance_level_max",
         },
         winner_key=("winner_uei", "winner_name"),
         size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),

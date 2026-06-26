@@ -236,8 +236,8 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v10",
-        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar PRIME contract action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
+        "version": "awards.v11",
+        "description": "Individual federal AWARD ACTIONS — one row per positive-dollar PRIME contract action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup. Actions may ALSO carry CAPABILITY signals extracted from their award's solicitation (clearance, CMMC, what the contract scopes, what trades it staffs) — use these for 'cleared/CMMC awards won in the last N days' questions. Capability covers the scope-extracted slice (~3% of actions); unlabeled actions carry no signal (surface as not-applied).",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
             "days_since_action": {"type": "days_ago", "ops": ("<=", ">=", "between"),
@@ -272,6 +272,18 @@ DECODERS: dict[str, dict] = {
                                   "desc": "WHAT THE VENDOR DOES on the award (the make-vs-resell axis). services_labor = labor/services; manufacture = makes the goods; distribute_resell = resells/distributes; construct = construction work; RnD = research & development; maintain_repair = maintenance/repair. 'manufacturers'/'makers' → 'manufacture'; 'resellers'/'distributors' → 'distribute_resell'"},
             "equipment_intensity": {"type": "string", "ops": ("=", "in"), "enum": _EQUIP_INTENSITY,
                                   "desc": "how EQUIPMENT-HEAVY the work is (a mobilization-capital / financing signal). 'equipment-heavy'/'capital-intensive' → 'high'; 'asset-light'/'labor-only' → 'low'"},
+            # ── Phase-3 capability axes (awards.v11): signals extracted from the award's solicitation
+            # documents, inherited by every action of the award. has_extracted_scope is the gate; the
+            # gated axes only span the scope-extracted slice (EXECUTE ANDs has_extracted_scope=true). ──
+            "has_extracted_scope":     {"type": "bool", "ops": ("=",), "desc": "true = this action's award has extracted solicitation scope (the ~3%-of-actions slice the capability axes describe)"},
+            "requires_clearance":      {"type": "bool", "ops": ("=",), "desc": "true = the award's solicitation requires a personnel/facility security clearance"},
+            "req_clearance_level_max": {"type": "string", "ops": ("=", "in"), "enum": _CLEARANCE_LEVELS,
+                                        "desc": "highest clearance the award requires. 'secret clearance' → in [SECRET, TOP_SECRET, TS_SCI]"},
+            "requires_cmmc":           {"type": "bool", "ops": ("=",), "desc": "true = the award's solicitation requires CMMC certification"},
+            "solicitation_scope_tag":  {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the award SCOPES (set membership). 'electrical work won this year' → solicitation_scope_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
+            "labor_category":          {"type": "list", "ops": ("has", "has_any"), "enum": _LABOR_CATEGORIES,
+                                        "desc": "skilled labor/trade the award staffs. 'electricians' → labor_category has 'electrician'; 'cleared trades' → requires_clearance=true AND labor_category has_any the trade list"},
         },
         "synonyms": {
             "construction":   {"field": "naics2", "op": "=", "value": "23"},
@@ -298,6 +310,14 @@ DECODERS: dict[str, dict] = {
             "option exercises":        {"field": "is_option_exercise", "op": "=", "value": True},
             "exercised option":        {"field": "is_option_exercise", "op": "=", "value": True},
             "options exercised":       {"field": "is_option_exercise", "op": "=", "value": True},
+            # ── Phase-3 capability phrasings (awards.v11), byte-identical to the catalyst mirror +
+            # the winners/active decoders. Route to the gated capability axes; EXECUTE ANDs has_extracted_scope=true. ──
+            "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+            "secret clearance": {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+            "top secret":       {"field": "req_clearance_level_max", "op": "in", "value": ["TOP_SECRET", "TS_SCI"]},
+            "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+            "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
+            "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
             # ── GTM label-axis lexicon (awards.v9). Plain-English → vertical / work_type /
             # equipment_intensity. Byte-identical to the catalyst mirror. Head-coverage only;
             # bare "construction" stays on naics2 above (broad recall). Ambiguous bare tokens
@@ -433,7 +453,7 @@ DECODERS: dict[str, dict] = {
             "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
                      "action_type", "winner_type",
-                     "vertical", "work_type", "equipment_intensity"],
+                     "vertical", "work_type", "equipment_intensity", "req_clearance_level_max"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING questions ('break down by"
@@ -814,7 +834,10 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v9"   # v8→v9: active gains the Phase-3 capability axes (clearance / CMMC /
+ROUTER_VERSION = "router.v10"  # v9→v10: awards gains the Phase-3 capability axes (clearance / CMMC /
+                               # solicitation scope tag / labor) — the awards routing cue now also
+                               # steers 'cleared / CMMC / what-they-do won in the last N days' phrasing.
+                               # v8→v9: active gains the Phase-3 capability axes (clearance / CMMC /
                                # solicitation scope tag / labor) — the active recompete routing cue now
                                # also steers 'cleared / CMMC / what-they-do up for recompete' phrasing.
                                # v7→v8: awards gains the GTM label axes vertical/work_type/
