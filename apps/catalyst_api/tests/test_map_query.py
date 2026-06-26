@@ -386,9 +386,9 @@ def test_active_business_size_enum_and_current_value_aggregate():
     )
     with pytest.raises(lance_store.MapCompileError):
         _compile(ACTIVE, [{"field": "business_size", "op": "=", "value": "small"}])
-    # the active aggregate measure is current_value (award ceiling), not award_amount
+    # the active aggregate measure is contract_current_value_usd (contract ceiling), not the obligation
     spec, gb, _, _ = lance_store.validate_aggregate(ACTIVE, "business_size", ["count", "sum"], None)
-    assert spec.measure == "current_value" and gb == "business_size"
+    assert spec.measure == "contract_current_value_usd" and gb == "business_size"
 
 
 # ── GeoJSON shaping ──────────────────────────────────────────────────────────
