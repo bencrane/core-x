@@ -26,6 +26,22 @@ _SET_ASIDE_CODES = ("NONE", "SBA", "SBP", "8A", "8AN", "SDVOSBC", "SDVOSBS", "WO
                     "WOSBSS", "EDWOSB", "EDWOSBSS", "HZC", "HZS", "ISBEE", "BI", "IEE",
                     "VSA", "VSS")
 
+# GTM-attribute label axes on the awards serving table (awards.v9). MUST stay byte-identical to
+# catalyst_api/src/map_decoders.py (the parity test asserts the enum value-sets are identical
+# edge↔catalyst). NOTE the embedded COMMAS in "Facilities, Maintenance & Janitorial" and
+# "Food, Agriculture & Beverage" — a wrong comma/& → zero rows on a Lance BITMAP scan.
+_VERTICALS = (
+    "Information Technology & Software", "Aerospace & Defense", "Construction",
+    "Research & Development", "Professional & Management Services", "Healthcare & Life Sciences",
+    "Facilities, Maintenance & Janitorial", "Engineering & Architecture", "Transportation & Logistics",
+    "Food, Agriculture & Beverage", "Wholesale & Supply", "Environmental & Remediation",
+    "Electronics & Instruments", "Telecommunications", "Energy & Utilities", "Industrial Manufacturing",
+    "Financial & Insurance", "Security & Guard Services", "Government & Public Administration",
+    "Education & Training", "Real Estate", "Media & Publishing", "Mining & Extraction",
+    "Staffing & Human Capital")
+_WORK_TYPES = ("services_labor", "manufacture", "distribute_resell", "construct", "RnD", "maintain_repair")
+_EQUIP_INTENSITY = ("low", "medium", "high")
+
 # PHASE-3 capability controlled vocabularies — MUST match catalyst_api/src/map_decoders.py
 # (the parity test asserts enum value-sets are identical edge↔catalyst).
 _CLEARANCE_LEVELS = ("PUBLIC_TRUST", "CONFIDENTIAL", "SECRET", "TOP_SECRET", "TS_SCI")
@@ -220,7 +236,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "awards": {
-        "version": "awards.v8",
+        "version": "awards.v9",
         "description": "Individual federal AWARD ACTIONS — one row per positive-dollar contract/subaward action. THE table for 'won an award over $X in the last N days': the amount is the single action's dollars, never a lifetime or window rollup.",
         "fields": {
             "award_amount":      {"type": "float", "ops": (">=", "<=", "between"), "desc": "the single award action's dollars, USD ('won an award over $1M' → award_amount >= 1000000)"},
@@ -245,6 +261,17 @@ DECODERS: dict[str, dict] = {
             "action_type":       {"type": "string", "ops": ("=", "in"), "desc": "FPDS action type of this action, e.g. 'EXERCISE AN OPTION', 'FUNDING ONLY ACTION', 'CHANGE ORDER', 'SUPPLEMENTAL AGREEMENT FOR WORK WITHIN SCOPE'. Group-by action_type for the action mix. Prefer is_option_exercise for the option-exercise case"},
             "is_option_exercise": {"type": "bool", "ops": ("=",), "desc": "true = this action EXERCISED A CONTRACT OPTION — the government committing the next work tranche on an existing contract (a mobilization-capital trigger; the entity is already invested). 'option exercise' / 'exercised option' / 'mobilization' → is_option_exercise = true; award_amount is then the mobilization $"},
             "is_active":         {"type": "bool", "ops": ("=",), "desc": "true = the contract is currently within its period of performance (active). Prime actions only — subawards carry no PoP and are excluded. 'active contracts' / 'currently active' → is_active = true"},
+            # ── GTM label axes (awards.v9): the award's (NAICS, PSC) pair → a rich VERTICAL, a
+            # WORK_TYPE (make vs resell vs build), and an EQUIPMENT_INTENSITY band. All three live
+            # as BITMAP columns; head-coverage (~80% of both-codes $) so unlabeled rows surface in
+            # 'not applied', never silently filtered. award grain. (what_was_done is a DISPLAY-only
+            # gloss surfaced in notes — NOT a filter field.) ──
+            "vertical":          {"type": "string", "ops": ("=", "in"), "enum": _VERTICALS,
+                                  "desc": "the award's INDUSTRY VERTICAL — a 24-name GTM taxonomy derived from the (NAICS, PSC) pair (distinct from naics2, the raw 2-digit sector). 'IT companies' / 'the aerospace vertical' / 'healthcare sector' → vertical = the matching name. Partial coverage: only the labeled head (~80% of both-codes $); unlabeled rows carry no signal (surface as not-applied)"},
+            "work_type":         {"type": "string", "ops": ("=", "in"), "enum": _WORK_TYPES,
+                                  "desc": "WHAT THE VENDOR DOES on the award (the make-vs-resell axis). services_labor = labor/services; manufacture = makes the goods; distribute_resell = resells/distributes; construct = construction work; RnD = research & development; maintain_repair = maintenance/repair. 'manufacturers'/'makers' → 'manufacture'; 'resellers'/'distributors' → 'distribute_resell'"},
+            "equipment_intensity": {"type": "string", "ops": ("=", "in"), "enum": _EQUIP_INTENSITY,
+                                  "desc": "how EQUIPMENT-HEAVY the work is (a mobilization-capital / financing signal). 'equipment-heavy'/'capital-intensive' → 'high'; 'asset-light'/'labor-only' → 'low'"},
         },
         "synonyms": {
             "construction":   {"field": "naics2", "op": "=", "value": "23"},
@@ -271,6 +298,116 @@ DECODERS: dict[str, dict] = {
             "option exercises":        {"field": "is_option_exercise", "op": "=", "value": True},
             "exercised option":        {"field": "is_option_exercise", "op": "=", "value": True},
             "options exercised":       {"field": "is_option_exercise", "op": "=", "value": True},
+            # ── GTM label-axis lexicon (awards.v9). Plain-English → vertical / work_type /
+            # equipment_intensity. Byte-identical to the catalyst mirror. Head-coverage only;
+            # bare "construction" stays on naics2 above (broad recall). Ambiguous bare tokens
+            # (security, engineering, manufacturing, logistics, defense) deliberately NOT mapped. ──
+            "it contracts":            {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "software contracts":      {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "software vendors":        {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "cybersecurity":           {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "cyber contracts":         {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "information technology":  {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+            "aerospace":               {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "aerospace contracts":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "defense contractors":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "aerospace and defense":   {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "weapons systems":         {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+            "construction industry":   {"field": "vertical", "op": "=", "value": "Construction"},
+            "building contractors":    {"field": "vertical", "op": "=", "value": "Construction"},
+            "general contractors":     {"field": "vertical", "op": "=", "value": "Construction"},
+            "r&d vertical":            {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "research and development": {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "research labs":           {"field": "vertical", "op": "=", "value": "Research & Development"},
+            "professional services":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "management consulting":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "management services":     {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "consulting firms":        {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+            "healthcare":              {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "healthcare contracts":    {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "medical services":        {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "life sciences":           {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "pharma":                  {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+            "facilities management":   {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "janitorial":              {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "custodial services":      {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "facilities maintenance":  {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+            "engineering and architecture": {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "architecture firms":      {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "a&e firms":               {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "architectural services":  {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+            "transportation and logistics": {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "logistics contractors":   {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "trucking":                {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "freight carriers":        {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+            "food and agriculture":    {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "food services vertical":  {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "agriculture":             {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "food and beverage":       {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+            "wholesale and supply":    {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "supply contractors":      {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "wholesalers":             {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "commodity suppliers":     {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+            "environmental":           {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "environmental remediation": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "remediation contractors": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "environmental cleanup":   {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+            "electronics":             {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "electronics and instruments": {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "instrumentation":         {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+            "telecom":                 {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "telecommunications":      {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "telecom contractors":     {"field": "vertical", "op": "=", "value": "Telecommunications"},
+            "energy and utilities":    {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "utilities":               {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "power and energy":        {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "energy contractors":      {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+            "industrial manufacturing": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "manufacturing vertical":  {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "industrial manufacturers": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+            "financial services":      {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "financial and insurance": {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "insurance contractors":   {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+            "guard services":          {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "security guards":         {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "physical security":       {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "armed guard services":    {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+            "public administration":   {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+            "government administration": {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+            "education and training":  {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "training contractors":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "educational services":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+            "real estate":             {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "real estate services":    {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "leasing services":        {"field": "vertical", "op": "=", "value": "Real Estate"},
+            "media and publishing":    {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "publishing":              {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "media services":          {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+            "mining":                  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "mining and extraction":   {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "extraction contractors":  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+            "aec":                     {"field": "vertical", "op": "in",
+                                        "value": ["Engineering & Architecture", "Construction"]},
+            "manufacturers":           {"field": "work_type", "op": "=", "value": "manufacture"},
+            "makers":                  {"field": "work_type", "op": "=", "value": "manufacture"},
+            "product manufacturers":   {"field": "work_type", "op": "=", "value": "manufacture"},
+            "resellers":               {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "distributors":            {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "value-added resellers":   {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "vars":                    {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "warehousing":             {"field": "work_type", "op": "=", "value": "distribute_resell"},
+            "maintenance and repair":  {"field": "work_type", "op": "=", "value": "maintain_repair"},
+            "repair services":         {"field": "work_type", "op": "=", "value": "maintain_repair"},
+            "services firms":          {"field": "work_type", "op": "=", "value": "services_labor"},
+            "labor services":          {"field": "work_type", "op": "=", "value": "services_labor"},
+            "r&d work":                {"field": "work_type", "op": "=", "value": "RnD"},
+            "research work":           {"field": "work_type", "op": "=", "value": "RnD"},
+            "equipment-heavy":         {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "equipment-intensive":     {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "capital-intensive":       {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "asset-heavy":             {"field": "equipment_intensity", "op": "=", "value": "high"},
+            "asset-light":             {"field": "equipment_intensity", "op": "=", "value": "low"},
+            "labor-only":              {"field": "equipment_intensity", "op": "=", "value": "low"},
         },
         # Dataset-specific prompt rules (rendered under Rules).
         "notes": (
@@ -281,6 +418,13 @@ DECODERS: dict[str, dict] = {
             " WHAT THE CONTRACT BUYS. For 'transportation/freight SERVICES' or 'PSC category V'"
             " use psc_category='V' (not a NAICS filter) — many transport/logistics service"
             " awards carry a non-48/49 NAICS, so a NAICS-only filter misses them.",
+            "Industry axes: naics2/naics_code = the RAW federal sector code; vertical = the 24-name"
+            " GTM taxonomy over the (NAICS, PSC) pair. 'industry sector code' or a literal 2-digit"
+            " code → naics2; 'the <name> vertical/sector/industry' → vertical. work_type (make vs"
+            " resell vs construct vs services vs RnD vs maintain_repair) and equipment_intensity"
+            " (low/medium/high financing signal) are PEER filters that AND with naics2/psc. All"
+            " three have partial coverage — unlabeled rows surface in 'not applied', never silently"
+            " filtered. what_was_done is a free-text DISPLAY field (shown for context, not filterable).",
         ),
         # Aggregate capability (mirrors catalyst_api AggregateSpec; the parity test asserts
         # dims+metrics match). Prompt-facing only — no Lance column names.
@@ -288,7 +432,8 @@ DECODERS: dict[str, dict] = {
             "measure": "award_amount",
             "dims": ["fiscal_year", "naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
-                     "action_type", "winner_type"],
+                     "action_type", "winner_type",
+                     "vertical", "work_type", "equipment_intensity"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING questions ('break down by"
@@ -512,7 +657,10 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v7"   # v6→v7: awards gains the option-exercise / action_type axis; drop a
+ROUTER_VERSION = "router.v8"   # v7→v8: awards gains the GTM label axes vertical/work_type/
+                               # equipment_intensity — the awards routing cue now steers industry/
+                               # vertical/sector + make-vs-resell + equipment-intensity phrasing.
+                               # v6→v7: awards gains the option-exercise / action_type axis; drop a
                                # stale 'awards is the only aggregate dataset' claim (all 4 aggregate)
                                # v5→v6: winners + company gain the aggregate capability
                                # v4→v5: add the 'active' dataset (forward-looking recompete radar)
@@ -525,8 +673,11 @@ _ROUTING_CUES = {
               " N days', 'who won <agency> contracts this week', set-asides, place of"
               " performance, PSC (what the contract BUYS — 'transportation/freight SERVICES',"
               " 'PSC category V'), and OPTION EXERCISES (the govt exercising a contract option"
-              " = a mobilization event — 'options exercised', 'mobilization'). DEFAULT for"
-              " win/award phrasing.",
+              " = a mobilization event — 'options exercised', 'mobilization'). ALSO the GTM LABEL"
+              " axes on the (NAICS, PSC) pair: INDUSTRY / VERTICAL / SECTOR phrasing ('the IT"
+              " vertical', 'aerospace sector', 'healthcare industry') → vertical; make-vs-resell"
+              " ('manufacturers' vs 'resellers/distributors') → work_type; EQUIPMENT-HEAVY /"
+              " capital-intensity → equipment_intensity. DEFAULT for win/award phrasing.",
     "company": "COMPANY-ATTRIBUTE questions: lifetime/active federal obligations,"
                " firmographics (employee size, founded year, industry label, company type),"
                " SAM registration, 'federal contractors with $X total obligations'.",

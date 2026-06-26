@@ -72,6 +72,8 @@ AWARDS_COLS = [
     "pop_state", "pop_city",
     "awarding_agency", "awarding_sub_agency", "set_aside", "business_size",
     "action_type", "is_option_exercise", "is_active", "pop_end",
+    # awards.v9 GTM label axes (BITMAP) + what_was_done display column (free-text, NOT indexed).
+    "vertical", "work_type", "equipment_intensity", "what_was_done",
     "longitude", "latitude",
 ]
 AWARDS_IDX = [
@@ -96,6 +98,11 @@ AWARDS_IDX = [
     {"name": "business_size_idx", "type": "Bitmap", "fields": ["business_size"]},
     {"name": "action_type_idx", "type": "Bitmap", "fields": ["action_type"]},
     {"name": "is_option_exercise_idx", "type": "Bitmap", "fields": ["is_option_exercise"]},
+    # awards.v9 GTM label axes — BITMAP (low cardinality), award-grain. what_was_done is a
+    # free-text DISPLAY column and is intentionally NOT indexed (no entry here).
+    {"name": "vertical_idx", "type": "Bitmap", "fields": ["vertical"]},
+    {"name": "work_type_idx", "type": "Bitmap", "fields": ["work_type"]},
+    {"name": "equipment_intensity_idx", "type": "Bitmap", "fields": ["equipment_intensity"]},
 ]
 
 
