@@ -149,15 +149,12 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v10",  # v9→v10: widen the build window 90→730d (WINNERS_WINDOW_DAYS) for parity
-                            # with the awards map, so the days_since_last_award axis is honest up to ~2y;
-                            # entity_obligated_usd is a rolled-up sum over THAT build window (a snapshot),
-                            # not full history — stated in the total_obligation desc. (The v6→v7 "spans
-                            # full history" claim was inaccurate; corrected here.)
-                            # v8→v9: rename money column total_obligation → entity_obligated_usd
-                            # (physical column only; LLM-facing query-name 'total_obligation' unchanged).
-                            # v7→v8: add the AGGREGATE capability (rollup by dim / top winners / distribution)
-                            # v6→v7: drop stale ~90-day window claim from prompt-facing copy (data spans full history)
+    version="winners.v10",  # entity grain (one row per winner_uei × winner_type) over the 730d build
+                            # window (WINNERS_WINDOW_DAYS). entity_obligated_usd = per-entity Σ positive
+                            # obligations within that window — a snapshot. For a query-bounded entity
+                            # total, aggregate the awards dataset by winner with days_since_action.
+                            # v10: window 90→730d. v9: total_obligation→entity_obligated_usd (column).
+                            # v8: aggregate capability. v7: PHASE-3 capability axes (prime + sub teaming).
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
                 "state", "entity_obligated_usd", "award_count", "last_action_date",

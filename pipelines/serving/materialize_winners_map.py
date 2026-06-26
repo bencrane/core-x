@@ -1,5 +1,5 @@
 """Serving worker — usaspending_winners_map_serving: one row per (winner_uei, winner_type)
-for federal-contract winners in the rolling window, joined to the address-keyed geocode
+for federal-contract winners over a ~730d build window, joined to the address-keyed geocode
 crosswalk so every winner carries a lat/lon dot. The read model behind the sales-demo map.
 
 GRAIN  1 row per (winner_uei, winner_type ∈ {prime_recipient, subawardee}).

@@ -8,8 +8,9 @@ SoR    s3://data-sink/active/firmographics_company_map_serving/  (Lance v2.1, de
 INPUTS firmographics_blitz (domain firmographics) ⋈ sam_master_domains (domain↦uei)
        ⋈ entity_profile_gold (uei → SAM address + award rollups) ⋈ geocode_xwalk (addr_hash → coords)
        + RECENCY: contractor_award_summary (prime/subaward most-recent action dates, rebuilt
-       daily — summary_as_of) ∪ usaspending_api_fresh prime/subaward feeds (rolling 90d),
-       max()'d per UEI into latest_award_action_date (DATE).
+       daily — summary_as_of) ∪ usaspending_api_fresh prime/subaward feeds, max()'d per UEI into
+       latest_award_action_date (DATE). These feeds supply ONLY the recency date; the money
+       (entity_active_obligated_usd) is sourced from entity_profile_gold, not windowed here.
 SIGNALS industry, employee_size_band, company_type (firmographics) + naics, has_federal_awards,
        entity_active_obligated_usd, award_count, latest_award_action_date (govcon) — the
        prospecting filters. latest_award_action_date STALENESS: as fresh as the most recent
@@ -105,7 +106,7 @@ def _assemble(so):
         "physical_address_zip_postal_code"]).to_table())
     con.register("xw", xw.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_table())
     # Recency sources: the all-time per-recipient summary (date32, rebuilt daily) plus the
-    # rolling-90d fresh feeds (ISO-string action dates) — max()'d per UEI below.
+    # fresh-feed action dates (ISO-string) — max()'d per UEI below for latest_award_action_date.
     con.register("cas", cas.scanner(columns=[
         "recipient_uei", "prime_most_recent_action_date", "subaward_most_recent_action_date"]).to_table())
     con.register("fp", fp.scanner(columns=["recipient_uei", "action_date"]).to_table())
