@@ -74,7 +74,9 @@ async def documenso_webhook(
 
 
 @router.get("/sign-state/{opportunity_id}/{document_id}")
-async def read_sign_state(opportunity_id: str, document_id: str) -> dict[str, Any]:
+async def read_sign_state(
+    opportunity_id: str, document_id: str, signer: str = Query("client")
+) -> dict[str, Any]:
     """PUBLIC prospect signing-state read — the POLL. Keyed by the ``(opportunity_id, document_id)``
     PAIR carried in the signing link (``/p/m/{opportunity_id}/{document_id}``).
 
@@ -93,7 +95,7 @@ async def read_sign_state(opportunity_id: str, document_id: str) -> dict[str, An
     """
     async with get_db_connection() as conn:
         state = await queries.read_sign_state(
-            conn, opportunity_id=opportunity_id, document_id=document_id
+            conn, opportunity_id=opportunity_id, document_id=document_id, signer=signer
         )
     return {
         "opportunity_id": opportunity_id,
