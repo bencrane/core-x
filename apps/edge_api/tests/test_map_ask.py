@@ -262,7 +262,7 @@ def test_all_datasets_expose_optional_aggregate_tool_property():
 
 
 def test_winners_company_aggregate_parity_both_sides():
-    for ds, measure in (("winners", "total_obligation"), ("company", "total_active_obligations")):
+    for ds, measure in (("winners", "entity_obligated_usd"), ("company", "total_active_obligations")):
         cat_agg = cat.DECODERS[ds].aggregate
         assert cat_agg is not None and cat_agg.measure == measure
         edge_agg = edge.DECODERS[ds]["aggregate"]

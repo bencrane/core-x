@@ -149,11 +149,13 @@ _CERT_OSHA_30 = ("osha_30", "osha_30_hour")
 
 WINNERS = Decoder(
     dataset_key="winners",
-    version="winners.v8",   # v7→v8: add the AGGREGATE capability (rollup total_obligation by dim / top winners / distribution)
+    version="winners.v9",   # v8→v9: rename money column total_obligation → entity_obligated_usd
+                            # (physical column only; LLM-facing query-name 'total_obligation' unchanged).
+                            # v7→v8: add the AGGREGATE capability (rollup by dim / top winners / distribution)
                             # v6→v7: drop stale ~90-day window claim from prompt-facing copy (data spans full history)
     geometry=("longitude", "latitude"),
     properties=("winner_uei", "winner_name", "winner_type", "naics_code", "naics2",
-                "state", "total_obligation", "award_count", "last_action_date",
+                "state", "entity_obligated_usd", "award_count", "last_action_date",
                 # PHASE-3 capability surface (structured only — NO chunk-derived verbatim text)
                 "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
                 "requires_cmmc", "solicitation_scope_tags", "labor_categories",
@@ -168,7 +170,8 @@ WINNERS = Decoder(
         "winner_type":      FieldSpec("winner_type", "string", ("=", "in"),
                                       enum=("prime_recipient", "subawardee"), index="BITMAP"),
         "naics_code":       FieldSpec("naics_code", "string", ("=", "in")),
-        "total_obligation": FieldSpec("total_obligation", "float", (">=", "<=", "between"), index="BTREE"),
+        # query-name 'total_obligation' (LLM-facing, unchanged) → physical column entity_obligated_usd.
+        "total_obligation": FieldSpec("entity_obligated_usd", "float", (">=", "<=", "between"), index="BTREE"),
         "award_count":      FieldSpec("award_count", "int", (">=", "<=", "between"), index="BTREE"),
         # ISO-string action date; days_ago resolves to a DATE literal at request time. BTREE serves ranges.
         "days_since_last_award": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
@@ -254,7 +257,7 @@ WINNERS = Decoder(
     # Aggregate over the per-winner rolled-up obligation. group-by any indexed dim (or 'winner'
     # top-N / 'size_band' histogram); measure = total_obligation.
     aggregate=AggregateSpec(
-        measure="total_obligation",
+        measure="entity_obligated_usd",
         dims={"naics2": "naics2", "naics_code": "naics_code", "state": "state",
               "winner_type": "winner_type"},
         winner_key=("winner_uei", "winner_name"),

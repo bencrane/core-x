@@ -15,7 +15,7 @@ from apps.catalyst_api.src.map_decoders import ACTIVE, AWARDS, COMPANY, WINNERS
 WINNERS_IDX = [
     {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},  # extra (resolution key)
     {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},    # extra
-    {"name": "total_obligation_idx", "type": "BTree", "fields": ["total_obligation"]},
+    {"name": "entity_obligated_usd_idx", "type": "BTree", "fields": ["entity_obligated_usd"]},
     {"name": "award_count_idx", "type": "BTree", "fields": ["award_count"]},
     {"name": "last_action_date_idx", "type": "BTree", "fields": ["last_action_date"]},
     # winners.v7 SUB-only teaming BTREE indexes (teaming_dollars_5y / n_teaming_primes axes).
@@ -32,7 +32,7 @@ WINNERS_IDX = [
 ]
 WINNERS_COLS = [
     "winner_uei", "winner_name", "winner_type", "naics_code", "naics2", "state",
-    "total_obligation", "award_count", "last_action_date",
+    "entity_obligated_usd", "award_count", "last_action_date",
     # PHASE-3 capability columns (rolled from govcon_award_solicitation_profiles).
     "has_extracted_scope", "requires_clearance", "req_clearance_level_max", "requires_cmmc",
     "solicitation_scope_tags", "labor_categories", "covered_award_count", "covered_award_keys",

@@ -30,7 +30,7 @@ def test_winners_construction_over_150k():
         {"field": "naics2", "op": "=", "value": "23"},
         {"field": "total_obligation", "op": ">=", "value": 150000},
     ])
-    assert pred == "naics2 = '23' AND total_obligation >= 150000.0"
+    assert pred == "naics2 = '23' AND entity_obligated_usd >= 150000.0"
 
 
 def test_company_bool_literal_is_unquoted():
@@ -303,10 +303,10 @@ def test_awards_aggregate_validation_allowlist():
 
 def test_winners_company_aggregate_measures():
     # winners rolls up the per-entity obligation; company rolls up active obligations.
-    assert WINNERS.aggregate.measure == "total_obligation"
+    assert WINNERS.aggregate.measure == "entity_obligated_usd"
     assert COMPANY.aggregate.measure == "total_active_obligations"
     spec, gb, _, _ = lance_store.validate_aggregate(WINNERS, "state", ["count", "sum", "median"], None)
-    assert spec.measure == "total_obligation" and gb == "state"
+    assert spec.measure == "entity_obligated_usd" and gb == "state"
     spec2, gb2, _, _ = lance_store.validate_aggregate(COMPANY, "industry", ["sum"], None)
     assert spec2.measure == "total_active_obligations" and gb2 == "industry"
     # a winners field that is NOT a declared aggregate dim is rejected as a group_by
