@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pipelines.sam_gov.sam_marking_fullbody_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_marking_fullbody import (  # noqa: E402
     classify_decision, detect_markings_fullbody, promote,
 )
 

@@ -13,7 +13,7 @@ the chunk sinks: extract/chunk here, embed/index there. No embedding code lives 
              whitespace chunks → per-sub text-dedup → per-sub ordinal. Per-UEI concat is REJECTED (p99
              concat = 78,225 chars; ~1,080 prolific subs would truncate at bge's 512-token ceiling).
     SoR      s3://data-sink/active/govcon_sub_capability_vectors/ (Lance v2.1; derived, OVERWRITE).
-             No window suffix beyond the inherited `_90day`; the window is DATA (created_at + run_id).
+             No window suffix; the window is DATA (created_at + run_id).
              Frozen schema + assert_schema (govcon_gtm_schemas.py) BEFORE the first commit.
     IDEMPOTENT  overwrite-mode snapshot. `chunk_id = sha256(subawardee_uei|chunk_ix|text)[:24]`;
              per-sub chunk order = (len DESC, text) so chunk_ix + content-hash are stable across re-runs.
@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     SUB_CAPABILITY_VECTORS_URI, sub_capability_vectors_schema, assert_schema)
-from pipelines.sam_gov.sam_attachment_extract_90day import _r2_storage_options  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _r2_storage_options  # noqa: E402
 
 import os  # noqa: E402
 

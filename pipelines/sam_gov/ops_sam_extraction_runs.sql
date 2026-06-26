@@ -1,5 +1,5 @@
 -- Per-run roll-up table for the SAM.gov 90-day attachment TEXT/STRUCTURED EXTRACTION pipeline
--- (Stage 4). Written by pipelines/sam_gov/sam_attachment_extract_90day.py:_record_run via psycopg
+-- (Stage 4). Written by pipelines/sam_gov/sam_attachment_extract.py:_record_run via psycopg
 -- (HQX_DB_URL_POOLED) on every terminal state, one row per (run_id, phase, lane). ISOLATED from the
 -- Stage-3 ops.sam_attachment_download_runs by design (separate motion: download is byte
 -- transport, this is text extraction off the CAS at s3://data-sink/active/sam_attachment_blobs/).
@@ -12,7 +12,7 @@ CREATE SCHEMA IF NOT EXISTS ops;
 
 CREATE TABLE IF NOT EXISTS ops.sam_extraction_runs (
     id                    bigserial PRIMARY KEY,
-    run_id                text        NOT NULL,   -- '90day-extract-<UTC ISO>' batch identifier
+    run_id                text        NOT NULL,   -- 'extract-<UTC ISO>' batch identifier
     phase                 text,                   -- 'phase0' | 'route' | 'expand' | 'extract'
     lane                  text,                   -- L1_scope | L4_structured | L3_triage | container | <multi>
     files_in              int,                    -- files claimed this (run, phase, lane) (excludes resume-skips)
@@ -47,7 +47,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx
+CREATE INDEX IF NOT EXISTS sam_extraction_runs_run_id_idx
     ON ops.sam_extraction_runs (run_id);
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_started_at_idx
+CREATE INDEX IF NOT EXISTS sam_extraction_runs_started_at_idx
     ON ops.sam_extraction_runs (started_at DESC);

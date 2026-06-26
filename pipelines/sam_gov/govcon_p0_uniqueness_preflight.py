@@ -13,7 +13,7 @@ Per chunk sink (govcon_scope_vectors / govcon_pricing / govcon_unknown):
 
 READ-ONLY by construction: scans key columns only (`chunk_id`, `resource_id`; ledger scalars),
 NEVER touches `embedding`, writes nothing. On a sink FAIL the remediation is the patched
-delete-based `phase_finalize` in sam_attachment_extract_90day.py (`--phase finalize`) — safe
+delete-based `phase_finalize` in sam_attachment_extract.py (`--phase finalize`) — safe
 pre-Phase-5 because no vector index exists yet (the patched path refuses compaction otherwise).
 
 Run (read-only; exit 0 = all sinks PASS, 1 = any FAIL):
@@ -25,7 +25,7 @@ import argparse
 import json
 import sys
 
-from pipelines.sam_gov.sam_attachment_extract_90day import (
+from pipelines.sam_gov.sam_attachment_extract import (
     EXTRACTION_URI,
     PRICING_URI,
     SCOPE_URI,

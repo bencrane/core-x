@@ -1,4 +1,4 @@
-"""Unit tests for the Phase-1 regex extraction lane cores (sam_labor_demand_extract_90day) — pure
+"""Unit tests for the Phase-1 regex extraction lane cores (sam_labor_demand_extract) — pure
 functions, no R2/Lance.
 
 Covers (mandate item 5): each pattern family positive + negative, conservative negation suppression,
@@ -15,8 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pipelines.sam_gov.sam_attachment_extract_90day import _chunk_text, _normalize_ws  # noqa: E402
-from pipelines.sam_gov.sam_labor_demand_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _chunk_text, _normalize_ws  # noqa: E402
+from pipelines.sam_gov.sam_labor_demand_extract import (  # noqa: E402
     MIN_OVERLAP, REGEX_LANE_VERSION,
     chunks_for_span, collapse_matches, extract_from_text, in_predicate,
     labor_delete_predicate, make_quote, norm_clearance, norm_dollars, parse_date,

@@ -28,7 +28,7 @@ ARCHITECTURE (locked — do not alter):
     result's per-result checkpoint line is written ONLY AFTER its chunks (and its ledger event) are
     durably committed to LanceDB — never before — so resume never loses chunks (#19/#20).
   * GTM SCOPE GATE (optional): Phase 1 consults `sam_attachment_gtm_scope` (built by
-    sam_attachment_gtm_scope_90day.py — the "Strained Middle" mid-market cohort: NAICS set ∩ dollar band
+    sam_attachment_gtm_scope.py — the "Strained Middle" mid-market cohort: NAICS set ∩ dollar band
     ∩ frequency cap). Out-of-scope resources get a terminal `skipped_out_of_scope` and never enter a lane,
     so no parse/chunk compute is spent on them. Absent table ⇒ no gate; disabled under --max-files (smoke).
     A swappable lens — re-point the cohort by rebuilding that one table, zero parser change.
@@ -38,7 +38,7 @@ Run (provision asserts soffice + creates datasets; then route -> expand -> extra
       uv run --with pylance --with pyarrow --with duckdb --with boto3 --with 'psycopg[binary]' \
         --with pypdfium2 --with python-docx --with openpyxl --with xlrd --with pdfplumber \
         --with striprtf --with charset-normalizer \
-      python pipelines/sam_gov/sam_attachment_extract_90day.py --phase route
+      python pipelines/sam_gov/sam_attachment_extract.py --phase route
     ... --phase expand
     ... --phase extract --lane L1_scope --daemon --resume
     ... --phase extract --lane L4_structured --daemon --resume
@@ -64,24 +64,24 @@ import sys
 
 # ── URIs (immutable inputs read-only; new Stage-4 sinks under active/) ────────────────────────────
 FILES_LEDGER_URI = os.environ.get(
-    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files/")        # INPUT (read-only SoR)
-BLOB_PREFIX = os.environ.get("SAM90_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs/")  # INPUT CAS
+    "SAM_FILES_URI", "s3://data-sink/active/sam_attachment_files/")        # INPUT (read-only SoR)
+BLOB_PREFIX = os.environ.get("SAM_BLOB_PREFIX", "s3://data-sink/active/sam_attachment_blobs/")  # INPUT CAS
 MANIFEST_URI = os.environ.get(
-    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")  # INPUT (award join)
+    "SAM_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")  # INPUT (award join)
 EXTRACTION_URI = os.environ.get(
-    "SAM90_EXTRACTION_URI", "s3://data-sink/active/sam_attachment_extraction/")  # append-only event ledger
-SCOPE_URI = os.environ.get("SAM90_SCOPE_URI", "s3://data-sink/active/govcon_scope_vectors/")
-PRICING_URI = os.environ.get("SAM90_PRICING_URI", "s3://data-sink/active/govcon_pricing/")
-UNKNOWN_URI = os.environ.get("SAM90_UNKNOWN_URI", "s3://data-sink/active/govcon_unknown/")
-DEDUP_URI = os.environ.get("SAM90_DEDUP_URI", "s3://data-sink/active/sam_attachment_content_dedup/")
+    "SAM_EXTRACTION_URI", "s3://data-sink/active/sam_attachment_extraction/")  # append-only event ledger
+SCOPE_URI = os.environ.get("SAM_SCOPE_URI", "s3://data-sink/active/govcon_scope_vectors/")
+PRICING_URI = os.environ.get("SAM_PRICING_URI", "s3://data-sink/active/govcon_pricing/")
+UNKNOWN_URI = os.environ.get("SAM_UNKNOWN_URI", "s3://data-sink/active/govcon_unknown/")
+DEDUP_URI = os.environ.get("SAM_DEDUP_URI", "s3://data-sink/active/sam_attachment_content_dedup/")
 INNER_URI = os.environ.get(  # Phase-1.5 materialization of expanded inner-file metadata (§6)
-    "SAM90_INNER_URI", "s3://data-sink/active/sam_attachment_inner_files/")
-SCOPE_GATE_URI = os.environ.get(  # GTM "Strained Middle" gate (sam_attachment_gtm_scope_90day.py). ABSENT ⇒ no gate
-    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")  # INPUT (read-only)
-CKPT_PATH = os.environ.get("SAM90_EXTRACT_CKPT", "/tmp/sam_90day_extract_ckpt.jsonl")
-LOG_PATH = os.environ.get("SAM90_EXTRACT_LOG", "/tmp/sam_90day_extract.log")
+    "SAM_INNER_URI", "s3://data-sink/active/sam_attachment_inner_files/")
+SCOPE_GATE_URI = os.environ.get(  # GTM "Strained Middle" gate (sam_attachment_gtm_scope.py). ABSENT ⇒ no gate
+    "SAM_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")  # INPUT (read-only)
+CKPT_PATH = os.environ.get("SAM_EXTRACT_CKPT", "/tmp/sam_extract_ckpt.jsonl")
+LOG_PATH = os.environ.get("SAM_EXTRACT_LOG", "/tmp/sam_extract.log")
 SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
-FEED = "sam_attachment_extract_90day"
+FEED = "sam_attachment_extract"
 
 # ── Tunables (spec §14 defaults) ──────────────────────────────────────────────────────────────────
 POOL_WORKERS = int(os.environ.get("POOL_WORKERS", "0")) or max(1, (os.cpu_count() or 4) - 2)
@@ -159,7 +159,7 @@ INNER_OK_MIME = {"pdf", "docx", "doc", "txt", "xlsx", "xls"}   # §6: inner file
 
 # Terminal states (spec §3.2). `routed`/`extracted_spreadsheet`/`requires_ocr` are intermediate (int).
 _INTERMEDIATE = {"routed", "extracted_spreadsheet", "requires_ocr"}
-# Audit-provenance states (e.g. the Phase-0 full-body marking pre-pass, sam_marking_fullbody_90day):
+# Audit-provenance states (e.g. the Phase-0 full-body marking pre-pass, sam_marking_fullbody):
 # they ANNOTATE a resource without superseding its extraction terminal, so they are NEVER resolution
 # candidates (D2) — otherwise a newer audit event masks `extracted_*` and breaks the §12 reconcile.
 _AUDIT_STATES = {"marking_fullbody"}
@@ -227,14 +227,14 @@ def _split_s3(uri: str) -> tuple[str, str]:
 
 
 # ════════════════════════════════════════════════════════════════════════ single-committer lease (D3)
-LEASE_PREFIX = os.environ.get("SAM90_LEASE_PREFIX", "s3://data-sink/active/_sink_leases/")
-LEASE_TTL_S = int(os.environ.get("SAM90_LEASE_TTL_S", str(2 * 60 * 60)))
+LEASE_PREFIX = os.environ.get("SAM_LEASE_PREFIX", "s3://data-sink/active/_sink_leases/")
+LEASE_TTL_S = int(os.environ.get("SAM_LEASE_TTL_S", str(2 * 60 * 60)))
 
 
 class SinkCommitLease:
     """Per-sink single-committer lease over an R2 conditional PUT (D3: one committing process per
     dataset). Binds every Lance COMMITTER to a sink — the extractor bulk writer, the embed writer
-    (`sam_attachment_embed_90day.py`, which imports this class), and `phase_finalize` — so no two of
+    (`sam_attachment_embed.py`, which imports this class), and `phase_finalize` — so no two of
     them can ever commit to the same sink concurrently (the pipeline commits directly to R2 with no
     `commit_lock`, so concurrent committers race the manifest).
 
@@ -246,7 +246,7 @@ class SinkCommitLease:
         concurrent caller can win; losers raise RuntimeError naming the current holder. No spin or
         queueing — these writers are long batch jobs; a blocked acquire is an operator decision.
       * EXPIRY TAKEOVER: the lease body carries `expires_at` (= acquire time + ttl_s; default
-        SAM90_LEASE_TTL_S = 2h). A crashed holder leaves its object behind; an acquirer that finds an
+        SAM_LEASE_TTL_S = 2h). A crashed holder leaves its object behind; an acquirer that finds an
         EXPIRED (or unparseable) lease deletes it and re-runs the conditional create exactly once.
         That takeover race is still single-winner because the create stays conditional. Holders must
         size ttl_s to their worst-case wall clock (the extract phase passes 24h explicitly).
@@ -516,7 +516,7 @@ def _read_resolution(so: dict):
 
 def _read_scope_gate(so: dict):
     """GTM "Strained Middle" verdicts per resource_id (sam_attachment_gtm_scope, built by
-    sam_attachment_gtm_scope_90day.py). None ⇒ no gate (Phase 1 routes every downloaded resource).
+    sam_attachment_gtm_scope.py). None ⇒ no gate (Phase 1 routes every downloaded resource).
     When present, out-of-scope resources are diverted to a terminal `skipped_out_of_scope` BEFORE lane
     classification, so the extract worklist never spends parse/chunk compute on them. The gate is a
     swappable lens (NAICS set / dollar band / frequency cap live in the resolver, not here)."""
@@ -1907,8 +1907,8 @@ DO $$ BEGIN
     ALTER TABLE ops.sam_extraction_runs RENAME COLUMN cui_tagged TO content_marked;
   END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_run_id_idx ON ops.sam_extraction_runs (run_id);
-CREATE INDEX IF NOT EXISTS sam_extraction_90day_runs_started_at_idx ON ops.sam_extraction_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS sam_extraction_runs_run_id_idx ON ops.sam_extraction_runs (run_id);
+CREATE INDEX IF NOT EXISTS sam_extraction_runs_started_at_idx ON ops.sam_extraction_runs (started_at DESC);
 """
 
 
@@ -2034,7 +2034,7 @@ def _cli() -> None:
 
     so = _r2_storage_options()
     dsn = os.environ.get("HQX_DB_URL_POOLED")
-    run_id = a.run_id or f"90day-extract-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}"
+    run_id = a.run_id or f"extract-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}"
 
     phase0_create_datasets(so, dsn)                     # idempotent; every phase needs the sinks
     if phase == "phase0":

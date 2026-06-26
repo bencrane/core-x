@@ -46,7 +46,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     SUB_TARGETING_URI, sub_targeting_schema, assert_schema)
-from pipelines.sam_gov.sam_attachment_extract_90day import _r2_storage_options  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _r2_storage_options  # noqa: E402
 
 ACTIVE = "s3://data-sink/active"
 PROFILES_URI = f"{ACTIVE}/govcon_award_solicitation_profiles/"

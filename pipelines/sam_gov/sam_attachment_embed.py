@@ -25,7 +25,7 @@ a ~55h local run; a rented A10G/4090 (or the Modal orchestrator) clears it in ~3
 Self-hosted either way — set EMBED_DEVICE=cuda on a GPU box. Resumable, so a local run can be
 chunked across sessions via --limit.
 
-    doppler run -p core-x -c prd -- .venv/bin/python pipelines/sam_gov/sam_attachment_embed_90day.py \
+    doppler run -p core-x -c prd -- .venv/bin/python pipelines/sam_gov/sam_attachment_embed.py \
       <status|embed|index|verify> [--sink scope|unknown|both] [--limit N] [--flush 50000]
 """
 from __future__ import annotations
@@ -38,12 +38,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     _r2_storage_options, _dataset_exists, SinkCommitLease)
 
 ACTIVE = "s3://data-sink/active"
-SCOPE_URI = os.environ.get("SAM90_EMBED_SCOPE_URI", f"{ACTIVE}/govcon_scope_vectors/")
-UNKNOWN_URI = os.environ.get("SAM90_EMBED_UNKNOWN_URI", f"{ACTIVE}/govcon_unknown/")
+SCOPE_URI = os.environ.get("SAM_EMBED_SCOPE_URI", f"{ACTIVE}/govcon_scope_vectors/")
+UNKNOWN_URI = os.environ.get("SAM_EMBED_UNKNOWN_URI", f"{ACTIVE}/govcon_unknown/")
 SINKS = {"scope": SCOPE_URI, "unknown": UNKNOWN_URI}
 
 # Pinned to the query side (apps/gtm_mcp/src/embeddings.py) via the SAME env vars — writer and query

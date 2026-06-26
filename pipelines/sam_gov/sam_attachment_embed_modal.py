@@ -1,8 +1,8 @@
 """Modal GPU runner for the PHASE-5 embed — runs the non-CUI bulk (unmarked) embed + IVF_PQ on a
-rented A10G, the in-stack equivalent of `sam_attachment_embed_90day.py` with EMBED_DEVICE=cuda.
+rented A10G, the in-stack equivalent of `sam_attachment_embed.py` with EMBED_DEVICE=cuda.
 
 Self-contained on purpose (no repo imports) so the container ships only its pip deps + this file —
-the embed/index logic MIRRORS sam_attachment_embed_90day.py exactly (same model pin, same worklist,
+the embed/index logic MIRRORS sam_attachment_embed.py exactly (same model pin, same worklist,
 same merge_insert motion, same IVF_PQ/scalar campaign, same CUI bracket). One container per sink ⇒
 single-committer by construction (no lease needed). Marked (CUI) chunks are bracketed out and stay
 NULL — excluded from the ANN index by construction (verified).

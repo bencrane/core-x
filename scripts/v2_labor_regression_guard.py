@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """READ-ONLY regression guard for the reset-llm → v2-freeform-labor re-grind.
 
-The re-grind path (pipelines/sam_gov/sam_labor_demand_extract_90day.py:
+The re-grind path (pipelines/sam_gov/sam_labor_demand_extract.py:
 phase_llm_reset → bracket/select/grind → phase_llm_ingest) DELETES every `llm:%`
 requirement row for a shard's resource_ids and re-extracts labor under the
 free-form v2 prompt. v2's free-form vocabulary is a strict superset of the v1

@@ -54,7 +54,7 @@ NEVER in any column list; every sink write runs under its SinkCommitLease (D3) a
 govcon_gtm_schemas.assert_schema (frozen-schema drift detector, anti-pattern #1).
 
 Run (corpus pass is hours-scale: daemonize/background it; resumable):
-    doppler run -- python pipelines/sam_gov/sam_labor_demand_extract_90day.py \
+    doppler run -- python pipelines/sam_gov/sam_labor_demand_extract.py \
         --phase extract --resume --daemon
     ... --phase extract --resource-ids RID1,RID2          # explicit slice (smoke)
     ... --phase extract --max-resources 50                # capped slice (smoke)
@@ -87,7 +87,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     CHUNK_OVERLAP, LABOR_LEXICON_RX, MAX_CHUNKS_PER_FILE, PRICING_URI, SCOPE_HDR_RX, SCOPE_URI,
     UNKNOWN_URI, SinkCommitLease, _daemonize, _dataset_exists, _r2_storage_options,
 )
@@ -97,7 +97,7 @@ from pipelines.sam_gov.govcon_gtm_schemas import (  # noqa: E402
     requirements_schema,
 )
 
-FEED = "sam_labor_demand_extract_90day"
+FEED = "sam_labor_demand_extract"
 REGEX_LANE_VERSION = "v1"
 LABOR_DEMAND_EXTRACTOR = f"regex:labor_demand@{REGEX_LANE_VERSION}"   # §3.6 sink has no version col
 
@@ -832,7 +832,7 @@ def requirements_delete_predicate(resource_ids: list[str]) -> str:
 
 
 def labor_delete_predicate(resource_ids: list[str]) -> str:
-    """Plan Phase-1 verbatim: unscoped per-resource delete on govcon_labor_demand_90day."""
+    """Plan Phase-1 verbatim: unscoped per-resource delete on govcon_labor_demand."""
     return in_predicate("resource_id", resource_ids)
 
 
@@ -1399,7 +1399,7 @@ def _marking_gate_ok(report: "dict | None", *, require_after: "str | None" = Non
     The live-`content_marking` asserts downstream (bracket/_pending_worklist/select/build_task_payload)
     are the belt; this is the suspenders that make 'F ran' a precondition, not a hope."""
     if report is None:
-        raise RuntimeError("CUI gate: marking report absent — run Phase F (sam_marking_fullbody_90day "
+        raise RuntimeError("CUI gate: marking report absent — run Phase F (sam_marking_fullbody "
                            "scan->writeback->reconcile) to reconcile_overall=PASS before any LLM phase.")
     overall = report.get("reconcile_overall")
     if overall != "PASS":
@@ -2212,7 +2212,7 @@ def main(argv=None) -> int:
     p.add_argument("--force-land", action="store_true",
                    help="ingest: land despite a failed run gate (operator override, logged)")
     p.add_argument("--marking-report",
-                   default=os.environ.get("SAM90_MARKING_REPORT", "/tmp/sam_marking_fullbody_report.json"),
+                   default=os.environ.get("SAM_MARKING_REPORT", "/tmp/sam_marking_fullbody_report.json"),
                    help="CUI gate: Phase-F reconcile report; bracket/select refuse unless reconcile_overall=PASS")
     p.add_argument("--require-marking-after", default=None,
                    help="CUI gate freshness: require marking report completed_at >= this ISO8601 (e.g. the "

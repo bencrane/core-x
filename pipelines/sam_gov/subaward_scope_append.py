@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import lance  # noqa: E402
 import pyarrow as pa  # noqa: E402
 
-from pipelines.sam_gov.sam_attachment_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import (  # noqa: E402
     SinkCommitLease,
     _dataset_exists,
     _pricing_schema,

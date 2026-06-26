@@ -2,7 +2,7 @@
 
 Verdicts every downloaded attachment (sam_attachment_files) as in_scope / out_of_scope for the
 mid-market, labor/capital-intensive GTM cohort, and materializes a tiny per-resource scope table that
-the extraction engine (sam_attachment_extract_90day.py Phase 1) consults to skip out-of-scope files
+the extraction engine (sam_attachment_extract.py Phase 1) consults to skip out-of-scope files
 BEFORE spending parse/chunk/embed compute on them.
 
 WHY a separate resolver (not inline in the extractor): the GTM business logic — the NAICS target set,
@@ -33,12 +33,12 @@ OUTPUT  s3://data-sink/active/sam_attachment_gtm_scope/ (Lance v2.1):
   resource_id, gtm_scope ∈ {in_scope, out_of_scope}, scope_reason ∈ {in_scope, out_of_scope_naics,
   below_band, above_band, failed_frequency_cap, no_award_link}, matched_award_key, recipient_uei,
   matched_naics, matched_amount, run_id, created_at.  BTREE(resource_id) · BITMAP(gtm_scope, scope_reason).
-  Overwrite-snapshot (idempotent full rebuild; deterministic). Ledger: ops.sam_attachment_gtm_scope_90day_runs.
+  Overwrite-snapshot (idempotent full rebuild; deterministic). Ledger: ops.sam_attachment_gtm_scope_runs.
 
 Run (read-only except the one additive output dataset):
     doppler run --project core-x --config prd -- \
       uv run --with pylance --with pyarrow --with duckdb --with 'psycopg[binary]' \
-      python pipelines/sam_gov/sam_attachment_gtm_scope_90day.py            # build + index + ledger
+      python pipelines/sam_gov/sam_attachment_gtm_scope.py            # build + index + ledger
     ... --dry-run                                                           # funnel only, no write
 """
 
@@ -53,11 +53,11 @@ import sys
 FRESH_URI = os.environ.get(
     "USASPENDING_API_FRESH_URI", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/")
 MANIFEST_URI = os.environ.get(
-    "SAM90_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")
+    "SAM_MANIFEST_URI", "s3://data-sink/active/sam_opps_attachment_manifest_winners/")
 FILES_LEDGER_URI = os.environ.get(
-    "SAM90_FILES_URI", "s3://data-sink/active/sam_attachment_files/")
+    "SAM_FILES_URI", "s3://data-sink/active/sam_attachment_files/")
 SCOPE_GATE_URI = os.environ.get(
-    "SAM90_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")
+    "SAM_SCOPE_GATE_URI", "s3://data-sink/active/sam_attachment_gtm_scope/")
 
 FEED = "sam_attachment_gtm_scope"
 
@@ -226,7 +226,7 @@ def _resolve(so: dict):
 # ── ops ledger ────────────────────────────────────────────────────────────────────────────────────
 def _ops_ddl() -> str:
     from pathlib import Path
-    return Path(__file__).with_name("ops_sam_attachment_gtm_scope_90day_runs.sql").read_text()
+    return Path(__file__).with_name("ops_sam_attachment_gtm_scope_runs.sql").read_text()
 
 
 def _record_run(metrics: dict, run_id: str, status: str, error: str | None,

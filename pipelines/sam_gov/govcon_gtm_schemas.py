@@ -17,7 +17,7 @@ Frozen set (plan §2 artifact map):
         doc-level outputs only to the award-grain profiles overwrite build, which needs a durable
         resource-grain source to roll up from)
   * govcon_award_solicitation_profiles    — Phase-2 award grain (overwrite build). **No window
-        suffix (operator naming decision 2026-06-14, overrides the plan's _90day):** the window is
+        suffix (operator naming decision 2026-06-14):** the window is
         carried as DATA — denormalized `award_last_modified_date` (the canonical window column) +
         `award_action_date` + a `built_at` run stamp — so "last 90 days" is a column filter and
         widening the window later is an append, not a new table. Supersedes the empty
@@ -43,7 +43,7 @@ import argparse
 import os
 import sys
 
-from pipelines.sam_gov.sam_attachment_extract_90day import _dataset_exists, _r2_storage_options
+from pipelines.sam_gov.sam_attachment_extract import _dataset_exists, _r2_storage_options
 
 # ── URIs (plan §2 artifact map; env-overridable for smoke) ───────────────────────────────────────
 REQUIREMENTS_URI = os.environ.get(
@@ -179,7 +179,7 @@ def capability_profiles_schema():
     (clearance/cert/labor rollups over `validated` rows), and `contract_prime_txn` collapsed to
     award grain (row_number() over last_modified_date DESC).
 
-    WINDOW-AS-DATA (operator naming decision 2026-06-14): no `_90day` suffix. `award_last_modified_
+    WINDOW-AS-DATA (operator naming decision 2026-06-14): the window is a DATA column, not the name. `award_last_modified_
     date` is the canonical denormalized window column (= txn `last_modified_date`), so "last 90 days"
     is a column filter and a wider window is an append, not a new table; `award_action_date` carries
     the obligation date for recency framing; `built_at` is the run stamp.
@@ -296,7 +296,7 @@ def subawardee_capability_profiles_schema():
       TEAM   `govcon_teaming_edges` — $/count/NAICS/which primes (5y teaming corpus).
       REACH  `sam_pocs` — best government-business POC for the sub_uei (name/title/city/state).
 
-    WINDOW-AS-DATA (same discipline as the prime table): no `_90day` suffix; `sub_action_date`
+    WINDOW-AS-DATA (same discipline as the prime table): the window is a DATA column, not the name; `sub_action_date`
     (= max subaward action date) is the canonical denormalized window column, `first_sub_action_date`
     the floor, `built_at` the run stamp — so "last N days" is a column filter and a wider window is an
     append, not a new table.

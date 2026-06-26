@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import pytest  # noqa: E402
 
-from pipelines.sam_gov.sam_labor_demand_extract_90day import (  # noqa: E402
+from pipelines.sam_gov.sam_labor_demand_extract import (  # noqa: E402
     _marking_gate_ok,
     _scope_pending,
 )

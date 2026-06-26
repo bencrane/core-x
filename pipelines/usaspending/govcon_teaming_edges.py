@@ -21,7 +21,7 @@ subawardee_work_profile.py) so a crashed build never re-scans subaward_search.
 
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' \
-      python3 pipelines/usaspending/govcon_teaming_edges_90day.py <build|verify> [years]
+      python3 pipelines/usaspending/govcon_teaming_edges.py <build|verify> [years]
 """
 from __future__ import annotations
 

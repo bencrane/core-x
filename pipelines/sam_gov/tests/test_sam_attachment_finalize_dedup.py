@@ -16,7 +16,7 @@ from pathlib import Path
 # repo root = .../pipelines/sam_gov/tests/this_file → parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pipelines.sam_gov.sam_attachment_extract_90day import _duplicate_rowids  # noqa: E402
+from pipelines.sam_gov.sam_attachment_extract import _duplicate_rowids  # noqa: E402
 
 
 def test_empty_input_yields_no_deletes():
