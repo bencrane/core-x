@@ -34,3 +34,6 @@ env/
 node_modules/
 .trigger/
 .gstack/
+
+# scratch query/probe outputs (not source)
+query_outputs/
