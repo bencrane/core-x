@@ -321,8 +321,8 @@ def test_active_recompete_axis_present_both_sides():
         "field": "days_until_expiry", "op": "<=", "value": 180}
     assert edge.DECODERS["active"]["synonyms"]["recompete"] == {
         "field": "days_until_expiry", "op": "<=", "value": 180}
-    # aggregate measure is the award value (current_value), dims match
-    assert cat.DECODERS["active"].aggregate.measure == "current_value"
+    # aggregate measure is the contract ceiling (contract_current_value_usd), dims match
+    assert cat.DECODERS["active"].aggregate.measure == "contract_current_value_usd"
     assert set(edge.DECODERS["active"]["aggregate"]["dims"]) == set(cat.DECODERS["active"].aggregate.dims)
 
 

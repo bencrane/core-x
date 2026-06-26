@@ -107,7 +107,7 @@ AWARDS_IDX = [
 
 
 ACTIVE_COLS = [
-    "award_id", "winner_uei", "winner_name", "current_value", "potential_value", "obligated",
+    "award_id", "winner_uei", "winner_name", "contract_current_value_usd", "contract_potential_value_usd", "contract_obligated_usd",
     "pop_current_end", "pop_potential_end", "has_option_tail", "naics2", "naics_code",
     "psc_category", "psc_code", "state", "pop_state", "awarding_agency", "awarding_sub_agency",
     "set_aside", "business_size", "award_or_idv_flag",
@@ -119,9 +119,9 @@ ACTIVE_IDX = [
     # days_until_expiry → the pop_current_end BTREE (the forward recompete axis).
     {"name": "pop_current_end_idx", "type": "BTree", "fields": ["pop_current_end"]},
     {"name": "pop_potential_end_idx", "type": "BTree", "fields": ["pop_potential_end"]},  # extra
-    {"name": "current_value_idx", "type": "BTree", "fields": ["current_value"]},
-    {"name": "potential_value_idx", "type": "BTree", "fields": ["potential_value"]},
-    {"name": "obligated_idx", "type": "BTree", "fields": ["obligated"]},
+    {"name": "contract_current_value_usd_idx", "type": "BTree", "fields": ["contract_current_value_usd"]},
+    {"name": "contract_potential_value_usd_idx", "type": "BTree", "fields": ["contract_potential_value_usd"]},
+    {"name": "contract_obligated_usd_idx", "type": "BTree", "fields": ["contract_obligated_usd"]},
     {"name": "winner_uei_idx", "type": "BTree", "fields": ["winner_uei"]},  # extra (resolution key)
     {"name": "addr_hash_idx", "type": "BTree", "fields": ["addr_hash"]},  # extra
     {"name": "naics_code_idx", "type": "BTree", "fields": ["naics_code"]},

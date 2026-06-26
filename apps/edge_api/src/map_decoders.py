@@ -446,7 +446,7 @@ DECODERS: dict[str, dict] = {
         },
     },
     "active": {
-        "version": "active.v2",
+        "version": "active.v3",
         "description": "ACTIVE prime awards still in performance — one row per award (award grain). The FORWARD-looking table: it carries the period-of-performance end date, so you can find incumbents about to RECOMPETE (contracts whose performance ends in the next N days). Use for 'expiring / up for recompete / runway' questions; amounts are the award's current/potential value, not a single action.",
         "fields": {
             "days_until_expiry": {"type": "days_ahead", "ops": ("<=", ">=", "between"), "desc": "whole days until the award's period of performance ends. 'expiring in the next N days' / 'recompete within N days' → days_until_expiry <= N; 'at least N days of runway' → days_until_expiry >= N. THE recompete axis"},
@@ -616,7 +616,7 @@ DECODERS: dict[str, dict] = {
             " DISPLAY field (shown for context, not filterable).",
         ),
         "aggregate": {
-            "measure": "current_value",
+            "measure": "contract_current_value_usd",
             "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
                      "vertical", "work_type", "equipment_intensity"],

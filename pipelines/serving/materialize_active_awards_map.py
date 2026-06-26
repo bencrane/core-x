@@ -47,8 +47,8 @@ DATA_STORAGE_VERSION = "2.1"
 
 # BTREE: range axes (pop_current_end — the forward recompete axis — + value/obligation) + resolution
 # keys + high-cardinality codes.
-BTREE_INDEXES = ["pop_current_end", "pop_potential_end", "current_value", "potential_value",
-                 "obligated", "winner_uei", "addr_hash", "naics_code", "psc_code",
+BTREE_INDEXES = ["pop_current_end", "pop_potential_end", "contract_current_value_usd", "contract_potential_value_usd",
+                 "contract_obligated_usd", "winner_uei", "addr_hash", "naics_code", "psc_code",
                  "awarding_sub_agency"]
 # BITMAP: low-cardinality filter columns.
 BITMAP_INDEXES = ["naics2", "psc_category", "state", "pop_state", "set_aside", "business_size",
@@ -121,9 +121,9 @@ def _assemble(so):
                nullif(trim(type_of_set_aside_code), '') AS set_aside,
                nullif(trim(business_size), '') AS business_size,
                nullif(trim(award_or_idv_flag), '') AS award_or_idv_flag,
-               TRY_CAST(current_total_value_of_award AS DOUBLE) AS current_value,
-               TRY_CAST(potential_total_value_of_award AS DOUBLE) AS potential_value,
-               TRY_CAST(total_dollars_obligated AS DOUBLE) AS obligated,
+               TRY_CAST(current_total_value_of_award AS DOUBLE) AS contract_current_value_usd,
+               TRY_CAST(potential_total_value_of_award AS DOUBLE) AS contract_potential_value_usd,
+               TRY_CAST(total_dollars_obligated AS DOUBLE) AS contract_obligated_usd,
                TRY_CAST(pop_current_end AS DATE) AS pop_current_end,
                TRY_CAST(pop_potential_end AS DATE) AS pop_potential_end,
                COALESCE(has_option_tail, FALSE) AS has_option_tail
@@ -133,7 +133,7 @@ def _assemble(so):
         SELECT award_id, winner_uei, winner_name, naics_code, naics2, psc_code, psc_category,
                awarding_agency, awarding_sub_agency, upper(trim(state_raw)) AS state, pop_state,
                set_aside, business_size, award_or_idv_flag,
-               current_value, potential_value, obligated, pop_current_end, pop_potential_end,
+               contract_current_value_usd, contract_potential_value_usd, contract_obligated_usd, pop_current_end, pop_potential_end,
                has_option_tail, {hexpr} AS addr_hash
         FROM base
     )
@@ -260,7 +260,7 @@ def demo():
     ds = lance.dataset(SERVING_URI, storage_options=so)
     flt = (f"psc_category = 'V' AND pop_current_end >= DATE '{today.isoformat()}' "
            f"AND pop_current_end <= DATE '{hi}'")
-    rows = ds.scanner(columns=["winner_name", "winner_uei", "current_value", "pop_current_end",
+    rows = ds.scanner(columns=["winner_name", "winner_uei", "contract_current_value_usd", "pop_current_end",
                                "awarding_agency", "business_size", "latitude", "longitude"],
                       filter=flt, limit=8).to_table().to_pylist()
     print(json.dumps({"demo_filter": flt, "matched_total": ds.count_rows(filter=flt),

@@ -607,7 +607,12 @@ _AWARD_OR_IDV = ("AWARD", "IDV")
 
 ACTIVE = Decoder(
     dataset_key="active",
-    version="active.v2",   # v1→v2: expose the GTM-attribute label axes vertical/work_type/
+    version="active.v3",   # v2→v3: rename the money columns current_value/potential_value/obligated
+                           # → contract_current_value_usd / contract_potential_value_usd /
+                           # contract_obligated_usd (physical columns only; LLM-facing query-names
+                           # current_value/potential_value/obligated unchanged). value family =
+                           # contract ceilings; obligation family = funded-to-date. Money-column rename.
+                           # v1→v2: expose the GTM-attribute label axes vertical/work_type/
                            # equipment_intensity (filter fields + aggregate dims, all BITMAP) and
                            # carry what_was_done as a self-describing DISPLAY property — mirrors the
                            # awards.v9 change (PR #715 vertical labels, #720 what_was_done gloss) onto
@@ -616,8 +621,8 @@ ACTIVE = Decoder(
                            # (~78% of recompete $ but ~38% of rows — the unlabeled tail is small-dollar);
                            # unlabeled rows surface in 'not applied', never silently filtered.
     geometry=("longitude", "latitude"),
-    properties=("award_id", "winner_uei", "winner_name", "current_value", "potential_value",
-                "obligated", "pop_current_end", "pop_potential_end", "has_option_tail",
+    properties=("award_id", "winner_uei", "winner_name", "contract_current_value_usd", "contract_potential_value_usd",
+                "contract_obligated_usd", "pop_current_end", "pop_potential_end", "has_option_tail",
                 "naics2", "naics_code", "psc_category", "psc_code", "state", "pop_state",
                 "awarding_agency", "awarding_sub_agency", "set_aside", "business_size",
                 "award_or_idv_flag",
@@ -629,9 +634,11 @@ ACTIVE = Decoder(
         # N days (today..today+N); >= N → at least N days of runway left. Award-grain (1 row/award),
         # so a count/sum is an honest contract count, not an action count. Query-driven horizon.
         "days_until_expiry": FieldSpec("pop_current_end", "days_ahead", ("<=", ">=", "between"), index="BTREE"),
-        "current_value":     FieldSpec("current_value", "float", (">=", "<=", "between"), index="BTREE"),
-        "potential_value":   FieldSpec("potential_value", "float", (">=", "<=", "between"), index="BTREE"),
-        "obligated":         FieldSpec("obligated", "float", (">=", "<=", "between"), index="BTREE"),
+        # query-names (LLM-facing, unchanged) → physical contract_* columns. value family (ceilings)
+        # vs the obligation column (funded-to-date) — distinct concepts, never collapse them.
+        "current_value":     FieldSpec("contract_current_value_usd", "float", (">=", "<=", "between"), index="BTREE"),
+        "potential_value":   FieldSpec("contract_potential_value_usd", "float", (">=", "<=", "between"), index="BTREE"),
+        "obligated":         FieldSpec("contract_obligated_usd", "float", (">=", "<=", "between"), index="BTREE"),
         "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
         "naics_code":        FieldSpec("naics_code", "string", ("=", "in"), index="BTREE"),
         # ── GTM-attribute axes (PR #715/#720), mirrored from awards.v9 onto the recompete dataset:
@@ -788,7 +795,7 @@ ACTIVE = Decoder(
         "labor-only":              {"field": "equipment_intensity", "op": "=", "value": "low"},
     },
     aggregate=AggregateSpec(
-        measure="current_value",
+        measure="contract_current_value_usd",
         dims={
             "naics2": "naics2", "naics_code": "naics_code",
             "psc_category": "psc_category", "psc_code": "psc_code",
