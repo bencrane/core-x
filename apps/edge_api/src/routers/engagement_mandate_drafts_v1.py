@@ -132,6 +132,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
         template_defaults = await queries.get_template_default_field_values(
             conn, draft["documenso_template_id"]
         )
+        editable_labels = await queries.get_template_editable_field_labels(
+            conn, draft["documenso_template_id"]
+        )
     if not prefill:
         raise HTTPException(
             status_code=404, detail="no opportunity_specific_content for this opportunity"
@@ -162,6 +165,9 @@ async def originate_prefilled(draft_id: str) -> MandatePrefilledOriginated:
             # Bind the prospect to the template's STORED prospect_recipient_id (deterministic). Falls
             # back to the email/role heuristic inside the client when no mapping is stored.
             prospect_recipient_id=prospect_rid,
+            # Operator-designated fields the prospect may correct (e.g. Full Name / Title) — left
+            # UNLOCKED after prefill; everything else prefilled stays locked (e.g. amt%).
+            editable_labels=editable_labels,
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
