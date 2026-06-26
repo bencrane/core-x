@@ -39,6 +39,10 @@ ACTIVE = "s3://data-sink/active"
 SERVING_URI = os.environ.get("ACTIVE_AWARDS_MAP_SERVING_URI", f"{ACTIVE}/govcon_active_awards_map_serving/")
 SOURCE_URI = f"{ACTIVE}/govcon_active_awards/"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
+# Stage-1 (naics_code, psc_code) -> vertical / work_type / equipment_intensity classification
+# (the top-$ 279 combos). LEFT-JOINed per award so the GTM label axes become filterable columns
+# here too — mirrors the awards serving build (materialize_awards_map.py).
+NAICS_PSC_MAP_URI = os.environ.get("NAICS_PSC_VERTICAL_MAP_URI", f"{ACTIVE}/naics_psc_vertical_map/")
 DATA_STORAGE_VERSION = "2.1"
 
 # BTREE: range axes (pop_current_end — the forward recompete axis — + value/obligation) + resolution
@@ -48,7 +52,9 @@ BTREE_INDEXES = ["pop_current_end", "pop_potential_end", "current_value", "poten
                  "awarding_sub_agency"]
 # BITMAP: low-cardinality filter columns.
 BITMAP_INDEXES = ["naics2", "psc_category", "state", "pop_state", "set_aside", "business_size",
-                  "has_option_tail", "award_or_idv_flag", "awarding_agency"]
+                  "has_option_tail", "award_or_idv_flag", "awarding_agency",
+                  # label axes joined from naics_psc_vertical_map (classified-dictionary bridge).
+                  "vertical", "work_type", "equipment_intensity"]
 
 DUCK_MEM = os.environ.get("ACTIVE_MAP_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("ACTIVE_MAP_DUCKDB_TEMP_DIR", "/tmp/active_awards_map_duckdb")
@@ -97,6 +103,10 @@ def _assemble(so):
         "current_total_value_of_award", "potential_total_value_of_award", "total_dollars_obligated",
         "pop_current_end", "pop_potential_end", "has_option_tail"]).to_reader())
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
+    vmap = lance.dataset(NAICS_PSC_MAP_URI, storage_options=so)
+    con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
+                                            "work_type", "equipment_intensity",
+                                            "what_was_done"]).to_reader())
     hexpr = addr_hash_sql("street", "city_raw", "state_raw", "zip")
     sql = f"""
     WITH base AS (
@@ -128,9 +138,12 @@ def _assemble(so):
         FROM base
     )
     SELECT k.*, x.latitude, x.longitude, x.match_type,
+           v.vertical, v.work_type, v.equipment_intensity, v.what_was_done,
            'govcon_active_awards_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
-    FROM keyed k LEFT JOIN x USING (addr_hash)
+    FROM keyed k
+    LEFT JOIN x USING (addr_hash)
+    LEFT JOIN v ON k.naics_code = v.naics_code AND k.psc_code = v.psc_code
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
@@ -228,6 +241,9 @@ def verify():
            "with_coords": ds.count_rows(filter="latitude IS NOT NULL"),
            "with_pop_current_end": ds.count_rows(filter="pop_current_end IS NOT NULL"),
            "with_business_size": ds.count_rows(filter="business_size IS NOT NULL"),
+           "with_vertical_label": ds.count_rows(filter="vertical IS NOT NULL"),
+           "with_what_was_done": ds.count_rows(filter="what_was_done IS NOT NULL"),
+           "vertical_aerospace_defense": ds.count_rows(filter="vertical = 'Aerospace & Defense'"),
            "columns": len(ds.schema.names), "indices": idx}
     for win in (90, 180, 365):
         hi = (today + dt.timedelta(days=win)).isoformat()
