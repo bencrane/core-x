@@ -4,7 +4,7 @@ crosswalk so every winner carries a lat/lon dot. The read model behind the sales
 
 GRAIN  1 row per (winner_uei, winner_type ∈ {prime_recipient, subawardee}).
 SoR    s3://data-sink/active/usaspending_winners_map_serving/  (Lance v2.1; derived, overwrite)
-INPUTS prime + subaward fresh feeds (rolling 90d by action_date) ⋈ geocode_xwalk (addr_hash)
+INPUTS prime + subaward fresh feeds (rolling ~730d by action_date) ⋈ geocode_xwalk (addr_hash)
        ⋈ govcon_award_solicitation_profiles (award grain) rolled to the prime winner (PHASE 3).
        The window lives HERE (a WHERE), not in the crosswalk — extend it freely.
 SIGNALS entity_obligated_usd (Σ federal_action_obligation / subaward_amount), award_count, naics,
@@ -56,7 +56,7 @@ PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
 # subawardee row carries has_extracted_scope=false / empty tags — the capability filter excludes them).
 SUB_PROFILES_URI = os.environ.get("GOVCON_SUB_CAPABILITY_PROFILES_URI",
                                   f"{ACTIVE}/govcon_subawardee_profiles/")
-WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "90"))
+WINDOW_DAYS = int(os.environ.get("WINNERS_WINDOW_DAYS", "730"))
 DATA_STORAGE_VERSION = "2.1"
 COVERED_AWARD_KEYS_CAP = 50          # per-winner drill-down pointer bound (mega-IDIQ tail)
 BTREE_INDEXES = ["winner_uei", "addr_hash",
