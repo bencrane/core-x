@@ -446,8 +446,8 @@ DECODERS: dict[str, dict] = {
         },
     },
     "active": {
-        "version": "active.v3",
-        "description": "ACTIVE prime awards still in performance — one row per award (award grain). The FORWARD-looking table: it carries the period-of-performance end date, so you can find incumbents about to RECOMPETE (contracts whose performance ends in the next N days). Use for 'expiring / up for recompete / runway' questions; amounts are the award's current/potential value, not a single action.",
+        "version": "active.v4",
+        "description": "ACTIVE prime awards still in performance — one row per award (award grain). The FORWARD-looking table: it carries the period-of-performance end date, so you can find incumbents about to RECOMPETE (contracts whose performance ends in the next N days). Use for 'expiring / up for recompete / runway' questions; amounts are the award's current/potential value, not a single action. Awards may ALSO carry CAPABILITY signals extracted from the award's solicitation documents (clearance, CMMC, what work the contract scopes, what trades it staffs) — use these for 'cleared/CMMC contracts up for recompete' and 'what-do-they-do up for recompete' questions. Capability covers the scope-extracted slice (~15% of active awards); unlabeled awards carry no signal (surface as not-applied).",
         "fields": {
             "days_until_expiry": {"type": "days_ahead", "ops": ("<=", ">=", "between"), "desc": "whole days until the award's period of performance ends. 'expiring in the next N days' / 'recompete within N days' → days_until_expiry <= N; 'at least N days of runway' → days_until_expiry >= N. THE recompete axis"},
             "current_value": {"type": "float", "ops": (">=", "<=", "between"), "desc": "current total value of the award, USD ('contracts over $1M' → current_value >= 1000000)"},
@@ -476,6 +476,18 @@ DECODERS: dict[str, dict] = {
             "business_size": {"type": "string", "ops": ("=", "in"), "enum": ("SMALL BUSINESS", "OTHER THAN SMALL BUSINESS"), "desc": "contracting officer's business-size determination. 'small business' → 'SMALL BUSINESS'"},
             "has_option_tail": {"type": "bool", "ops": ("=",), "desc": "true = the govt holds an unexercised option beyond the current end (extra runway before a hard recompete)"},
             "award_or_idv_flag": {"type": "string", "ops": ("=", "in"), "enum": ("AWARD", "IDV"), "desc": "'AWARD' = a definitive contract; 'IDV' = an indefinite-delivery vehicle"},
+            # ── Phase-3 capability axes (active.v4): signals extracted from the award's solicitation
+            # documents. Award-grain (joined 1:1). has_extracted_scope is the gate; the gated axes only
+            # span the scope-extracted slice (EXECUTE ANDs has_extracted_scope=true). ──
+            "has_extracted_scope":     {"type": "bool", "ops": ("=",), "desc": "true = this award has extracted solicitation scope (the ~15%-of-active-awards slice the capability axes describe)"},
+            "requires_clearance":      {"type": "bool", "ops": ("=",), "desc": "true = the award's solicitation requires a personnel/facility security clearance"},
+            "req_clearance_level_max": {"type": "string", "ops": ("=", "in"), "enum": _CLEARANCE_LEVELS,
+                                        "desc": "highest clearance the award requires. 'secret clearance' → in [SECRET, TOP_SECRET, TS_SCI]"},
+            "requires_cmmc":           {"type": "bool", "ops": ("=",), "desc": "true = the award's solicitation requires CMMC certification"},
+            "solicitation_scope_tag":  {"type": "list", "ops": ("has", "has_any"), "enum": _CAPABILITY_TAGS,
+                                        "desc": "controlled capability the award SCOPES (set membership). 'electrical work up for recompete' → solicitation_scope_tag has 'electrical_systems'. Use has (one tag) or has_any (list of tags)"},
+            "labor_category":          {"type": "list", "ops": ("has", "has_any"), "enum": _LABOR_CATEGORIES,
+                                        "desc": "skilled labor/trade the award staffs. 'electricians' → labor_category has 'electrician'; 'cleared trades' → requires_clearance=true AND labor_category has_any the trade list"},
         },
         "synonyms": {
             "construction": {"field": "naics2", "op": "=", "value": "23"},
@@ -491,6 +503,14 @@ DECODERS: dict[str, dict] = {
             "hubzone": {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
             "woman-owned": {"field": "set_aside", "op": "in", "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
             "dod": {"field": "awarding_agency", "op": "in", "value": ["Department of Defense", "Department of Defense (DOD)"]},
+            # ── Phase-3 capability phrasings (active.v4), byte-identical to the catalyst mirror +
+            # the winners decoder. Route to the gated capability axes; EXECUTE ANDs has_extracted_scope=true. ──
+            "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+            "secret clearance": {"field": "req_clearance_level_max", "op": "in", "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+            "top secret":       {"field": "req_clearance_level_max", "op": "in", "value": ["TOP_SECRET", "TS_SCI"]},
+            "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+            "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
+            "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
             # ── GTM label-axis lexicon (active.v2). Plain-English → vertical / work_type /
             # equipment_intensity. Byte-identical to the catalyst mirror + the awards decoder.
             # Head-coverage only; bare "construction" stays on naics2 above (broad recall). Ambiguous
@@ -614,12 +634,18 @@ DECODERS: dict[str, dict] = {
             " (~78% of recompete $, ~38% of rows — the unlabeled tail is small-dollar) — unlabeled"
             " rows surface in 'not applied', never silently filtered. what_was_done is a free-text"
             " DISPLAY field (shown for context, not filterable).",
+            "Capability axes (active.v4): has_extracted_scope / requires_clearance /"
+            " req_clearance_level_max / requires_cmmc / solicitation_scope_tag / labor_category are"
+            " extracted from the award's solicitation. They cover the scope-extracted slice (~15% of"
+            " active awards); any capability clause is AND-ed with has_extracted_scope=true, so it"
+            " spans only that slice (never a silently-empty map). 'cleared / CMMC contracts up for"
+            " recompete' → requires_clearance / requires_cmmc, AND-ed with the days_until_expiry window.",
         ),
         "aggregate": {
             "measure": "contract_current_value_usd",
             "dims": ["naics2", "naics_code", "psc_category", "psc_code", "awarding_agency",
                      "awarding_sub_agency", "state", "pop_state", "set_aside", "business_size",
-                     "vertical", "work_type", "equipment_intensity"],
+                     "vertical", "work_type", "equipment_intensity", "req_clearance_level_max"],
             "pseudo_dims": ["winner", "size_band"],
             "metrics": ["count", "sum", "avg", "median", "p90"],
             "desc": ("For BREAKDOWN / TOTAL / DISTRIBUTION / RANKING over expiring/active awards"
@@ -788,7 +814,10 @@ def build_emit_filter_tool(dataset: str) -> dict:
 # One forced-tool call picks the dataset AND compiles its filters. Bump on any
 # change to the routing rules below; combined with every per-dataset version in
 # the auto memo key so any axis change busts cached routings.
-ROUTER_VERSION = "router.v8"   # v7→v8: awards gains the GTM label axes vertical/work_type/
+ROUTER_VERSION = "router.v9"   # v8→v9: active gains the Phase-3 capability axes (clearance / CMMC /
+                               # solicitation scope tag / labor) — the active recompete routing cue now
+                               # also steers 'cleared / CMMC / what-they-do up for recompete' phrasing.
+                               # v7→v8: awards gains the GTM label axes vertical/work_type/
                                # equipment_intensity — the awards routing cue now steers industry/
                                # vertical/sector + make-vs-resell + equipment-intensity phrasing.
                                # v6→v7: awards gains the option-exercise / action_type axis; drop a
