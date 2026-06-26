@@ -1,7 +1,7 @@
 """Serving worker — usaspending_awards_map_serving: ONE ROW PER PRIME AWARD ACTION from the
 rolling fresh feeds, joined to the address-keyed geocode crosswalk. The award-EVENT read
 model behind "won an award over $X in the last N days" — the grain neither rollup table
-(company = lifetime, winners = window SUM) can express.
+(company = entity active-obligations rollup, winners = per-entity window SUM) can express.
 
 GRAIN  1 row per positive-dollar PRIME award action (contract_transaction_unique_key).
        PRIME-ONLY — subaward actions are excluded (tiny + under-reported at source; teaming
