@@ -134,7 +134,8 @@ def _assemble(so, window_days: int):
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
     vmap = lance.dataset(NAICS_PSC_MAP_URI, storage_options=so)
     con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
-                                            "work_type", "equipment_intensity"]).to_reader())
+                                            "work_type", "equipment_intensity",
+                                            "what_was_done"]).to_reader())
     hexpr = addr_hash_sql("street", "city_raw", "state", "zip")
     sql = f"""
     WITH u AS (
@@ -191,7 +192,7 @@ def _assemble(so, window_days: int):
         FROM deduped
     )
     SELECT k.*, x.latitude, x.longitude, x.match_type,
-           v.vertical, v.work_type, v.equipment_intensity,
+           v.vertical, v.work_type, v.equipment_intensity, v.what_was_done,
            'usaspending_awards_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
@@ -295,6 +296,7 @@ def verify():
            "fy2026_actions": ds.count_rows(filter="fiscal_year = 2026"),
            "option_exercises": ds.count_rows(filter="is_option_exercise = true"),
            "with_vertical_label": ds.count_rows(filter="vertical IS NOT NULL"),
+           "with_what_was_done": ds.count_rows(filter="what_was_done IS NOT NULL"),
            "vertical_aerospace_defense": ds.count_rows(filter="vertical = 'Aerospace & Defense'"),
            "with_action_type": ds.count_rows(filter="action_type IS NOT NULL"),
            "columns": len(ds.schema.names), "indices": idx}
