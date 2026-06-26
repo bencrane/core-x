@@ -54,6 +54,13 @@ XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # Stage-1 (naics_code, psc_code) -> vertical / work_type / equipment_intensity classification
 # (the top-$ 279 combos). LEFT-JOINed per action so the labels become filterable columns here.
 NAICS_PSC_MAP_URI = os.environ.get("NAICS_PSC_VERTICAL_MAP_URI", f"{ACTIVE}/naics_psc_vertical_map/")
+# Phase-3 award-grain capability profiles (clearance / CMMC / solicitation scope tags / labor).
+# LEFT-JOINed by the award key so the capability axes become filterable on the action-grain awards
+# dataset — mirrors active.v4 (#752), but MANY:1 here (many actions share one contract_award_unique_key,
+# each inherits its award's profile). Project ONLY structured / controlled-vocab columns (scope_summary
+# is the CUI column and is NEVER scanned — CUI egress invariant).
+CAPABILITY_PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
+                                         f"{ACTIVE}/govcon_award_solicitation_profiles/")
 WINDOW_DAYS = int(os.environ.get("AWARDS_WINDOW_DAYS", "730"))
 DATA_STORAGE_VERSION = "2.1"
 # BTREE: range axes (action_date, award_amount) + resolution keys + high-cardinality geo
@@ -66,7 +73,11 @@ BITMAP_INDEXES = ["naics2", "state", "winner_type", "pop_state", "awarding_agenc
                   "set_aside", "is_active", "psc_category", "fiscal_year", "business_size",
                   "action_type", "is_option_exercise",
                   # label axes joined from naics_psc_vertical_map (classified-dictionary bridge).
-                  "vertical", "work_type", "equipment_intensity"]
+                  "vertical", "work_type", "equipment_intensity",
+                  # Phase-3 capability axes joined from govcon_award_solicitation_profiles (awards.v11).
+                  # Low-cardinality bool/enum → BITMAP pushdown. The list axes (solicitation_scope_tags,
+                  # labor_categories) are NOT scalar-indexed — matches the winners/active precedent + decoder.
+                  "has_extracted_scope", "requires_clearance", "requires_cmmc", "req_clearance_level_max"]
 
 DUCK_MEM = os.environ.get("AWARDS_DUCKDB_MEMORY_LIMIT", "8GB")
 DUCK_TMP = os.environ.get("AWARDS_DUCKDB_TEMP_DIR", "/tmp/awards_map_duckdb")
@@ -111,7 +122,8 @@ def _assemble(so, window_days: int):
     x = lance.dataset(XWALK_URI, storage_options=so)
     con = _duck()
     con.register("p", p.scanner(
-        columns=["contract_transaction_unique_key", "recipient_uei", "recipient_name",
+        columns=["contract_transaction_unique_key", "contract_award_unique_key",
+                 "recipient_uei", "recipient_name",
                  "recipient_address_line_1", "recipient_city_name", "recipient_county_name",
                  "recipient_state_code", "recipient_zip_4_code", "naics_code", "action_date",
                  "federal_action_obligation", "awarding_agency_name", "awarding_sub_agency_name",
@@ -126,10 +138,18 @@ def _assemble(so, window_days: int):
     con.register("v", vmap.scanner(columns=["naics_code", "psc_code", "vertical",
                                             "work_type", "equipment_intensity",
                                             "what_was_done"]).to_reader())
+    # Phase-3 award-grain capability bridge → re-scannable TABLE (.to_table(), NOT a single-pass
+    # reader). Project ONLY structured / controlled-vocab columns; scope_summary (CUI) is never scanned.
+    prof = lance.dataset(CAPABILITY_PROFILES_URI, storage_options=so)
+    con.register("prof", prof.scanner(columns=[
+        "contract_award_unique_key", "has_extracted_scope", "requires_clearance",
+        "req_clearance_level_max", "requires_cmmc", "solicitation_scope_tags",
+        "top_labor_categories"]).to_table())
     hexpr = addr_hash_sql("street", "city_raw", "state", "zip")
     sql = f"""
     WITH u AS (
-        SELECT contract_transaction_unique_key AS award_id, recipient_uei AS winner_uei,
+        SELECT contract_transaction_unique_key AS award_id,
+               contract_award_unique_key AS award_key, recipient_uei AS winner_uei,
                'prime_recipient' AS winner_type, recipient_name AS winner_name,
                recipient_address_line_1 AS street, recipient_city_name AS city_raw,
                recipient_county_name AS county_raw, recipient_state_code AS state_raw,
@@ -154,7 +174,8 @@ def _assemble(so, window_days: int):
         QUALIFY row_number() OVER (PARTITION BY winner_type, award_id ORDER BY adt DESC) = 1
     ),
     keyed AS (
-        SELECT award_id, winner_uei, winner_type, winner_name, street,
+        SELECT award_id, award_key AS contract_award_unique_key,
+               winner_uei, winner_type, winner_name, street,
                upper(trim(city_raw)) AS city, upper(trim(county_raw)) AS county,
                upper(trim(state_raw)) AS state, zip, naics AS naics_code,
                substr(naics, 1, 2) AS naics2, adt AS action_date, amt AS action_obligated_usd,
@@ -172,13 +193,29 @@ def _assemble(so, window_days: int):
                {hexpr} AS addr_hash
         FROM deduped
     )
-    SELECT k.*, x.latitude, x.longitude, x.match_type,
+    -- contract_award_unique_key rides in `keyed` only to drive the capability join below; it is the
+    -- award-grain JOIN key, not a serving/decoder column, so EXCLUDE it from the output (the decoder
+    -- never references it, and a second full-width non-null string column at action scale overflows
+    -- the Lance 2.1 encoder's chunk limit).
+    SELECT k.* EXCLUDE (contract_award_unique_key), x.latitude, x.longitude, x.match_type,
            v.vertical, v.work_type, v.equipment_intensity, v.what_was_done,
+           -- Phase-3 capability axes (awards.v11), MANY:1 by the award key (every action of an award
+           -- inherits that award's solicitation profile). Actions whose award has no extracted profile
+           -- get has_extracted_scope=FALSE → the gate (has_extracted_scope=true, ANDed in EXECUTE for
+           -- any gated clause) excludes them; on ungated queries they surface as 'not applied', never
+           -- silently filtered. labor: bridge top_labor_categories → serving labor_categories.
+           COALESCE(prof.has_extracted_scope, FALSE) AS has_extracted_scope,
+           COALESCE(prof.requires_clearance, FALSE) AS requires_clearance,
+           prof.req_clearance_level_max AS req_clearance_level_max,
+           COALESCE(prof.requires_cmmc, FALSE) AS requires_cmmc,
+           prof.solicitation_scope_tags AS solicitation_scope_tags,
+           prof.top_labor_categories AS labor_categories,
            'usaspending_awards_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
     LEFT JOIN x USING (addr_hash)
     LEFT JOIN v ON k.naics_code = v.naics_code AND k.psc_code = v.psc_code
+    LEFT JOIN prof ON k.contract_award_unique_key = prof.contract_award_unique_key
     """
     tbl = con.execute(sql).fetch_arrow_table()
     con.close()
@@ -227,8 +264,14 @@ def build(window_days: int = WINDOW_DAYS):
             f"{with_coords:,} with coords ({(with_coords / rows * 100 if rows else 0):.1f}%)")
         if rows == 0:
             raise RuntimeError("zero award actions assembled")
+        # max_rows_per_file: the Lance 2.1 encoder asserts chunk_bytes <= max_chunk_size per column
+        # chunk. The awards.v11 capability list columns (solicitation_scope_tags / labor_categories)
+        # push a single-fragment write of all 1.1M actions past that limit (the 189K-row active table
+        # writes the SAME columns fine — ~6x smaller). Cap the fragment at ~active scale so every
+        # per-column chunk stays well under the limit; Lance reads/indexes across fragments natively.
         lance.write_dataset(tbl, SERVING_URI, mode="overwrite",
-                            data_storage_version=DATA_STORAGE_VERSION, storage_options=so)
+                            data_storage_version=DATA_STORAGE_VERSION, storage_options=so,
+                            max_rows_per_file=250_000)
         ds = lance.dataset(SERVING_URI, storage_options=so)
         for col in BTREE_INDEXES:
             ds.create_scalar_index(col, index_type="BTREE", replace=True)
