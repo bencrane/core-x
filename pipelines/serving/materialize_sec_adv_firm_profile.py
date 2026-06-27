@@ -484,7 +484,9 @@ def verify() -> None:
         print(f"[8] pushdown explain unavailable (advisory): {exc}")
 
     print("\nby aum_band (IA):")
-    print(con.execute("SELECT aum_band, count(*) n FROM d WHERE is_ria GROUP BY 1 ORDER BY n DESC").df().to_string())
+    for band, cnt in con.execute(
+            "SELECT aum_band, count(*) n FROM d WHERE is_ria GROUP BY 1 ORDER BY n DESC").fetchall():
+        print(f"    {band:12s} {cnt}")
 
     if fails:
         raise AssertionError(f"verify(): {len(fails)} gate failure(s) -> {fails}")
