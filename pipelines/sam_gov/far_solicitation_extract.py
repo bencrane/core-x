@@ -217,8 +217,7 @@ def extract_far_subcontracting_goals(
             set_aside_code
         FROM read_parquet(
             's3://data-sink/sam-gov-opps/active/**/*.parquet',
-            hive_partitioning=true,
-            parallel_scan_prefetch=true
+            hive_partitioning=true
         )
         WHERE response_deadline > CURRENT_TIMESTAMP
             AND description IS NOT NULL

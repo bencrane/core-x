@@ -55,8 +55,7 @@ def test_query_open_solicitations(limit: int = 5, dry_run: bool = False) -> None
         set_aside_code
     FROM read_parquet(
         's3://data-sink/sam-gov-opps/active/**/*.parquet',
-        hive_partitioning=true,
-        parallel_scan_prefetch=true
+        hive_partitioning=true
     )
     WHERE response_deadline > CURRENT_TIMESTAMP
         AND description IS NOT NULL
@@ -94,6 +93,11 @@ def test_query_open_solicitations(limit: int = 5, dry_run: bool = False) -> None
 def test_anthropic_extraction() -> None:
     """Test LLM extraction with a sample solicitation text."""
     print("\nTesting LLM extraction...")
+
+    # Check for API key
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("✗ ANTHROPIC_API_KEY not set; skipping LLM test")
+        return
 
     try:
         from anthropic import Anthropic
