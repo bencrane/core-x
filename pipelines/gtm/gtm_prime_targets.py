@@ -13,8 +13,13 @@ SOURCES (read-only):
   • active/govcon_prime_trajectories  — per-prime trailing-window metrics (new_awards_t{12,24}m,
     obligated_t{12,24}m, primary_naics/psc, as_of_date). Refreshes ~weekly; we pin to the
     LATEST as_of_date snapshot per prime.
-  • active/contractor_award_summary   — per-UEI lifetime rollup; we read subaward_total to
-    flag demonstrated subcontracting (known vs cold).
+  • active/usaspending/subaward_search — raw FFATA/FSRS first-tier subaward records, keyed on the
+    prime (awardee_or_recipient_uei), PROCUREMENT only. Source of every subaward signal here:
+    roster size (n_distinct_subs), volume (n_subawards), magnitude (subaward_dollars, guarded
+    against the feed's free-text dollar sentinels), pass-through, and the known/cold flag.
+    contractor_award_summary's subaward rollup is deliberately NOT used — its
+    lifetime_subaward_obligated is corrupted (pass-through ratios in the thousands) and its
+    subaward_total overcounts demonstrated subcontracting ~5x vs the raw records.
 
 THE ICP (tunable constants below). Accelerating, mid-market, project-shaped work:
   • t24m obligated in [BAND_LO, BAND_HI]      — drops mega-primes (entrenched sub networks)
@@ -27,21 +32,22 @@ THE ICP (tunable constants below). Accelerating, mid-market, project-shaped work
     labor-relevant manufacturing (assembly/vehicle/equipment) and drops bolt/food vendors.
 
 OUTREACH MOTION (derived):
-  • known_subcontractor (subaward_total > 0) → 'expand_roster' ("add us to your eval set").
+  • known_subcontractor (procurement subaward records present) → 'expand_roster' ("add us to
+    your eval set").
   • cold                                      → 'form_roster'   ("scaling fast — bench early").
   Caveat: cold == no *reported* subaward (FSRS self-report floor); some cold primes subcontract
   heavily but under-report. Motion is a conversation frame, not a gate.
 
 INDEXES (rebuilt each run): BTREE on resolution/range keys (recipient_uei, primary_naics,
-dollar_growth, obligated_t12m, new_awards_t12m, award_growth); BITMAP on low-cardinality
-facets (vertical, known_subcontractor, outreach_motion).
+dollar_growth, obligated_t12m, new_awards_t12m, award_growth, subaward_dollars, n_distinct_subs);
+BITMAP on low-cardinality facets (vertical, known_subcontractor, outreach_motion).
 
 IDEMPOTENT. Full overwrite — safe to re-run; same snapshot → same cohort. A terminal-state row
 is written to ops.gtm_prime_targets_runs (HQX control plane) each run; best-effort, degrades
 to R2-only if HQX is unreachable.
 
     doppler run -p core-x -c prd -- uv run --no-project \\
-      --with boto3 --with pylance --with duckdb --with 'psycopg[binary]>=3.2' \\
+      --with boto3 --with pylance --with pyarrow --with duckdb --with 'psycopg[binary]>=3.2' \\
       python3 pipelines/gtm/gtm_prime_targets.py [build|verify]
 """
 from __future__ import annotations
@@ -53,7 +59,7 @@ import sys
 FEED = "gtm_prime_targets"
 DATASET_URI = os.environ.get("GTM_PRIME_TARGETS_URI", "s3://data-sink/active/gtm_prime_targets/").rstrip("/") + "/"
 TRAJ_URI = "s3://data-sink/active/govcon_prime_trajectories/"
-CAS_URI = "s3://data-sink/active/contractor_award_summary/"
+SUB_URI = "s3://data-sink/active/usaspending/subaward_search/"
 DATA_STORAGE_VERSION = "2.1"
 
 # ── ICP knobs (the only business parameters; change here to re-cut the cohort) ──
@@ -63,7 +69,7 @@ MIN_T12M_AWARDS = 2          # recurring cadence floor
 MIN_AVG_AWARD = 100_000      # avg $/award over t24m — project-shaped, not commodity micro-purchase
 
 BTREE_INDEXES = ["recipient_uei", "primary_naics", "dollar_growth", "obligated_t12m",
-                 "new_awards_t12m", "award_growth"]
+                 "new_awards_t12m", "award_growth", "subaward_dollars", "n_distinct_subs"]
 BITMAP_INDEXES = ["vertical", "known_subcontractor", "outreach_motion"]
 
 
@@ -93,8 +99,31 @@ def _materialize(con):
 
     so = _r2_storage_options()
     con.register("traj", lance.dataset(TRAJ_URI, storage_options=so).to_table())
-    con.register("cas", lance.dataset(CAS_URI, storage_options=so).scanner(
-        columns=["recipient_uei", "subaward_total"]).to_table())
+    # ALL subaward signals come from subaward_search directly — the raw FFATA/FSRS transactional
+    # record, consistently keyed on the prime's awardee_or_recipient_uei. contractor_award_summary
+    # is deliberately NOT used: its lifetime_subaward_obligated is corrupted (free-text dollar
+    # sentinels → pass-through ratios in the thousands) and its subaward_total overcounts ~5x vs
+    # the raw records. Dollar guard drops negative/sentinel amounts; counts are garbage-immune.
+    # Signal is the FSRS self-report FLOOR — cold primes show 0 even when they subcontract.
+    con.register("sub", lance.dataset(SUB_URI, storage_options=so).scanner(
+        columns=["awardee_or_recipient_uei", "sub_awardee_or_recipient_uei", "subaward_amount",
+                 "prime_award_group"],
+        filter="awardee_or_recipient_uei IS NOT NULL").to_reader())
+    # PROCUREMENT subawards only — excludes grant/assistance pass-through (state health/human-svc
+    # agencies sub-granting Medicaid/SNAP show billions in sub-grants against a tiny contract book,
+    # which is not contract subcontracting and explodes the pass-through ratio). Keeps the signal
+    # consistent with the govcon CONTRACT cohort.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE sub_roster AS
+        SELECT upper(trim(awardee_or_recipient_uei)) AS uei,
+               count(*) AS n_subawards,
+               count(DISTINCT NULLIF(upper(trim(sub_awardee_or_recipient_uei)), '')) AS n_distinct_subs,
+               sum(CASE WHEN TRY_CAST(subaward_amount AS DOUBLE) BETWEEN 0 AND 1e9
+                        THEN TRY_CAST(subaward_amount AS DOUBLE) ELSE 0 END) AS subaward_dollars
+        FROM sub
+        WHERE lower(coalesce(prime_award_group, '')) = 'procurement'
+        GROUP BY 1
+    """)
 
     # latest snapshot per prime (defensive against a time-series grain), then derive + filter
     con.execute(f"""
@@ -116,8 +145,14 @@ def _materialize(con):
                 GREATEST(l.obligated_t24m - l.obligated_t12m, 0)               AS obligated_prior12m,
                 l.obligated_t12m - GREATEST(l.obligated_t24m - l.obligated_t12m, 0) AS dollar_growth,
                 CASE WHEN l.new_awards_t24m > 0 THEN l.obligated_t24m / l.new_awards_t24m END AS avg_award,
-                coalesce(c.subaward_total, 0)                                  AS subaward_total,
-                coalesce(c.subaward_total, 0) > 0                              AS known_subcontractor,
+                coalesce(s.n_subawards, 0)                                    AS n_subawards,
+                coalesce(s.n_subawards, 0) > 0                                 AS known_subcontractor,
+                coalesce(s.n_distinct_subs, 0)                                 AS n_distinct_subs,
+                coalesce(s.subaward_dollars, 0.0)                             AS subaward_dollars,
+                CASE WHEN coalesce(s.n_subawards, 0) > 0
+                     THEN s.subaward_dollars / s.n_subawards END              AS avg_subaward,
+                CASE WHEN coalesce(l.obligated_lifetime, 0) > 0
+                     THEN s.subaward_dollars / l.obligated_lifetime END        AS pass_through_ratio,
                 CASE substr(l.primary_naics, 1, 2)
                     WHEN '23' THEN 'Construction'
                     WHEN '54' THEN 'Professional/Technical Svc'
@@ -129,7 +164,8 @@ def _materialize(con):
                     WHEN '42' THEN 'Wholesale/Distribution'
                     WHEN '44' THEN 'Retail' WHEN '45' THEN 'Retail'
                     ELSE 'Other' END                                          AS vertical
-            FROM latest l LEFT JOIN cas c USING (recipient_uei)
+            FROM latest l
+            LEFT JOIN sub_roster s ON upper(trim(l.recipient_uei)) = s.uei
         )
         SELECT *,
             CASE WHEN known_subcontractor THEN 'expand_roster' ELSE 'form_roster' END AS outreach_motion
@@ -152,7 +188,11 @@ def _materialize(con):
             obligated_prior12m::DOUBLE        AS obligated_prior12m,
             dollar_growth::DOUBLE             AS dollar_growth,
             avg_award::DOUBLE                 AS avg_award,
-            subaward_total::BIGINT            AS subaward_total,
+            n_subawards::BIGINT               AS n_subawards,
+            n_distinct_subs::INTEGER          AS n_distinct_subs,
+            subaward_dollars::DOUBLE          AS subaward_dollars,
+            avg_subaward::DOUBLE              AS avg_subaward,
+            pass_through_ratio::DOUBLE        AS pass_through_ratio,
             known_subcontractor,
             outreach_motion,
             (rank() OVER (ORDER BY dollar_growth DESC))::INTEGER AS rank_dollar_growth,
@@ -239,6 +279,8 @@ def build() -> int:
     con = duckdb.connect()
     con.execute("SET threads=4")
     con.execute("SET memory_limit='6GB'")
+    os.makedirs("/tmp/gtm_pt_spill", exist_ok=True)
+    con.execute("SET temp_directory='/tmp/gtm_pt_spill'")
     try:
         table, metrics = _materialize(con)
         print(f"Materialized {FEED}: {metrics}")
@@ -278,6 +320,13 @@ def verify() -> int:
     print("indices:", [(i["name"], i.get("type")) for i in ds.list_indices()])
     import duckdb
     con = duckdb.connect(); con.register("t", ds.to_table())
+    sm = con.execute("""SELECT count(*) FILTER (WHERE known_subcontractor),
+            round(median(subaward_dollars) FILTER (WHERE known_subcontractor)),
+            round(median(n_distinct_subs) FILTER (WHERE known_subcontractor)),
+            round(median(pass_through_ratio) FILTER (WHERE known_subcontractor), 3)
+        FROM t""").fetchone()
+    print(f"known subcontractors (procurement): {sm[0]:,} · median sub $: {sm[1]} · "
+          f"median distinct subs: {sm[2]} · median pass-through: {sm[3]}")
     for r in con.execute("""SELECT outreach_motion, vertical, count(*) n
                             FROM t GROUP BY 1,2 ORDER BY 1, n DESC""").fetchall():
         print(f"  {r[0]:14} | {r[1]:28} | {r[2]:,}")
