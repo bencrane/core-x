@@ -68,20 +68,47 @@ export const secAdvMonthly = schedules.task({
       DATASETS.map((dataset) => ({ payload: { dataset } })),
     );
 
-    const results: IngestCallback[] = [];
+    // Collect outcomes WITHOUT throwing yet — the firm-profile MV is a pure function of part1
+    // alone, so an advw-only failure must not suppress the rebuild. Surface failures after the MV.
+    const ok: IngestCallback[] = [];
+    const failed: string[] = [];
     for (const run of runs) {
-      if (!run.ok) {
-        throw new Error(`sec-adv dataset run ${run.id} failed: ${JSON.stringify(run.error)}`);
+      if (run.ok) ok.push(run.output);
+      else failed.push(`run ${run.id}: ${JSON.stringify(run.error)}`);
+    }
+    const part1Ok = ok.find((r) => r.dataset === "part1");
+
+    const totalRows = ok.reduce((acc, r) => acc + (r.rows ?? 0), 0);
+    const byDataset = Object.fromEntries(
+      ok.map((r) => [r.dataset, { rows: r.rows, dataset_uri: r.dataset_uri, as_of: r.as_of }]),
+    );
+    logger.info("SEC ADV monthly ingest complete", { total_rows: totalRows, byDataset, failed });
+
+    // Chain the derived firm-profile serving MV — fires on part1 success ONLY. FAILURE-ISOLATED:
+    // an MV-build failure never fails the monthly run; the part1/advw SoR writes are already
+    // committed and untouched. Record degraded + continue, never roll back.
+    let firmProfile: { status: string; rows?: number } = { status: "skipped" };
+    if (part1Ok) {
+      try {
+        firmProfile = await dispatch<{ status: "success" | "error"; rows?: number }>(
+          "build_remote", {}, "sec-adv-firm-profile",
+        );
+        logger.info("sec_adv_firm_profile MV rebuilt", { firmProfile });
+      } catch (err) {
+        logger.error("sec_adv_firm_profile MV build failed (non-fatal; SoR unaffected)", {
+          error: String(err),
+        });
+        firmProfile = { status: "error" };
       }
-      results.push(run.output);
     }
 
-    const totalRows = results.reduce((acc, r) => acc + (r.rows ?? 0), 0);
-    const byDataset = Object.fromEntries(
-      results.map((r) => [r.dataset, { rows: r.rows, dataset_uri: r.dataset_uri, as_of: r.as_of }]),
-    );
-    logger.info("SEC ADV monthly ingest complete", { total_rows: totalRows, byDataset });
-    return { total_rows: totalRows, datasets: byDataset };
+    // Surface any child failure AFTER the MV has had its chance off the good part1 snapshot, so the
+    // monthly run still signals failure for alerting without suppressing the (valid) MV rebuild.
+    if (failed.length) {
+      throw new Error(`sec-adv dataset run(s) failed: ${failed.join("; ")}`);
+    }
+
+    return { total_rows: totalRows, datasets: byDataset, firm_profile: firmProfile };
   },
 });
 
@@ -92,6 +119,7 @@ export const secAdvMonthly = schedules.task({
 async function dispatch<T extends { status: "success" | "error" }>(
   functionName: string,
   kwargs: Record<string, unknown>,
+  appName: string = APP_NAME,
 ): Promise<T> {
   const tag = String(kwargs.dataset ?? functionName);
   const token = await wait.createToken({ timeout: "1h", tags: ["sec-adv", tag] });
@@ -104,7 +132,7 @@ async function dispatch<T extends { status: "success" | "error" }>(
       "Modal-Secret": requireEnv("MODAL_SECRET"),
     },
     body: JSON.stringify({
-      app_name: APP_NAME,
+      app_name: appName,
       function_name: functionName,
       kwargs,
       trigger_callback_url: token.url,

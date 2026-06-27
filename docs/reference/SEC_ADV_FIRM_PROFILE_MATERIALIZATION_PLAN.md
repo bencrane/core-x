@@ -87,10 +87,12 @@ The load-bearing spec. Codified as an ordered field plan in the module (mirrors 
 | `sec_number` | typed (`1D`) | str | 801-/802- |
 | `legal_name`, `primary_business_name` | typed (`1A`,`1B1`) | str | |
 | `business_address_city/state/country/postal` | typed | str | |
-| `website` | `1I` | str | firm web presence (100%) |
-| `phone` | `1F3` | str | principal office phone |
-| `fiscal_year_end` | `1M` | str | |
-| `native_cik` | `1N-CIK` | str | **0% populated** — see §13 |
+| `has_website` | `1I` | bool | `1I` is the Y/N "do you have a website" flag (100%), NOT a URL (URLs live in Schedule D, not ingested) |
+| `phone` | `1F3` | str | principal-office phone (verified: distinct phone strings) — not indexed |
+
+> Execution-time correction: v2 §3.1 listed `website`(str), `fiscal_year_end`(1M) and `native_cik`(1N-CIK).
+> Live sampling showed `1I` is Y/N (→ `has_website` bool), `1M` is an unrelated Y/N (dropped), and
+> `1N-CIK` is 0% populated (dropped — see §13).
 
 ### 3.2 Size / headcount (Item 5A–5B)
 | Column | Code | Fill | Type |
@@ -166,10 +168,18 @@ not a range bucket and not dropped.
 ## 4. Derived enrichments (computed in-SQL, indexed)
 
 - **`aum_band`** (bitmap) from `total_regulatory_aum`, **NULL-led, half-open intervals**:
-  `WHEN total_regulatory_aum IS NULL THEN 'unreported'`, then `lt_25m, 25m_100m, 100m_500m, 500m_1b,
-  1b_10b, 10b_50b, gte_50b` (each `>= lo AND < hi`).
-- **`employee_band`** (bitmap) from `total_employees`, **NULL-led**: `unreported` (NULL), `0`, then
-  `1_5, 6_10, 11_50, 51_250, gt_250` (half-open). `0`/NULL must not fall through silently.
+  `'unreported'` (NULL), `'0'` (reported-zero — kept distinct from unreported, same not-reported-vs-zero
+  principle), then `lt_25m, 25m_100m, 100m_500m, 500m_1b, 1b_10b, 10b_50b, gte_50b` (each `>= lo AND < hi`).
+- **`employee_band` / `client_count_band`** (bitmaps), **NULL-led, MIXED-MODE**: Items 5A/5C1 are
+  reported as an exact integer by large filers but as an SEC **range-bucket string** by small filers
+  (`'1-5'`, `'251-500'`, `'More than 1000'`). The band absorbs BOTH into one vocabulary, so its labels
+  **MUST equal the raw SEC bucket strings verbatim** (underscore labels like `1_5` would split each
+  bucket in two — silently wrong segmentation). `employee_band ∈ {unreported, 0, 1-5, 6-10, 11-50,
+  51-250, 251-500, 501-1000, more_than_1000}`; `client_count_band ∈ {unreported, 0, 1-10, 11-25,
+  26-100, 101-250, 251-500, 501-1000, more_than_1000}`. Exact-int filers are bucketed by the matching
+  SEC boundaries; range-string filers pass through (normalizing only `'More than 1000' → more_than_1000`).
+  The exact integer is also kept in `total_employees`/`num_clients` (NULL where the filer used a bucket,
+  ~93% of IA); the band is ~100% populated.
 - **`pct_discretionary`** = `discretionary_aum / nullif(total_regulatory_aum,0)` (numeric).
 - **`serves_<t>`** (14 bitmaps) — **prefer the SEC checkbox where it exists**:
   a,b,c,g–n → `upper(trim("5D2{x}"))='Y' OR coalesce(n_clients_<t>,0)>0 OR coalesce(aum_<t>,0)>0`;
@@ -394,3 +404,15 @@ found six P0 correctness traps + four worthwhile improvements; all confirmed emp
 Empirically verified during review: grain (36,846 = distinct, 0 null); `5F2a+5F2b=5F2c` 100% exact;
 AUM numbers parse clean (0 commas/decimals/negatives); tokens are clean `Y`/`N`/null; the 54-index
 build runs in <1s; JSON-path quoting works for all space/suffix keys; MetLife golden row exact.
+
+**v2.1 — execution-hardened** (discovered while implementing + a second adversarial code-review pass):
+
+| Sev | Change | Why |
+|---|---|---|
+| P0 | `5A`/`5B1`/`5C1` are **mixed-mode** (exact int OR SEC range-bucket string) | a pure-bigint `total_employees` is only ~93% filled (would fail fill-gate); added `employee_band`/`client_count_band` that absorb both modes |
+| P0 | band labels = **raw SEC bucket strings** (hyphenated, e.g. `1-5`,`more_than_1000`) | underscore labels would split each bucket across the int- and string-derived paths |
+| P1 | `1I` → `has_website` bool (not URL); dropped `fiscal_year_end`(1M, unrelated Y/N) + `native_cik`(0%) | v2 §3.1 mislabeled these; live sampling corrected them |
+| P1 | non-degenerate gate numerator IA-scoped (`FILTER(WHERE col AND is_ria)`) | cross-population numerator read >100% and could mask an all-FALSE IA column |
+| P1 | `verify()` now **enforces** (accumulates failures, raises) | v2 verify only printed → a corrupt build returned exit 0; §9 calls it definition-of-done |
+| P1 | MV chain decoupled from advw (fires on **part1 success only**) | §10 intent; an advw-only failure must not suppress the (valid) part1-derived rebuild |
+| P0 | every derived boolean wrapped `coalesce(…, FALSE)`; new **boolean-NULL gate** (build + verify) | `NULL = 'Y'` is NULL under SQL three-valued logic → NULLs leaked into 33 boolean cols (serves_*/act_*/comp_*/has_smas/has_custody/any_disciplinary), silently breaking `WHERE NOT col` for 9,883–15,227 rows. Spec §4 mandates blanks⇒FALSE. Caught by **independent post-build verification** (reconstructing from raw), NOT by self-verify — which is why the gate now asserts zero boolean NULLs. |
