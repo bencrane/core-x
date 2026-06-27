@@ -1,0 +1,174 @@
+{
+  "version": "v1",
+  "frozen_at": "2026-06-27",
+  "seeded_from": [
+    "govcon_active_awards recipient self-cert flag columns (verbatim stems — zero join drift)",
+    "sam_business_type_code_dict / SUBAWARDEE_DESIGNATIONS.md",
+    "FAR Part 19 / FAR 52.219 clause family"
+  ],
+  "note": "Stems are the verbatim govcon_active_awards / govcon_subawardee_designations flag names. Text matches are opportunity/solicitation REFERENCES (opp_text_ref__<stem>), NOT firm attributes — presence != truth. Boundary-aware regex; precision-leaning v1 (bare collision-prone acronyms like 8a/SDB/MBE/ESB/WOB are deliberately excluded — phrases required).",
+  "match_policy": {
+    "case_insensitive": true,
+    "word_boundary": true,
+    "whitespace_collapse": true,
+    "negation_window_chars": 120,
+    "listed_min_distinct_stems": 4,
+    "listed_window_chars": 200,
+    "negation_cues": [
+      "not set[\\s-]?aside",
+      "is not a set[\\s-]?aside",
+      "no set[\\s-]?aside",
+      "unrestricted",
+      "full and open",
+      "do(?:es)? not apply",
+      "shall not apply",
+      "not applicable",
+      "all offerors"
+    ],
+    "pdf_text_density": {
+      "abs_floor": "max(200, n_pages*80)",
+      "page_low_char_threshold": 40,
+      "page_low_fraction_max": 0.5
+    }
+  },
+  "designations": [
+    {
+      "stem": "service_disabled_veteran_owned_business",
+      "short": "SDVOSB",
+      "patterns": ["\\bSDVOSBC?\\b", "service[\\s-]disabled veteran[\\s-]owned"],
+      "far_clauses": ["19.14", "52.219-27"],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "veteran_owned_business",
+      "short": "VOSB",
+      "patterns": ["\\bVOSB\\b", "(?<!disabled )(?<!disabled-)veteran[\\s-]owned small business"],
+      "far_clauses": ["819.70", "VAAR 852.219"],
+      "collision_risk": "medium",
+      "entity_join": true
+    },
+    {
+      "stem": "women_owned_small_business",
+      "short": "WOSB",
+      "patterns": ["\\bWOSB\\b", "women[\\s-]owned small business"],
+      "far_clauses": ["19.15", "52.219-29", "52.219-30"],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "economically_disadvantaged_women_owned_small_business",
+      "short": "EDWOSB",
+      "patterns": ["\\bEDWOSB\\b", "economically[\\s-]disadvantaged women[\\s-]owned"],
+      "far_clauses": ["19.15", "52.219-29"],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "woman_owned_business",
+      "short": "WOB",
+      "patterns": ["woman[\\s-]owned business"],
+      "far_clauses": [],
+      "collision_risk": "high",
+      "entity_join": true,
+      "review_note": "Overlaps WOSB; bare 'WOB' excluded. Tighten at peer review."
+    },
+    {
+      "stem": "historically_underutilized_business_zone_hubzone_firm",
+      "short": "HUBZone",
+      "patterns": ["\\bHUBZone\\b", "\\bHUB[\\s-]?Zone\\b", "historically underutilized business zone"],
+      "far_clauses": ["19.13", "52.219-3", "52.219-4"],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "c8a_program_participant",
+      "short": "8(a)",
+      "patterns": ["\\b8\\s?\\(a\\)", "section 8\\s?\\(a\\)"],
+      "far_clauses": ["19.8", "52.219-18"],
+      "collision_risk": "medium",
+      "entity_join": true,
+      "review_note": "Bare '8a' (no parens) excluded — collides with building/part labels (e.g. 'Building 8A')."
+    },
+    {
+      "stem": "sba_certified_8a_joint_venture",
+      "short": "8(a) JV",
+      "patterns": ["8\\s?\\(a\\) joint venture", "8\\s?\\(a\\) jv\\b"],
+      "far_clauses": ["19.8"],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "small_disadvantaged_business",
+      "short": "SDB",
+      "patterns": ["small disadvantaged business"],
+      "far_clauses": ["19.0", "52.219-8"],
+      "collision_risk": "medium",
+      "entity_join": true,
+      "review_note": "Bare 'SDB' excluded. Program largely folded into 8(a)."
+    },
+    {
+      "stem": "self_certified_small_disadvantaged_business",
+      "short": "self-cert SDB",
+      "patterns": ["self[\\s-]certified small disadvantaged business"],
+      "far_clauses": [],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "joint_venture_women_owned_small_business",
+      "short": "WOSB JV",
+      "patterns": ["women[\\s-]owned small business joint venture", "WOSB joint venture", "WOSB jv\\b"],
+      "far_clauses": [],
+      "collision_risk": "low",
+      "entity_join": true
+    },
+    {
+      "stem": "emerging_small_business",
+      "short": "ESB",
+      "patterns": ["emerging small business"],
+      "far_clauses": [],
+      "collision_risk": "low",
+      "entity_join": true,
+      "review_note": "FPDS size construct; rare in solicitation prose. Bare 'ESB' excluded."
+    },
+    {
+      "stem": "minority_owned_business",
+      "short": "MBE",
+      "patterns": ["minority[\\s-]owned business", "minority business enterprise"],
+      "far_clauses": [],
+      "collision_risk": "medium",
+      "entity_join": true,
+      "review_note": "Bare 'MBE' excluded."
+    }
+  ],
+  "set_aside_reference": {
+    "stem": "small_business_set_aside",
+    "patterns": ["small business set[\\s-]?aside", "total small business set[\\s-]?aside", "partial small business set[\\s-]?aside"],
+    "far_clauses": ["19.5", "52.219-6", "52.219-7"],
+    "entity_join": false,
+    "review_note": "Size-based set-aside, not a socioeconomic designation; no recipient flag to join. Context only."
+  },
+  "subcontracting_plan": {
+    "clause_present": {
+      "patterns": ["\\b52\\.219-9\\b", "small business subcontracting plan", "subcontracting plan"],
+      "far_clauses": ["19.7", "52.219-9"]
+    },
+    "section_l_submit": {
+      "patterns": [
+        "submit[\\w\\s,()-]{0,40}subcontracting plan",
+        "subcontracting plan[\\w\\s,()-]{0,30}(shall|must|is to|will) be submitted",
+        "subcontracting plan is required"
+      ]
+    },
+    "goals_table": {
+      "comment": "Implemented in matcher: a designation/small-business token within goals_proximity_chars of a percentage figure.",
+      "goals_proximity_chars": 40,
+      "percent_pattern": "\\d{1,3}(?:\\.\\d+)?\\s?(?:%|percent)",
+      "goal_token_pattern": "(small business|small disadvantaged|SDVOSB|service[\\s-]disabled|HUBZone|WOSB|women[\\s-]owned|veteran[\\s-]owned|8\\s?\\(a\\))"
+    },
+    "support_clauses": {
+      "patterns": ["\\b52\\.219-8\\b", "\\b52\\.219-16\\b", "utilization of small business concerns"]
+    }
+  }
+}
