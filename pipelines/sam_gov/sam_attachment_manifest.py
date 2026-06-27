@@ -66,6 +66,10 @@ DOWNLOAD_URL = "https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{
 TRIGGER_PSC = ("N063", "C1AZ")
 FEED = "sam_opps_attachment_manifest"
 
+# Notice types that are an actual open bid window (vs. pre-solicitation market
+# research / informational notices). Used by --scope-open-biddable.
+BIDDABLE_TYPES = {"Solicitation", "Combined Synopsis/Solicitation"}
+
 
 def _r2_storage_options() -> dict[str, str]:
     endpoint = os.environ.get("R2_ENDPOINT")
@@ -140,6 +144,7 @@ def run_harvest(
     checkpoint_every: int = 500,
     inter_call_sleep: float = 0.12,
     resume: bool = False,
+    scope_open_biddable: bool = False,
 ) -> dict:
     import lance
     import pyarrow as pa
@@ -147,14 +152,20 @@ def run_harvest(
 
     started_at = dt.datetime.now(dt.timezone.utc)
     today = dt.date.today()
+    now_utc = started_at
     session = requests.Session()
     calls = {"n": 0}
 
     # ---- active set -----------------------------------------------------
+    # scope_open_biddable additionally projects notice_type + response_deadline so
+    # the harvest can be restricted to notices currently open for bidding (a
+    # Solicitation / Combined Synopsis with response_deadline still in the future)
+    # — the scoped re-harvest that feeds the subcontracting-plan extraction worklist.
     ds = lance.dataset(sam_active_uri, storage_options=storage_options)
     src = ds.to_table(columns=[
         "notice_id", "solicitation_number", "naics_code",
         "classification_code", "title", "posted_date", "link",
+        "notice_type", "response_deadline",
     ]).to_pylist()
 
     meta: dict[str, dict] = {}
@@ -162,6 +173,12 @@ def run_harvest(
         nid = r["notice_id"]
         if not nid:
             continue
+        if scope_open_biddable:
+            rd = r["response_deadline"]
+            if rd is not None and rd.tzinfo is None:
+                rd = rd.replace(tzinfo=dt.timezone.utc)
+            if (r["notice_type"] or "") not in BIDDABLE_TYPES or rd is None or rd < now_utc:
+                continue
         naics = (r["naics_code"] or "").strip()
         psc = (r["classification_code"] or "").strip()
         legs = []
@@ -339,6 +356,10 @@ def _cli() -> None:
     p.add_argument("--do-remaining", dest="do_remaining", action="store_true", default=True)
     p.add_argument("--no-do-remaining", dest="do_remaining", action="store_false")
     p.add_argument("--resume", action="store_true", default=False)
+    p.add_argument("--scope-open-biddable", dest="scope_open_biddable",
+                   action="store_true", default=False,
+                   help="Restrict the harvest to notices open for bidding right now "
+                        "(Solicitation / Combined Synopsis, response_deadline >= now).")
     p.add_argument("--max-notices", type=int, default=0)
     p.add_argument("--manifest-uri", default=MANIFEST_URI)
     p.add_argument("--checkpoint-every", type=int, default=500)
@@ -348,6 +369,7 @@ def _cli() -> None:
         storage_options=_r2_storage_options(), dsn=os.environ.get("HQX_DB_URL_POOLED"),
         manifest_uri=a.manifest_uri, do_remaining=a.do_remaining, max_notices=a.max_notices,
         checkpoint_every=a.checkpoint_every, inter_call_sleep=a.inter_call_sleep, resume=a.resume,
+        scope_open_biddable=a.scope_open_biddable,
     )
     print("RESULT:", out, flush=True)
 
