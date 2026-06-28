@@ -8,6 +8,7 @@
       "plain": "styles/plain.css",
       "branded": "styles/branded.css"
     },
-    "plain": true
+    "plain": true,
+    "inputs": ["amount", "introductions", "term_days"]
   }
 }

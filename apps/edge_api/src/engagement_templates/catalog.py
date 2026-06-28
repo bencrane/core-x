@@ -45,6 +45,7 @@ class TemplateEntry:
     name: str
     default_style: str  # "plain" | "branded"
     styles_available: tuple[str, ...]  # the manifest's stylesheet keys
+    inputs: tuple[str, ...]  # operator-entered values the template bakes in (manifest "inputs")
 
 
 def _doc_entry(manifest_path: pathlib.Path) -> dict:
@@ -91,6 +92,7 @@ def list_templates() -> list[TemplateEntry]:
                             name=str(doc.get("name") or ver_dir.name),
                             default_style=_default_style(doc),
                             styles_available=tuple(sorted((doc.get("stylesheets") or {}).keys())),
+                            inputs=tuple(doc.get("inputs") or ()),
                         )
                     )
     return out

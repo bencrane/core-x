@@ -16,7 +16,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..engagement_templates import catalog, push, render, store
+from ..engagement_templates import catalog, push, render, store, values
 from ..engagement_templates.models import (
     RenderPushRequest,
     RenderPushResult,
@@ -46,6 +46,7 @@ def list_templates() -> list[TemplateRef]:
             name=e.name,
             default_style=e.default_style,
             styles_available=list(e.styles_available),
+            inputs=list(e.inputs),
         )
         for e in catalog.list_templates()
     ]
@@ -63,7 +64,7 @@ async def render_template(body: RenderRequest) -> RenderResult:
     # Assembly does blocking filesystem reads (manifest + html + css) — keep it off the event loop.
     try:
         html, style = await asyncio.to_thread(render.assemble_html, content_dir, body.style)
-    except render.StyleError as e:
+    except (render.StyleError, render.MissingTokenError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except render.RenderError as e:
         raise HTTPException(status_code=502, detail=f"render: {e}") from e
@@ -109,7 +110,22 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
     ``push.render_and_push`` — the SAME machinery the Trigger.dev `/internal` lane uses — but gated by
     the operator service token (not the trigger secret). DB-free: no ops ledger row (that is the
     automation lane's contract); the created Documenso template id is returned to the caller.
+
+    A tokenized template (manifest ``inputs``, e.g. prepaid-introductions) carries the operator's
+    values in ``body.values``; they are formatted into ``{{token}}`` substitutions and baked into the
+    PDF before DocRaptor. Untokenized templates ignore ``values``.
     """
+    tokens: dict[str, str] | None = None
+    if body.values is not None:
+        try:
+            tokens = values.prepaid_introduction_tokens(
+                amount=body.values.amount,
+                introductions=body.values.introductions,
+                term_days=body.values.term_days,
+            )
+        except (ValueError, ArithmeticError) as e:
+            raise HTTPException(status_code=400, detail=f"invalid values: {str(e)[:200]}") from e
+
     try:
         outcome = await push.render_and_push(
             brand=body.brand,
@@ -118,8 +134,9 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
             version=body.version,
             source_kind=push.REPO_HTML,
             style=body.style,
+            tokens=tokens,
         )
-    except (push.PushError, render.StyleError) as e:
+    except (push.PushError, render.StyleError, render.MissingTokenError) as e:
         # Bad selector / unknown template / unwired source / bad style — operator-fixable.
         raise HTTPException(status_code=400, detail=str(e)[:300]) from e
     except render.RenderConfigError as e:

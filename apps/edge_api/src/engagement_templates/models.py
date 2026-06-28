@@ -1,6 +1,8 @@
 """Request/response models for the engagement-template render surface."""
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import BaseModel
 
 
@@ -12,6 +14,16 @@ class TemplateRef(BaseModel):
     name: str
     default_style: str  # "plain" | "branded"
     styles_available: list[str]  # selectable styles for this template
+    inputs: list[str] = []  # operator-entered values this template bakes in (empty = none)
+
+
+class InputValues(BaseModel):
+    """Operator-entered values baked into a tokenized template at render time. Shape is per-archetype;
+    prepaid-introductions uses all three (price-per-introduction is derived, not entered)."""
+
+    amount: Decimal | None = None  # total USD paid
+    introductions: int | None = None  # whole count
+    term_days: int | None = None  # whole days
 
 
 class RenderRequest(BaseModel):
@@ -39,6 +51,7 @@ class RenderPushRequest(BaseModel):
     version: str
     brand: str = "active-operators"  # content root; mirrors RenderRequest's default
     style: str | None = None  # "plain" | "branded"; defaults to the manifest's style flag
+    values: InputValues | None = None  # baked values for a tokenized template (None = no tokens)
 
 
 class RenderPushResult(BaseModel):
