@@ -24,12 +24,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import config
 from ..db import get_db_connection
 from ..documenso_documents import queries as documenso_documents_queries
+from ..documenso_documents.models import DocumentAmountPublic
 from ..engagement_mandate_drafts import queries
 from ..engagement_mandate_drafts.models import (
     MandateDraftConfirmed,
     MandateDraftCreate,
     MandateDraftCreated,
     MandateDraftDocument,
+    MandateSigner,
     MandateStagingDraft,
     MandateStagingUpsert,
 )
@@ -124,10 +126,14 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
     except Exception:  # noqa: BLE001 — never fail the originate on a persistence hiccup
         logger.exception("documenso_documents stamp failed (envelope %s)", result.envelope_id)
 
+    # Surface EVERY signer link (participant + provider), sourced from the live envelope recipients;
+    # the legacy ``signing_token`` (first signer) is retained for back-compat.
+    signers = [MandateSigner(**s) for s in documenso_client.extract_signers(result.raw)]
     return MandateDraftConfirmed(
         envelope_id=result.envelope_id,
         signing_token=result.client_token,
         documenso_host=config.documenso_api_url(),
+        recipients=signers,
     )
 
 
@@ -143,4 +149,27 @@ async def read_mandate_draft_document(envelope_id: str) -> MandateDraftDocument:
         signing_token=token,
         documenso_host=config.documenso_api_url(),
         status=status,
+    )
+
+
+@router.get("/amount/{opportunity_id}/{document_id}")
+async def read_document_amount(opportunity_id: str, document_id: int) -> DocumentAmountPublic:
+    """PUBLIC — the per-document charge the BFF payment page reads after signing. Keyed by the
+    (opportunity_id, document_id) PAIR (the access capability — the document_id is enumerable, so the
+    opportunity uuid gates the read). Returns the variant price FROZEN on the document at originate.
+    404 when the pair does not match a row OR the opportunity id is not a well-formed UUID (the query
+    guards the cast in Python); genuine DB faults propagate as 5xx so an outage is observable, not
+    masked as 'not found'."""
+    async with get_db_connection() as conn:
+        row = await documenso_documents_queries.get_amount_by_opportunity_and_document_id(
+            conn, opportunity_id, document_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    return DocumentAmountPublic(
+        amount_cents=row["amount_cents"],
+        currency=row.get("currency") or "usd",
+        status=row.get("status"),
+        opportunity_id=row["opportunity_id"],
+        document_id=row["document_id"],
     )

@@ -25,6 +25,7 @@ from ..db import get_db_connection
 from ..documenso_documents import queries as documenso_documents_queries
 from ..services import documenso_client
 from ..engagement_docs import queries
+from ..engagement_docs import store
 
 logger = logging.getLogger(__name__)
 
@@ -61,17 +62,49 @@ async def documenso_webhook(
     except documenso_client.DocumensoError:
         payload = None
 
+    # external_id (the stamped draft id) is the deterministic bridge back to our row; the envelope id is
+    # the fallback. Computed once, used for both the document status advance and the signed-PDF capture.
+    match = evt.external_id or evt.envelope_id
+
+    # Signed-PDF capture on COMPLETED — download the sealed PDF, put it to R2, persist url + key.
+    # Resolve the CANONICAL row first (by ``match``) and operate on the row's OWN prefixed envelope id —
+    # never the webhook's id, which may be a NUMERIC document id that matches no prefixed column and 404s
+    # the download. IDEMPOTENT (skip when already captured) and BEST-EFFORT: all I/O (the probe read, the
+    # download, the R2 put/sign) happens OUTSIDE the pooled write below; a failure logs and degrades to a
+    # status-only advance. The persisted write is a single-row ``set_signed_pdf`` keyed by that canonical id.
+    captured_envelope_id: str | None = None
+    signed_pdf_url: str | None = None
+    signed_pdf_r2_key: str | None = None
+    if status == "COMPLETED" and match:
+        try:
+            async with get_db_connection() as probe:
+                existing = await documenso_documents_queries.get_by_match(probe, match)
+            if existing and not existing.get("signed_pdf_url"):
+                canonical = existing["envelope_id"]  # the unique, prefixed handle from our own row
+                pdf_bytes = await documenso_client.download_signed_pdf(canonical)
+                signed_pdf_r2_key = f"{store.MANDATE_PREFIX}{canonical}/signed.pdf"
+                await store.put_pdf(signed_pdf_r2_key, pdf_bytes)
+                signed_pdf_url = await store.presigned_get_url(signed_pdf_r2_key)
+                captured_envelope_id = canonical
+        except Exception:  # noqa: BLE001 — capture is an enhancement; never fail the status advance
+            logger.exception("signed-PDF capture failed (match %s)", match)
+            captured_envelope_id = signed_pdf_url = signed_pdf_r2_key = None
+
     async with get_db_connection() as conn:
         # AO term-only mandate lane (active-operators) — status advance by envelope_id, unchanged.
         mandate = await queries.update_documenso_status_by_envelope(
             conn, envelope_id=evt.envelope_id, documenso_status=status,
         )
-        # RS direct-to-documenso document SoR — matched by the external id we stamped (the draft id)
-        # or the envelope id; advances status, appends the event, refreshes payload when we have it.
+        # RS direct-to-documenso document SoR — status advance + event append + payload refresh.
         document = await documenso_documents_queries.sync_from_webhook(
-            conn, match=(evt.external_id or evt.envelope_id), status=status,
-            event=body, payload=payload,
+            conn, match=match, status=status, event=body, payload=payload,
         )
+        # Single-row sealed-PDF write, keyed by the canonical (unique) envelope id we captured under.
+        if captured_envelope_id and signed_pdf_url and signed_pdf_r2_key:
+            await documenso_documents_queries.set_signed_pdf(
+                conn, envelope_id=captured_envelope_id,
+                signed_pdf_url=signed_pdf_url, signed_pdf_r2_key=signed_pdf_r2_key,
+            )
         await conn.commit()
 
     if mandate is None and document is None:

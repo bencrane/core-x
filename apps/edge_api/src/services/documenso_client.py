@@ -143,6 +143,31 @@ def _extract_signer_token(body: Any) -> str | None:
     return str(tok) if tok else None
 
 
+def extract_signers(body: Any) -> list[dict[str, str | None]]:
+    """Enumerate EVERY recipient on an envelope as ``{name, email, role, signing_token}``, in payload
+    order (the engagement template is [participant, provider], so the order is stable). Drives the
+    BFF's per-signer links — the participant AND provider tokens, not just the first. Empty when the
+    envelope carries no recipients."""
+    env = _dig(body, "envelope", "document", "data") or body
+    recips = _dig(env, "recipients", "Recipient") or []
+    if not isinstance(recips, list):
+        return []
+    out: list[dict[str, str | None]] = []
+    for r in recips:
+        if not isinstance(r, dict):
+            continue
+        tok = _dig(r, "token", "signingToken")
+        out.append(
+            {
+                "name": (lambda v: str(v) if v is not None else None)(_dig(r, "name")),
+                "email": (lambda v: str(v) if v is not None else None)(_dig(r, "email")),
+                "role": (lambda v: str(v) if v is not None else None)(_dig(r, "role")),
+                "signing_token": str(tok) if tok else None,
+            }
+        )
+    return out
+
+
 # Field SIZE overrides — PERCENT of the page (0-100). Position is NOT set here: Documenso resolves
 # it from the anchor marker (``findText``). But the anchor's own text box (a thin one-line strip at
 # sig-line font size) is too small to be a usable signature/date target, so we override the box to

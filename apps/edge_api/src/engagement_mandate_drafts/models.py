@@ -18,14 +18,30 @@ class MandateDraftCreated(BaseModel):
     id: str
 
 
+class MandateSigner(BaseModel):
+    """One signer link on the instantiated document — the identity (name/email/role) plus the signing
+    token that drives that party's embed. The engagement template carries TWO signers (participant +
+    provider), so the BFF renders one link per recipient."""
+
+    name: str | None = None
+    email: str | None = None
+    role: str | None = None
+    signing_token: str | None = None
+
+
 class MandateDraftConfirmed(BaseModel):
     """The direct-to-documenso originate result — the envelope id (the prospect-link capability)
-    plus the signer token + host that drive the embedded signer. STATELESS: nothing is persisted on
-    the draft, so the envelope id carried in the link is the only handle back to the document."""
+    plus the signer tokens + host that drive the embedded signers. STATELESS: nothing is persisted on
+    the draft, so the envelope id carried in the link is the only handle back to the document.
+
+    ``recipients`` surfaces EVERY signer (participant + provider) with full identity + token — the BFF
+    keys off role/email, not order. The legacy ``signing_token`` (the first SIGNER-role recipient's
+    token) is retained for back-compat; prefer ``recipients`` for new consumers."""
 
     envelope_id: str
     signing_token: str | None
     documenso_host: str
+    recipients: list[MandateSigner] = []
 
 
 class MandateDraftDocument(BaseModel):
