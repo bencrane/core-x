@@ -260,8 +260,10 @@ def _assemble(so, window_days: int):
            COALESCE(prof.requires_clearance, FALSE) AS requires_clearance,
            COALESCE(prof.requires_cmmc, FALSE) AS requires_cmmc,
            prof.req_clearance_level_max AS req_clearance_level_max,
-           prof.solicitation_scope_tags AS capability_tags,
-           prof.top_labor_categories AS labor_categories,
+           -- Cap the free-text list axes at 50 elements (mirrors winners' COVERED_AWARD_KEYS_CAP) so a
+           -- pathological profile cannot blow a single Lance v2.1 column chunk past max_chunk_size.
+           list_slice(prof.solicitation_scope_tags, 1, 50) AS capability_tags,
+           list_slice(prof.top_labor_categories, 1, 50) AS labor_categories,
            'usaspending_contracts_map_serving (derived)' AS source_file,
            now()::VARCHAR AS ingested_at
     FROM keyed k
@@ -319,13 +321,12 @@ def build(window_days: int = WINDOW_DAYS):
         if rows == 0:
             raise RuntimeError("zero contracts assembled")
         # max_rows_per_file: the Lance 2.1 encoder asserts chunk_bytes <= max_chunk_size per column
-        # chunk. The capability list columns (capability_tags / labor_categories) can push a single-
-        # fragment write past that limit. Cap the fragment so every per-column chunk stays well under
-        # the limit; Lance reads/indexes across fragments natively. (Contract grain is sub-million —
-        # far below action grain — but the wide list columns make the cap a cheap safety net.)
+        # chunk; a 250k-row fragment overran it at ~1M contracts, so bound fragments tighter. 64k rows
+        # keeps every per-column page well under the limit (Lance reads/indexes across fragments
+        # natively), and the capability lists are independently capped at 50 elements above.
         lance.write_dataset(tbl, SERVING_URI, mode="overwrite",
                             data_storage_version=DATA_STORAGE_VERSION, storage_options=so,
-                            max_rows_per_file=250_000)
+                            max_rows_per_file=64_000)
         ds = lance.dataset(SERVING_URI, storage_options=so)
         for col in BTREE_INDEXES:
             ds.create_scalar_index(col, index_type="BTREE", replace=True)
