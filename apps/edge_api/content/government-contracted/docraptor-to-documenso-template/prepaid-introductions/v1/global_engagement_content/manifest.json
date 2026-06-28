@@ -1,7 +1,7 @@
 {
   "government_contracted_prepaid_introductions": {
     "slug": "government_contracted_prepaid_introductions",
-    "name": "Rare Structure (Government-Contracted) — Prepaid Introductions Agreement",
+    "name": "Rare Structure (Government-Contracted) — Strategic Origination Agreement (Prepaid Introductions)",
     "archetype": "prepaid_introductions",
     "document": "government_contracted_prepaid_introductions.html",
     "stylesheets": {
