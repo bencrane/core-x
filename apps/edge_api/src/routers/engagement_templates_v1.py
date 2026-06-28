@@ -16,9 +16,16 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..engagement_templates import catalog, render, store
-from ..engagement_templates.models import RenderRequest, RenderResult, TemplateRef
+from ..engagement_templates import catalog, push, render, store
+from ..engagement_templates.models import (
+    RenderPushRequest,
+    RenderPushResult,
+    RenderRequest,
+    RenderResult,
+    TemplateRef,
+)
 from ..service_token import require_service_token
+from ..services import documenso_client
 
 logger = logging.getLogger(__name__)
 
@@ -91,4 +98,49 @@ async def render_template(body: RenderRequest) -> RenderResult:
         version=body.version,
         style=style,
         pdf_bytes=len(pdf),
+    )
+
+
+@router.post("/render-push", dependencies=[Depends(require_service_token)])
+async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
+    """Render the selected template to a PDF and create a Documenso TEMPLATE from the bytes.
+
+    Operator-driven sibling of POST /render (which stops at the presigned PDF). Reuses
+    ``push.render_and_push`` — the SAME machinery the Trigger.dev `/internal` lane uses — but gated by
+    the operator service token (not the trigger secret). DB-free: no ops ledger row (that is the
+    automation lane's contract); the created Documenso template id is returned to the caller.
+    """
+    try:
+        outcome = await push.render_and_push(
+            brand=body.brand,
+            path=body.path,
+            archetype=body.archetype,
+            version=body.version,
+            source_kind=push.REPO_HTML,
+            style=body.style,
+        )
+    except (push.PushError, render.StyleError) as e:
+        # Bad selector / unknown template / unwired source / bad style — operator-fixable.
+        raise HTTPException(status_code=400, detail=str(e)[:300]) from e
+    except render.RenderConfigError as e:
+        raise HTTPException(status_code=503, detail=f"render: {str(e)[:300]}") from e
+    except (render.RenderError, documenso_client.DocumensoError) as e:
+        raise HTTPException(status_code=502, detail=str(e)[:300]) from e
+
+    logger.info(
+        "engagement-template render-push ok: %s/%s/%s/%s style=%s template=%s",
+        outcome.brand, outcome.path, outcome.archetype, outcome.version,
+        outcome.style, outcome.documenso_template_id,
+    )
+    return RenderPushResult(
+        documenso_template_id=outcome.documenso_template_id,
+        documenso_numeric_id=outcome.documenso_numeric_id,
+        brand=outcome.brand,
+        path=outcome.path,
+        archetype=outcome.archetype,
+        version=outcome.version,
+        style=outcome.style,
+        source_kind=outcome.source_kind,
+        pdf_bytes=outcome.pdf_bytes,
+        pdf_url=outcome.pdf_url,
     )
