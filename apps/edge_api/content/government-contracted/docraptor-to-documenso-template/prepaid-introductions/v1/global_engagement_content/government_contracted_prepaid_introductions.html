@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!--
+  RARE STRUCTURE — Government-Contracted brand — Prepaid Introductions Agreement.
+  Brand subtree: government-contracted. ORG AFFILIATION: Rare Structure (Provider executes as Rare
+  Structure LLC) — the first brand whose subtree name differs from its organization. Archetype:
+  prepaid_introductions — Participant PRE-PAYS a fixed amount for a GUARANTEED count of introductions
+  delivered within an X-day window, priced at Y per introduction (count Z = prepayment / price-per-intro).
+
+  STYLE-AGNOSTIC static PDF body. The stylesheet slot in <head> is the ONLY render-time substitution
+  (plain | branded, per manifest.json). NO Handlebars-style merge tokens: the render+push lane performs
+  ZERO token substitution, so every dynamic value is a blank underscore run (and/or an INVISIBLE [[XX]]
+  findText anchor, painted white into the text layer) that a Documenso field is affixed onto in the
+  editor — never filled into the HTML before render.
+
+  PLACEHOLDER BODY — replace the prose below with the supplied government-contracted prepaid-introductions
+  content. Convert any Handlebars-style merge tokens in that content to underscore runs on intake. Preserve
+  the stylesheet slot, the underscore-run blanks, the invisible [[XX]] anchors, and the execution block.
+  House reference: content/rare-structure/docraptor-to-documenso-template/capital-origination/v3.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Prepaid Introductions Agreement</title>
+<style>__STYLESHEET__</style>
+</head>
+<body>
+  <div class="wordmark">RARE STRUCTURE</div>
+  <h1>Prepaid Introductions Agreement</h1>
+  <hr class="rule" />
+
+  <p class="lead">This Prepaid Introductions Agreement (the &ldquo;Agreement&rdquo;), effective as of
+  ____________<span class="anchor">[[EFD]]</span> (the &ldquo;Effective Date&rdquo;), is entered into by
+  Rare Structure LLC (the &ldquo;Provider&rdquo;) and the participating entity,
+  <span class="anchor">[[LEN]]</span>______________________________, hereby defined as the
+  &ldquo;Participant&rdquo;.</p>
+
+  <p class="lead"><em>PLACEHOLDER BODY &mdash; replace with the supplied government-contracted
+  prepaid-introductions content. Section&nbsp;1 below illustrates the archetype&rsquo;s economic
+  variables as blank underscore runs in the Rare Structure house style.</em></p>
+
+  <h2>1. Prepaid Introductions</h2>
+  <p><strong>1.1 Prepayment.</strong> Participant shall pre-pay a fixed, non-refundable amount of
+  $____________<span class="anchor">[[AMT]]</span> (the &ldquo;Prepayment&rdquo;), due in full upon
+  execution of this Agreement.</p>
+  <p><strong>1.2 Guaranteed Introductions.</strong> In consideration of the Prepayment, Provider shall
+  deliver ________<span class="anchor">[[QTY]]</span> introductions (the &ldquo;Guaranteed
+  Introductions&rdquo;) within ________<span class="anchor">[[WIN]]</span> days of the Effective Date.</p>
+  <p><strong>1.3 Per-Introduction Price.</strong> The Prepayment reflects a price of
+  $____________<span class="anchor">[[PPI]]</span> per introduction; the number of Guaranteed
+  Introductions equals the Prepayment divided by the per-introduction price.</p>
+
+  <!-- Execution block — HELD INLINE; mirrors the Rare Structure house convention. Provider pre-set
+       (Benjamin J. Crane / Managing Director). Every dynamic value is a blank field AREA a Documenso
+       field is affixed onto in the editor; the invisible [[XX]] anchors are findText placement markers. -->
+  <div class="sig-wrap">
+    <table class="sig-grid"><tr>
+      <td>
+        <div class="sig-party">Provider</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"><span class="anchor">[[VSG]]</span></div>
+        <div class="sig-field"><span class="lab">By:</span> <span class="val">Benjamin J. Crane</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> <span class="anchor">[[VDT]]</span></div>
+      </td>
+      <td>
+        <div class="sig-party">Participant</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"><span class="anchor">[[PSG]]</span></div>
+        <div class="sig-field"><span class="lab">By:</span> <span class="anchor">[[PNM]]</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="anchor">[[PTL]]</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> <span class="anchor">[[PDT]]</span></div>
+      </td>
+    </tr></table>
+  </div>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "government_contracted_prepaid_introductions": {
+    "slug": "government_contracted_prepaid_introductions",
+    "name": "Rare Structure (Government-Contracted) — Prepaid Introductions Agreement",
+    "archetype": "prepaid_introductions",
+    "document": "government_contracted_prepaid_introductions.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}

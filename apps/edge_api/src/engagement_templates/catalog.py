@@ -3,7 +3,7 @@ archetype, version) tuples to a repo-resident template directory.
 
 A template is any ``<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json``
 under the content root (``apps/edge_api/content``). ``brand`` selects the content root subtree
-(``active-operators`` | ``rare-structure``); the remaining segments arrive from the operator (via the
+(``active-operators`` | ``rare-structure`` | ``government-contracted``); the remaining segments arrive from the operator (via the
 BFF / the content-source registry), so each is validated against a strict allowlist AND the resolved
 directory is confirmed to live inside the root — defense-in-depth against path traversal.
 
@@ -25,7 +25,7 @@ _MANIFEST = "manifest.json"
 # The brands (content-root subtrees) the lane will discover/resolve. An explicit allowlist so a stray
 # or unvetted directory under content/ can never surface as a selectable template — enforced in BOTH
 # list_templates() and resolve(). Adding a brand is a one-line, code-reviewed change here.
-_ALLOWED_BRANDS = frozenset({"active-operators", "rare-structure"})
+_ALLOWED_BRANDS = frozenset({"active-operators", "rare-structure", "government-contracted"})
 
 # One path SEGMENT: starts alnum, then alnum / dot / dash / underscore. No slash and no leading dot,
 # so "..", "/", "", and absolute paths are all rejected before any filesystem touch.
