@@ -23,8 +23,8 @@ body {
 h1 { font-family: Georgia, serif; font-size: 18pt; font-weight: 700; margin: 6pt 0 2pt; color: #111111; }
 .rule { border: 0; border-top: 1pt solid #111111; margin: 10pt 0 16pt; }
 h2 {
-  font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; letter-spacing: 0.08em;
-  text-transform: uppercase; font-weight: 700; margin: 16pt 0 5pt; color: #111111;
+  font-family: Helvetica, Arial, sans-serif; font-size: 13pt; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 700; margin: 18pt 0 6pt; color: #111111;
 }
 strong { font-weight: 700; color: #000000; }
 p { margin: 0 0 8pt; text-align: justify; }
