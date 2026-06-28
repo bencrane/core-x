@@ -1078,6 +1078,7 @@ _SURFACE_DATASETS = {
     "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
     "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],
     "awards_map_serving": lambda: config.MAP_DATASET_URIS["awards"],
+    "contracts_map_serving": lambda: config.MAP_DATASET_URIS["contracts"],
     "subawardee_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
     "contract_subaward": lambda: config.CONTRACT_SUBAWARD_URI,
     "people": lambda: config.PEOPLE_URI,

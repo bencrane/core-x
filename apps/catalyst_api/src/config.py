@@ -130,8 +130,16 @@ AWARDS_MAP_URI = os.environ.get(
 ACTIVE_MAP_URI = os.environ.get(
     "ACTIVE_MAP_LANCE_URI", "s3://data-sink/active/govcon_active_awards_map_serving/"
 )
+# Contract-AWARD grain (1 row per contract_award_unique_key = FPDS PIID+agency composite),
+# pre-geocoded — the read model behind "a single contract with $X+ summed obligations". The
+# transaction ledger is rolled to award grain (deduped, net-summed), so the $-threshold filters
+# the SUMMED contract value, not one action (distinct from the awards EVENT grain). Prime-only.
+CONTRACTS_MAP_URI = os.environ.get(
+    "CONTRACTS_MAP_LANCE_URI", "s3://data-sink/active/usaspending_contracts_map_serving/"
+)
 MAP_DATASET_URIS = {"winners": WINNERS_MAP_URI, "company": COMPANY_MAP_URI,
-                    "awards": AWARDS_MAP_URI, "active": ACTIVE_MAP_URI}
+                    "awards": AWARDS_MAP_URI, "active": ACTIVE_MAP_URI,
+                    "contracts": CONTRACTS_MAP_URI}
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
