@@ -44,6 +44,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
+from .src.routers.deals_v1 import router as deals_router
 from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
@@ -269,6 +270,11 @@ app.include_router(bookings_router)
 # opportunities: the operator Pipeline list — CRM opportunities materialized on a booking
 # (business.opportunities). Service-token gated; the BFF brokers it with the operator session.
 app.include_router(opportunities_router)
+
+# deals: the operator Applications/Research list — business.deals (one per account, org-grounded).
+# The first-class pipeline entity replacing the booking->opportunity projection for the cockpit
+# list + Application detail. Service-token gated; the BFF brokers it with the operator session.
+app.include_router(deals_router)
 
 # opportunities (internal): the materialization PRODUCER. The opportunity-materialize Trigger.dev
 # task (fired by the cal webhook on a new booking) calls /internal/opportunities/materialize to
