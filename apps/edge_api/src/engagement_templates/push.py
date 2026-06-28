@@ -69,10 +69,12 @@ async def render_and_push(
     source_kind: str = REPO_HTML,
     style: str | None = None,
     title: str | None = None,
+    tokens: dict[str, str] | None = None,
     recipients: list[dict[str, str]] | None = None,
     store_copy: bool = True,
 ) -> PushOutcome:
-    """Resolve the content source, render it to PDF, and create a Documenso TEMPLATE from the bytes.
+    """Resolve the content source, render it to PDF (substituting any baked-value ``tokens``), and
+    create a Documenso TEMPLATE from the bytes.
 
     Raises ``PushError`` (bad selector / unwired source), ``render.RenderError`` /
     ``render.StyleError`` / ``render.RenderConfigError`` (assembly or DocRaptor), ``store.StoreError``
@@ -89,7 +91,7 @@ async def render_and_push(
         raise PushError(str(exc)) from exc
 
     # Assembly does blocking filesystem reads (manifest + html + css) — keep it off the event loop.
-    html, resolved_style = await asyncio.to_thread(render.assemble_html, content_dir, style)
+    html, resolved_style = await asyncio.to_thread(render.assemble_html, content_dir, style, tokens)
 
     if title is None:
         doc = await asyncio.to_thread(catalog.manifest_doc, content_dir)

@@ -1,8 +1,11 @@
-"""Assemble a template's static HTML (inject the chosen stylesheet — NO token substitution) and
-render it to PDF via DocRaptor in LIVE mode (clean, billed; DocRaptor's test output is watermarked).
+"""Assemble a template's HTML (inject the chosen stylesheet + substitute any baked-value ``{{tokens}}``)
+and render it to PDF via DocRaptor in LIVE mode (clean, billed; DocRaptor's test output is watermarked).
 
-The HTML body carries no ``{{tokens}}`` — every dynamic value is reserved blank space the operator
-fills as Documenso fields later — so assembly is purely the ``__STYLESHEET__`` slot injection.
+Most templates carry no ``{{tokens}}`` — every dynamic value is reserved blank space the operator fills
+as Documenso fields later — so assembly is just the ``__STYLESHEET__`` slot injection. A tokenized
+template (e.g. government-contracted prepaid-introductions) additionally has ``{{ name }}`` slots whose
+formatted values are passed in via ``tokens`` and substituted here, BEFORE DocRaptor. Any token left
+unsubstituted is a hard error — a blank-input bug must never reach a billed render as literal ``{{…}}``.
 
 ``assemble_html`` does blocking filesystem reads; call it off the event loop (``asyncio.to_thread``).
 """
@@ -10,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 
 import httpx
 
@@ -21,6 +25,7 @@ logger = logging.getLogger(__name__)
 _DOCRAPTOR_URL = "https://docraptor.com/docs"
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 _STYLE_SLOT = "__STYLESHEET__"
+_TOKEN_RE = re.compile(r"{{\s*([a-z_]+)\s*}}")
 
 
 class RenderError(RuntimeError):
@@ -35,6 +40,11 @@ class StyleError(RenderError):
     """The requested style is not one of the manifest's stylesheets → surface as 400 (client error)."""
 
 
+class MissingTokenError(RenderError):
+    """A tokenized template was rendered with a ``{{token}}`` the caller did not supply (or with no
+    values at all) → operator-fixable input, so surface as 400, not 502."""
+
+
 def _within(base: pathlib.Path, rel: str) -> pathlib.Path:
     """Resolve ``rel`` under ``base`` and confirm it does not escape — defense-in-depth so a manifest
     that names ``../../secret`` cannot read outside the template directory."""
@@ -45,12 +55,31 @@ def _within(base: pathlib.Path, rel: str) -> pathlib.Path:
     return target
 
 
-def assemble_html(content_dir: pathlib.Path, style: str | None = None) -> tuple[str, str]:
+def _substitute_tokens(html: str, tokens: dict[str, str]) -> str:
+    """Replace each ``{{ name }}`` with ``tokens[name]``. Raises ``RenderError`` if the template names
+    a token the caller did not supply."""
+
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in tokens:
+            raise MissingTokenError(f"template references unknown token {{{{ {key} }}}}")
+        return tokens[key]
+
+    return _TOKEN_RE.sub(repl, html)
+
+
+def assemble_html(
+    content_dir: pathlib.Path,
+    style: str | None = None,
+    tokens: dict[str, str] | None = None,
+) -> tuple[str, str]:
     """Load the manifest, resolve the style (default = the manifest's plain flag), validate it,
-    containment-check the asset paths, and inject the CSS into the ``__STYLESHEET__`` slot.
+    containment-check the asset paths, inject the CSS into the ``__STYLESHEET__`` slot, and substitute
+    any baked-value ``{{tokens}}``.
 
     Returns ``(html, resolved_style)``. Raises ``StyleError`` (bad style) or ``RenderError`` (manifest
-    or asset read failure). Blocking I/O — run via ``asyncio.to_thread``.
+    or asset read failure, or a ``{{token}}`` left unsubstituted — e.g. a tokenized template rendered
+    without its input values). Blocking I/O — run via ``asyncio.to_thread``.
     """
     try:
         doc = catalog.manifest_doc(content_dir)
@@ -67,7 +96,16 @@ def assemble_html(content_dir: pathlib.Path, style: str | None = None) -> tuple[
         css = _within(content_dir, stylesheets[resolved]).read_text()
     except (KeyError, OSError) as exc:
         raise RenderError(f"cannot read template assets: {exc}") from exc
-    return document.replace(_STYLE_SLOT, css), resolved
+
+    html = document.replace(_STYLE_SLOT, css)
+    if tokens:
+        html = _substitute_tokens(html, tokens)
+    leftover = _TOKEN_RE.search(html)
+    if leftover:
+        raise MissingTokenError(
+            f"template has an unsubstituted token {{{{ {leftover.group(1)} }}}} — missing input values"
+        )
+    return html, resolved
 
 
 async def render_pdf(html: str, *, name: str) -> bytes:

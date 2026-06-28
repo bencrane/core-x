@@ -8,11 +8,14 @@
   per-introduction unit cost (allocation = total payment / price-per-introduction); any unfulfilled
   balance at term expiration resolves to a prorated refund (Option A) or a credit rollover (Option B).
 
-  STYLE-AGNOSTIC static PDF body. The stylesheet slot in <head> is the ONLY render-time substitution
-  (plain | branded, per manifest.json). NO Handlebars-style merge tokens: the render+push lane performs
-  ZERO token substitution, so every dynamic value is a blank underscore run paired with an INVISIBLE
-  [[XX]] findText anchor (white, 5pt — painted into the text layer, invisible to the eye) that a
-  Documenso field is affixed onto in the editor — never filled into the HTML before render.
+  STYLE-AGNOSTIC PDF body with TWO kinds of dynamic slot:
+    - BAKED VALUES — named tokens amount, introductions, price_per_introduction, term_days —
+      substituted server-side at render time from the operator's inputs (price_per_introduction is
+      DERIVED = amount / introductions) BEFORE DocRaptor. These print as real text.
+    - SIGNER BLANKS — effective date, participant entity / d/b/a, and the signature / by / title /
+      date lines — left as plain underscore runs; the operator drops Documenso fields on them in the
+      Documenso editor. No invisible anchors.
+  The <head> stylesheet slot (plain | branded per manifest.json) is injected the same way.
 
   House reference: content/rare-structure/docraptor-to-documenso-template/capital-origination/v3.
 -->
@@ -28,9 +31,9 @@
   <hr class="rule" />
 
   <p class="lead">This Strategic Origination Agreement (the &ldquo;Agreement&rdquo;), effective as of
-  ____________<span class="anchor">[[EFD]]</span> (the &ldquo;Effective Date&rdquo;), is entered into by
+  ____________ (the &ldquo;Effective Date&rdquo;), is entered into by
   Rare Structure LLC (the &ldquo;Provider&rdquo;) and the participating entity,
-  ____________________<span class="anchor">[[LEN]]</span> d/b/a ____________________<span class="anchor">[[DBA]]</span>,
+  ______________________________ d/b/a ____________________________,
   hereby defined as the &ldquo;Participant&rdquo;.</p>
 
   <h2>1. Purpose &amp; Scope</h2>
@@ -87,24 +90,24 @@
 
   <h2>3. Financial Architecture &amp; Commercial Terms</h2>
   <p><strong>3.1 Prepaid Origination Allocation.</strong> Participant shall pay a non-refundable upfront
-  fee of ____________<span class="anchor">[[AMT]]</span>, due in full upon execution of this Agreement.
-  This payment secures a dedicated allocation of ________<span class="anchor">[[QTY]]</span> Introductions,
-  establishing a fixed unit cost of ____________<span class="anchor">[[PPI]]</span> per Introduction.</p>
+  fee of {{ amount }}, due in full upon execution of this Agreement.
+  This payment secures a dedicated allocation of {{ introductions }} Introductions,
+  establishing a fixed unit cost of {{ price_per_introduction }} per Introduction.</p>
   <p><strong>3.2 Primary Fulfillment Term.</strong> Provider shall have a primary operational window of
-  ________<span class="anchor">[[WIN]]</span> days from the Effective Date (the &ldquo;Primary Term&rdquo;)
-  to execute and deliver the ________<span class="anchor">[[QTY]]</span> Introductions.</p>
+  {{ term_days }} days from the Effective Date (the &ldquo;Primary Term&rdquo;)
+  to execute and deliver the {{ introductions }} Introductions.</p>
   <p><strong>3.3 Condition Precedent to Commencement.</strong> Provider shall have no obligation to
   commence origination activity under this Agreement until the payment set forth in Section 3.1 has been
   received and irrevocably cleared in full.</p>
   <p><strong>3.4 Term Expiration &amp; Resolution.</strong> In the event that Provider does not facilitate
-  the full allocation of ________<span class="anchor">[[QTY]]</span> Introductions prior to the expiration
+  the full allocation of {{ introductions }} Introductions prior to the expiration
   of the Primary Term, Participant shall be immediately presented with a binary resolution choice for the
   unfulfilled balance:</p>
   <p><strong>Option A (Prorated Refund):</strong> Participant may elect to receive a cash refund for the
   unfulfilled Introductions, calculated precisely as the number of unfulfilled Introductions multiplied
-  by ____________<span class="anchor">[[PPI]]</span>.</p>
+  by {{ price_per_introduction }}.</p>
   <p><strong>Option B (Credit Rollover):</strong> Participant may elect to convert the unfulfilled balance
-  into a retained allocation credit, locking in the ____________<span class="anchor">[[PPI]]</span> rate
+  into a retained allocation credit, locking in the {{ price_per_introduction }} rate
   for future Introductions.</p>
   <p><strong>3.5 Rollover Mechanics &amp; Passive Allocation.</strong> If Participant elects Option B
   (Credit Rollover) under Section 3.4, the relationship formally transitions into the &ldquo;Rollover
@@ -152,25 +155,25 @@
   authorized to execute this Agreement on behalf of, and to bind, the party for which they sign.</p>
 
   <!-- Execution block — HELD INLINE; mirrors the Rare Structure house convention. Provider pre-set
-       (Benjamin J. Crane / Managing Director). Signature/date/name/title are blank field AREAS a
-       Documenso field is affixed onto in the editor; the invisible [[XX]] anchors are findText markers. -->
+       (Benjamin J. Crane / Managing Director). Signature / by / title / date are plain underscore blanks; the
+       operator drops Documenso fields on them in the Documenso editor. -->
   <div class="sig-wrap">
     <table class="sig-grid"><tr>
       <td>
         <div class="sig-party">Provider</div>
         <div class="sig-entity">Rare Structure LLC</div>
-        <div class="sig-line"><span class="anchor">[[VSG]]</span></div>
+        <div class="sig-line"></div>
         <div class="sig-field"><span class="lab">By:</span> <span class="val">Benjamin J. Crane</span></div>
         <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
-        <div class="sig-field"><span class="lab">Date:</span> ________<span class="anchor">[[VDT]]</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________</div>
       </td>
       <td>
         <div class="sig-party">Participant</div>
         <div class="sig-entity"></div>
-        <div class="sig-line"><span class="anchor">[[PSG]]</span></div>
-        <div class="sig-field"><span class="lab">By:</span> ____________<span class="anchor">[[PNM]]</span></div>
-        <div class="sig-field"><span class="lab">Title:</span> ____________<span class="anchor">[[PTL]]</span></div>
-        <div class="sig-field"><span class="lab">Date:</span> ________<span class="anchor">[[PDT]]</span></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">By:</span> ________________</div>
+        <div class="sig-field"><span class="lab">Title:</span> ________________</div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________</div>
       </td>
     </tr></table>
   </div>
