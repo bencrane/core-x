@@ -13,7 +13,7 @@
 * { box-sizing: border-box; }
 html, body { background: #ffffff; }
 body {
-  font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.6;
+  font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.65;
   color: #111111; margin: 0;
 }
 .wordmark {
@@ -38,9 +38,10 @@ p { margin: 0 0 8pt; text-align: justify; }
    text layer and is NOT found). Assumes the plain (white-background) stylesheet, which is what we push. */
 .anchor { color: #ffffff; font-size: 5pt; }
 
-/* Execution block. page-break-inside: avoid keeps the signatures intact. Signature, date, name, and
-   title fields are affixed in the Documenso editor — nothing is rendered into these slots. */
-.sig-wrap { margin-top: 30pt; page-break-inside: avoid; }
+/* Execution block. page-break-before: always puts the whole signature area on its own (last) page;
+   page-break-inside: avoid keeps it intact. Signature, date, name, and title fields are affixed in
+   the Documenso editor — nothing is rendered into these slots. */
+.sig-wrap { margin-top: 30pt; page-break-before: always; page-break-inside: avoid; }
 .sig-grid { width: 100%; border-collapse: separate; border-spacing: 0; }
 .sig-grid td { width: 50%; vertical-align: top; padding-right: 28pt; }
 .sig-party {
@@ -48,7 +49,7 @@ p { margin: 0 0 8pt; text-align: justify; }
   text-transform: uppercase; font-weight: 700; color: #111111; margin-bottom: 2pt;
 }
 .sig-entity { font-size: 10.5pt; font-weight: 700; color: #111111; line-height: 13pt; min-height: 13pt; margin-bottom: 18pt; }
-.sig-line { border-bottom: 1pt solid #111111; height: 30pt; margin-bottom: 4pt; }
+.sig-line { border-bottom: 1pt solid #111111; height: 30pt; margin-bottom: 12pt; }
 .sig-field { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #111111; margin: 0 0 2pt; }
 .sig-field .lab { display: inline-block; width: 44pt; color: #666666; }
 .sig-field .val { color: #111111; }
