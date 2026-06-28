@@ -1,4 +1,4 @@
-# Rare Structure (Government-Contracted) — Prepaid Introductions Agreement
+# Rare Structure (Government-Contracted) — Strategic Origination Agreement (Prepaid Introductions)
 
 Render-ready HTML for the **government-contracted** brand's first template — the **prepaid-introductions**
 archetype. DocRaptor renders this file directly to a PDF, and that PDF is the source document for a
@@ -24,11 +24,14 @@ org (`active-operators` and `rare-structure` are 1:1 brand↔org). Consequences:
 ## Archetype — `prepaid_introductions`
 
 A NEW economic shape (no `business.engagement_archetypes` row yet — see Deferred). The Participant
-**pre-pays a fixed amount** for a **guaranteed count of introductions** delivered within an **X-day
-window**, priced at **Y per introduction**:
+**pre-pays a fixed amount** for a **dedicated allocation of Introductions** over a **primary fulfillment
+window (X days)**, at a fixed **per-introduction unit cost (Y)**. Any balance unfulfilled at primary-term
+expiration resolves to the Participant's election of a **prorated refund** (Option A) or a **credit
+rollover** (Option B, transitioning to a passive-allocation mandate). An "Introduction" is strictly an
+outbound email facilitation (§2.2):
 
 ```
-guaranteed_introductions (Z)  =  prepayment (amount paid)  ÷  price_per_introduction (Y)
+allocation (Z)  =  prepayment (amount paid)  ÷  price_per_introduction (Y)
 ```
 
 Economic fill-slots in the body — each a blank underscore run paired with an invisible `[[XX]]` findText
@@ -37,11 +40,11 @@ anchor:
 | Slot | Anchor | Meaning |
 | --- | --- | --- |
 | Effective Date | `[[EFD]]` | agreement effective date |
-| Participant entity | `[[LEN]]` | Participant legal entity name |
-| Prepayment amount | `[[AMT]]` | total prepaid (the "Prepayment") |
-| Guaranteed count | `[[QTY]]` | number of introductions (Z) |
-| Delivery window | `[[WIN]]` | days to deliver |
-| Per-introduction price | `[[PPI]]` | price per introduction (Y) |
+| Participant entity | `[[LEN]]` | Participant legal entity name (the preamble reads "[name] d/b/a [dba]" verbatim from source — the participant's own d/b/a) |
+| Prepayment amount | `[[AMT]]` | total prepaid (the non-refundable upfront fee) |
+| Allocation count | `[[QTY]]` | number of Introductions (Z) — recurs in §3.1, §3.2, §3.4 |
+| Primary term | `[[WIN]]` | fulfillment window in days |
+| Per-introduction price | `[[PPI]]` | unit cost (Y) — recurs in §3.1, §3.4 A/B |
 | Execution block | `[[VSG]] [[VDT]] [[PSG]] [[PNM]] [[PTL]] [[PDT]]` | Provider/Participant signature, date, name, title |
 
 ## Layout
