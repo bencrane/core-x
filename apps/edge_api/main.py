@@ -43,7 +43,6 @@ from .src.mcp.trigger import mcp as trigger_mcp
 from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
-from .src.routers.opportunities_v1 import router as opportunities_router
 from .src.routers.deals_v1 import router as deals_router
 from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
@@ -266,10 +265,6 @@ app.include_router(proposal_templates_router)
 # bookings: the operator Pipeline list — recent cal.com bookings from corex.bookings.
 # Service-token gated; the BFF brokers it with the operator session. Read-only (Phase 1).
 app.include_router(bookings_router)
-
-# opportunities: the operator Pipeline list — CRM opportunities materialized on a booking
-# (business.opportunities). Service-token gated; the BFF brokers it with the operator session.
-app.include_router(opportunities_router)
 
 # deals: the operator Applications/Research list — business.deals (one per account, org-grounded).
 # The first-class pipeline entity replacing the booking->opportunity projection for the cockpit
