@@ -890,4 +890,239 @@ ACTIVE = Decoder(
 )
 
 
-DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY, "awards": AWARDS, "active": ACTIVE}
+CONTRACTS = Decoder(
+    dataset_key="contracts",
+    version="contracts.v1",  # NEW 6th map dataset (alongside company/winners/awards/active). CONTRACT-
+                             # AWARD grain: 1 row per contract_award_unique_key (FPDS PIID+agency
+                             # composite), PRIME-ONLY (subawards carry no PIID). The transaction ledger
+                             # is rolled to award grain — deduped on contract_transaction_unique_key,
+                             # NET-summed federal_action_obligation — so the $-threshold filters the
+                             # SUMMED contract value (contract_obligated_usd), not a single action (the
+                             # distinction from the awards EVENT grain). contract_ceiling_usd =
+                             # arg_max(base_and_all_options_value by action_date). Cloned byte-identical
+                             # from awards.v11 except: award_amount→{obligated, ceiling} (two money
+                             # fields over the two contract-$ columns), geometry, properties, aggregate
+                             # measure. Every other axis (days_since_action→last_action_date, fiscal_year,
+                             # naics/psc, geo, agency, set_aside, business_size, is_active, GTM labels,
+                             # Phase-3 capability) is identical to awards in query-name/type/ops/enum/gate.
+    geometry=("longitude", "latitude"),
+    properties=("award_id", "parent_award_id", "winner_uei", "winner_name",
+                "contract_obligated_usd", "contract_ceiling_usd", "action_count",
+                "naics_code", "naics2", "psc_code", "psc_category",
+                "state", "pop_state", "awarding_agency", "awarding_sub_agency",
+                "set_aside", "vertical", "work_type", "equipment_intensity",
+                "is_active", "fiscal_year", "last_action_date",
+                # Phase-3 capability surface (contracts.v1) — structured only (NO chunk-derived verbatim text).
+                "has_extracted_scope", "requires_clearance", "req_clearance_level_max",
+                "requires_cmmc"),
+    fields={
+        # ── The two contract-$ axes (the entire point of this grain): obligations SUMMED across the
+        # contract's deduped actions (NET — de-obligations included → true current value), and the
+        # contract ceiling (base_and_all_options_value, arg_max by action_date). A "$X+" threshold
+        # here filters the WHOLE contract, never a single action. ──
+        "obligated":         FieldSpec("contract_obligated_usd", "float", (">=", "<=", "between"), index="BTREE"),
+        "ceiling":           FieldSpec("contract_ceiling_usd", "float", (">=", "<=", "between"), index="BTREE"),
+        # Days since the contract's LAST rolled action (max action_date); days_ago resolves to a DATE
+        # literal at request time. BTREE serves the ranges. (awards uses action_date; here last_action_date.)
+        "days_since_action": FieldSpec("last_action_date", "days_ago", ("<=", ">=", "between"), index="BTREE"),
+        # US federal fiscal year of the contract's FIRST action. Explicit year only ('FY2025' → 2025);
+        # group-by fiscal_year is the YoY trend. A relative window uses days_since_action.
+        "fiscal_year":       FieldSpec("fiscal_year", "int", ("=", "in"), index="BITMAP"),
+        "naics2":            FieldSpec("naics2", "string", ("=", "in"), index="BITMAP"),
+        "naics_code":        FieldSpec("naics_code", "string", ("=", "in")),
+        # ── GTM-attribute axes (identical to awards): the contract's (naics, psc) pair → a rich
+        # VERTICAL, a WORK_TYPE, and an EQUIPMENT_INTENSITY band. All three BITMAP, head-coverage only. ──
+        "vertical":          FieldSpec("vertical", "string", ("=", "in"), enum=_VERTICALS, index="BITMAP"),
+        "work_type":         FieldSpec("work_type", "string", ("=", "in"), enum=_WORK_TYPES, index="BITMAP"),
+        "equipment_intensity": FieldSpec("equipment_intensity", "string", ("=", "in"),
+                                         enum=_EQUIP_INTENSITY, index="BITMAP"),
+        # PSC = what the contract BUYS (distinct from NAICS, the vendor's industry). Prime-only.
+        "psc_category":      FieldSpec("psc_category", "string", ("=", "in"), index="BITMAP"),
+        "psc_code":          FieldSpec("psc_code", "string", ("=", "in"), index="BTREE"),
+        # Recipient (HQ) geo vs PLACE OF PERFORMANCE geo — two distinct axes by design.
+        "state":             FieldSpec("state", "string", ("=", "in"), index="BITMAP"),
+        "pop_state":         FieldSpec("pop_state", "string", ("=", "in"), index="BITMAP"),
+        "awarding_agency":   FieldSpec("awarding_agency", "string", ("=", "in"), index="BITMAP"),
+        "awarding_sub_agency": FieldSpec("awarding_sub_agency", "string", ("=", "in"), index="BTREE"),
+        "set_aside":         FieldSpec("set_aside", "string", ("=", "in"),
+                                       enum=_SET_ASIDE_CODES, index="BITMAP"),
+        # Contracting officer's small/large determination (prime-only).
+        "business_size":     FieldSpec("business_size", "string", ("=", "in"),
+                                       enum=_BUSINESS_SIZE, index="BITMAP"),
+        # Contract currently within its period of performance (pop_current_end >= today, build-time).
+        "is_active":         FieldSpec("is_active", "bool", ("=",), index="BITMAP"),
+        # ── Phase-3 capability axes (contracts.v1), lifted byte-identical from awards.v11. Contract-grain
+        # (joined 1:1 by the contract award key). has_extracted_scope is the GATE itself — filterable but
+        # NOT gated; the gated axes self-AND has_extracted_scope=true in EXECUTE (the scope slice). ──
+        "has_extracted_scope": FieldSpec("has_extracted_scope", "bool", ("=",), index="BITMAP"),
+        "requires_clearance":  FieldSpec("requires_clearance", "bool", ("=",), index="BITMAP",
+                                         gated=True),
+        "req_clearance_level_max": FieldSpec("req_clearance_level_max", "string", ("=", "in"),
+                                             enum=_CLEARANCE_LEVELS, index="BITMAP", gated=True),
+        "requires_cmmc":       FieldSpec("requires_cmmc", "bool", ("=",), index="BITMAP", gated=True),
+        # list<string> capability columns — set membership via Lance array_has / array_has_any.
+        "solicitation_scope_tag":      FieldSpec("capability_tags", "list", ("has", "has_any"),
+                                         enum=_CAPABILITY_TAGS, gated=True),
+        "labor_category":      FieldSpec("labor_categories", "list", ("has", "has_any"),
+                                         enum=_LABOR_CATEGORIES, gated=True),
+    },
+    synonyms={
+        "construction":   {"field": "naics2", "op": "=", "value": "23"},
+        "active":         {"field": "is_active", "op": "=", "value": True},
+        "active contracts": {"field": "is_active", "op": "=", "value": True},
+        "this week":      {"field": "days_since_action", "op": "<=", "value": 7},
+        "this month":     {"field": "days_since_action", "op": "<=", "value": 30},
+        "dod":            {"field": "awarding_agency", "op": "in",
+                           "value": ["Department of Defense", "Department of Defense (DOD)"]},
+        "gsa":            {"field": "awarding_agency", "op": "=", "value": "General Services Administration"},
+        "the va":         {"field": "awarding_agency", "op": "=", "value": "Department of Veterans Affairs"},
+        "8(a)":           {"field": "set_aside", "op": "in", "value": ["8A", "8AN"]},
+        "sdvosb":         {"field": "set_aside", "op": "in", "value": ["SDVOSBC", "SDVOSBS"]},
+        "hubzone":        {"field": "set_aside", "op": "in", "value": ["HZC", "HZS"]},
+        "woman-owned":    {"field": "set_aside", "op": "in",
+                           "value": ["WOSB", "WOSBSS", "EDWOSB", "EDWOSBSS"]},
+        "transportation services": {"field": "psc_category", "op": "=", "value": "V"},
+        "freight services":        {"field": "psc_category", "op": "=", "value": "V"},
+        "psc v":                   {"field": "psc_category", "op": "=", "value": "V"},
+        "small business":          {"field": "business_size", "op": "=", "value": "SMALL BUSINESS"},
+        # ── Phase-3 capability phrasings (contracts.v1), byte-identical to the awards/active/winners
+        # decoders + edge mirror. Route to the gated capability axes; EXECUTE ANDs has_extracted_scope=true. ──
+        "cleared":          {"field": "requires_clearance", "op": "=", "value": True},
+        "secret clearance": {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["SECRET", "TOP_SECRET", "TS_SCI"]},
+        "top secret":       {"field": "req_clearance_level_max", "op": "in",
+                             "value": ["TOP_SECRET", "TS_SCI"]},
+        "cmmc":             {"field": "requires_cmmc", "op": "=", "value": True},
+        "electrical":       {"field": "solicitation_scope_tag", "op": "has", "value": "electrical_systems"},
+        "electricians":     {"field": "labor_category", "op": "has", "value": "electrician"},
+        # ── GTM label-axis lexicon, byte-identical to the awards decoder. Head-coverage only; bare
+        # "construction" stays on naics2 above. Ambiguous bare tokens deliberately NOT mapped. ──
+        "it contracts":            {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "software contracts":      {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "software vendors":        {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "cybersecurity":           {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "cyber contracts":         {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "information technology":  {"field": "vertical", "op": "=", "value": "Information Technology & Software"},
+        "aerospace":               {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+        "aerospace contracts":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+        "defense contractors":     {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+        "aerospace and defense":   {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+        "weapons systems":         {"field": "vertical", "op": "=", "value": "Aerospace & Defense"},
+        "construction industry":   {"field": "vertical", "op": "=", "value": "Construction"},
+        "building contractors":    {"field": "vertical", "op": "=", "value": "Construction"},
+        "general contractors":     {"field": "vertical", "op": "=", "value": "Construction"},
+        "r&d vertical":            {"field": "vertical", "op": "=", "value": "Research & Development"},
+        "research and development": {"field": "vertical", "op": "=", "value": "Research & Development"},
+        "research labs":           {"field": "vertical", "op": "=", "value": "Research & Development"},
+        "professional services":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+        "management consulting":   {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+        "management services":     {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+        "consulting firms":        {"field": "vertical", "op": "=", "value": "Professional & Management Services"},
+        "healthcare":              {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+        "healthcare contracts":    {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+        "medical services":        {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+        "life sciences":           {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+        "pharma":                  {"field": "vertical", "op": "=", "value": "Healthcare & Life Sciences"},
+        "facilities management":   {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+        "janitorial":              {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+        "custodial services":      {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+        "facilities maintenance":  {"field": "vertical", "op": "=", "value": "Facilities, Maintenance & Janitorial"},
+        "engineering and architecture": {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+        "architecture firms":      {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+        "a&e firms":               {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+        "architectural services":  {"field": "vertical", "op": "=", "value": "Engineering & Architecture"},
+        "transportation and logistics": {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+        "logistics contractors":   {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+        "trucking":                {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+        "freight carriers":        {"field": "vertical", "op": "=", "value": "Transportation & Logistics"},
+        "food and agriculture":    {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+        "food services vertical":  {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+        "agriculture":             {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+        "food and beverage":       {"field": "vertical", "op": "=", "value": "Food, Agriculture & Beverage"},
+        "wholesale and supply":    {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+        "supply contractors":      {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+        "wholesalers":             {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+        "commodity suppliers":     {"field": "vertical", "op": "=", "value": "Wholesale & Supply"},
+        "environmental":           {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+        "environmental remediation": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+        "remediation contractors": {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+        "environmental cleanup":   {"field": "vertical", "op": "=", "value": "Environmental & Remediation"},
+        "electronics":             {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+        "electronics and instruments": {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+        "instrumentation":         {"field": "vertical", "op": "=", "value": "Electronics & Instruments"},
+        "telecom":                 {"field": "vertical", "op": "=", "value": "Telecommunications"},
+        "telecommunications":      {"field": "vertical", "op": "=", "value": "Telecommunications"},
+        "telecom contractors":     {"field": "vertical", "op": "=", "value": "Telecommunications"},
+        "energy and utilities":    {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+        "utilities":               {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+        "power and energy":        {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+        "energy contractors":      {"field": "vertical", "op": "=", "value": "Energy & Utilities"},
+        "industrial manufacturing": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+        "manufacturing vertical":  {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+        "industrial manufacturers": {"field": "vertical", "op": "=", "value": "Industrial Manufacturing"},
+        "financial services":      {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+        "financial and insurance": {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+        "insurance contractors":   {"field": "vertical", "op": "=", "value": "Financial & Insurance"},
+        "guard services":          {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+        "security guards":         {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+        "physical security":       {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+        "armed guard services":    {"field": "vertical", "op": "=", "value": "Security & Guard Services"},
+        "public administration":   {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+        "government administration": {"field": "vertical", "op": "=", "value": "Government & Public Administration"},
+        "education and training":  {"field": "vertical", "op": "=", "value": "Education & Training"},
+        "training contractors":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+        "educational services":    {"field": "vertical", "op": "=", "value": "Education & Training"},
+        "real estate":             {"field": "vertical", "op": "=", "value": "Real Estate"},
+        "real estate services":    {"field": "vertical", "op": "=", "value": "Real Estate"},
+        "leasing services":        {"field": "vertical", "op": "=", "value": "Real Estate"},
+        "media and publishing":    {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+        "publishing":              {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+        "media services":          {"field": "vertical", "op": "=", "value": "Media & Publishing"},
+        "mining":                  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+        "mining and extraction":   {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+        "extraction contractors":  {"field": "vertical", "op": "=", "value": "Mining & Extraction"},
+        "aec":                     {"field": "vertical", "op": "in",
+                                    "value": ["Engineering & Architecture", "Construction"]},
+        "manufacturers":           {"field": "work_type", "op": "=", "value": "manufacture"},
+        "makers":                  {"field": "work_type", "op": "=", "value": "manufacture"},
+        "product manufacturers":   {"field": "work_type", "op": "=", "value": "manufacture"},
+        "resellers":               {"field": "work_type", "op": "=", "value": "distribute_resell"},
+        "distributors":            {"field": "work_type", "op": "=", "value": "distribute_resell"},
+        "value-added resellers":   {"field": "work_type", "op": "=", "value": "distribute_resell"},
+        "vars":                    {"field": "work_type", "op": "=", "value": "distribute_resell"},
+        "warehousing":             {"field": "work_type", "op": "=", "value": "distribute_resell"},
+        "maintenance and repair":  {"field": "work_type", "op": "=", "value": "maintain_repair"},
+        "repair services":         {"field": "work_type", "op": "=", "value": "maintain_repair"},
+        "services firms":          {"field": "work_type", "op": "=", "value": "services_labor"},
+        "labor services":          {"field": "work_type", "op": "=", "value": "services_labor"},
+        "r&d work":                {"field": "work_type", "op": "=", "value": "RnD"},
+        "research work":           {"field": "work_type", "op": "=", "value": "RnD"},
+        "equipment-heavy":         {"field": "equipment_intensity", "op": "=", "value": "high"},
+        "equipment-intensive":     {"field": "equipment_intensity", "op": "=", "value": "high"},
+        "capital-intensive":       {"field": "equipment_intensity", "op": "=", "value": "high"},
+        "asset-heavy":             {"field": "equipment_intensity", "op": "=", "value": "high"},
+        "asset-light":             {"field": "equipment_intensity", "op": "=", "value": "low"},
+        "labor-only":              {"field": "equipment_intensity", "op": "=", "value": "low"},
+    },
+    # Aggregate over the SUMMED contract obligation (contract_obligated_usd), grouped by any indexed
+    # dim (or the 'winner'/'size_band' pseudo-dims). Dims identical to awards.
+    aggregate=AggregateSpec(
+        measure="contract_obligated_usd",
+        dims={
+            "fiscal_year": "fiscal_year",
+            "naics2": "naics2", "naics_code": "naics_code",
+            "psc_category": "psc_category", "psc_code": "psc_code",
+            "awarding_agency": "awarding_agency", "awarding_sub_agency": "awarding_sub_agency",
+            "state": "state", "pop_state": "pop_state",
+            "set_aside": "set_aside", "business_size": "business_size",
+            "vertical": "vertical", "work_type": "work_type", "equipment_intensity": "equipment_intensity",
+            "req_clearance_level_max": "req_clearance_level_max",
+        },
+        winner_key=("winner_uei", "winner_name"),
+        size_band_edges=(25_000.0, 250_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0),
+    ),
+)
+
+
+DECODERS: dict[str, Decoder] = {"winners": WINNERS, "company": COMPANY, "awards": AWARDS,
+                                "active": ACTIVE, "contracts": CONTRACTS}
