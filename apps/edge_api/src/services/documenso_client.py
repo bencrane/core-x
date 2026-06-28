@@ -61,6 +61,7 @@ class EnvelopeResult:
     envelope_id: str
     document_id: int | None  # numeric secondary id (used for the signed-PDF download)
     client_token: str | None
+    raw: dict[str, Any] | None = None  # the full envelope payload (for stamping documenso_documents)
 
 
 @dataclass(frozen=True)
@@ -363,6 +364,7 @@ async def create_document_from_template(
         envelope_id=str(envelope_id),
         document_id=_numeric_document_id(env),
         client_token=_extract_signer_token(env),
+        raw=env,
     )
 
 

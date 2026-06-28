@@ -22,6 +22,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..config import documenso_webhook_secret
 from ..db import get_db_connection
+from ..documenso_documents import queries as documenso_documents_queries
 from ..services import documenso_client
 from ..engagement_docs import queries
 
@@ -48,24 +49,43 @@ async def documenso_webhook(
     if not evt.envelope_id:
         return {"ok": True, "ignored": True, "event": evt.event, "reason": "no envelope_id"}
 
+    status = evt.status.upper()  # stored uppercase for consistency
+
+    # Re-read the authoritative envelope payload BEFORE taking a pooled connection (never hold a
+    # pooled conn across a network call). Best-effort — a fetch failure degrades to a status-only
+    # advance. ``evt.envelope_id`` may be a numeric document id on some payload shapes, in which case
+    # the GET 404s and we fall back to the webhook event alone.
+    payload: dict[str, Any] | None = None
+    try:
+        payload = await documenso_client.get_envelope(evt.envelope_id)
+    except documenso_client.DocumensoError:
+        payload = None
+
     async with get_db_connection() as conn:
-        # Update the mandate by envelope_id (the unique linkage between Documenso and our mandate).
-        # Status is already in lowercase (e.g., "sent", "completed"); uppercase for storage consistency.
-        updated = await queries.update_documenso_status_by_envelope(
-            conn,
-            envelope_id=evt.envelope_id,
-            documenso_status=evt.status.upper(),
+        # AO term-only mandate lane (active-operators) — status advance by envelope_id, unchanged.
+        mandate = await queries.update_documenso_status_by_envelope(
+            conn, envelope_id=evt.envelope_id, documenso_status=status,
+        )
+        # RS direct-to-documenso document SoR — matched by the external id we stamped (the draft id)
+        # or the envelope id; advances status, appends the event, refreshes payload when we have it.
+        document = await documenso_documents_queries.sync_from_webhook(
+            conn, match=(evt.external_id or evt.envelope_id), status=status,
+            event=body, payload=payload,
         )
         await conn.commit()
 
-    if updated is None:
-        logger.warning("documenso webhook: no mandate found for envelope %s", evt.envelope_id)
-        return {"ok": True, "ignored": True, "event": evt.event, "reason": "no matching mandate"}
+    if mandate is None and document is None:
+        logger.warning("documenso webhook: no mandate/document for envelope %s", evt.envelope_id)
+        return {"ok": True, "ignored": True, "event": evt.event, "reason": "no matching record"}
 
     logger.info(
-        "documenso webhook: mandate %s → status %s (envelope %s)",
-        updated["id"],
-        evt.status.upper(),
-        evt.envelope_id,
+        "documenso webhook: %s → %s (mandate=%s document=%s)",
+        evt.envelope_id, status,
+        mandate["id"] if mandate else None,
+        document["envelope_id"] if document else None,
     )
-    return {"ok": True, "event": evt.event, "status": evt.status, "updated": True}
+    return {
+        "ok": True, "event": evt.event, "status": evt.status, "updated": True,
+        "mandate": mandate["id"] if mandate else None,
+        "document": document["envelope_id"] if document else None,
+    }

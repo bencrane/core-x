@@ -17,10 +17,13 @@ persistence is a clean follow-up, not a prerequisite for the flow.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config
 from ..db import get_db_connection
+from ..documenso_documents import queries as documenso_documents_queries
 from ..engagement_mandate_drafts import queries
 from ..engagement_mandate_drafts.models import (
     MandateDraftConfirmed,
@@ -34,6 +37,8 @@ from ..service_token import require_service_token
 from ..services import documenso_client
 
 router = APIRouter(prefix="/api/v1/engagement-mandate-drafts", tags=["engagement-mandate-drafts"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("", dependencies=[Depends(require_service_token)])
@@ -98,6 +103,27 @@ async def confirm_mandate_draft(draft_id: str) -> MandateDraftConfirmed:
         )
     except documenso_client.DocumensoError as e:
         raise HTTPException(status_code=502, detail=f"documenso: {e}") from e
+
+    # Stamp the instantiated document into its own opportunity-linked row, sourced from the live
+    # Documenso envelope payload (recipients/fields/raw). The amount is resolved from the template's
+    # variant (system_fee_cents) and FROZEN here, so the payment page charges the variant price.
+    # Best-effort: a persistence failure must NOT fail the originate (the document exists in Documenso
+    # and the webhook reconciles); it is logged.
+    try:
+        async with get_db_connection() as conn:
+            await documenso_documents_queries.stamp(
+                conn,
+                envelope_id=result.envelope_id,
+                document_id=result.document_id,
+                external_id=draft_id,
+                opportunity_id=draft["opportunity_id"],
+                documenso_template_id=draft["documenso_template_id"],
+                payload=result.raw,
+            )
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — never fail the originate on a persistence hiccup
+        logger.exception("documenso_documents stamp failed (envelope %s)", result.envelope_id)
+
     return MandateDraftConfirmed(
         envelope_id=result.envelope_id,
         signing_token=result.client_token,
