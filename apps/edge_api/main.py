@@ -54,6 +54,7 @@ from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_enrich_companies_v1 import router as clay_enrich_companies_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
+from .src.routers.clay_person_work_history_v1 import router as clay_person_work_history_router
 from .src.routers.contacts_v1 import router as contacts_router
 from .src.routers.equipment_catalog_v1 import router as equipment_catalog_router
 from .src.routers.industries_served_v1 import router as industries_served_router
@@ -177,6 +178,12 @@ app.include_router(agent_runs_router)
 # clay-find-people: raw, append-only landing of Clay find-people records into
 # gtm.clay_find_people (verbatim raw_payload + lossless identity keys). Service-token gated.
 app.include_router(clay_find_people_router)
+
+# clay-person-work-history: raw, append-only landing of the FULL Clay person profile (the whole
+# experience[] work-history array + education/publications/etc.) into gtm.clay_person_work_history as a
+# single verbatim raw_payload blob — NOT exploded. Computed identity keys only (person_id joins
+# clay_find_people). Service-token gated.
+app.include_router(clay_person_work_history_router)
 
 # clay-find-companies: raw, append-only landing of Clay find-companies records into
 # gtm.clay_find_companies (verbatim raw_payload + lossless identity keys). Service-token gated.
@@ -349,6 +356,7 @@ def _info() -> dict:
             "agent_runs": True,        # /api/v1/agent-runs/* (SSE)
             "pipeline": True,          # /internal/gtm/initiatives/{id}/run-step
             "clay_find_people": True,  # /api/v1/clay/find-people/{land,stats,by-linkedin}
+            "clay_person_work_history": True,  # /api/v1/clay/person-work-history/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "clay_enrich_companies": True,  # /api/v1/clay/enrich-companies/{land,stats}
             "contacts": True,          # /api/v1/contacts/{land,check,stats}
