@@ -1,6 +1,7 @@
 # FPDS Serving + Canonical Reconciliation — Canonical Handoff
 
-**Last updated:** 2026-06-28 · **Source of truth for this doc:** the full session transcript
+**Last updated:** 2026-06-28 (rev: canonical schema LOCKED to typed v2 SoR; existing consumers decoupled —
+operator decision 2026-06-28) · **Source of truth for this doc:** the full session transcript
 `f0785f80-e21e-4746-b707-cf55488c7990.jsonl` (~4 MB). All numbers, URIs, column names, PR numbers,
 and commit hashes below are pulled from that transcript and cross-checked against the on-disk code.
 
@@ -23,17 +24,25 @@ This body of work fixes a **grain bug** in the platform-app `/ask` map ("which c
    tables** — landing the third FPDS source and, critically, the **656 FPDS deletion records** that
    nothing else captures. (core-x #781)
 
-**What is designed but NOT built (the next big thing):**
+**What is designed and LOCKED but NOT built (the next big thing):**
 - **`usaspending_fpds_canonical_txn`** — a canonical reconciliation Lance that unions all three FPDS
-  sources, deduped, with deletions tombstoned. Fully specified (see §e). **Not started.**
+  sources, deduped, with deletions tombstoned. Fully specified (see §e). **Schema is LOCKED to the
+  fully-typed v2 SoR** (`Date32`/`double`/`bool`, one clean canonical vocabulary, sentinels nulled,
+  PK-deduped, BULK's ~80 enrichment columns carried as native typed columns) — operator decision
+  2026-06-28; the v1 all-VARCHAR conform is rejected (see §d.4). **Not started.**
 - **`won_Nd` windowed-cumulative per-company table** (`won_90d / won_365d / won_730d / won_1825d`) —
   answers "a company whose *summed* awards over the last N days ≥ $X." Designed, **not built**; should
-  be built off the canonical, not today's recency-skewed feed.
+  be built off the canonical, not today's recency-skewed feed. It is greenfield (no legacy vocabulary)
+  → it reads the typed canonical natively and is the canonical's first consumer.
 
 **One-paragraph state:** The contracts grain-fix is shipped and live; the map can now correctly answer
-"a single contract ≥ $X." All three raw FPDS sources are now landed as Lance SoRs. The reconciliation
-that makes the serving tables *complete* (and unblocks an accurate windowed company-total table) is
-specified down to the proven join key and merge rule but has not been built. **Resume at §e.**
+"a single contract ≥ $X." All three raw FPDS sources are now landed as Lance SoRs. The next build is the
+typed-v2 canonical (locked design) plus `won_Nd` off it. **Existing serving consumers are decoupled from
+this build** — they keep reading their current sources and continue working unchanged; the typed canonical
+does NOT trigger an immediate consumer re-point. Migrating the existing consumers onto the canonical is a
+separate, deliberate FUTURE effort (and, because the canonical is typed, requires per-consumer code
+changes — not a URI swap). The reconciliation is specified down to the proven join key and merge rule but
+has not been built. **Resume at §e.**
 
 ---
 
@@ -246,21 +255,33 @@ catalyst_api / edge_api decoders                      - decoder binds $X → the
   it deletes the auto-router risk (user declares the grain), turns silent suppression into an explicit
   choice, and makes `contracts` useful the day it lands. Labels by grain/money-semantics, not table name.
 
-### d.4 — conform-to-FRESH-VARCHAR (v1) vs typed canonical (v2)
-- **For the canonical with existing consumers: conform to the FRESH (`bulk_download/awards`) names +
-  all-VARCHAR typing.** Reason: all 9 downstream consumers project the FRESH verbatim names and
-  string-filter `action_date`. Conforming to FRESH makes re-point a **one-line URI swap per file, zero
-  code changes, zero risk**. Conforming to BULK's `rpt.*` typed schema would force column-rename +
-  cast-filter rewrites in all 9.
-  - Worked example: FRESH `action_date` is VARCHAR `"2024-06-01"`; materializers do
-    `scanner(filter="action_date >= '2024-06-01'")`. FRESH-shape → works; BULK-shape (`Date32`) →
-    string-compare errors. Set-aside: FRESH `type_of_set_aside_code` vs BULK `type_set_aside`.
-- **Greenfield (no consumers): flip to TYPED.** Cast once at the canonical boundary, correctness
-  (`'9' > '1000'` lexical bugs gone), index-served range pushdown, sentinel normalization
-  (`-NONE-`/`''` → NULL) and PK-uniqueness enforced once. VARCHAR was *only* the cheaper migration, never
-  the better design. **Refinement (L688):** the canonical should ALSO carry the BULK dump's ~80 enrichment
-  columns as additive typed columns (`business_categories`, `recipient_levels`, `federal_accounts`,
-  `recipient_hash`, …) — real GTM signal the API CSV lacks. API rows get NULL there.
+### d.4 — schema verdict: **typed v2 SoR; consumers decoupled** (LOCKED 2026-06-28)
+> **Decision log (operator, 2026-06-28):** build the canonical as the fully-typed v2 SoR. Existing
+> consumers are decoupled from this build. The v1 all-VARCHAR conform is rejected.
+
+- **Build TYPED (v2).** Cast/normalize once at the canonical materialization boundary: typed columns
+  (`Date32`/`double`/`bool`), one clean canonical vocabulary, correctness (`'9' > '1000'` lexical
+  string-compare bugs eliminated), index-served range pushdown, sentinel normalization
+  (`-NONE-`/`''` → NULL), and PK-uniqueness enforced once. **The BULK dump's ~80 enrichment columns are
+  carried as native typed columns** (`business_categories`, `recipient_levels`, `federal_accounts`,
+  `recipient_hash`, …) — real GTM signal the API CSV lacks, NOT an additive VARCHAR bolt-on. API/archive
+  rows get NULL there. VARCHAR was *only* the cheaper migration, never the better design — so it is not
+  built.
+- **The v1 all-VARCHAR conform is REJECTED.** Its sole merit was a zero-code URI swap for the 9 existing
+  consumers (they project the FRESH `bulk_download/awards` verbatim names and string-filter `action_date`).
+  Building a v1 all-VARCHAR canonical *solely* to serve those consumers — only to tear it down and rebuild
+  it typed shortly after — is wasteful and architecturally wrong. Build it correctly once.
+- **Existing consumers are decoupled from this build.** They keep reading their current sources and keep
+  working unchanged; the typed canonical does NOT trigger an immediate re-point. Migration onto the
+  canonical is a separate, deliberate FUTURE effort (see §e "Future migration targets").
+- **Why that migration is non-trivial (and therefore deferred):** because the canonical is typed (new
+  vocabulary + real types), each consumer needs genuine per-consumer CODE changes — column renames to the
+  canonical vocabulary, cast-aware filters replacing string comparisons. Worked example: today a
+  materializer does `scanner(filter="action_date >= '2024-06-01'")` against FRESH's VARCHAR `action_date`
+  `"2024-06-01"`; against the typed canonical (`Date32`) that string-compare errors and must be rewritten
+  to a date predicate. (Same per-consumer shape for renames like FRESH `type_of_set_aside_code` vs the
+  canonical's set-aside column.) This is precisely why migration is a separate code effort, not the
+  one-line URI swap a VARCHAR conform would have allowed.
 
 ### d.5 — Window default 730d, surfaced as a tunable
 - `contract_obligated_usd` is the trailing-730d NET sum, so multi-year contracts undercount lifetime
@@ -348,11 +369,17 @@ canonical = live  ANTI-JOIN  archive_delta WHERE correction_delete_ind='D'   -- 
   Add an `OR BULK.lm_ts > fresh_latest.lm_ts` guard for the negligible "BULK newer" case. Turns a 109M
   external sort into a 2M sort + hash anti-join.
 
-### Pivotal schema decision (per §d.4)
-- v1 (with consumers): **conform to FRESH names + all-VARCHAR** for the shared ~45 serving-relevant
-  columns → re-point is a one-line URI swap per consumer. **PLUS** carry the BULK dump's ~80 enrichment
-  columns as additive columns (API/archive rows NULL there).
-- v2: typed SoR (`Date32`/`double`/`bool`), one clean vocabulary, sentinels nulled, PK-deduped.
+### Schema — typed v2 SoR (LOCKED, per §d.4)
+> **Decision log (operator, 2026-06-28):** typed v2 SoR; consumers decoupled. The v1 all-VARCHAR conform
+> is rejected — see §d.4.
+
+- **Typed SoR (`Date32`/`double`/`bool`)** with one clean canonical vocabulary. Sentinels (`-NONE-`,
+  empty string) normalized to NULL. **PK-deduped** on `contract_transaction_unique_key`. Casting and
+  sentinel-normalization are applied **once, at the canonical materialization boundary** (consistent with
+  the "cast once" principle) — the merge LOGIC below is unchanged; only the OUTPUT is typed.
+- **Carry the BULK dump's ~80 enrichment columns as native typed columns** (`business_categories`,
+  `recipient_levels`, `federal_accounts`, `recipient_hash`, …) — real GTM signal the API CSV lacks, folded
+  into the typed schema (NOT an additive VARCHAR bolt-on). API/archive rows get NULL there.
 - ZIP caveat: BULK ships `recipient_location_zip5`; FRESH ships `recipient_zip_4_code` (9-digit) — emit
   `recipient_zip_4_code` and derive zip5 downstream as `left(...,5)` (materializers + `geocode_xwalk`
   already do this).
@@ -373,8 +400,16 @@ canonical = live  ANTI-JOIN  archive_delta WHERE correction_delete_ind='D'   -- 
   `count(distinct key) == rows_out` (PK uniqueness — dedup actually worked); spot-join 20 known keys.
 - **Idempotency:** fully deterministic from sources → `overwrite` is safe to re-run.
 
-### Downstream re-point (URI swap only — schema decision §d.4 guarantees no column changes)
-| # | file | constant to swap → canonical |
+### Future migration targets (SEPARATE effort — NOT part of this build)
+**Existing consumers are NOT re-pointed by this build.** Each continues to read its current source and
+keeps running unchanged. Migrating them onto the typed canonical is a separate, deliberate future effort:
+because the canonical is typed (new vocabulary + real types), this is **per-consumer CODE work** — column
+renames to the canonical vocabulary and cast-aware filters replacing string comparisons (e.g. the
+`action_date` VARCHAR-string-compare → `Date32` predicate rewrite in §d.4) — **NOT a one-line URI swap.**
+The 9 files below are the migration targets, each needing code changes (the listed constant is the source
+ref to repoint, not a swap-only change):
+
+| # | file | current source ref → canonical |
 |---|---|---|
 | 1 | `serving/materialize_contracts_map.py` | `PRIME_URI` |
 | 2 | `serving/materialize_awards_map.py` | `PRIME_URI` |
@@ -384,23 +419,35 @@ canonical = live  ANTI-JOIN  archive_delta WHERE correction_delete_ind='D'   -- 
 | 6 | `serving/materialize_sub_diversification.py` | `PRIMETXN_URI` |
 | 7 | `usaspending/geocode_xwalk.py` (bridge) | `PRIME_URI` |
 | 8 | `sam_gov/build_award_capability_profiles.py` (bridge) | `TXN_URI` |
-| 9 | `usaspending/govcon_prime_trajectories.py` | confirm ref |
+| 9 | `usaspending/govcon_prime_trajectories.py` | confirm source ref before migrating |
 
 **Out of scope (separate, larger migration):** the resolution/spine layer (`award_lines_gold.py`,
 `crosswalk_sam_usaspending.py`, `reconcile_entity_profiles.py`, …) reads the BULK `rpt.*` schema directly
 — leave it on BULK; not a serving consumer.
 
-### Rebuild + cutover order
+### Build order — THIS build vs DEFERRED effort
+**THIS build (land + verify the typed canonical; build won_Nd off it):**
 ```
-1. Build & verify  usaspending_fpds_canonical_txn               (the new base)
-2. Re-point + rebuild bridges: geocode_xwalk → award capability profiles
+1. Build & verify  usaspending_fpds_canonical_txn (typed v2)    (the new base)
+2. Build the NEW won_Nd windowed-cumulative table off the canonical
+       — greenfield (no legacy vocabulary): it reads the typed canonical NATIVELY and is
+         the canonical's FIRST consumer / proving ground.
+3. Wire won_Nd's catalyst/edge decoder bindings; verify on the map
+```
+Existing serving consumers (contracts/awards/winners/company/active/sub_diversification) and the bridges
+are **untouched** by this build — they keep running on their current sources.
+
+**DEFERRED separate effort (migrate existing consumers onto the canonical):**
+```
+A. Migrate (code changes) bridges: geocode_xwalk → award capability profiles
        (naics_psc_vertical_map is static — NO rebuild)
-3. Re-point + rebuild  active_awards → active_awards_map         (second-order)
-4. Re-point + rebuild the maps: contracts, awards, winners, company
-5. Build the NEW won_Nd windowed-cumulative table off the canonical
-6. Redeploy catalyst/edge (decoders unchanged; tables now complete) — verify on the map
+B. Migrate (code changes)  active_awards → active_awards_map     (second-order)
+C. Migrate (code changes) the maps: contracts, awards, winners, company
+D. Rebuild + redeploy catalyst/edge (decoders unchanged; tables now complete) — verify on the map
 ```
-Bridges before maps (the maps join them). Gate each rebuild on its `verify()` green before the next.
+Each migration is per-consumer CODE work (renames + cast-aware filters), not a URI swap — see §d.4 /
+"Future migration targets". Bridges before maps (the maps join them). Gate each rebuild on its `verify()`
+green before the next.
 
 ### The `won_Nd` windowed-cumulative per-company table (designed, not built)
 - **Purpose:** answer "a company whose **summed** awards over the last N days ≥ $X" (entity grain,
@@ -425,23 +472,25 @@ Bridges before maps (the maps join them). Gate each rebuild on its `verify()` gr
 ## (f) OPEN TODO checklist
 
 - [ ] **Build `usaspending_fpds_canonical_txn`** per §e (merge rule, proven keys, efficient
-      small-side-dedup + anti-join, D-tombstones). Decide v1-VARCHAR-conform vs v2-typed at kickoff
-      (operator leaned typed greenfield, but consumers exist → v1-conform is the zero-risk path; the
-      enrichment-columns refinement applies either way).
-- [ ] **Re-point + rebuild** the 6 serving tables + 2 bridges in the §e cutover order; gate each on
-      `verify()` green.
+      small-side-dedup + anti-join, D-tombstones). **Schema LOCKED: typed v2 SoR** (operator, 2026-06-28)
+      — typed columns, one clean vocabulary, sentinels nulled, PK-deduped, BULK's ~80 enrichment columns
+      carried as native typed columns. The v1 all-VARCHAR conform is rejected.
 - [ ] **Build the `won_Nd` windowed-cumulative company table** off the canonical (`won_90d/365d/730d/1825d`),
-      wire its catalyst/edge decoder bindings.
+      wire its catalyst/edge decoder bindings — greenfield, the canonical's first consumer / proving ground.
+- [ ] **(DEFERRED — separate effort, NOT gating this build)** Migrate the existing 6 serving tables + 2
+      bridges onto the canonical. This is per-consumer CODE work (column renames + cast-aware filters),
+      NOT a URI swap, because the canonical is typed (§d.4 / §e "Future migration targets"). Until then,
+      existing consumers stay on their current sources, **untouched** and working.
 - [ ] **Redeploy** catalyst_api + edge_api (off core-x `main`) and the platform app — required for
       `contracts` (and future tables) to be servable; confirm Railway built `c16a5c3`/`d8e10cf`/`0a91a77`.
 - [ ] **Test the map** (the only step that touches the operator's ~$5 Anthropic key): ⌘K → Contracts →
       e.g. "construction contracts over $1M". (No `/ask` call was made in-session — operator drives this.)
 - [ ] **Decide ongoing freshness:** the fresh feed is **manual** (no Modal cron). If genuine daily is
       wanted, wire a Modal Cron on `usaspending_api_fresh.py` (15-day trailing append). Rebuild the
-      canonical after each fresh advance (v1 full overwrite; v2 incremental).
+      canonical after each fresh advance (full `overwrite`; deterministic from sources, safe to re-run).
 - [ ] **(optional) `modal app stop` the abandoned `usaspending-archive` Modal app** (idle cruft).
-- [ ] **(optional, deferred)** expand the canonical from the serving-relevant ~45 cols to the full 297/378
-      (mechanical crosswalk extension); typed-SoR v2.
+- [ ] **(optional, deferred)** expand the typed canonical from the serving-relevant ~45 cols to the full
+      297/378 (mechanical crosswalk extension).
 - [ ] **Verify operator checkouts are current** before resuming (this worktree is NOT on the merged-archive
       `main`): `git -C /Users/benjamincrane/core-x fetch && git -C /Users/benjamincrane/core-x log -1 --oneline`.
 
@@ -514,7 +563,7 @@ modal run pipelines/usaspending/usaspending_api_fresh.py::daily --days 15
 - The contracts table's **730-day window** means it (and any serving table rolling off the fresh feed)
   under-represents the universe; the canonical fixes the *source*, but the window is a separate per-table
   tunable.
-- Item #9 in the re-point table (`govcon_prime_trajectories.py`) was flagged "confirm ref" in the plan —
-  verify it actually reads the prime feed before swapping.
+- Item #9 in the future-migration-targets table (`govcon_prime_trajectories.py`) was flagged "confirm ref"
+  in the plan — verify it actually reads the prime feed before migrating it (deferred, separate effort).
 - The canonical pipeline was planned as a **Modal app** in the original plan; §d.8 strongly argues for the
   **local-CLI** pattern instead. Re-decide at kickoff.
