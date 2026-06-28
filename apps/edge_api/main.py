@@ -46,7 +46,6 @@ from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.opportunities_v1 import router as opportunities_router
 from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
-from .src.routers.engagement_mandate_drafts_v1 import router as engagement_mandate_drafts_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_templates_v1 import router as documenso_templates_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
@@ -280,10 +279,6 @@ app.include_router(internal_opportunities_router, prefix="/internal")
 # engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
 # (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
 app.include_router(engagement_mappings_router)
-
-# engagement-mandate-drafts: the direct-to-documenso Originate Mandate stamp — inserts
-# (opportunity_id, documenso_template_id) into business.engagement_mandate_draft_content.
-app.include_router(engagement_mandate_drafts_router)
 
 # operator-settings: the per-operator cockpit config (render_mode + direct_to_documenso_lane) the BFF
 # resolves at originate. Service-token gated; the BFF asserts the validated auth_user_id on the path.
