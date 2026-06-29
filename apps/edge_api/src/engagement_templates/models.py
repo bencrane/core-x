@@ -52,6 +52,7 @@ class RenderPushRequest(BaseModel):
     brand: str = "active-operators"  # content root; mirrors RenderRequest's default
     style: str | None = None  # "plain" | "branded"; defaults to the manifest's style flag
     values: InputValues | None = None  # baked values for a tokenized template (None = no tokens)
+    name: str | None = None  # operator-entered Documenso TEMPLATE TITLE; empty/None -> manifest name
 
 
 class RenderPushResult(BaseModel):

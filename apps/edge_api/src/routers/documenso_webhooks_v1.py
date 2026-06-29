@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 
 from .. import config
 from ..db import get_db_connection
+from ..documenso_projection import project_envelope_event
 from ..documenso_webhooks import queries
 from ..services import documenso_client
 
@@ -38,9 +39,13 @@ def _dig(obj: Any, *keys: str) -> Any:
 
 @router.post("/webhook")
 async def documenso_webhook(
-    request: Request, x_documenso_secret: str | None = Header(default=None)
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_documenso_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Capture a Documenso webhook delivery RAW. Secret-gated; append-only; no projection here."""
+    """Capture a Documenso webhook delivery RAW (system of record), then ACK 200. The ENVELOPE MIRROR
+    projection runs AFTER the response is sent (FastAPI BackgroundTask) — the 200 never waits on the
+    projector's live Documenso pull. Secret-gated; the raw insert is append-only."""
     if config.documenso_webhook_secret() is None:
         raise HTTPException(status_code=503, detail="webhook secret not configured")
     if not documenso_client.verify_webhook_secret(x_documenso_secret):
@@ -70,6 +75,13 @@ async def documenso_webhook(
             payload=raw,
         )
     logger.info("documenso webhook captured: id=%s event=%s envelope=%s", event_id, event, envelope_id)
+
+    # ENVELOPE MIRROR — schedule the async projector to run AFTER this 200 is sent (it pulls the FULL
+    # live envelope and upserts business.documenso_envelopes verbatim). Only for events that carry an
+    # envelope: an event name present AND a numeric inner id. The 200 above does NOT wait on this.
+    if event is not None and isinstance(inner, dict) and inner.get("id") is not None:
+        background_tasks.add_task(project_envelope_event, str(event), raw)
+
     return {"ok": True, "id": event_id}
 
 
