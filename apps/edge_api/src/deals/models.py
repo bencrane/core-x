@@ -86,17 +86,19 @@ class DealDetails(BaseModel):
     deal_handle: str
     company_name: str | None = None
     company_domain: str | None = None
-    contacts: list = []
-    content: dict = {}
+    contacts: list = []            # the deal's contacts (deal_contacts JOIN the person), is_signatory each
+    available_contacts: list = []  # account contacts NOT yet on the deal — the add-contact pool
+    field_values: dict = {}        # the document's prefilled form-field values (renamed from content)
     default_template_uuid: str | None = None
     template_origin: str = "default"
     available_templates: list[TemplateOption] = []
 
 
 class DealDetailsUpdate(BaseModel):
-    """PUT body — the editable fields. ``template_origin`` is NOT client-set; it is derived from
-    whether ``default_template_uuid`` matches the deal-org's current is_default template."""
+    """PUT body — ``contacts`` is the desired deal_contacts set [{contact_id, is_signatory}];
+    ``field_values`` + ``default_template_uuid`` land on deal_details. ``template_origin`` is derived
+    server-side; person identity (business.contacts) is not edited here."""
 
     contacts: list = []
-    content: dict = {}
+    field_values: dict = {}
     default_template_uuid: str | None = None
