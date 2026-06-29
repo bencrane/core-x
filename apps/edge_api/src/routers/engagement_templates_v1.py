@@ -134,6 +134,7 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
             version=body.version,
             source_kind=push.REPO_HTML,
             style=body.style,
+            title=body.name,  # operator-entered NAME -> Documenso template title (blank -> manifest name)
             tokens=tokens,
         )
     except (push.PushError, render.StyleError, render.MissingTokenError) as e:

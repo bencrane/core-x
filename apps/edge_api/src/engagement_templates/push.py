@@ -68,7 +68,7 @@ async def render_and_push(
     version: str,
     source_kind: str = REPO_HTML,
     style: str | None = None,
-    title: str | None = None,
+    title: str | None = None,  # operator NAME override for the Documenso template title; blank -> manifest name
     tokens: dict[str, str] | None = None,
     recipients: list[dict[str, str]] | None = None,
     store_copy: bool = True,
@@ -93,7 +93,10 @@ async def render_and_push(
     # Assembly does blocking filesystem reads (manifest + html + css) — keep it off the event loop.
     html, resolved_style = await asyncio.to_thread(render.assemble_html, content_dir, style, tokens)
 
-    if title is None:
+    # The operator-entered NAME (``title`` override) becomes the Documenso template title when non-empty;
+    # otherwise fall through to the manifest ``name`` (then a brand/path/archetype/version fallback).
+    title = title.strip() if title else None
+    if not title:
         doc = await asyncio.to_thread(catalog.manifest_doc, content_dir)
         title = str(doc.get("name") or f"{brand} {path} {archetype} {version}")
 
