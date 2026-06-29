@@ -102,3 +102,21 @@ class DealDetailsUpdate(BaseModel):
     contacts: list = []
     field_values: dict = {}
     default_template_uuid: str | None = None
+
+
+class DealOriginated(BaseModel):
+    """The originate result — a Documenso document instantiated FROM the deal's attached template
+    (template-use lane) with the deal's ``field_values`` prefilled, then distributed
+    (``distributionMethod:NONE``) so it lands ``PENDING`` (signable, no email sent). The prospect
+    signing link is ``/p/m/{deal_handle}/{document_id}``: ``deal_handle`` is the public 8-char handle
+    stamped as the envelope's ``externalId`` (the access capability + sign-gate anchor) and the numeric
+    ``document_id`` is the disambiguator behind it. ``envelope_id`` (the prefixed handle) is retained
+    for continuity; ``signing_token`` is the prospect's client token."""
+
+    envelope_id: str
+    document_id: int | None = None
+    deal_handle: str
+    signing_token: str | None = None
+    sign_link: str
+    status: str = "pending"
+    documenso_host: str

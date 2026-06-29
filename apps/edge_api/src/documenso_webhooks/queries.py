@@ -54,20 +54,25 @@ _PROVIDER_SIGNING_DOMAINS = (
 )
 
 
-async def get_opportunity_contact_email(conn, opportunity_id: str) -> str | None:
-    """The opportunity's contact email by its 8-char PUBLIC handle — the email bound to the CLIENT
-    recipient at originate. The sign-token read uses it to tell the client's token from the
-    originator's on a two-signer document. None when the handle/contact is unknown."""
+async def get_deal_signatory_email(conn, deal_handle: str) -> str | None:
+    """The deal's SIGNATORY contact email by its public ``deal_handle`` — the email bound to the
+    client recipient at originate. The sign-token read uses it to tell the client's token from the
+    originator's on a two-signer document. ONE signatory in practice (templates carry a single
+    prospect slot); the deterministic ORDER BY matches ``deals.queries.get_deal_originate_inputs`` so
+    this resolves the SAME signatory the originate bound. Hard-keyed on the deal_contacts junction,
+    NO opportunity fallback. None when the handle/signatory is unknown."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
             SELECT c.email
-              FROM business.opportunities o
-              LEFT JOIN business.contacts c ON c.id = o.contact_id
-             WHERE o.opportunity_id = %s
+              FROM business.deals d
+              JOIN business.deal_contacts dc ON dc.deal_id = d.id AND dc.is_signatory
+              JOIN business.contacts c ON c.id = dc.contact_id
+             WHERE d.deal_handle = %s
+             ORDER BY dc.created_at, dc.contact_id
              LIMIT 1
             """,
-            (opportunity_id,),
+            (deal_handle,),
         )
         row = await cur.fetchone()
     return row[0] if row and row[0] else None

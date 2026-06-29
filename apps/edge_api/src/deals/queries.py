@@ -174,3 +174,93 @@ async def upsert_details(conn, *, deal_id: str, contacts, field_values,
                 (deal_id, cid, bool(c.get("is_signatory", True))),
             )
     await conn.commit()
+
+
+# ── Originate resolvers (read-only) ──────────────────────────────────────────────────────────────
+# Inputs to mint a prefilled Documenso document for a deal. The signatory is the ONE deal_contacts
+# row WHERE is_signatory (templates carry a single prospect slot); the deterministic ORDER BY is the
+# same one the sign-token client-email resolver uses, so both pick the SAME signatory.
+async def get_deal_originate_inputs(conn, handle: str) -> dict | None:
+    """Resolve, by public ``deal_handle``: the externalId (``deal_handle``), the attached template's
+    external Documenso id (via ``deal_details.default_template_uuid`` → ``documenso_templates``), the
+    SIGNATORY contact's email + name (the ``deal_contacts`` row WHERE is_signatory, joined to the
+    person), and the deal's ``field_values``. ``None`` when the handle is unknown; per-field nulls
+    (no attached template / no signatory / no email) are the caller's 422 to raise."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT d.deal_handle,
+                   dt.documenso_template_id,
+                   c.email                                                     AS recipient_email,
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '') AS recipient_name,
+                   COALESCE(dd.field_values, '{}'::jsonb)                      AS field_values
+              FROM business.deals d
+         LEFT JOIN business.deal_details dd ON dd.deal_id = d.id
+         LEFT JOIN business.documenso_templates dt ON dt.id = dd.default_template_uuid
+         LEFT JOIN LATERAL (
+                   SELECT dc.contact_id
+                     FROM business.deal_contacts dc
+                    WHERE dc.deal_id = d.id AND dc.is_signatory
+                    ORDER BY dc.created_at, dc.contact_id
+                    LIMIT 1
+              ) sig ON true
+         LEFT JOIN business.contacts c ON c.id = sig.contact_id
+             WHERE d.deal_handle = %s
+             LIMIT 1
+            """,
+            (handle,),
+        )
+        return await cur.fetchone()
+
+
+async def get_prospect_recipient_id(conn, documenso_template_id: str) -> int | None:
+    """The Documenso recipient id the prospect must bind to, from the template's STORED mapping
+    (``business.documenso_templates.recipients->>'prospect_recipient_id'``). ``None`` when not stored
+    (older templates) → the caller falls back to its email/role heuristic. Read-only (no commit)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT (recipients->>'prospect_recipient_id')::int
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+async def get_template_default_field_values(conn, documenso_template_id: str) -> dict:
+    """Template-level DEFAULT prefill values (label→value) from
+    ``business.documenso_templates.recipients->'default_field_values'``. Merged UNDER the deal's
+    per-deal ``field_values`` at originate (the deal overrides). Returns ``{}`` when unset. Read-only."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT recipients->'default_field_values'
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    val = row[0] if row else None
+    return val if isinstance(val, dict) else {}
+
+
+async def get_template_editable_field_labels(conn, documenso_template_id: str) -> set[str]:
+    """Field LABELS (``documenso_templates.recipients->'editable_field_labels'``) left UNLOCKED after
+    prefill — the prospect's own facts (e.g. Full Name, Title) they may correct before signing.
+    Everything else prefilled stays locked (operator terms). Empty/unset → lock all (default)."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT recipients->'editable_field_labels'
+              FROM business.documenso_templates
+             WHERE documenso_template_id = %s
+            """,
+            (documenso_template_id,),
+        )
+        row = await cur.fetchone()
+    val = row[0] if row else None
+    return {str(x) for x in val} if isinstance(val, list) else set()

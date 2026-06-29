@@ -148,7 +148,7 @@ async def read_sign_token(
     pairs = list(doc.recipient_tokens)
     if len(pairs) > 1:
         async with get_db_connection() as conn:
-            contact = await queries.get_opportunity_contact_email(conn, opportunity_id)
+            contact = await queries.get_deal_signatory_email(conn, opportunity_id)
         contact_l = (contact or "").strip().lower()
         # CLIENT = the recipient bound to the opportunity contact; ORIGINATOR = any other recipient.
         client_tok = next((t for (e, t) in pairs if contact_l and e == contact_l), None)
