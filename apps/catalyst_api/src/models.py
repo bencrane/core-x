@@ -715,3 +715,167 @@ class PersonByLinkedInResponse(_Model):
             match_count=len(matches),
             matches=matches,
         )
+
+
+# Capability profile (the per-firm card object: identity + activity + lanes).
+# Assembled from capability_profile (1 row/UEI). count/dollars are normalized across the sub
+# side (subawards/amount) and prime side (awards/obligated). Digit-suffixed fields carry an
+# explicit clean alias (amount5y) - the to_camel default would emit amount5Y.
+from pydantic import Field as _F
+
+
+class CapPartner(_Model):
+    name: str | None = None
+    uei: str | None = None
+    count: int | None = None
+    dollars: float | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "CapPartner":
+        return cls(name=r.get("name"), uei=(r.get("uei") or None),
+                   count=r.get("subawards"), dollars=r.get("amount"))
+
+
+class CapCodeStat(_Model):
+    code: str | None = None
+    description: str | None = None
+    count: int | None = None
+    dollars: float | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any], count_key: str, dollar_key: str) -> "CapCodeStat":
+        return cls(code=r.get("code"), description=r.get("description"),
+                   count=r.get(count_key), dollars=r.get(dollar_key))
+
+
+class CapAgency(_Model):
+    agency: str | None = None
+    sub_agency: str | None = None
+    count: int | None = None
+    dollars: float | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "CapAgency":
+        return cls(agency=r.get("agency"), sub_agency=r.get("subagency"),
+                   count=r.get("awards"), dollars=r.get("obligated"))
+
+
+class CapLane(_Model):
+    """One recommended NAICS+PSC lane. evidence_tier is the why (primed-direct >
+    subbed-hop > primed-hop > declared); top_primes are the primes who sub it out."""
+
+    rank: int | None = None
+    evidence_tier: str | None = None
+    naics: str | None = None
+    psc: str | None = None
+    naics_description: str | None = None
+    psc_description: str | None = None
+    score: float | None = None
+    lane_primes: int | None = None
+    lane_median_amount: float | None = None
+    top_primes: list[str] = []
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "CapLane":
+        return cls(
+            rank=r.get("rank"), evidence_tier=r.get("evidence_tier"),
+            naics=r.get("dst_naics"), psc=r.get("dst_psc"),
+            naics_description=r.get("naics_desc"), psc_description=r.get("psc_desc"),
+            score=r.get("score"), lane_primes=r.get("lane_n_primes"),
+            lane_median_amount=r.get("lane_median_amt"),
+            top_primes=[p for p in (r.get("top_primes") or []) if p],
+        )
+
+
+class SubActivity(_Model):
+    amount_5y: float | None = _F(default=None, alias="amount5y")
+    subawards_5y: int | None = _F(default=None, alias="subawards5y")
+    distinct_primes_5y: int | None = _F(default=None, alias="distinctPrimes5y")
+    distinct_prime_partners_5y: int | None = _F(default=None, alias="distinctPrimePartners5y")
+    recent_subawards_90d: int | None = _F(default=None, alias="recentSubawards90d")
+    recent_subaward_amount_90d: float | None = _F(default=None, alias="recentSubawardAmount90d")
+    recent_latest_action_date: str | None = None
+    recent_top_prime_name: str | None = None
+    recent_top_naics_code: str | None = None
+    recent_top_naics_description: str | None = None
+    recent_subaward_scope: str | None = None
+    top_prime_partners: list[CapPartner] = []
+    top_naics: list[CapCodeStat] = []
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "SubActivity":
+        return cls(
+            amount_5y=r.get("sub_amount_5y"),
+            subawards_5y=r.get("sub_received_5y"),
+            distinct_primes_5y=r.get("sub_distinct_primes_5y"),
+            distinct_prime_partners_5y=r.get("sub_distinct_prime_partners_5y"),
+            recent_subawards_90d=r.get("recent_subawards_90d"),
+            recent_subaward_amount_90d=r.get("recent_subaward_amount_90d"),
+            recent_latest_action_date=_iso(r.get("recent_latest_action_date")),
+            recent_top_prime_name=r.get("recent_top_prime_name"),
+            recent_top_naics_code=r.get("recent_top_naics_code"),
+            recent_top_naics_description=r.get("recent_top_naics_description"),
+            recent_subaward_scope=r.get("recent_subaward_scope"),
+            top_prime_partners=[CapPartner.from_row(p) for p in (r.get("sub_top_prime_partners") or [])],
+            top_naics=[CapCodeStat.from_row(n, "subawards", "amount") for n in (r.get("sub_top_naics") or [])],
+        )
+
+
+class PrimeActivity(_Model):
+    awards_5y: int | None = _F(default=None, alias="awards5y")
+    obligated_5y: float | None = _F(default=None, alias="obligated5y")
+    competed_awards_5y: int | None = _F(default=None, alias="competedAwards5y")
+    distinct_naics_5y: int | None = _F(default=None, alias="distinctNaics5y")
+    top_naics: list[CapCodeStat] = []
+    top_psc: list[CapCodeStat] = []
+    top_agencies: list[CapAgency] = []
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "PrimeActivity":
+        return cls(
+            awards_5y=r.get("prime_awards_5y"),
+            obligated_5y=r.get("prime_obligated_5y"),
+            competed_awards_5y=r.get("prime_competed_awards_5y"),
+            distinct_naics_5y=r.get("prime_distinct_naics_5y"),
+            top_naics=[CapCodeStat.from_row(n, "awards", "obligated") for n in (r.get("prime_top_naics") or [])],
+            top_psc=[CapCodeStat.from_row(n, "awards", "obligated") for n in (r.get("prime_top_psc") or [])],
+            top_agencies=[CapAgency.from_row(a) for a in (r.get("prime_top_agencies") or [])],
+        )
+
+
+class CapabilityProfileResponse(_Model):
+    """The full per-firm card: identity + designations + sub/prime activity + the
+    evidence-tiered recommended lanes. sub_activity is None when the firm never subbed;
+    prime_activity is None with no prime history. federal_status makes role a status."""
+
+    uei: str | None = None
+    firm_name: str | None = None
+    state_code: str | None = None
+    parent_uei: str | None = None
+    federal_status: str | None = None
+    is_dsbs: bool | None = None
+    has_sub_history: bool | None = None
+    has_prime_history: bool | None = None
+    designations: list[str] = []
+    sub_activity: SubActivity | None = None
+    prime_activity: PrimeActivity | None = None
+    recommended_lanes: list[CapLane] = []
+    n_recommended_lanes: int | None = None
+    top_evidence_tier: str | None = None
+    materialized_at: str | None = None
+
+    @classmethod
+    def from_row(cls, r: dict[str, Any]) -> "CapabilityProfileResponse":
+        return cls(
+            uei=r.get("uei"), firm_name=r.get("firm_name"), state_code=r.get("state_code"),
+            parent_uei=(r.get("parent_uei") or None), federal_status=r.get("federal_status"),
+            is_dsbs=r.get("is_dsbs"), has_sub_history=r.get("has_sub_history"),
+            has_prime_history=r.get("has_prime_history"),
+            designations=[d for d in (r.get("designations") or []) if d],
+            sub_activity=SubActivity.from_row(r) if r.get("has_sub_history") else None,
+            prime_activity=PrimeActivity.from_row(r) if r.get("has_prime_history") else None,
+            recommended_lanes=[CapLane.from_row(lane) for lane in (r.get("recommended_lanes") or [])],
+            n_recommended_lanes=r.get("n_recommended_lanes"),
+            top_evidence_tier=r.get("top_evidence_tier"),
+            materialized_at=_iso(r.get("materialized_at")),
+        )
