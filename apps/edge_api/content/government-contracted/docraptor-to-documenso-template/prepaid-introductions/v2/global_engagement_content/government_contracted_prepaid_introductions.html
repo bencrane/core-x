@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<!--
+  RARE STRUCTURE — Government-Contracted brand — Strategic Origination Agreement (PREPAID INTRODUCTIONS).
+  VERSION v2 — FIELD-PREFILL MODEL. ORG AFFILIATION: Rare Structure — Provider executes as Rare Structure
+  LLC with NO d/b/a ("Government Contracted" is not a registered DBA and is intentionally absent from the
+  document body). Archetype: prepaid_introductions.
+
+  DIFFERENCE FROM v1: v1 BAKED the economic values into the PDF via handlebar tokens substituted
+  server-side. v2 carries NO tokens and NO declared inputs. Every dynamic value is a plain underscore blank
+  (________), DEFINED ONCE under a capitalized term and referenced by that term everywhere downstream, so
+  no value recurs. The operator drops a Documenso TEXT field onto each underscore in the template editor
+  (once), then prefills those fields per-instantiation.
+
+  DYNAMIC VALUE SLOTS — all four live in Section 3, each a single underscore run at its definition:
+    - Prepaid Fee             §3.1   the non-refundable upfront amount
+    - Introduction Allocation §3.1   the count of Introductions secured
+    - Per-Introduction Rate   §3.1   the unit cost (= Prepaid Fee / Introduction Allocation); the operator
+                                     supplies the derived figure at prefill — Documenso does no arithmetic
+    - Primary Term            §3.2   the fulfillment window, in days
+  Each is defined once at its underscore and reused as its capitalized term (Introduction Allocation,
+  Per-Introduction Rate, Primary Term, Prepaid Fee) — never as a repeated number.
+
+  SIGNER BLANKS — effective date, participant entity / d/b/a, and the signature / by / title / date
+  lines — are likewise plain underscore runs; the operator drops Documenso fields on them in the editor.
+  No baked values, no handlebar tokens, no findText anchors — pure underscores.
+
+  The <head> stylesheet slot (plain | branded per manifest.json) is injected at render time.
+  House reference: content/rare-structure/docraptor-to-documenso-template/capital-origination/v3.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Strategic Origination Agreement</title>
+<style>__STYLESHEET__</style>
+</head>
+<body>
+  <h1>Strategic Origination Agreement</h1>
+  <hr class="rule" />
+
+  <p class="lead">This Strategic Origination Agreement (the &ldquo;Agreement&rdquo;), effective as of
+  ____________________ (the &ldquo;Effective Date&rdquo;), is entered into by
+  Rare Structure LLC (the &ldquo;Provider&rdquo;) and the participating entity,
+  ______________________________ d/b/a ____________________________,
+  hereby defined as the &ldquo;Participant&rdquo;.</p>
+
+  <h2>1. Purpose &amp; Scope</h2>
+  <p><strong>1.1 System Architecture.</strong> Provider has created, operates, and deploys proprietary
+  data-processing architecture designed to ingest, resolve, and detect unstructured corporate inflection
+  points, including federal contract awards and prime contractor ecosystem signals. Provider utilizes
+  this specialized data-engineering infrastructure to identify and originate off-market commercial
+  partnership and subcontracting opportunities.</p>
+  <p><strong>1.2 Strategic Origination.</strong> Participant engages Provider on a business development
+  basis to route proprietary introductions aligned, as assessed by Provider, to the Participant&rsquo;s
+  capabilities, operational parameters, and target verticals. This engagement is explicitly framed as an
+  un-brokered origination channel driven by algorithmic discovery configured, applied, and acted upon at
+  Provider&rsquo;s sole and strategic discretion.</p>
+  <p><strong>1.3 Discretion, Execution &amp; Infrastructure Autonomy.</strong> Provider retains absolute
+  sole discretion over the methods, data architecture, protocols, and front-facing enterprise networks
+  utilized to execute this Agreement. Provider shall bear all costs and expenses associated with the
+  development, deployment, and maintenance of its proprietary architecture, including all computational
+  data ingestion, high-dimensional scalar processing, vectorized entity resolution, and outbound routing
+  infrastructure. Participant bears no financial responsibility for Provider&rsquo;s operational,
+  technical, or outreach overhead beyond the fees explicitly defined in Section 3.</p>
+  <p><strong>1.4 Non-Brokerage &amp; Liability Acknowledgment.</strong> The Parties acknowledge and agree
+  that Provider acts solely as a data-routing infrastructure and lead generation service. Provider does
+  not, and will not, advise on specific contract terms, negotiate teaming agreements, or act as a
+  registered employment agency, staffing broker, or legal advisor. Provider makes no representations or
+  warranties regarding the viability, solvency, or intent of any routed entity. Participant retains sole
+  responsibility for all due diligence, contracting, and operational decisions.</p>
+  <p><strong>1.5 Non-Exclusive Engagement.</strong> Participant acknowledges and agrees that this
+  Agreement does not grant Participant exclusive rights to Provider&rsquo;s proprietary data pipeline,
+  origination network, or routed deal flow. Provider retains the absolute, unrestricted right to enter
+  into similar strategic origination agreements with other market participants, including competing
+  firms, and to route any originated opportunity to any party at Provider&rsquo;s sole strategic
+  discretion.</p>
+  <p><strong>1.6 Data Accuracy &amp; Reliance.</strong> Participant acknowledges that Provider&rsquo;s
+  infrastructure synthesizes information from disparate public and third-party sources. While Provider
+  employs best efforts to ensure signal fidelity, Provider makes no representations, warranties, or
+  guarantees regarding the absolute accuracy, completeness, or timeliness of the routed data.</p>
+
+  <h2>2. Operational Routing Protocol</h2>
+  <p><strong>2.1 Discretionary Discovery.</strong> Provider retains absolute engineering control over the
+  data pipeline inputs, matching models, and threshold criteria. Routing is triggered when, in
+  Provider&rsquo;s sole and strategic discretion, a target profile satisfies internal catalyst parameters
+  and reflects a workable fit. Such algorithmic and model-driven discovery is a tool Provider applies in
+  its sole discretion; it does not bind, predetermine, or guarantee any routing decision.</p>
+  <p><strong>2.2 Direct Introductions.</strong> Originated opportunities will be routed to the
+  Participant&rsquo;s designated point of contact. For the purposes of this Agreement, an
+  &ldquo;Introduction&rdquo; is strictly defined as an outbound email facilitation connecting Participant
+  with a representative of a target entity.</p>
+  <p><strong>2.3 Protected Client List.</strong> Participant may, strictly concurrent with the execution
+  of this Agreement, provide Provider with a designated &ldquo;Protected Client List&rdquo; consisting of
+  Participant&rsquo;s existing, active relationships. Provider will suppress these entities from its
+  routing pipeline, and Participant shall not be charged an Introduction allocation for connections made
+  with entities explicitly listed on the Protected Client List prior to Provider&rsquo;s initial
+  outreach.</p>
+
+  <h2>3. Financial Architecture &amp; Commercial Terms</h2>
+  <p><strong>3.1 Prepaid Origination Allocation.</strong> Participant shall pay a non-refundable upfront
+  fee of ____________________ (the &ldquo;Prepaid Fee&rdquo;), due in full upon execution of this
+  Agreement. The Prepaid Fee secures a dedicated allocation of ____________ Introductions (the
+  &ldquo;Introduction Allocation&rdquo;), establishing a fixed unit cost of ____________________ per
+  Introduction (the &ldquo;Per-Introduction Rate&rdquo;).</p>
+  <p><strong>3.2 Primary Fulfillment Term.</strong> Provider shall have a primary operational window of
+  ____________ days from the Effective Date (the &ldquo;Primary Term&rdquo;)
+  to execute and deliver the Introduction Allocation.</p>
+  <p><strong>3.3 Condition Precedent to Commencement.</strong> Provider shall have no obligation to
+  commence origination activity under this Agreement until the Prepaid Fee has been received and
+  irrevocably cleared in full.</p>
+  <p><strong>3.4 Term Expiration &amp; Resolution.</strong> In the event that Provider does not facilitate
+  the full Introduction Allocation prior to the expiration of the Primary Term, Participant shall be
+  immediately presented with a binary resolution choice for the unfulfilled balance:</p>
+  <p><strong>Option A (Prorated Refund):</strong> Participant may elect to receive a cash refund for the
+  unfulfilled Introductions, calculated precisely as the number of unfulfilled Introductions multiplied
+  by the Per-Introduction Rate.</p>
+  <p><strong>Option B (Credit Rollover):</strong> Participant may elect to convert the unfulfilled balance
+  into a retained allocation credit, locking in the Per-Introduction Rate for future Introductions.</p>
+  <p><strong>3.5 Rollover Mechanics &amp; Passive Allocation.</strong> If Participant elects Option B
+  (Credit Rollover) under Section 3.4, the relationship formally transitions into the &ldquo;Rollover
+  Period.&rdquo; During the Rollover Period, Participant retains a right to receive their remaining
+  allocation of Introductions. However, Participant explicitly acknowledges and agrees that during the
+  Rollover Period, Provider is under zero obligation to conduct dedicated outbound campaigns, maintain
+  active sourcing operations on Participant&rsquo;s behalf, or fulfill the remaining credits within any
+  specific timeframe. Provider&rsquo;s obligation converts entirely to a passive allocation mandate,
+  wherein remaining credits will be fulfilled strictly at Provider&rsquo;s sole discretion as organic,
+  relevant opportunities arise through Provider&rsquo;s general market operations.</p>
+
+  <h2>4. Data Ingestion &amp; Intellectual Property</h2>
+  <p><strong>4.1 Permissive Ingestion.</strong> Participant may provide Provider with targeting matrices
+  or operational preferences to calibrate Provider&rsquo;s active go-to-market efforts.</p>
+  <p><strong>4.2 Intellectual Property Lock.</strong> Any lookalike models, clustering parameters,
+  derivative enrichment data, behavioral intent signals, or analytical taxonomies generated by
+  Provider&rsquo;s infrastructure remain the sole, exclusive, and unencumbered intellectual property of
+  Provider.</p>
+
+  <h2>5. Confidentiality</h2>
+  <p><strong>5.1 Confidentiality.</strong> Both parties agree to maintain the strict confidentiality of
+  all proprietary information received from the other party. Both parties explicitly covenant that all
+  strategic initiatives, target identities, proprietary operational capabilities, and structural
+  discussions remain strictly confidential and protected from public disclosure.</p>
+
+  <h2>6. Indemnification</h2>
+  <p>Participant agrees to indemnify and hold harmless Provider from and against any and all claims,
+  liabilities, damages, and expenses (including reasonable attorneys&rsquo; fees) arising out of or
+  related to Provider&rsquo;s outreach efforts executed specifically on behalf of Participant, provided
+  such outreach efforts are conducted in good faith and in compliance with this Agreement.</p>
+
+  <h2>7. Miscellaneous</h2>
+  <p><strong>7.1 Governing Law.</strong> This Agreement and all performance hereunder shall be governed
+  by, and construed in accordance with, the laws of the State of New York, without regard to its conflict
+  of laws principles.</p>
+  <p><strong>7.2 Arbitration.</strong> Any disputes arising out of or in connection with this Agreement
+  shall be resolved through binding arbitration in accordance with the rules of the American Arbitration
+  Association. The arbitration shall be conducted in New York, NY, and judgment on the arbitration award
+  may be entered in any court having jurisdiction thereof. The prevailing party in any arbitration or
+  legal proceeding shall be entitled to recover its reasonable attorneys&rsquo; fees and costs.</p>
+  <p><strong>7.3 Entire Agreement &amp; Amendment.</strong> This Agreement constitutes the entire
+  agreement between the parties and supersedes all prior agreements, understandings, and negotiations. It
+  may be amended only by a written agreement signed by both parties.</p>
+  <p><strong>7.4 Authority.</strong> Each individual signing below represents that they are duly
+  authorized to execute this Agreement on behalf of, and to bind, the party for which they sign.</p>
+
+  <!-- Execution block — HELD INLINE; mirrors the Rare Structure house convention. Provider pre-set
+       (Benjamin J. Crane / Managing Director). Signature / by / title / date are plain underscore blanks; the
+       operator drops Documenso fields on them in the Documenso editor. -->
+  <div class="sig-wrap">
+    <table class="sig-grid"><tr>
+      <td>
+        <div class="sig-party">Provider</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">By:</span> <span class="val">Benjamin J. Crane</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+      <td>
+        <div class="sig-party">Participant</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">By:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Title:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+    </tr></table>
+  </div>
+</body>
+</html>
