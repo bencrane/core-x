@@ -63,3 +63,40 @@ class DealSummary(BaseModel):
             last_booking_id=d.last_booking_id,
             booked_at=d.booked_at.isoformat() if d.booked_at else None,
         )
+
+
+class TemplateOption(BaseModel):
+    """A selectable Documenso template for the deal-details editor dropdown. ``template_uuid`` is
+    ``documenso_templates.id`` — exactly what ``deal_details.default_template_uuid`` stores — so the
+    editor matches the current selection and PUTs the uuid back. ``documenso_template_id`` is the
+    external Documenso id (shown for reference)."""
+
+    template_uuid: str
+    documenso_template_id: str
+    name: str | None = None
+    is_default: bool = False
+
+
+class DealDetails(BaseModel):
+    """The editable deal_details payload: the deal's contacts + content + attached Documenso template,
+    plus the deal-org's selectable templates for the dropdown. ``template_origin`` is derived
+    server-side ('default' = the org default, 'operator' = a manual override)."""
+
+    deal_id: str
+    deal_handle: str
+    company_name: str | None = None
+    company_domain: str | None = None
+    contacts: list = []
+    content: dict = {}
+    default_template_uuid: str | None = None
+    template_origin: str = "default"
+    available_templates: list[TemplateOption] = []
+
+
+class DealDetailsUpdate(BaseModel):
+    """PUT body — the editable fields. ``template_origin`` is NOT client-set; it is derived from
+    whether ``default_template_uuid`` matches the deal-org's current is_default template."""
+
+    contacts: list = []
+    content: dict = {}
+    default_template_uuid: str | None = None
