@@ -181,17 +181,13 @@ def main() -> None:
                 sys.exit("  aborting LIVE run on incomplete placement")
             continue
 
-        recipients_json = {
-            "recipients": [
-                {"id": rid["participant"], "role": "SIGNER", "email": PARTICIPANT["email"], "party": "participant", "signing_order": 1},
-                {"id": rid["provider"], "role": "SIGNER", "email": PROVIDER["email"], "party": "provider", "signing_order": 2},
-            ],
+        # Store the FULL Documenso envelope response + custom metadata for template-use lane binding.
+        documenso_response = {
+            **env,  # Full Documenso API response
             "prospect_recipient_id": rid["participant"],
             "editable_field_labels": editable_labels,
             "default_field_values": {},
             "text_fields": editable_labels,
-            "envelope_id": env_id,
-            "secondary_id": f"template_{num}",
         }
         with conn.cursor() as cur:
             cur.execute(
@@ -201,10 +197,10 @@ def main() -> None:
             )
             cur.execute(
                 "INSERT INTO business.documenso_templates "
-                "(id, documenso_template_id, organization_id, name, slug, status, recipients, "
+                "(id, documenso_template_id, organization_id, name, slug, status, documenso_response, "
                 " archetype_id, global_input_content_id, global_input_content_variant_id, source_pdf_sha256) "
                 "VALUES (gen_random_uuid(), %s, %s, %s, %s, 'active', %s::jsonb, %s, %s, %s, %s)",
-                (num, org_id, title, slug, json.dumps(recipients_json), archetype_id, gic_id, vid, sha),
+                (num, org_id, title, slug, json.dumps(documenso_response), archetype_id, gic_id, vid, sha),
             )
         conn.commit()
         ok += 1

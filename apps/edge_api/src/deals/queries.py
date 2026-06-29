@@ -215,12 +215,12 @@ async def get_deal_originate_inputs(conn, handle: str) -> dict | None:
 
 async def get_prospect_recipient_id(conn, documenso_template_id: str) -> int | None:
     """The Documenso recipient id the prospect must bind to, from the template's STORED mapping
-    (``business.documenso_templates.recipients->>'prospect_recipient_id'``). ``None`` when not stored
+    (``business.documenso_templates.documenso_response->>'prospect_recipient_id'``). ``None`` when not stored
     (older templates) → the caller falls back to its email/role heuristic. Read-only (no commit)."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT (recipients->>'prospect_recipient_id')::int
+            SELECT (documenso_response->>'prospect_recipient_id')::int
               FROM business.documenso_templates
              WHERE documenso_template_id = %s
             """,
@@ -232,12 +232,12 @@ async def get_prospect_recipient_id(conn, documenso_template_id: str) -> int | N
 
 async def get_template_default_field_values(conn, documenso_template_id: str) -> dict:
     """Template-level DEFAULT prefill values (label→value) from
-    ``business.documenso_templates.recipients->'default_field_values'``. Merged UNDER the deal's
+    ``business.documenso_templates.documenso_response->'default_field_values'``. Merged UNDER the deal's
     per-deal ``field_values`` at originate (the deal overrides). Returns ``{}`` when unset. Read-only."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT recipients->'default_field_values'
+            SELECT documenso_response->'default_field_values'
               FROM business.documenso_templates
              WHERE documenso_template_id = %s
             """,
@@ -249,13 +249,13 @@ async def get_template_default_field_values(conn, documenso_template_id: str) ->
 
 
 async def get_template_editable_field_labels(conn, documenso_template_id: str) -> set[str]:
-    """Field LABELS (``documenso_templates.recipients->'editable_field_labels'``) left UNLOCKED after
+    """Field LABELS (``documenso_templates.documenso_response->'editable_field_labels'``) left UNLOCKED after
     prefill — the prospect's own facts (e.g. Full Name, Title) they may correct before signing.
     Everything else prefilled stays locked (operator terms). Empty/unset → lock all (default)."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT recipients->'editable_field_labels'
+            SELECT documenso_response->'editable_field_labels'
               FROM business.documenso_templates
              WHERE documenso_template_id = %s
             """,

@@ -21,7 +21,7 @@ _SQL = """
            a.key                               AS archetype_key,
            a.name                              AS archetype_name,
            a.performance_fee_basis             AS performance_fee_basis,
-           COALESCE(dt.recipients->'text_fields', '[]'::jsonb) AS text_fields
+           COALESCE(dt.documenso_response->'text_fields', '[]'::jsonb) AS text_fields
       FROM business.engagement_documenso_template_mappings m
       JOIN business.documenso_templates dt       ON dt.id = m.documenso_template_uuid
       JOIN business.organizations o              ON o.id = m.organization_id
