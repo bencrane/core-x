@@ -65,7 +65,8 @@ def main() -> int:
     reg("govcon_subawardee_designations", ["subawardee_uei","subawardee_name",
         "service_disabled_veteran_owned_business","veteran_owned_business","women_owned_small_business",
         "economically_disadvantaged_women_owned_small_business","historically_underutilized_business_zone_hubzone_firm",
-        "c8a_program_participant","small_disadvantaged_business","minority_owned_business","emerging_small_business"], "dg0")
+        "c8a_program_participant","small_disadvantaged_business","self_certified_small_disadvantaged_business",
+        "minority_owned_business","emerging_small_business","woman_owned_business","joint_venture_women_owned_small_business"], "dg0")
     con.execute("CREATE TABLE dg AS SELECT upper(trim(subawardee_uei)) uei, * EXCLUDE(subawardee_uei) FROM dg0")
 
     # recommendation surface -> nested list + summary, per firm
@@ -94,9 +95,12 @@ def main() -> int:
             CASE WHEN dg.veteran_owned_business THEN 'VOSB' END,
             CASE WHEN dg.women_owned_small_business THEN 'WOSB' END,
             CASE WHEN dg.economically_disadvantaged_women_owned_small_business THEN 'EDWOSB' END,
+            CASE WHEN dg.joint_venture_women_owned_small_business THEN 'WOSB-JV' END,
+            CASE WHEN dg.woman_owned_business THEN 'WOB' END,
             CASE WHEN dg.historically_underutilized_business_zone_hubzone_firm THEN 'HUBZone' END,
             CASE WHEN dg.c8a_program_participant THEN '8(a)' END,
             CASE WHEN dg.small_disadvantaged_business THEN 'SDB' END,
+            CASE WHEN dg.self_certified_small_disadvantaged_business THEN 'SDB-SC' END,
             CASE WHEN dg.minority_owned_business THEN 'MBE' END,
             CASE WHEN dg.emerging_small_business THEN 'ESB' END
         ], x -> x IS NOT NULL) AS designations,
