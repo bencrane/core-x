@@ -3,7 +3,7 @@
 This is the production execution harness that WRAPS the shipped, sample-proven merge
 in ``pipelines/usaspending/usaspending_fpds_canonical.py``. The merge is NOT reimplemented:
 ``build_fn`` calls the shipped ``build()`` verbatim and ``verify_fn`` calls the shipped
-``verify()`` verbatim. The ONLY net-new logic is ``index_fn`` — the Volume-staged,
+``verify()`` verbatim. The ONLY net-new logic is ``index_fn`` — the /tmp-staged,
 append-only scalar index that replaces the shipped ``index()`` (which writes scalar
 indices DIRECTLY to R2 and trips R2's "non-trailing parts must match" multipart rule at
 107M, and sorts the BTREE in a bounded DataFusion pool that OOMs on a 100M+ row column).
@@ -15,33 +15,36 @@ WHY a wrapper and not edits to the shipped module:
   • env-before-import. The shipped module reads SCRATCH/DUCK_MEM/DUCK_TMP/DUCK_THREADS at
     IMPORT time (usaspending_fpds_canonical.py L85-88). Modal injects ``build_env``/``index_env``
     Secrets into ``os.environ`` BEFORE the function body runs, and the import of the shipped
-    module happens INSIDE each function body — so the module-level reads resolve to Volume
+    module happens INSIDE each function body — so the module-level reads resolve to the /tmp
     paths. There is deliberately NO top-level import of the canonical module in this wrapper.
 
 ═══════════════════════════════════════════════════════════════════════════════════════
 RUN SEQUENCE (run as separate invocations — blast-radius split, design §6)
 ═══════════════════════════════════════════════════════════════════════════════════════
+Drive via the LOCAL ENTRYPOINTS (``::smoke``/``::build``/``::index``/``::verify``), NOT the bare
+``::*_fn`` function targets — the entrypoints coerce ``--since ""`` → ``None`` (a bare ``::build_fn``
+with ``--since ""`` would inject ``action_date >= DATE ''`` → SQL error). The full detached
+prod procedure with two-source completion detection lives in MODAL_GIANT_EXECUTION_DURABILITY.md §5.
 
-  # 0a) CHEAP smoke — validates packaging + secrets + import for pennies BEFORE the giant.
-  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::smoke_fn
+  # 0a) CHEAP smoke — validates packaging + secrets + import for pennies BEFORE the giant. MANDATORY.
+  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::smoke
 
-  # 0b) one-time ops DDL. EITHER apply locally via doppler (preferred — no container spin-up):
+  # 0b) one-time ops DDL via doppler — MANDATORY pre-step (do NOT rely on _record_run's
+  #     self-bootstrap: two concurrent first-run CREATEs can deadlock; pre-create the table once):
   doppler run -p core-x -c prd -- python3 -m pipelines.usaspending.usaspending_fpds_canonical init_ops
-  #     OR remotely (belt-and-suspenders; _record_run also self-bootstraps via to_regclass):
-  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::init_ops_main
 
-  # 1) BUILD — full 107M merge → local Lance on the Volume → boto3 uniform-part publish.
+  # 1) BUILD — full 107M merge → local Lance on /tmp → boto3 uniform-part publish.
   #    Prod build passes NO --since (full universe; --since is sample/debug ONLY).
-  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::build_fn
+  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::build
 
-  # 2) INDEX — Volume-staged append-only BTREE/BITMAP. Runs AFTER build verifies clean.
-  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::index_fn
+  # 2) INDEX — /tmp-staged append-only BTREE/BITMAP. Runs AFTER build verifies clean.
+  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::index
 
   # 3) VERIFY — read-back §5 assertions.
-  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::verify_fn
+  modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::verify
 
-(Args: ``modal run …::build_fn --since 2025-10-01`` or ``--target-uri s3://…`` pass through
-Modal's CLI. The bare function-target form above works because each is a plain ``@app.function``.)
+(Args: ``modal run …::build --since 2025-10-01`` or ``--target-uri s3://…`` pass through Modal's
+CLI. The entrypoints coerce empty strings to None before dispatching to the remote functions.)
 
 ═══════════════════════════════════════════════════════════════════════════════════════
 SIZING (design §2)
@@ -53,27 +56,47 @@ SIZING (design §2)
   container cpu                 16.0              8.0               4.0
   timeout                       60*60*8 (8h)      60*60*4 (4h)      60*60 (1h)
   retries                       0                 0                 0
-  Volume (400 GiB)              spill + stage     idx stage         verify_spill
-  FPDS_CANONICAL_DUCKDB_MEM     64GB              —                 24GB
+  max_containers                1 (HIGH-1 guard)  1 (HIGH-1 guard)  —
+  spill + stage                 /tmp local disk   /tmp local disk   /tmp local disk
+  FPDS_CANONICAL_DUCKDB_MEM     96GB              —                 24GB
   FPDS_CANONICAL_DUCKDB_THREADS 8                 —                 4
-  FPDS_CANONICAL_SCRATCH        /vol/.../stage    /vol/.../idx_stage —
-  FPDS_CANONICAL_DUCKDB_TEMP_DIR /vol/.../spill   —                 /vol/.../verify_spill
+  FPDS_CANONICAL_SCRATCH        /tmp/.../stage    /tmp/.../idx_stage —
+  FPDS_CANONICAL_DUCKDB_TEMP_DIR /tmp/.../spill   —                 /tmp/.../verify_spill
   LANCE_BYPASS_SPILLING         true (harmless)   true (REQUIRED)   (module setdefault)
 
-  NOTE verify_fn diverges from spec §3.3's "16 GiB, no Volume" because the SHIPPED verify()
-  does NOT stream — it `CREATE TEMP TABLE c AS SELECT * FROM c_src` (full 107M materialize; the
-  §5 checks multi-scan c). At the module-default 8GB memory_limit on a Volume-less box that spills
-  to the small container root /tmp and crashes. 32 GiB box + 24GB DuckDB + Volume-backed spill.
+  Spill + stage live on the standard 512 GiB container local disk (no modal.Volume): the merge's
+  ~100-180 GiB DuckDB spill and the ~50-90 GiB local Lance stage both fit the default disk, and a
+  high-churn spill dir on a network-backed Volume (background-committed every few seconds) is the
+  write-heavy throwaway workload Volumes are worst at — it materially risks the 8 h build timeout.
+
+  NOTE verify_fn diverges from spec §3.3's "16 GiB" because the SHIPPED verify() does NOT stream —
+  it `CREATE TEMP TABLE c AS SELECT * FROM c_src` (full 107M materialize; the §5 checks multi-scan
+  c). At the module-default 8GB memory_limit that spills to the small container root /tmp and
+  crashes. 32 GiB box + 24GB DuckDB + a dedicated /tmp spill dir (the 512 GiB disk has room).
 
 ═══════════════════════════════════════════════════════════════════════════════════════
 d.8 / FLEET DISCIPLINES
 ═══════════════════════════════════════════════════════════════════════════════════════
   • retries=0 on EVERY function. A giant re-run is operator-initiated; overwrite idempotency
-    only (design §6). No detach — the operator drives it foreground (``modal run``) so the
-    Volume is never orphaned mid-write.
-  • modal.Volume (network storage), NEVER ephemeral_disk. A large ephemeral_disk request
-    forces the job onto preemptible spot capacity that gets killed and restarted repeatedly
-    (usaspending_bulk.py giant lesson; ARCHITECTURE.md L143-149). The Volume does not push to spot.
+    only (design §6).
+  • Spill + stage on the standard 512 GiB local disk — NO modal.Volume, NO ephemeral_disk.
+    The default disk fits the ~100-180 GiB spill + ~50-90 GiB stage; a Volume is network-backed
+    and background-commits a high-churn spill dir every few seconds (slow → risks the 8 h timeout),
+    and the proven giant `usaspending_bulk.py` ran its 43 GiB-gz ingest on standard `/tmp` with NO
+    Volume — the Volume-as-"giant lesson" was a misreading of that precedent. The `ephemeral_disk`
+    "spot-preemption trap" is project lore (bulk.py comments), not Modal-documented, and is moot
+    because the 512 GiB default suffices without requesting `ephemeral_disk` at all.
+  • COMPLETION SENTINEL is two-source AND, not the ledger alone. The ops-ledger row is written
+    only in build()'s `finally:`, which an OOM SIGKILL (or spot reap) SKIPS — so a killed run
+    writes NO row and a ledger-only poller hangs forever (or reads a STALE prior 'success' and
+    arms index against an unpublished dataset). Decide completion on Modal app state
+    (`modal app list`/`modal app logs <ap-id>`) AND a fresh `status='success'` ledger row: app
+    stopped + fresh success row = PASS; app stopped + NO fresh row = OOM/reap FAIL. The build's
+    return dict is log-only under `--detach` (`--write-result` is str/bytes only). Full procedure
+    + decision table: MODAL_GIANT_EXECUTION_DURABILITY.md §5.
+  • max_containers=1 on build_fn + index_fn — Modal will not run two simultaneously within the app
+    (double-launch guard, HIGH-1; pair with the operational discipline of checking `modal app list`
+    before any manual launch, since separate ephemeral `modal run` apps are not covered).
   • index_fn uploads ONLY new index files (diff R2 key-set before/after). It NEVER wipes or
     re-uploads the ~50-80 GiB of data files. TWO FAIL-CLOSED gates run on the upload set BEFORE any
     byte is written: (1) no ``prefix+"data/"…*.lance`` in the diff (append-only-on-index holds),
@@ -94,7 +117,7 @@ import modal
 
 # ── constants mirrored from the shipped module (must NOT drift) ─────────────────────────
 BUCKET = "data-sink"
-VOL_MOUNT = "/vol/fpds_canonical"
+SCRATCH_ROOT = "/tmp/fpds_canonical"  # spill + stage on the container's standard 512 GiB local disk
 OPS_SQL_FILE = "ops_usaspending_fpds_canonical_runs.sql"
 
 # Package dir = …/pipelines/usaspending. Source of the one co-located ops .sql shipped into the
@@ -136,32 +159,31 @@ image = (
 
 app = modal.App("usaspending-fpds-canonical", image=image)
 
-# ── Volume — network storage, shared by build_fn (spill + stage) and index_fn (idx stage) ─
-# 400 GiB ceiling (design §2.4): build peak = DuckDB spill (≤250) + local Lance stage (≤90).
-# Each function wipes its staging sub-dir, so steady-state occupancy between runs is ~0.
-vol = modal.Volume.from_name("fpds-canonical-vol", create_if_missing=True)
-
 # ── env-knob Secrets — present in os.environ BEFORE the shipped module imports ───────────
 # The shipped module reads SCRATCH/DUCK_TMP/DUCK_MEM/DUCK_THREADS at IMPORT time (L85-88).
+# Spill + stage live on the container's standard 512 GiB local disk (/tmp), NOT a network
+# Volume: the merge's ~100-180 GiB DuckDB spill fits the default disk, and a high-churn spill
+# dir on a network-backed Volume (background-committed every few seconds) is exactly the
+# write-heavy throwaway workload Volumes are worst at — it risks the 8 h build timeout.
 build_env = modal.Secret.from_dict({
-    "FPDS_CANONICAL_SCRATCH": f"{VOL_MOUNT}/stage",
-    "FPDS_CANONICAL_DUCKDB_TEMP_DIR": f"{VOL_MOUNT}/duckdb_spill",
-    "FPDS_CANONICAL_DUCKDB_MEM": "64GB",
+    "FPDS_CANONICAL_SCRATCH": f"{SCRATCH_ROOT}/stage",
+    "FPDS_CANONICAL_DUCKDB_TEMP_DIR": f"{SCRATCH_ROOT}/duckdb_spill",
+    "FPDS_CANONICAL_DUCKDB_MEM": "96GB",   # 96GB on the 128 GiB box: less spill, finishes in time
     "FPDS_CANONICAL_DUCKDB_THREADS": "8",
     "LANCE_BYPASS_SPILLING": "true",
 })
 index_env = modal.Secret.from_dict({
-    "FPDS_CANONICAL_SCRATCH": f"{VOL_MOUNT}/idx_stage",
+    "FPDS_CANONICAL_SCRATCH": f"{SCRATCH_ROOT}/idx_stage",
     "LANCE_BYPASS_SPILLING": "true",  # REQUIRED — BTREE train sorts ~107M PK values in-RAM
 })
 # verify() runs `CREATE TEMP TABLE c AS SELECT * FROM c_src` — a FULL 107M-row × 75-col
 # materialize (the six §5 checks multi-scan c, so it cannot stream). Without these knobs the
 # shipped module's import-time defaults apply (memory_limit=8GB, temp_directory=/tmp,
-# threads=4): an 8GB-limited 107M materialize spills hard to the container's ephemeral /tmp,
-# which on a Volume-less box is the small root disk → DuckDB IO error / crash. Point DUCK_TMP
-# at the Volume (room for the spill) and raise the DuckDB memory_limit under the bumped box.
+# threads=4): an 8GB-limited 107M materialize spills hard to the small container root /tmp and
+# crashes. Point DUCK_TMP at a dedicated /tmp spill dir (the 512 GiB local disk has room) and
+# raise the DuckDB memory_limit under the bumped box.
 verify_env = modal.Secret.from_dict({
-    "FPDS_CANONICAL_DUCKDB_TEMP_DIR": f"{VOL_MOUNT}/verify_spill",
+    "FPDS_CANONICAL_DUCKDB_TEMP_DIR": f"{SCRATCH_ROOT}/verify_spill",
     "FPDS_CANONICAL_DUCKDB_MEM": "24GB",   # under the 32 GiB box; spill relief, not the driver
     "FPDS_CANONICAL_DUCKDB_THREADS": "4",
 })
@@ -233,23 +255,23 @@ def smoke_fn() -> dict:
         modal.Secret.from_name("hqx-postgres"),
         build_env,
     ],
-    volumes={VOL_MOUNT: vol},
-    memory=131072,  # 128 GiB — DuckDB memory_limit=64GB + Arrow drain + spill page cache slack
+    memory=131072,  # 128 GiB — DuckDB memory_limit=96GB + Arrow drain + spill page cache slack
     cpu=16.0,       # the 107M per-key window-collapse is the compute hot path (DUCK_THREADS=8)
     timeout=60 * 60 * 8,  # 8h — deliberate slack over the multi-hour spilling build
     retries=0,            # d.8 — a giant re-run is operator-initiated
+    max_containers=1,     # double-launch guard (HIGH-1) — never two builds on the same R2 prefix
 )
 def build_fn(since: str | None = None, target_uri: str | None = None) -> dict:
     import os
     import shutil
 
-    # Pre-create the Volume sub-dirs the shipped module's SCRATCH/DUCK_TMP point at, so a
-    # stale prior run's tree does not collide (the module rmtrees SCRATCH in its finally).
+    # Pre-create the /tmp sub-dirs the shipped module's SCRATCH/DUCK_TMP point at, so a stale
+    # prior run's tree does not collide (the module rmtrees SCRATCH in its finally).
     for sub in ("stage", "duckdb_spill"):
-        os.makedirs(f"{VOL_MOUNT}/{sub}", exist_ok=True)
+        os.makedirs(f"{SCRATCH_ROOT}/{sub}", exist_ok=True)
 
     # Import AFTER the build_env Secret is in os.environ (it is — it's a function arg), so the
-    # module-level SCRATCH/DUCK_TMP/DUCK_MEM/DUCK_THREADS reads (L85-88) resolve to Volume paths.
+    # module-level SCRATCH/DUCK_TMP/DUCK_MEM/DUCK_THREADS reads (L85-88) resolve to /tmp paths.
     from pipelines.usaspending import usaspending_fpds_canonical as fpds
 
     uri = target_uri or fpds.CANONICAL_URI
@@ -258,31 +280,32 @@ def build_fn(since: str | None = None, target_uri: str | None = None) -> dict:
     finally:
         # build() rmtrees SCRATCH (the stage) in its OWN finally, but the DuckDB spill dir is NOT
         # under SCRATCH and the module never cleans it → it would accrue across runs. Publish is
-        # to R2 via boto3 (NOT the Volume), so there is nothing durable to vol.commit() here; the
-        # only Volume residue is the spill, which we wipe so steady-state occupancy returns to ~0.
-        shutil.rmtree(f"{VOL_MOUNT}/duckdb_spill", ignore_errors=True)
+        # to R2 via boto3, so there is nothing durable to persist here; the only local residue is
+        # the spill, which we wipe so steady-state /tmp occupancy returns to ~0.
+        shutil.rmtree(f"{SCRATCH_ROOT}/duckdb_spill", ignore_errors=True)
     return metrics
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════════
-# index_fn — Volume-staged APPEND-ONLY scalar index (the ONLY net-new logic, design §3.2)
+# index_fn — /tmp-staged APPEND-ONLY scalar index (the ONLY net-new logic, design §3.2)
 # ═══════════════════════════════════════════════════════════════════════════════════════
 @app.function(
     image=image,
     secrets=[
         modal.Secret.from_name("r2-credentials"),
-        index_env,  # LANCE_BYPASS_SPILLING=true + SCRATCH on the Volume
+        index_env,  # LANCE_BYPASS_SPILLING=true + SCRATCH on the local /tmp disk
     ],
-    volumes={VOL_MOUNT: vol},
     memory=49152,  # 48 GiB — in-RAM BTREE sort of the ~107M VARCHAR PK (32-64 GiB fleet rule)
     cpu=8.0,
     timeout=60 * 60 * 4,  # 4h
     retries=0,
+    max_containers=1,     # double-launch guard (HIGH-1) — never two index runs on the same prefix
 )
 def index_fn(target_uri: str | None = None) -> dict:
     """Mirror usaspending_bulk.build_table_indexes (download R2 → local → create_scalar_index →
-    upload) with three giant-correct deltas: (a) the local FS is a Volume (no spot); (b) it uploads
-    ONLY new index files via a before/after R2 key-set diff — NEVER re-uploading data files; (c) it
+    upload) with three giant-correct deltas: (a) the local FS is the standard 512 GiB container
+    disk (/tmp), ample for the ~50-80 GiB staged dataset; (b) it uploads ONLY new index files via
+    a before/after R2 key-set diff — NEVER re-uploading data files; (c) it
     force-re-uploads the MUTABLE version pointer (_versions/latest_version_hint.json) LAST, because
     create_scalar_index rewrites its content in place under the SAME key (so the pure set-diff would
     skip it and leave R2's hint pointing at the OLD un-indexed manifest — a stale-version corruption).
@@ -307,8 +330,8 @@ def index_fn(target_uri: str | None = None) -> dict:
     s3 = fpds._s3()  # same R2 client (retries=10, checksum-when-required) the publish path uses
     uri = target_uri or fpds.CANONICAL_URI
     prefix = uri.replace(f"s3://{BUCKET}/", "")
-    local_ds = f"{VOL_MOUNT}/idx_stage/canonical_lance"
-    os.makedirs(f"{VOL_MOUNT}/idx_stage", exist_ok=True)
+    local_ds = f"{SCRATCH_ROOT}/idx_stage/canonical_lance"
+    os.makedirs(f"{SCRATCH_ROOT}/idx_stage", exist_ok=True)
     shutil.rmtree(local_ds, ignore_errors=True)
 
     paginator = s3.get_paginator("list_objects_v2")
@@ -321,7 +344,7 @@ def index_fn(target_uri: str | None = None) -> dict:
     if not before:
         return {"status": "dataset_not_found", "prefix": prefix}
 
-    # 2) Download the published dataset to the Volume (local FS has no R2 multipart rule).
+    # 2) Download the published dataset to the local /tmp disk (local FS has no R2 multipart rule).
     staged = 0
     for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
         for o in page.get("Contents", []):
@@ -467,9 +490,8 @@ def index_fn(target_uri: str | None = None) -> dict:
     image=image,
     secrets=[
         modal.Secret.from_name("r2-credentials"),
-        verify_env,  # DUCK_MEM=24GB + DUCK_TMP on the Volume — verify() materializes 107M rows
+        verify_env,  # DUCK_MEM=24GB + DUCK_TMP on the local disk — verify() materializes 107M rows
     ],
-    volumes={VOL_MOUNT: vol},  # spill room for the 107M TEMP TABLE materialize (NOT container /tmp)
     memory=32768,  # 32 GiB — shipped verify() does CREATE TEMP TABLE c (full 107M materialize),
                    # NOT a stream; the §5 checks multi-scan c. 16 GiB + 8GB DuckDB on root /tmp crashes.
     cpu=4.0,
@@ -479,11 +501,11 @@ def index_fn(target_uri: str | None = None) -> dict:
 def verify_fn(target_uri: str | None = None) -> dict:
     import os
 
-    # The shipped _duck() makedirs DUCK_TMP, but pre-create on the mount for clarity.
-    os.makedirs(f"{VOL_MOUNT}/verify_spill", exist_ok=True)
+    # The shipped _duck() makedirs DUCK_TMP, but pre-create the /tmp spill dir for clarity.
+    os.makedirs(f"{SCRATCH_ROOT}/verify_spill", exist_ok=True)
 
     # Import AFTER verify_env is in os.environ so the module-level DUCK_MEM/DUCK_TMP reads
-    # (usaspending_fpds_canonical.py L86-88) resolve to the Volume-backed spill + raised mem.
+    # (usaspending_fpds_canonical.py L86-88) resolve to the /tmp-backed spill + raised mem.
     from pipelines.usaspending import usaspending_fpds_canonical as fpds
 
     return fpds.verify(target_uri=target_uri or fpds.CANONICAL_URI)
@@ -532,7 +554,7 @@ def smoke() -> None:
 
 @app.local_entrypoint()
 def build(since: str = "", target_uri: str = "") -> None:
-    """Full 107M merge → local Lance on the Volume → boto3 publish. Prod build passes NO --since."""
+    """Full 107M merge → local Lance on /tmp → boto3 publish. Prod build passes NO --since."""
     import json
 
     print(json.dumps(
@@ -543,7 +565,7 @@ def build(since: str = "", target_uri: str = "") -> None:
 
 @app.local_entrypoint()
 def index(target_uri: str = "") -> None:
-    """Volume-staged append-only BTREE/BITMAP index. Runs AFTER build verifies clean."""
+    """/tmp-staged append-only BTREE/BITMAP index. Runs AFTER build verifies clean."""
     import json
 
     print(json.dumps(index_fn.remote(target_uri=target_uri or None), indent=2, default=str))
