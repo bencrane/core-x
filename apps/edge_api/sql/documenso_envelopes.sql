@@ -28,8 +28,8 @@
 --   documenso_response    — full GET /api/v2/envelope/{id} response (jsonb), verbatim. System of mirror.
 --   deleted_at            — soft-delete stamp set on a *_DELETED event (no API pull on delete).
 --
--- ── business.documenso_template_configs ───────────────────────────────────────────────────────────
--- Per-template binding config (field bindings, prospect recipient, default flag). OPERATOR/app-owned —
+-- ── business.documenso_template_document_prefill_configs ────────────────────────────────────────────
+-- Per-template DOCUMENT-prefill config (per-field default value + read-only). OPERATOR/app-owned —
 -- the projector/sync NEVER writes this table. Keyed UNIQUE on template_documenso_id.
 
 CREATE SCHEMA IF NOT EXISTS business;
@@ -62,16 +62,22 @@ CREATE INDEX IF NOT EXISTS documenso_envelopes_external_id_idx
 CREATE INDEX IF NOT EXISTS documenso_envelopes_type_idx
     ON business.documenso_envelopes (type);
 
-CREATE TABLE IF NOT EXISTS business.documenso_template_configs (
+-- Per-template DOCUMENT-PREFILL config. Operator-authored (the projector/sync NEVER writes this).
+-- Dictates what happens when a document is instantiated + prefilled off this template, per field label:
+--   field_settings = { "<field label>": { default_document_field_value: <str>, read_only: <bool>,
+--                                          source?: <deal-fact key, Phase 2> } }
+-- Resolution at originate (model B): value = deal_details.field_values[label] (explicit override)
+--   ELSE default_document_field_value (live fallback); read_only fields are locked on the document.
+CREATE TABLE IF NOT EXISTS business.documenso_template_document_prefill_configs (
     id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     template_documenso_id bigint      NOT NULL,
-    field_bindings        jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    prospect_recipient_id integer,
-    is_default            boolean     NOT NULL DEFAULT false,
-    organization_id       uuid,
+    field_settings        jsonb       NOT NULL DEFAULT '{}'::jsonb,
     created_at            timestamptz NOT NULL DEFAULT now(),
     updated_at            timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS documenso_template_configs_template_documenso_id_uidx
-    ON business.documenso_template_configs (template_documenso_id);
+CREATE UNIQUE INDEX IF NOT EXISTS documenso_template_document_prefill_configs_template_uidx
+    ON business.documenso_template_document_prefill_configs (template_documenso_id);
+
+-- Superseded by the table above (renamed + reshaped). Empty in prod; dropped manually. Kept absent
+-- here so a fresh DB never creates the old name.

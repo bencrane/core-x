@@ -49,6 +49,7 @@ from .src.routers.engagement_mappings_v1 import router as engagement_mappings_ro
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_templates_v1 import router as documenso_templates_router
 from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
+from .src.routers.documenso_prefill_configs_v1 import router as documenso_prefill_configs_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
 from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
@@ -300,6 +301,14 @@ app.include_router(documenso_templates_router)
 # webhook projector's exact get_envelope → upsert_envelope pull (no second upsert path, no remap) and
 # NEVER writes business.documenso_template_configs. Service-token gated.
 app.include_router(documenso_envelopes_router)
+
+# documenso-template-prefill: the "Manage Documenso Templates" prefill-config editor. GET surfaces a
+# template's value fields (TEXT/NUMBER with a fieldMeta.label, read off the verbatim mirror
+# business.documenso_envelopes) + the saved per-label settings; PUT upserts the OPERATOR-OWNED
+# business.documenso_template_document_prefill_configs (field_settings keyed by label, arbitrary objects
+# stored verbatim). The default lives in OUR config, applied at originate later — nothing is baked onto
+# the Documenso template. This editor is the SOLE writer of that table. Service-token gated.
+app.include_router(documenso_prefill_configs_router)
 
 # engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
 # engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident
