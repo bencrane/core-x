@@ -48,6 +48,7 @@ from .src.routers.internal_opportunities_v1 import router as internal_opportunit
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_templates_v1 import router as documenso_templates_router
+from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
 from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
@@ -293,6 +294,12 @@ app.include_router(documenso_template_fields_router)
 # documenso-templates: the Settings → Documenso → Manage Templates table — lists every
 # business.documenso_templates row (active + archived) for the operator's org.
 app.include_router(documenso_templates_router)
+
+# documenso-envelopes: the envelope MIRROR surface — LIST the mirrored TEMPLATE envelopes
+# (business.documenso_envelopes, verbatim) and on-demand RE-GRAB one or all of them. Re-grab reuses the
+# webhook projector's exact get_envelope → upsert_envelope pull (no second upsert path, no remap) and
+# NEVER writes business.documenso_template_configs. Service-token gated.
+app.include_router(documenso_envelopes_router)
 
 # engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
 # engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident

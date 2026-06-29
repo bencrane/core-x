@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 
@@ -92,3 +93,42 @@ async def soft_delete_envelope(
         affected = cur.rowcount
     await conn.commit()
     return affected
+
+
+async def list_template_mirror(conn) -> list[dict[str, Any]]:
+    """The mirrored TEMPLATE envelopes (non-deleted), newest sync first — the LIST surface.
+
+    Reads STRAIGHT off the verbatim mirror: ``documenso_id``/``title``/``status`` as stored, plus
+    field/recipient counts derived from ``documenso_response`` (the full envelope), and ``synced_at``.
+    Read-only; touches ONLY business.documenso_envelopes.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT
+                documenso_id,
+                title,
+                status,
+                jsonb_array_length(COALESCE(documenso_response->'fields', '[]'::jsonb))     AS field_count,
+                jsonb_array_length(COALESCE(documenso_response->'recipients', '[]'::jsonb)) AS recipient_count,
+                synced_at
+            FROM business.documenso_envelopes
+            WHERE type = 'template' AND deleted_at IS NULL
+            ORDER BY synced_at DESC
+            """
+        )
+        return await cur.fetchall()
+
+
+async def list_template_documenso_ids(conn) -> list[int]:
+    """The ``documenso_id`` of every non-deleted TEMPLATE mirror row — the re-grab-all worklist."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT documenso_id
+            FROM business.documenso_envelopes
+            WHERE type = 'template' AND deleted_at IS NULL
+            ORDER BY documenso_id
+            """
+        )
+        return [int(r[0]) for r in await cur.fetchall()]
