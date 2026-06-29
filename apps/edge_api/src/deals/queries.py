@@ -51,9 +51,9 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
                    d.company_name,
                    d.company_domain,
                    d.organization_id::text AS organization_id,
-                   COALESCE(dd.contacts, '[]'::jsonb) AS contacts,
-                   COALESCE(dd.content,  '{}'::jsonb) AS content,
-                   dd.default_template_uuid::text     AS default_template_uuid,
+                   d.account_id::text      AS account_id,
+                   COALESCE(dd.field_values, '{}'::jsonb) AS field_values,
+                   dd.default_template_uuid::text         AS default_template_uuid,
                    COALESCE(dd.template_origin, 'default') AS template_origin
               FROM business.deals d
          LEFT JOIN business.deal_details dd ON dd.deal_id = d.id
@@ -63,6 +63,46 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
             (handle,),
         )
         return await cur.fetchone()
+
+
+async def get_deal_contacts(conn, deal_id: str) -> list[dict]:
+    """The deal's contacts (deal_contacts junction JOINed to the person), signatories first. The
+    person fields (full_name/email/title) are read-only here — business.contacts is their source."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT dc.contact_id::text AS contact_id,
+                   NULLIF(btrim(concat_ws(' ', c.first_name, c.last_name)), '') AS full_name,
+                   c.email, c.title, dc.is_signatory
+              FROM business.deal_contacts dc
+              JOIN business.contacts c ON c.id = dc.contact_id
+             WHERE dc.deal_id = %s::uuid
+             ORDER BY dc.is_signatory DESC, c.first_name NULLS LAST, c.last_name NULLS LAST
+            """,
+            (deal_id,),
+        )
+        return await cur.fetchall()
+
+
+async def get_available_contacts(conn, account_id: str | None, deal_id: str) -> list[dict]:
+    """The eligible pool — account contacts NOT yet on the deal — for the editor's add-contact picker."""
+    if not account_id:
+        return []
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT c.id::text AS contact_id,
+                   NULLIF(btrim(concat_ws(' ', c.first_name, c.last_name)), '') AS full_name,
+                   c.email, c.title
+              FROM business.contacts c
+             WHERE c.account_id = %s::uuid AND c.deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM business.deal_contacts dc
+                                WHERE dc.deal_id = %s::uuid AND dc.contact_id = c.id)
+             ORDER BY c.first_name NULLS LAST, c.last_name NULLS LAST
+            """,
+            (account_id, deal_id),
+        )
+        return await cur.fetchall()
 
 
 async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
@@ -83,11 +123,12 @@ async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
         return await cur.fetchall()
 
 
-async def upsert_details(conn, *, deal_id: str, contacts, content,
+async def upsert_details(conn, *, deal_id: str, contacts, field_values,
                          default_template_uuid: str | None) -> None:
-    """Upsert the deal's deal_details (1:1 on deal_id). ``template_origin`` is DERIVED: 'default' when
-    the chosen template IS the deal-org's is_default (or none is chosen), else 'operator' (a manual
-    override). Commits."""
+    """Write the deal's deal_details (field_values + attached template; ``template_origin`` DERIVED:
+    'default' when the chosen template is the deal-org's is_default or none is chosen, else 'operator')
+    AND reconcile the deal_contacts junction to the desired set (membership + is_signatory). Person
+    identity (business.contacts) is NOT edited here. ``contacts`` = [{contact_id, is_signatory}]. Commits."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -104,17 +145,32 @@ async def upsert_details(conn, *, deal_id: str, contacts, content,
         origin = "default" if (default_template_uuid is None or default_template_uuid == org_default) else "operator"
         await cur.execute(
             """
-            INSERT INTO business.deal_details
-                (deal_id, content, contacts, default_template_uuid, template_origin)
-            VALUES (%(deal_id)s::uuid, %(content)s, %(contacts)s, %(tmpl)s::uuid, %(origin)s)
+            INSERT INTO business.deal_details (deal_id, field_values, default_template_uuid, template_origin)
+            VALUES (%(deal_id)s::uuid, %(fv)s, %(tmpl)s::uuid, %(origin)s)
             ON CONFLICT (deal_id) DO UPDATE SET
-                content               = EXCLUDED.content,
-                contacts              = EXCLUDED.contacts,
+                field_values          = EXCLUDED.field_values,
                 default_template_uuid = EXCLUDED.default_template_uuid,
                 template_origin       = EXCLUDED.template_origin,
                 updated_at            = now()
             """,
-            {"deal_id": deal_id, "content": Jsonb(content), "contacts": Jsonb(contacts),
-             "tmpl": default_template_uuid, "origin": origin},
+            {"deal_id": deal_id, "fv": Jsonb(field_values), "tmpl": default_template_uuid, "origin": origin},
         )
+        # Reconcile the deal_contacts junction to the desired set: drop removed, upsert kept (is_signatory).
+        desired = [c["contact_id"] for c in contacts if c.get("contact_id")]
+        await cur.execute(
+            "DELETE FROM business.deal_contacts WHERE deal_id = %s::uuid AND NOT (contact_id = ANY(%s::uuid[]))",
+            (deal_id, desired),
+        )
+        for c in contacts:
+            cid = c.get("contact_id")
+            if not cid:
+                continue
+            await cur.execute(
+                """
+                INSERT INTO business.deal_contacts (deal_id, contact_id, is_signatory)
+                VALUES (%s::uuid, %s::uuid, %s)
+                ON CONFLICT (deal_id, contact_id) DO UPDATE SET is_signatory = EXCLUDED.is_signatory
+                """,
+                (deal_id, cid, bool(c.get("is_signatory", True))),
+            )
     await conn.commit()
