@@ -63,14 +63,14 @@ END $$;
 CREATE INDEX IF NOT EXISTS documenso_templates_archetype_idx
     ON business.documenso_templates (archetype_id);
 
--- Backfill existing templates from their declared merge fields: a template whose recipients.text_fields
+-- Backfill existing templates from their declared merge fields: a template whose documenso_response.text_fields
 -- carry the performance-fee tokens is term_plus_greater_of, else term_only. Idempotent (fills NULLs
 -- only), data-driven (no hardcoded template ids).
 UPDATE business.documenso_templates dt
    SET archetype_id = (
        SELECT id FROM business.engagement_archetypes
         WHERE key = CASE
-            WHEN (dt.recipients->'text_fields') ?| array['percentage_deal_fee','flat_deal_fee_amount','term_fee']
+            WHEN (dt.documenso_response->'text_fields') ?| array['percentage_deal_fee','flat_deal_fee_amount','term_fee']
                 THEN 'term_plus_greater_of'
             ELSE 'term_only'
         END
