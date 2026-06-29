@@ -558,6 +558,31 @@ def entity_award_lines_by_uei(uei: str, side: str, limit: int) -> list[dict[str,
     return items[:cap]
 
 
+# Surface 4: UEI -> capability profile card (identity + activity + recommended lanes).
+_CAPABILITY_PROFILE_COLS = [
+    "uei", "firm_name", "state_code", "parent_uei", "is_dsbs", "has_sub_history",
+    "has_prime_history", "federal_status", "designations",
+    "sub_amount_5y", "sub_received_5y", "sub_distinct_primes_5y", "sub_distinct_prime_partners_5y",
+    "recent_subawards_90d", "recent_subaward_amount_90d", "recent_latest_action_date",
+    "recent_top_prime_name", "recent_top_naics_code", "recent_top_naics_description", "recent_subaward_scope",
+    "sub_top_prime_partners", "sub_top_naics",
+    "prime_awards_5y", "prime_obligated_5y", "prime_competed_awards_5y", "prime_distinct_naics_5y",
+    "prime_top_naics", "prime_top_psc", "prime_top_agencies",
+    "recommended_lanes", "n_recommended_lanes", "top_evidence_tier", "materialized_at",
+]
+
+
+def capability_profile_by_uei(uei: str) -> dict[str, Any] | None:
+    """BTREE point-lookup on capability_profile.uei (1 row/firm). Returns the full
+    assembled card row, or None when the UEI has no profile. Caller pre-validates charset."""
+    uei = (uei or "").strip()
+    if not uei:
+        return None
+    rows = _scan(config.CAPABILITY_PROFILE_URI, columns=_CAPABILITY_PROFILE_COLS,
+                 filter=f"uei = {_sql_str(uei)}", limit=1)
+    return rows[0] if rows else None
+
+
 # ── Surface 4: UEI → subawardee capability profile + prime-contract (subaward) history ──
 # The sub-side drill-down. The capability profile (govcon_subawardee_profiles, 1 row/sub_uei,
 # BTREE sub_uei) carries the structured capability block (scope/tags/clearance/teaming/POC) for the
@@ -1074,6 +1099,7 @@ _SURFACE_DATASETS = {
     "sam_pocs": lambda: config.SAM_POCS_URI,
     "entity_profile_gold": lambda: config.ENTITY_PROFILE_GOLD_URI,
     "entity_award_lines_gold": lambda: config.ENTITY_AWARD_LINES_GOLD_URI,
+    "capability_profile": lambda: config.CAPABILITY_PROFILE_URI,
     "contractor_award_summary": lambda: config.CONTRACTOR_AWARD_SUMMARY_URI,
     "winners_map_serving": lambda: config.MAP_DATASET_URIS["winners"],
     "company_map_serving": lambda: config.MAP_DATASET_URIS["company"],

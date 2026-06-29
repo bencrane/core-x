@@ -40,6 +40,7 @@ from .src.models import (
     ActiveContractsResponse,
     AwardProfile,
     AwardProfileResponse,
+    CapabilityProfileResponse,
     Company,
     DossierBatchRequest,
     EntityDossierResponse,
@@ -167,6 +168,7 @@ def _info() -> dict:
             "active_contracts": "/api/v1/entities/{uei}/active-contracts?limit=N",
             "overview": "/api/v1/entities/{uei}/overview",
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
+            "capability_profile": "/api/v1/entities/{uei}/capability-profile",
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
             "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
             "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
@@ -335,6 +337,19 @@ def past_performance(
         contracts=items,
     )
     return _envelope(resp)
+
+
+@app.get("/api/v1/entities/{uei}/capability-profile", response_model=None, dependencies=[Depends(require_operator)])
+def capability_profile(uei: str = Path(..., description="12-char SAM.gov UEI")) -> JSONResponse:
+    """The per-firm capability profile card - ONE BTREE point-lookup on
+    capability_profile.uei. Returns identity + designations + sub/prime activity + the
+    evidence-tiered recommended NAICS+PSC lanes (each lane names the primes who sub it
+    out). Covers active subs and never-subbed DSBS alike. 404 when the UEI has no profile."""
+    uei = _require_uei(uei)
+    row = lance_store.capability_profile_by_uei(uei)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no capability profile for uei {uei!r}")
+    return _envelope(CapabilityProfileResponse.from_row(row))
 
 
 @app.get("/api/v1/entities/{uei}/dossier", response_model=None, dependencies=[Depends(require_operator)])

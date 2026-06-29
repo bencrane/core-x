@@ -88,6 +88,12 @@ ENTITY_PROFILE_GOLD_URI = os.environ.get(
 ENTITY_AWARD_LINES_GOLD_URI = os.environ.get(
     "ENTITY_AWARD_LINES_GOLD_LANCE_URI", "s3://data-sink/active/entity_award_lines_gold/"
 )
+# Per-firm capability profile card (capability_profile, 1 row/UEI, BTREE uei) - built by
+# scripts/build_capability_profile.py: identity + designations + sub/prime activity +
+# nested evidence-tiered recommended NAICS+PSC lanes. One point-lookup; subs + DSBS alike.
+CAPABILITY_PROFILE_URI = os.environ.get(
+    "CAPABILITY_PROFILE_LANCE_URI", "s3://data-sink/active/capability_profile/"
+)
 # Subawardee drill-down (the /entities/{uei}/subaward-profile route). The capability profile
 # (sub_uei grain, BTREE sub_uei) carries the structured capability block; contract_subaward
 # (the raw sub→prime fact) carries the prime-contract history the sub won work under. The
