@@ -174,7 +174,7 @@ async def _kick_enrich(
 
 
 async def _kick_materialize(ical_uid: str | None) -> dict[str, Any]:
-    """Fire the booking → CRM opportunity materialization task for a new booking. Best-effort —
+    """Fire the booking → CRM deal materialization task for a new booking. Best-effort —
     a trigger failure never affects the webhook (booking + raw are already durable). Sibling of
     _kick_research / _kick_enrich; fires independently so one failing never blocks the others."""
     if not ical_uid:

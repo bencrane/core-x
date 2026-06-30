@@ -63,7 +63,7 @@ The `document_payments` fee-resolution query uses BOTH ids on different join leg
 | **upstream/shared (ALTER-only by edge_api)** | base predates this repo's DDL; edge_api only ALTER-adds columns + reads/FK-references | `business.engagement_mandate_draft_content`, `business.documenso_templates`, `business.organizations` |
 | **documenso / stripe** | external systems of record for their own state | Documenso webhook payloads (raw landed into `documenso_webhook_events.payload`); Stripe events (raw landed into `document_payment_events.payload`) |
 
-Proof that the upstream tables are NOT defined here: `grep -rniE 'create table.*(business\.)?(opportunities|contacts|accounts|opportunity_specific_content|engagement_mandate_draft_content|documenso_templates|organizations)\b' sql/` → **ZERO**. The ownership contract is documented in `apps/edge_api/src/opportunities/materialize.py:10-19` ("`business.accounts` / `business.contacts` / `business.opportunities` are owned by hq-x's own migration tool — edge_api WRITES them … but does NOT define them"), and the upserts "pin to the live partial-unique keys; if that schema drifts, the upsert fails loudly rather than duplicating" (`:13-14`).
+Proof that the upstream tables are NOT defined here: `grep -rniE 'create table.*(business\.)?(opportunities|contacts|accounts|opportunity_specific_content|engagement_mandate_draft_content|documenso_templates|organizations)\b' sql/` → **ZERO**. The ownership contract is documented in `apps/edge_api/src/deals/materialize.py:18-31` ("`business.accounts` / `business.contacts` / `business.deals` are upstream-owned by hq-x's migration tool — edge_api WRITES them … but does NOT define them"), and the upserts "pin to the live keys; if that schema drifts the upsert fails loudly rather than duplicating".
 
 ---
 
@@ -173,18 +173,23 @@ Proof that the upstream tables are NOT defined here: `grep -rniE 'create table.*
 
 ## Upstream tables (NO `CREATE TABLE` in edge_api `sql/`)
 
-### `business.opportunities` — upstream-DEFINED, edge_api-WRITTEN
+### `business.opportunities` — upstream-DEFINED, edge_api-READ (booking producer RETIRED)
 
-- Owned by hq-x's migration tool (grep-confirmed: ZERO `CREATE TABLE … opportunities` in `sql/`). The ONLY DDL touching it here is the `ALTER … ADD COLUMN` for the generated `opportunity_id` handle (`apps/edge_api/sql/opportunities_opportunity_id.sql:19-21`).
-- edge_api WRITES it: `materialize.py` upserts `INSERT INTO business.opportunities … ON CONFLICT (source_booking_id) …` (idempotent, one opportunity per booking) (`apps/edge_api/src/opportunities/materialize.py:151-159`, key documented `:18`).
+- Owned by hq-x's migration tool (grep-confirmed: ZERO `CREATE TABLE … opportunities` in `sql/`). The ONLY DDL touching it here is the `ALTER … ADD COLUMN` for the generated `opportunity_id` handle (`apps/edge_api/sql/opportunities_opportunity_id.sql:19-21`), still applied at boot.
+- **No longer ROW-written by edge_api.** The booking → opportunity producer was retired in the deals cutover (2026-06): the cal webhook now materializes one **deal** per account (see `business.deals` below), not one opportunity per booking. The table is retained for its historical rows and as the `opportunity_id` signing/payment handle that `document_payments` + the Documenso sign-state gate still resolve against (read-only here).
+
+### `business.deals` — upstream-DEFINED, edge_api-WRITTEN (the booking producer's target)
+
+- Owned by hq-x's migration tool (ZERO `CREATE TABLE … deals` in `sql/`; only idempotent `ALTER`s add the generated `deal_handle` + `company_name`/`company_domain` + `last_booking_id` — `apps/edge_api/sql/deals_spine_fields.sql`, `apps/edge_api/sql/deals_last_booking.sql`).
+- edge_api WRITES it: `deals/materialize.py` upserts `INSERT INTO business.deals … ON CONFLICT (account_id) …` — ONE deal per account (`uq_deals_account`), advancing `last_booking_id` to the newest booking and never regressing `status` (`apps/edge_api/src/deals/materialize.py:175-187`). The booker is attached as a signatory via `business.deal_contacts` (`:197`).
 
 ### `business.accounts` — upstream-DEFINED, edge_api-WRITTEN
 
-- No edge_api `CREATE TABLE`. Written by `materialize.py`: domain-keyed upsert (`ON CONFLICT (domain) …`) at `apps/edge_api/src/opportunities/materialize.py:83`, and a keyless insert (no domain) at `:96`.
+- No edge_api `CREATE TABLE`. Written by the deal producer `deals/materialize.py`: domain-keyed upsert (`ON CONFLICT (domain) …`) at `apps/edge_api/src/deals/materialize.py:106`, and a keyless insert (no domain) at `:119`.
 
 ### `business.contacts` — upstream-DEFINED, edge_api-WRITTEN (NOT read-only)
 
-- No edge_api `CREATE TABLE`. Written by `materialize.py` TWICE: account-email upsert (`ON CONFLICT (account_id, lower(email)) …`) at `apps/edge_api/src/opportunities/materialize.py:108`, and a named-no-email backstop insert at `:133`.
+- No edge_api `CREATE TABLE`. Written by the deal producer `deals/materialize.py` TWICE: account-email upsert (`ON CONFLICT (account_id, lower(email)) …`) at `apps/edge_api/src/deals/materialize.py:131`, and a named-no-email backstop insert at `:156`.
 
 ### `business.opportunity_specific_content` — the ONLY truly read-but-never-written table here
 
@@ -243,14 +248,16 @@ platform-app  /p/m/{opportunity_id}/{document_id}
 
 `opportunity_id` is the 8-char generated handle (the access capability); `document_id` is the Documenso numeric pin. NOTE: the E2E reference doc calls the payment intent "ACH us_bank_account" but the code creates a DUAL-RAIL `['card','us_bank_account']` intent — CODE WINS (see **Traps**).
 
-### Opportunity materialization (writes the upstream-owned tables)
+### Deal materialization — the booking → CRM producer (writes the upstream-owned tables)
 
 ```
-cal.com webhook → Trigger.dev opportunity-materialize task
-  → edge_api POST /internal/opportunities/materialize           # apps/edge_api/src/routers/internal_opportunities_v1.py:3
-    → materialize_for_booking(...)                                # apps/edge_api/src/opportunities/materialize.py:47
-      → upserts business.accounts / business.contacts / business.opportunities  (upstream-owned)
-        idempotently from corex.bookings
+cal.com webhook → Trigger.dev deal-materialize task
+  → edge_api POST /internal/deals/materialize                   # apps/edge_api/src/routers/internal_deals_v1.py:3
+    → materialize_deal_for_booking(...)                           # apps/edge_api/src/deals/materialize.py:58
+      → upserts business.accounts / business.contacts, then ONE business.deals
+        per account (uq_deals_account; advances last_booking_id) + a
+        business.deal_contacts signatory link — idempotently from corex.bookings
+        (all upstream-owned). Replaces the retired booking→opportunity producer.
 ```
 
 ### The embed-template direct-link lane (`direct_to_documenso_lane='embed-template'`)
@@ -285,7 +292,7 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 
 - The brand-aware catalog resolves `<brand>/<path>/<archetype>/<version>/global_engagement_content/manifest.json` under `content/`; `_ALLOWED_BRANDS = {active-operators, rare-structure}` is enforced as an allowlist so an unvetted directory can never surface as a selectable template; `brand` defaults to `active-operators` so the original three-segment call sites keep working (`apps/edge_api/src/engagement_templates/catalog.py:21-28,99-112`).
 - The brand asset tree `content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/` carries static-blank HTML (field-slot blanks, NO underscore glyphs; §8.4 Authority; 1.6 leading) plus `styles/plain.css` + `styles/branded.css` and a `manifest.json` (archetype `capital_origination`) (`apps/edge_api/content/rare-structure/docraptor-to-documenso-template/capital-origination/v1/global_engagement_content/manifest.json`). The minted live Documenso template numeric id (`14310`) is a runtime fact, not committed in this repo.
-- The internal endpoint is `/internal/*`-gated by `require_trigger_secret` (TRIGGER_SHARED_SECRET) — the same contract opportunity-materialize uses (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:1-6,84-85`).
+- The internal endpoint is `/internal/*`-gated by `require_trigger_secret` (TRIGGER_SHARED_SECRET) — the same contract deal-materialize uses (`apps/edge_api/src/routers/internal_engagement_templates_v1.py:1-6,84-85`).
 
 ---
 
@@ -303,6 +310,7 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 **ACTIVE**
 - `run_migrations()` boot DDL apply — `apps/edge_api/src/migrate.py:64-96`
 - `business.opportunities` (upstream) + generated `opportunity_id` handle — `apps/edge_api/sql/opportunities_opportunity_id.sql:19-28`
+- `business.deals` booking producer (one deal/account, advances `last_booking_id`) + `deal_contacts` signatory link — `apps/edge_api/src/deals/materialize.py`, `apps/edge_api/sql/deals_last_booking.sql:15-24`
 - `business.document_payments` + `business.document_payment_events` — `apps/edge_api/sql/document_payments.sql:16-50`
 - `business.documenso_webhook_events` (raw landing; offline sign-state) — `apps/edge_api/sql/documenso_webhook_events.sql:26-33`
 - `business.engagement_proposals` + ALTERed payment columns + `business.engagement_events` — `apps/edge_api/sql/engagement_proposals.sql:21-65`, `apps/edge_api/sql/engagement_payments.sql:18-56`
@@ -314,7 +322,7 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 - Engagement-template render+PUSH lane (`/internal/engagement-templates/render-push`) — `apps/edge_api/src/routers/internal_engagement_templates_v1.py:84-85`, `apps/edge_api/src/engagement_templates/catalog.py:99-112`
 - embed-template direct-link lane (`/{draft_id}/originate-embed-template`) — `apps/edge_api/src/routers/engagement_mandate_drafts_v1.py:169-223`, `apps/edge_api/src/services/documenso_client.py:410-547`
 - `ops.map_query_runs`, `business.company_profiles`, `business.company_profile_snapshots`, `gtm.clay_find_companies`, `gtm.clay_find_people`
-- Upstream-written: `business.accounts`, `business.contacts` (via `materialize.py`)
+- Upstream-written: `business.accounts`, `business.contacts`, `business.deals` (via `deals/materialize.py`)
 - Upstream read-only: `business.opportunity_specific_content`
 - Upstream ALTER-only/shared: `business.documenso_templates`, `business.organizations`, `business.engagement_mandate_draft_content`
 
@@ -346,7 +354,7 @@ Trigger.dev task "engagement-template-push" (src/trigger/engagement_template_pus
 
 3. **`document_payments.payment_status` has NO CHECK constraint** — only a comment listing the domain and a `DEFAULT 'none'` (`apps/edge_api/sql/document_payments.sql:23-24`). UNLIKE `engagement_proposals.payment_status`, which IS constrained by `engagement_proposals_payment_status_chk` (`apps/edge_api/sql/engagement_payments.sql:28-31`). Same string domain, different enforcement.
 
-4. **`business.contacts` is NOT read-only.** It is upstream-DEFINED but edge_api-WRITTEN (two `INSERT`s in `materialize.py`, lines 108 and 133). The ONLY truly read-but-never-written table in this domain is `business.opportunity_specific_content`.
+4. **`business.contacts` is NOT read-only.** It is upstream-DEFINED but edge_api-WRITTEN (two `INSERT`s in the deal producer `deals/materialize.py`, lines 131 and 156). The ONLY truly read-but-never-written table in this domain is `business.opportunity_specific_content`.
 
 5. **`mandate_payments` / `mandate_payment_events` are a phantom.** They do not exist (grep-zero across both repos; corroborated by the 2026-06-17 prd probe). The document-payment record is `business.document_payments`, keyed by Documenso `document_id`.
 

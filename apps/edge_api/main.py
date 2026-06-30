@@ -44,7 +44,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.deals_v1 import router as deals_router
-from .src.routers.internal_opportunities_v1 import router as internal_opportunities_router
+from .src.routers.internal_deals_v1 import router as internal_deals_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_templates_v1 import router as documenso_templates_router
@@ -274,11 +274,12 @@ app.include_router(bookings_router)
 # list + Application detail. Service-token gated; the BFF brokers it with the operator session.
 app.include_router(deals_router)
 
-# opportunities (internal): the materialization PRODUCER. The opportunity-materialize Trigger.dev
-# task (fired by the cal webhook on a new booking) calls /internal/opportunities/materialize to
-# project the booking → account+contact+opportunity. Trigger-secret gated, same /internal contract
-# as the gtm pipeline run-step. This is the seam the DocRaptor render layers onto in phase 2.
-app.include_router(internal_opportunities_router, prefix="/internal")
+# deals (internal): the materialization PRODUCER. The deal-materialize Trigger.dev task
+# (fired by the cal webhook on a new booking) calls /internal/deals/materialize to project the
+# booking → account+contact+deal (one deal per account, advancing last_booking_id) + the
+# deal_contacts signatory link. Trigger-secret gated, same /internal contract as the gtm pipeline
+# run-step. Replaces the retired booking→opportunity producer; the seam DocRaptor render layers onto.
+app.include_router(internal_deals_router, prefix="/internal")
 
 # engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
 # (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
