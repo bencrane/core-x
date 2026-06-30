@@ -30,3 +30,10 @@ CREATE TABLE IF NOT EXISTS business.deal_details (
     created_at            timestamptz NOT NULL DEFAULT now(),
     updated_at            timestamptz NOT NULL DEFAULT now()
 );
+
+-- The MIRROR template attached to this deal, keyed by the envelope mirror's numeric documenso_id
+-- (business.documenso_envelopes.documenso_id). Supersedes default_template_uuid (which keys the legacy
+-- business.documenso_templates registry); attaches made via the mirror dropdown write THIS column. No FK
+-- to the projector-owned mirror — validated at write. Idempotent ALTER, safe to re-apply on every boot.
+ALTER TABLE business.deal_details
+    ADD COLUMN IF NOT EXISTS default_template_documenso_id bigint;
