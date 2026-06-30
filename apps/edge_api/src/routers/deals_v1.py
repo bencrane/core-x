@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config
 from ..db import get_db_connection
-from ..deals import queries
+from ..deals import originate, queries
 from ..deals.models import DealDetails, DealDetailsUpdate, DealOriginated, DealSummary, TemplateOption
 from ..service_token import require_service_token
 from ..services import documenso_client
@@ -91,21 +91,36 @@ async def update_deal_details(handle: str, body: DealDetailsUpdate) -> DealDetai
 async def originate_deal(handle: str) -> DealOriginated:
     async with get_db_connection() as conn:
         inp = await queries.get_deal_originate_inputs(conn, handle)
-        if inp is None:
-            raise HTTPException(status_code=404, detail="deal not found")
-        if not inp["documenso_template_id"]:
-            raise HTTPException(status_code=422, detail="deal has no attached template")
-        if not inp["recipient_email"]:
-            raise HTTPException(status_code=422, detail="deal has no signatory contact with an email")
-        template_id = inp["documenso_template_id"]
-        prospect_rid = await queries.get_prospect_recipient_id(conn, template_id)
-        template_defaults = await queries.get_template_default_field_values(conn, template_id)
-        editable_labels = await queries.get_template_editable_field_labels(conn, template_id)
-    # Template-level defaults UNDER the deal's per-deal field_values (the deal overrides). Both {} today.
-    field_values = {**template_defaults, **(inp["field_values"] or {})}
+    if inp is None:
+        raise HTTPException(status_code=404, detail="deal not found")
+    if inp["template_documenso_id"] is None:
+        raise HTTPException(status_code=422, detail="deal has no attached template")
+    if not inp["recipient_email"]:
+        raise HTTPException(status_code=422, detail="deal has no signatory contact with an email")
+    # Resolve (model B): per template label, value = the deal's field_values[label] (override) ELSE the
+    # prefill-config default. read_only config labels LOCK on the derived document; the rest stay editable
+    # for the prospect. The prospect recipient is derived from the template's verbatim recipients.
+    field_settings = inp["field_settings"] or {}
+    field_values = originate.resolve_field_values(field_settings, inp["field_values"] or {})
+    locked = originate.locked_labels(field_settings)
+    # Fail loud: a read_only operator term with no resolved value can't be locked (Documenso requires
+    # read-only fields to carry text) — it would silently ship signer-EDITABLE. Refuse instead so an
+    # unset term (e.g. a blank fee) never reaches the prospect as an open field.
+    missing_locked = locked - set(field_values)
+    if missing_locked:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "operator-term field(s) marked read-only but with no value: "
+                f"{', '.join(sorted(missing_locked))} — set a default in the template prefill config "
+                "or a value on the deal before originating"
+            ),
+        )
+    editable_labels = set(field_values) - locked
+    prospect_rid = originate.derive_prospect_recipient_id(inp["template_response"])
     try:
         result = await documenso_client.create_document_from_template(
-            template_id,
+            str(inp["template_documenso_id"]),
             recipient_email=inp["recipient_email"],
             recipient_name=inp["recipient_name"] or inp["recipient_email"],
             field_values_by_label=field_values,
