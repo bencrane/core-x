@@ -87,6 +87,36 @@ def _read_mapped(source: dict[str, Any], key: str | None) -> Any:
     return None
 
 
+def _attr(obj: dict[str, Any] | None, key: str) -> Any:
+    """A non-empty top-level attribute on a Close object (lead/contact), else None."""
+    if not isinstance(obj, dict):
+        return None
+    v = obj.get(key)
+    return v if v not in (None, "", [], {}) else None
+
+
+def _resolve_source(
+    source: str | None,
+    activity: dict[str, Any],
+    lead: dict[str, Any],
+    contact: dict[str, Any],
+) -> Any:
+    """Resolve a field-map source string to a value. Source grammar:
+      ``lead.<attr>``    → a Close lead attribute (e.g. ``lead.display_name``, ``lead.url``)
+      ``contact.<attr>`` → a Close contact attribute (e.g. ``contact.title``)
+      anything else      → a value on the ACTIVITY (a ``custom.cf_*`` field — flattened or nested —
+                           or a top-level activity key).
+    Lets the 30min event's required Company-Name/Website source off the lead instead of forcing the
+    rep to re-type what the CRM already holds."""
+    if not source:
+        return None
+    if source.startswith("lead."):
+        return _attr(lead, source[len("lead."):])
+    if source.startswith("contact."):
+        return _attr(contact, source[len("contact."):])
+    return _read_mapped(activity, source)
+
+
 def _to_utc_iso(value: Any, default_tz: str) -> str | None:
     """Normalize a Close datetime value to cal.com's UTC ISO-8601 (``…Z``). A naive value is
     interpreted in ``default_tz``. Unparseable input is passed through for cal.com to validate."""
@@ -110,21 +140,31 @@ def _to_utc_iso(value: Any, default_tz: str) -> str | None:
 def build_booking_request(
     *,
     activity: dict[str, Any],
-    attendee_name: str,
-    attendee_email: str,
+    lead: dict[str, Any],
+    contact: dict[str, Any],
+    fallback_name: str | None,
+    fallback_email: str | None,
     field_map: dict[str, Any],
     event_type_id_map: dict[str, int],
     default_tz: str,
 ) -> dict[str, Any]:
-    """Map a Close custom activity + resolved contact identity into the cal.com create-booking parts.
+    """Map a Close custom activity + its lead/contact into the cal.com create-booking parts.
+
+    Every field-map value is a SOURCE string resolved by ``_resolve_source`` against the activity, the
+    lead, or the contact — so e.g. the 30min event's required Company-Name/Website can source off the
+    lead (``lead.display_name`` / ``lead.url``) without the rep re-typing them, and the attendee email
+    can prefer an editable form field (``attendee_email``) that the rep confirms on the call, falling
+    back to the contact's primary email.
 
     Returns ``{event_type_id, event_type_slug, start, attendee, booking_fields_responses}``. Raises
-    ``CalBookingError`` when a required piece (field map, event-type slug, start) is missing — the
-    caller marks the ledger error and surfaces it."""
+    ``CalBookingError`` when a required piece (field map, slug, start, attendee email) is missing."""
     if not field_map:
         raise CalBookingError("CLOSE_BOOKING_FIELD_MAP not configured")
 
-    raw_slug = _read_mapped(activity, field_map.get("event_type_slug"))
+    def src(key: str) -> Any:
+        return _resolve_source(field_map.get(key), activity, lead, contact)
+
+    raw_slug = src("event_type_slug")
     slug = str(raw_slug).strip() if raw_slug is not None else ""
     if not slug:
         raise CalBookingError("event-type slug not present on the activity (check field map)")
@@ -132,17 +172,23 @@ def build_booking_request(
     if event_type_id is None:
         raise CalBookingError(f"unknown event-type slug {slug!r} (not in event-type id map)")
 
-    start = _to_utc_iso(_read_mapped(activity, field_map.get("start")), default_tz)
+    start = _to_utc_iso(src("start"), default_tz)
     if not start:
         raise CalBookingError("start datetime not present on the activity (check field map)")
 
-    tz = _read_mapped(activity, field_map.get("timezone")) or default_tz
+    # Attendee email: prefer the (rep-confirmed) form field if mapped, else the contact's primary
+    # email. cal.com requires a valid attendee email, so a miss is a hard error.
+    email = src("attendee_email") or fallback_email
+    if not email:
+        raise CalBookingError("no attendee email (form field empty and contact has none)")
+    name = src("attendee_name") or fallback_name or email
+    tz = src("timezone") or default_tz
 
-    # cal.com's name/email booking fields mirror the attendee; custom booking fields (e.g. the 30min
-    # event's required Company-Name / Company-Website) come off the activity via the field map.
-    responses: dict[str, Any] = {"name": attendee_name, "email": attendee_email}
-    for cal_slug, src_key in (field_map.get("booking_fields") or {}).items():
-        v = _read_mapped(activity, src_key)
+    # cal.com's name/email booking fields mirror the attendee; custom booking fields (e.g. 30min's
+    # required Company-Name / Company-Website) resolve via their mapped source (activity/lead/contact).
+    responses: dict[str, Any] = {"name": str(name), "email": str(email)}
+    for cal_slug, source in (field_map.get("booking_fields") or {}).items():
+        v = _resolve_source(source, activity, lead, contact)
         if v is not None:
             responses[cal_slug] = v
 
@@ -150,7 +196,7 @@ def build_booking_request(
         "event_type_id": event_type_id,
         "event_type_slug": slug,
         "start": start,
-        "attendee": {"name": attendee_name, "email": attendee_email, "timeZone": str(tz)},
+        "attendee": {"name": str(name), "email": str(email), "timeZone": str(tz)},
         "booking_fields_responses": responses,
     }
 
