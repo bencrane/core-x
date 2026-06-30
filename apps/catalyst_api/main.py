@@ -30,11 +30,12 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from .src import config, dossier, lance_store
 from .src.map_decoders import DECODERS
+from .src.card_html import render_card, render_not_found
 from .src.models import (
     ActiveContract,
     ActiveContractsResponse,
@@ -222,6 +223,21 @@ def healthz(request: Request) -> JSONResponse:
         },
     }
     return JSONResponse(body, status_code=200 if (ok and contract_ok) else 503)
+
+
+@app.get("/card/{uei}", response_class=HTMLResponse)
+def capability_card(uei: str = Path(..., description="12-char SAM.gov UEI")) -> HTMLResponse:
+    """OPEN, self-contained HTML render of the capability profile card — the standalone
+    prototype look, deliberately NOT the /api/v1 JSON surface or any product design system.
+    Public (no bearer): a UEI in the URL renders a shareable card. Data is public-record
+    SAM/USAspending-derived capability, same posture as the consuming BFF's public routes."""
+    u = (uei or "").strip()
+    if not lance_store.valid_uei(u):
+        return HTMLResponse(render_not_found(u), status_code=400)
+    row = lance_store.capability_profile_by_uei(u)
+    if row is None:
+        return HTMLResponse(render_not_found(u), status_code=404)
+    return HTMLResponse(render_card(row))
 
 
 # ── The read surface ─────────────────────────────────────────────────────────
