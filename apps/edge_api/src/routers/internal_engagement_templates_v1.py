@@ -4,7 +4,7 @@
 
 Called by the ``engagement-template-push`` Trigger.dev task via ``callHqx``. Gated by
 ``require_trigger_secret`` (TRIGGER_SHARED_SECRET) — the same ``/internal/*`` contract the
-opportunity-materialize / gtm pipeline tasks use.
+deal-materialize / gtm pipeline tasks use.
 
 CHOOSE-WHERE-TO-PULL: pass a ``registryPath`` (or ``registryId``) to resolve a
 ``business.global_input_content`` row (brand + source_kind + brand-relative path), OR pass an explicit
