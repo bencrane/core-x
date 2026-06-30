@@ -91,16 +91,24 @@ async def book_calendar(body: BookRequest) -> BookResponse:
             raise CalBookingError("CLOSE_API_KEY not configured")
 
         activity = await close_client.get_custom_activity(close_activity_id)
-        name, email = await close_client.resolve_attendee(
-            contact_id=body.close_contact_id, lead_id=body.close_lead_id
-        )
-        if not email:
-            raise CalBookingError("could not resolve an attendee email from the Close contact/lead")
+        # Fetch the lead + contact: the contact is the booking attendee (prefer the explicit
+        # contact_id — i.e. log the activity ON the contact — else the lead's first contact), and the
+        # lead supplies booking fields the rep should not re-type (30min's Company-Name/Website).
+        lead = await close_client.get_lead(body.close_lead_id) if body.close_lead_id else {}
+        contact: dict = {}
+        if body.close_contact_id:
+            contact = await close_client.get_contact(body.close_contact_id)
+        elif isinstance(lead, dict) and lead.get("contacts"):
+            contact = lead["contacts"][0]
+        lead = lead if isinstance(lead, dict) else {}
+        contact = contact if isinstance(contact, dict) else {}
 
         parts = book.build_booking_request(
             activity=activity,
-            attendee_name=name or email,
-            attendee_email=email,
+            lead=lead,
+            contact=contact,
+            fallback_name=contact.get("name"),
+            fallback_email=close_client.primary_email(contact),
             field_map=config.close_booking_field_map(),
             event_type_id_map=config.cal_event_type_id_map(),
             default_tz=config.cal_default_timezone(),

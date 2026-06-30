@@ -72,21 +72,3 @@ def primary_email(contact: dict[str, Any]) -> str | None:
             if isinstance(e, dict) and e.get("email"):
                 return str(e["email"])
     return None
-
-
-async def resolve_attendee(
-    *, contact_id: str | None, lead_id: str | None
-) -> tuple[str | None, str | None]:
-    """Resolve ``(name, email)`` for the booking attendee from the Close contact (preferred) or the
-    lead's first contact. Returns ``(None, None)`` when neither resolves to an email."""
-    contact: dict[str, Any] | None = None
-    if contact_id:
-        contact = await get_contact(contact_id)
-    elif lead_id:
-        lead = await get_lead(lead_id)
-        contacts = lead.get("contacts") if isinstance(lead, dict) else None
-        if isinstance(contacts, list) and contacts:
-            contact = contacts[0]
-    if not isinstance(contact, dict):
-        return (None, None)
-    return (contact.get("name"), primary_email(contact))
