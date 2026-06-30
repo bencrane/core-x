@@ -41,8 +41,10 @@ async def list_recent(conn, limit: int = 100) -> list[Deal]:
 
 
 async def get_deal_with_details(conn, handle: str) -> dict | None:
-    """The deal + its (optional 1:1) deal_details, resolved by public ``deal_handle``. LEFT JOIN so a
-    deal with no deal_details row yet still returns (empty contacts/content). None if no such deal."""
+    """The deal + its ACTIVE document config (business.deal_document_configs), by public ``deal_handle``.
+    LEFT JOIN so a deal with no config row yet still returns (empty field_values, no template).
+    ``template_origin`` is DERIVED: 'default' when no template is attached OR the attached template is the
+    operator's MIRROR default (business.documenso_template_defaults), else 'operator'. None if no such deal."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -52,12 +54,18 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
                    d.company_domain,
                    d.organization_id::text AS organization_id,
                    d.account_id::text      AS account_id,
-                   COALESCE(dd.field_values, '{}'::jsonb) AS field_values,
-                   dd.default_template_uuid::text          AS default_template_uuid,
-                   dd.default_template_documenso_id         AS default_template_documenso_id,
-                   COALESCE(dd.template_origin, 'default')  AS template_origin
+                   COALESCE(cfg.field_values, '{}'::jsonb) AS field_values,
+                   cfg.template_documenso_id               AS default_template_documenso_id,
+                   CASE
+                       WHEN cfg.template_documenso_id IS NULL            THEN 'default'
+                       WHEN cfg.template_documenso_id = def.documenso_id THEN 'default'
+                       ELSE 'operator'
+                   END AS template_origin
               FROM business.deals d
-         LEFT JOIN business.deal_details dd ON dd.deal_id = d.id
+         LEFT JOIN business.deal_document_configs cfg
+                ON cfg.deal_id = d.id AND cfg.status = 'active'
+         LEFT JOIN business.documenso_template_defaults def
+                ON def.is_default
              WHERE d.deal_handle = %s
              LIMIT 1
             """,
@@ -128,37 +136,53 @@ async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
         return await cur.fetchall()
 
 
-async def upsert_details(conn, *, deal_id: str, contacts, field_values,
-                         default_template_documenso_id: int | None) -> None:
-    """Write the deal's deal_details (field_values + attached MIRROR template, keyed by documenso_id;
-    ``template_origin`` DERIVED: 'default' when the chosen template is the operator's MIRROR default
-    (business.documenso_template_defaults) or none is chosen, else 'operator') AND reconcile the
-    deal_contacts junction to the desired set (membership + is_signatory). Person identity
-    (business.contacts) is NOT edited here. ``contacts`` = [{contact_id, is_signatory}]. Commits."""
+async def upsert_document_config(conn, *, deal_id: str, contacts, field_values,
+                                 default_template_documenso_id: int | None) -> None:
+    """Persist the deal's ACTIVE document config (attached MIRROR template + per-field prefill
+    ``field_values``) into business.deal_document_configs, and reconcile the deal_contacts junction.
+
+    APPEND-ONLY, one active row per deal: editing values on the SAME template UPDATES the active row in
+    place; attaching a DIFFERENT template ARCHIVES the active row and INSERTS a new active one (its
+    field_values are per-template, keyed by that template's labels). The partial unique index
+    ``deal_document_configs_one_active_per_deal_uidx`` pins one active per deal; archive-before-insert
+    keeps it from being transiently violated. ``field_values`` holds operator OVERRIDES only (template
+    defaults + prospect facts resolve at read/originate). Person identity (business.contacts) is NOT
+    edited here. ``contacts`` = [{contact_id, is_signatory}]. Commits."""
     async with conn.cursor(row_factory=dict_row) as cur:
+        # Serialize concurrent writers for THIS deal: lock the parent deal row so simultaneous
+        # template-switch PUTs can't race the append-only archive→insert into a unique_violation on
+        # deal_document_configs_one_active_per_deal_uidx (the loser would otherwise surface a 500). The
+        # lock is held for the whole transaction (released at conn.commit() below).
+        await cur.execute("SELECT 1 FROM business.deals WHERE id = %s::uuid FOR UPDATE", (deal_id,))
         await cur.execute(
-            "SELECT documenso_id FROM business.documenso_template_defaults WHERE is_default LIMIT 1"
+            "SELECT id, template_documenso_id FROM business.deal_document_configs "
+            "WHERE deal_id = %s::uuid AND status = 'active' LIMIT 1",
+            (deal_id,),
         )
-        row = await cur.fetchone()
-        mirror_default = row["documenso_id"] if row else None
-        origin = (
-            "default"
-            if (default_template_documenso_id is None or default_template_documenso_id == mirror_default)
-            else "operator"
-        )
-        await cur.execute(
-            """
-            INSERT INTO business.deal_details
-                (deal_id, field_values, default_template_documenso_id, template_origin)
-            VALUES (%(deal_id)s::uuid, %(fv)s, %(tmpl)s, %(origin)s)
-            ON CONFLICT (deal_id) DO UPDATE SET
-                field_values                  = EXCLUDED.field_values,
-                default_template_documenso_id = EXCLUDED.default_template_documenso_id,
-                template_origin               = EXCLUDED.template_origin,
-                updated_at                    = now()
-            """,
-            {"deal_id": deal_id, "fv": Jsonb(field_values), "tmpl": default_template_documenso_id, "origin": origin},
-        )
+        active = await cur.fetchone()
+        if active is not None and active["template_documenso_id"] == default_template_documenso_id:
+            # Same template → update the active config's values in place.
+            await cur.execute(
+                "UPDATE business.deal_document_configs SET field_values = %(fv)s, updated_at = now() "
+                "WHERE id = %(id)s",
+                {"fv": Jsonb(field_values), "id": active["id"]},
+            )
+        else:
+            # New or changed template → archive the prior active, insert a fresh active config.
+            if active is not None:
+                await cur.execute(
+                    "UPDATE business.deal_document_configs SET status = 'archived', updated_at = now() "
+                    "WHERE id = %(id)s",
+                    {"id": active["id"]},
+                )
+            await cur.execute(
+                """
+                INSERT INTO business.deal_document_configs
+                    (deal_id, template_documenso_id, field_values, status)
+                VALUES (%(deal_id)s::uuid, %(tmpl)s, %(fv)s, 'active')
+                """,
+                {"deal_id": deal_id, "tmpl": default_template_documenso_id, "fv": Jsonb(field_values)},
+            )
         # Reconcile the deal_contacts junction to the desired set: drop removed, upsert kept (is_signatory).
         desired = [c["contact_id"] for c in contacts if c.get("contact_id")]
         await cur.execute(
