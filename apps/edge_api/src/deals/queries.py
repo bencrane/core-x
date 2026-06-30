@@ -53,8 +53,9 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
                    d.organization_id::text AS organization_id,
                    d.account_id::text      AS account_id,
                    COALESCE(dd.field_values, '{}'::jsonb) AS field_values,
-                   dd.default_template_uuid::text         AS default_template_uuid,
-                   COALESCE(dd.template_origin, 'default') AS template_origin
+                   dd.default_template_uuid::text          AS default_template_uuid,
+                   dd.default_template_documenso_id         AS default_template_documenso_id,
+                   COALESCE(dd.template_origin, 'default')  AS template_origin
               FROM business.deals d
          LEFT JOIN business.deal_details dd ON dd.deal_id = d.id
              WHERE d.deal_handle = %s
@@ -106,54 +107,57 @@ async def get_available_contacts(conn, account_id: str | None, deal_id: str) -> 
 
 
 async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
-    """Active Documenso templates for the deal's org — the editor's template dropdown. Each row
-    carries the template UUID (matches deal_details.default_template_uuid) + external id + name."""
-    if not organization_id:
-        return []
+    """The selectable Documenso templates for the deal editor's dropdown — read off the MIRROR
+    (business.documenso_envelopes, type='template', non-deleted), each flagged with the operator's
+    mirror default (business.documenso_template_defaults). ``organization_id`` is accepted for call
+    compatibility but the mirror is NOT org-scoped. Each row carries documenso_id (the attach key,
+    matching deal_details.default_template_documenso_id) + name (the envelope title) + is_default."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            SELECT dt.id::text AS template_uuid, dt.documenso_template_id, dt.name, dt.is_default
-              FROM business.documenso_templates dt
-             WHERE dt.organization_id = %s::uuid AND dt.status = 'active'
-             ORDER BY dt.is_default DESC, dt.name
-            """,
-            (organization_id,),
+            SELECT e.documenso_id,
+                   e.title                       AS name,
+                   COALESCE(d.is_default, false)  AS is_default
+              FROM business.documenso_envelopes e
+              LEFT JOIN business.documenso_template_defaults d
+                     ON d.documenso_id = e.documenso_id AND d.is_default
+             WHERE e.type = 'template' AND e.deleted_at IS NULL
+             ORDER BY e.synced_at DESC
+            """
         )
         return await cur.fetchall()
 
 
 async def upsert_details(conn, *, deal_id: str, contacts, field_values,
-                         default_template_uuid: str | None) -> None:
-    """Write the deal's deal_details (field_values + attached template; ``template_origin`` DERIVED:
-    'default' when the chosen template is the deal-org's is_default or none is chosen, else 'operator')
-    AND reconcile the deal_contacts junction to the desired set (membership + is_signatory). Person
-    identity (business.contacts) is NOT edited here. ``contacts`` = [{contact_id, is_signatory}]. Commits."""
+                         default_template_documenso_id: int | None) -> None:
+    """Write the deal's deal_details (field_values + attached MIRROR template, keyed by documenso_id;
+    ``template_origin`` DERIVED: 'default' when the chosen template is the operator's MIRROR default
+    (business.documenso_template_defaults) or none is chosen, else 'operator') AND reconcile the
+    deal_contacts junction to the desired set (membership + is_signatory). Person identity
+    (business.contacts) is NOT edited here. ``contacts`` = [{contact_id, is_signatory}]. Commits."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            """
-            SELECT dt.id::text AS uuid
-              FROM business.documenso_templates dt
-              JOIN business.deals d ON d.organization_id = dt.organization_id
-             WHERE d.id = %s::uuid AND dt.is_default
-             LIMIT 1
-            """,
-            (deal_id,),
+            "SELECT documenso_id FROM business.documenso_template_defaults WHERE is_default LIMIT 1"
         )
         row = await cur.fetchone()
-        org_default = row["uuid"] if row else None
-        origin = "default" if (default_template_uuid is None or default_template_uuid == org_default) else "operator"
+        mirror_default = row["documenso_id"] if row else None
+        origin = (
+            "default"
+            if (default_template_documenso_id is None or default_template_documenso_id == mirror_default)
+            else "operator"
+        )
         await cur.execute(
             """
-            INSERT INTO business.deal_details (deal_id, field_values, default_template_uuid, template_origin)
-            VALUES (%(deal_id)s::uuid, %(fv)s, %(tmpl)s::uuid, %(origin)s)
+            INSERT INTO business.deal_details
+                (deal_id, field_values, default_template_documenso_id, template_origin)
+            VALUES (%(deal_id)s::uuid, %(fv)s, %(tmpl)s, %(origin)s)
             ON CONFLICT (deal_id) DO UPDATE SET
-                field_values          = EXCLUDED.field_values,
-                default_template_uuid = EXCLUDED.default_template_uuid,
-                template_origin       = EXCLUDED.template_origin,
-                updated_at            = now()
+                field_values                  = EXCLUDED.field_values,
+                default_template_documenso_id = EXCLUDED.default_template_documenso_id,
+                template_origin               = EXCLUDED.template_origin,
+                updated_at                    = now()
             """,
-            {"deal_id": deal_id, "fv": Jsonb(field_values), "tmpl": default_template_uuid, "origin": origin},
+            {"deal_id": deal_id, "fv": Jsonb(field_values), "tmpl": default_template_documenso_id, "origin": origin},
         )
         # Reconcile the deal_contacts junction to the desired set: drop removed, upsert kept (is_signatory).
         desired = [c["contact_id"] for c in contacts if c.get("contact_id")]

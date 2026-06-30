@@ -66,15 +66,17 @@ class DealSummary(BaseModel):
 
 
 class TemplateOption(BaseModel):
-    """A selectable Documenso template for the deal-details editor dropdown. ``template_uuid`` is
-    ``documenso_templates.id`` — exactly what ``deal_details.default_template_uuid`` stores — so the
-    editor matches the current selection and PUTs the uuid back. ``documenso_template_id`` is the
-    external Documenso id (shown for reference)."""
+    """A selectable Documenso template for the deal-details editor dropdown, read off the MIRROR.
+    ``documenso_id`` is ``business.documenso_envelopes.documenso_id`` — the attach key the editor
+    matches and PUTs back (into ``deal_details.default_template_documenso_id``). ``name`` is the
+    envelope title. The legacy ``template_uuid``/``documenso_template_id`` fields are retained (empty
+    for mirror rows) so the Mandate page's existing contract still resolves until it is repointed."""
 
-    template_uuid: str
-    documenso_template_id: str
+    documenso_id: int
     name: str | None = None
     is_default: bool = False
+    template_uuid: str = ""
+    documenso_template_id: str = ""
 
 
 class DealDetails(BaseModel):
@@ -89,7 +91,8 @@ class DealDetails(BaseModel):
     contacts: list = []            # the deal's contacts (deal_contacts JOIN the person), is_signatory each
     available_contacts: list = []  # account contacts NOT yet on the deal — the add-contact pool
     field_values: dict = {}        # the document's prefilled form-field values (renamed from content)
-    default_template_uuid: str | None = None
+    default_template_uuid: str | None = None             # LEGACY attach (documenso_templates uuid); kept for Mandate
+    default_template_documenso_id: int | None = None     # MIRROR attach — the live key (documenso_envelopes.documenso_id)
     template_origin: str = "default"
     available_templates: list[TemplateOption] = []
 
@@ -101,7 +104,7 @@ class DealDetailsUpdate(BaseModel):
 
     contacts: list = []
     field_values: dict = {}
-    default_template_uuid: str | None = None
+    default_template_documenso_id: int | None = None
 
 
 class DealOriginated(BaseModel):

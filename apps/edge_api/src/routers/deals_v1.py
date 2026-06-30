@@ -40,6 +40,7 @@ def _details_payload(deal: dict, contacts: list[dict], available: list[dict],
         available_contacts=available,
         field_values=deal.get("field_values") or {},
         default_template_uuid=deal.get("default_template_uuid"),
+        default_template_documenso_id=deal.get("default_template_documenso_id"),
         template_origin=deal.get("template_origin") or "default",
         available_templates=[TemplateOption(**t) for t in templates],
     )
@@ -77,7 +78,7 @@ async def update_deal_details(handle: str, body: DealDetailsUpdate) -> DealDetai
             deal_id=deal["deal_id"],
             contacts=body.contacts,
             field_values=body.field_values,
-            default_template_uuid=body.default_template_uuid,
+            default_template_documenso_id=body.default_template_documenso_id,
         )
         fresh = await queries.get_deal_with_details(conn, handle)
         return await _assemble_details(conn, fresh)
