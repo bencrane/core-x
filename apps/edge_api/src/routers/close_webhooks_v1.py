@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from .. import config
+from ..cal import book
 from ..close import queries
 from ..close.signature import verify_signature
 from ..db import get_db_connection
@@ -74,7 +75,15 @@ async def close_webhook(
         "close webhook captured: id=%s object=%s action=%s lead=%s",
         event_id, _dig(evt, "object_type"), _dig(evt, "action"), _dig(data, "lead_id"),
     )
-    return {"ok": True, "id": event_id}
+
+    # CUSTOM-ACTIVITY → cal.com booking kickoff. Best-effort: fires the cal-book Trigger.dev task ONLY
+    # for a created custom activity matching the configured booking type; never fails the webhook (the
+    # raw event above is already durable). Mirrors webhooks_cal.py's _kick_* pattern.
+    booking = None
+    if _dig(evt, "object_type") == "activity.custom_activity" and _dig(evt, "action") == "created":
+        booking = await _kick_booking(data)
+
+    return {"ok": True, "id": event_id, "booking": booking}
 
 
 async def _land(raw_obj: Any, evt: Any, data: Any) -> str:
@@ -96,6 +105,36 @@ async def _land(raw_obj: Any, evt: Any, data: Any) -> str:
 
 def _s(v: Any) -> str | None:
     return str(v) if v is not None else None
+
+
+async def _kick_booking(data: Any) -> dict[str, Any]:
+    """Fire the cal-book task when a CREATED custom activity matches the configured booking type.
+    Best-effort — logs + returns on any miss/failure (the raw event is already durable). The actual
+    booking (Close API read-back + cal.com create) runs in /internal/cal/book; this only enqueues."""
+    target = config.close_booking_custom_activity_type_id()
+    type_id = _s(_dig(data, "custom_activity_type_id"))
+    activity_id = _s(_dig(data, "id"))
+    # One decision-log line so config state (dormant / typo'd type id) is visible without guessing why
+    # no booking fired.
+    logger.info(
+        "close custom-activity created: activity=%s type_id=%s configured_target=%s",
+        activity_id, type_id, target,
+    )
+    if not target:
+        return {"triggered": False, "reason": "booking custom-activity type not configured"}
+    if type_id != target:
+        return {"triggered": False, "reason": "custom_activity_type_id mismatch"}
+    if not activity_id:
+        return {"triggered": False, "reason": "no activity id"}
+    run_id = await book.trigger_book(
+        close_activity_id=activity_id,
+        close_lead_id=_s(_dig(data, "lead_id")),
+        close_contact_id=_s(_dig(data, "contact_id")),
+        custom_activity_type_id=type_id,
+    )
+    if not run_id:
+        return {"triggered": False, "reason": "trigger returned no run id"}
+    return {"triggered": True, "run_id": run_id}
 
 
 @read_router.get("/active-call")
