@@ -66,22 +66,19 @@ class DealSummary(BaseModel):
 
 
 class TemplateOption(BaseModel):
-    """A selectable Documenso template for the deal-details editor dropdown, read off the MIRROR.
-    ``documenso_id`` is ``business.documenso_envelopes.documenso_id`` — the attach key the editor
-    matches and PUTs back (into ``deal_details.default_template_documenso_id``). ``name`` is the
-    envelope title. The legacy ``template_uuid``/``documenso_template_id`` fields are retained (empty
-    for mirror rows) so the Mandate page's existing contract still resolves until it is repointed."""
+    """A selectable Documenso template for the deal-document-config editor dropdown, read off
+    business.documenso_envelopes. ``documenso_id`` is the envelope's numeric id — the attach key the
+    editor matches and PUTs back (into deal_document_configs.template_documenso_id). ``name`` is the
+    envelope title."""
 
     documenso_id: int
     name: str | None = None
     is_default: bool = False
-    template_uuid: str = ""
-    documenso_template_id: str = ""
 
 
 class DealDetails(BaseModel):
-    """The editable deal_details payload: the deal's contacts + content + attached Documenso template,
-    plus the deal-org's selectable templates for the dropdown. ``template_origin`` is derived
+    """The editable deal-document-config payload: the deal's contacts + field_values + attached
+    Documenso template, plus the selectable templates for the dropdown. ``template_origin`` is derived
     server-side ('default' = the org default, 'operator' = a manual override)."""
 
     deal_id: str
@@ -90,21 +87,20 @@ class DealDetails(BaseModel):
     company_domain: str | None = None
     contacts: list = []            # the deal's contacts (deal_contacts JOIN the person), is_signatory each
     available_contacts: list = []  # account contacts NOT yet on the deal — the add-contact pool
-    field_values: dict = {}        # the document's prefilled form-field values (renamed from content)
-    default_template_uuid: str | None = None             # LEGACY attach (documenso_templates uuid); kept for Mandate
-    default_template_documenso_id: int | None = None     # MIRROR attach — the live key (documenso_envelopes.documenso_id)
+    field_values: dict = {}        # the document's prefilled form-field values (operator overrides)
+    template_documenso_id: int | None = None   # the template attached to this deal (documenso_envelopes.documenso_id)
     template_origin: str = "default"
     available_templates: list[TemplateOption] = []
 
 
 class DealDetailsUpdate(BaseModel):
     """PUT body — ``contacts`` is the desired deal_contacts set [{contact_id, is_signatory}];
-    ``field_values`` + ``default_template_uuid`` land on deal_details. ``template_origin`` is derived
-    server-side; person identity (business.contacts) is not edited here."""
+    ``field_values`` + ``template_documenso_id`` land on the active deal_document_configs.
+    ``template_origin`` is derived server-side; person identity (business.contacts) is not edited here."""
 
     contacts: list = []
     field_values: dict = {}
-    default_template_documenso_id: int | None = None
+    template_documenso_id: int | None = None
 
 
 class DealOriginated(BaseModel):

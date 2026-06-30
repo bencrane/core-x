@@ -55,7 +55,7 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
                    d.organization_id::text AS organization_id,
                    d.account_id::text      AS account_id,
                    COALESCE(cfg.field_values, '{}'::jsonb) AS field_values,
-                   cfg.template_documenso_id               AS default_template_documenso_id,
+                   cfg.template_documenso_id,
                    CASE
                        WHEN cfg.template_documenso_id IS NULL            THEN 'default'
                        WHEN cfg.template_documenso_id = def.documenso_id THEN 'default'
@@ -119,7 +119,7 @@ async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
     (business.documenso_envelopes, type='template', non-deleted), each flagged with the operator's
     mirror default (business.documenso_template_defaults). ``organization_id`` is accepted for call
     compatibility but the mirror is NOT org-scoped. Each row carries documenso_id (the attach key,
-    matching deal_details.default_template_documenso_id) + name (the envelope title) + is_default."""
+    matching deal_document_configs.template_documenso_id) + name (the envelope title) + is_default."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -137,7 +137,7 @@ async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
 
 
 async def upsert_document_config(conn, *, deal_id: str, contacts, field_values,
-                                 default_template_documenso_id: int | None) -> None:
+                                 template_documenso_id: int | None) -> None:
     """Persist the deal's ACTIVE document config (attached MIRROR template + per-field prefill
     ``field_values``) into business.deal_document_configs, and reconcile the deal_contacts junction.
 
@@ -160,7 +160,7 @@ async def upsert_document_config(conn, *, deal_id: str, contacts, field_values,
             (deal_id,),
         )
         active = await cur.fetchone()
-        if active is not None and active["template_documenso_id"] == default_template_documenso_id:
+        if active is not None and active["template_documenso_id"] == template_documenso_id:
             # Same template → update the active config's values in place.
             await cur.execute(
                 "UPDATE business.deal_document_configs SET field_values = %(fv)s, updated_at = now() "
@@ -181,7 +181,7 @@ async def upsert_document_config(conn, *, deal_id: str, contacts, field_values,
                     (deal_id, template_documenso_id, field_values, status)
                 VALUES (%(deal_id)s::uuid, %(tmpl)s, %(fv)s, 'active')
                 """,
-                {"deal_id": deal_id, "tmpl": default_template_documenso_id, "fv": Jsonb(field_values)},
+                {"deal_id": deal_id, "tmpl": template_documenso_id, "fv": Jsonb(field_values)},
             )
         # Reconcile the deal_contacts junction to the desired set: drop removed, upsert kept (is_signatory).
         desired = [c["contact_id"] for c in contacts if c.get("contact_id")]
