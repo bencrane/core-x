@@ -73,7 +73,7 @@ async def update_deal_details(handle: str, body: DealDetailsUpdate) -> DealDetai
         deal = await queries.get_deal_with_details(conn, handle)
         if deal is None:
             raise HTTPException(status_code=404, detail="deal not found")
-        await queries.upsert_details(
+        await queries.upsert_document_config(
             conn,
             deal_id=deal["deal_id"],
             contacts=body.contacts,
