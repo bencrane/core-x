@@ -8,6 +8,7 @@ edge_api reads the same ``HQX_*`` Postgres and ``MANAGED_*`` /
 """
 from __future__ import annotations
 
+import json
 import os
 
 
@@ -58,6 +59,98 @@ def close_webhook_secret() -> str | None:
     When unset, ``/webhooks/close`` refuses (503) rather than accepting unverified events.
     From ``core-x/prd`` (``CLOSE_WEBHOOK_SECRET``)."""
     return os.environ.get("CLOSE_WEBHOOK_SECRET")
+
+
+# ── cal.com booking (OUTBOUND create) + Close API (read-back) ────────────────────────────────────
+# The Close custom-activity webhook fires the cal-book Trigger.dev task, which calls /internal/cal/book
+# here; that route reads the activity + contact from the Close API and creates a cal.com booking.
+# DISTINCT from cal_webhook_secret()/close_webhook_secret() (the INBOUND signature gates) — these are
+# the OUTBOUND API credentials + the Close→cal field crosswalk. Both keys already live in core-x/prd.
+def cal_api_key() -> str | None:
+    """cal.com API key (``cal_...``), server-side only — authenticates POST /v2/bookings. From
+    ``core-x/prd`` (``CAL_API_KEY``). When unset, the booking route fails the run (not a 503 — the
+    path is task-driven, not a public surface)."""
+    return os.environ.get("CAL_API_KEY")
+
+
+def cal_api_base() -> str:
+    """cal.com API v2 base URL. Override with ``CAL_API_BASE`` only to pin a different host."""
+    return os.environ.get("CAL_API_BASE", "https://api.cal.com/v2").rstrip("/")
+
+
+def cal_api_version() -> str:
+    """The ``cal-api-version`` date header the v2 bookings endpoint requires (cal.com versions its API
+    by date). Defaults to the long-stable create-a-booking version; override with ``CAL_API_VERSION``
+    if cal.com requires a newer date — a config flip, never a code change."""
+    return os.environ.get("CAL_API_VERSION", "2024-08-13")
+
+
+def cal_default_timezone() -> str:
+    """IANA timezone applied to the booking attendee when neither the Close activity nor the contact
+    supplies one. cal.com requires a valid ``timeZone`` on every attendee. Override with
+    ``CAL_DEFAULT_TIMEZONE``."""
+    return os.environ.get("CAL_DEFAULT_TIMEZONE", "America/New_York")
+
+
+def cal_event_type_id_map() -> dict[str, int]:
+    """Map of cal.com event-type SLUG → numeric ``eventTypeId`` (the Close form's dropdown carries the
+    slug; this resolves it to the id the booking API needs). Defaults to the operator's live event
+    types (15min/30min/secret); override wholesale with ``CAL_EVENT_TYPE_ID_MAP`` (a JSON object) when
+    event types are added/changed — a config flip, never a code change."""
+    raw = os.environ.get("CAL_EVENT_TYPE_ID_MAP")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            return {str(k): int(v) for k, v in parsed.items()}
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return {"15min": 5644162, "30min": 5644161, "secret": 5644163}
+
+
+def close_api_key() -> str | None:
+    """Close.com API key, server-side only — read-back of the custom activity + contact during a
+    booking (HTTP Basic, key as username, empty password). From ``core-x/prd`` (``CLOSE_API_KEY``)."""
+    return os.environ.get("CLOSE_API_KEY")
+
+
+def close_api_base() -> str:
+    """Close.com REST API base URL. Override with ``CLOSE_API_BASE``."""
+    return os.environ.get("CLOSE_API_BASE", "https://api.close.com/api/v1").rstrip("/")
+
+
+def close_booking_custom_activity_type_id() -> str | None:
+    """The Close ``custom_activity_type_id`` that means "book a meeting". A
+    ``activity.custom_activity`` / ``created`` webhook whose activity matches this id fires the
+    cal-book task; everything else is raw-captured only. UNSET → the outbound booking path is DORMANT
+    (the webhook branch never fires). From ``core-x/prd`` (``CLOSE_BOOKING_CUSTOM_ACTIVITY_TYPE_ID``)."""
+    return os.environ.get("CLOSE_BOOKING_CUSTOM_ACTIVITY_TYPE_ID")
+
+
+def close_booking_field_map() -> dict:
+    """Crosswalk from the Close custom-activity fields → the cal.com booking request, as a JSON object
+    in ``CLOSE_BOOKING_FIELD_MAP``. Shape::
+
+        {
+          "event_type_slug": "custom.cf_<id>",   # the dropdown field carrying 15min/30min/…
+          "start":           "custom.cf_<id>",   # the datetime field
+          "timezone":        "custom.cf_<id>",   # optional; else the contact / CAL_DEFAULT_TIMEZONE
+          "booking_fields": {                     # cal booking-field SLUG -> Close field key
+            "Company-Name":    "custom.cf_<id>",  #   (30min requires Company-Name + Company-Website)
+            "Company-Website": "custom.cf_<id>"
+          }
+        }
+
+    The field ids are operator-specific (defined by the Close custom-activity form); UNSET/empty → the
+    booking route returns a clear "field map not configured" error rather than guessing."""
+    raw = os.environ.get("CLOSE_BOOKING_FIELD_MAP")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            pass
+    return {}
 
 
 def docraptor_api_key() -> str | None:

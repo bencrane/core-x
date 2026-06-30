@@ -75,6 +75,7 @@ from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
 from .src.routers.close_webhooks_v1 import webhook_router as close_webhook_router
 from .src.routers.close_webhooks_v1 import read_router as close_read_router
+from .src.routers.internal_cal_v1 import router as internal_cal_router
 from .src.routers.document_payments_v1 import router as document_payments_router
 from .src.routers.operator_settings_v1 import router as operator_settings_router
 from .src.service_token import require_service_token
@@ -143,6 +144,13 @@ async def lifespan(app_: FastAPI):
             "CLOSE_WEBHOOK_SECRET unset -- /webhooks/close refuses (503), so Close call events will NOT "
             "be captured and the Insights call-sync stays idle. Set it in core-x/prd to match the Close "
             "webhook subscription signature_key."
+        )
+    if config.close_booking_custom_activity_type_id() is not None and (
+        config.cal_api_key() is None or config.close_api_key() is None
+    ):
+        log.warning(
+            "CLOSE_BOOKING_CUSTOM_ACTIVITY_TYPE_ID is set but CAL_API_KEY/CLOSE_API_KEY is unset -- the "
+            "Close custom-activity -> cal.com booking path will FAIL at /internal/cal/book. Set both in core-x/prd."
         )
     # Chain every mounted FastMCP sub-app's lifespan so its session manager
     # starts/stops with the parent app; open the Postgres pool (agent-runs
@@ -280,6 +288,13 @@ app.include_router(deals_router)
 # deal_contacts signatory link. Trigger-secret gated, same /internal contract as the gtm pipeline
 # run-step. Replaces the retired booking→opportunity producer; the seam DocRaptor render layers onto.
 app.include_router(internal_deals_router, prefix="/internal")
+
+# cal booking (internal): the OUTBOUND create PRODUCER. The cal-book Trigger.dev task (fired by the
+# Close custom-activity webhook) calls /internal/cal/book to mint a cal.com booking from the activity
+# + contact (read back from the Close API), idempotent on the Close activity id via ops.cal_booking_runs.
+# Trigger-secret gated, same /internal contract. The created booking re-enters via /webhooks/cal, so the
+# normalize -> corex.bookings -> materialize pipeline runs unchanged (closed loop, no double-write).
+app.include_router(internal_cal_router, prefix="/internal")
 
 # engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
 # (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
