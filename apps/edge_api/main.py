@@ -50,6 +50,7 @@ from .src.routers.documenso_template_fields_v1 import router as documenso_templa
 from .src.routers.documenso_templates_v1 import router as documenso_templates_router
 from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
 from .src.routers.documenso_prefill_configs_v1 import router as documenso_prefill_configs_router
+from .src.routers.documenso_template_defaults_v1 import router as documenso_template_defaults_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
 from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
@@ -309,6 +310,14 @@ app.include_router(documenso_envelopes_router)
 # stored verbatim). The default lives in OUR config, applied at originate later — nothing is baked onto
 # the Documenso template. This editor is the SOLE writer of that table. Service-token gated.
 app.include_router(documenso_prefill_configs_router)
+
+# documenso-template-defaults: the "Set Template as Default" picker over the MIRROR. GET lists the
+# mirrored TEMPLATE envelopes (business.documenso_envelopes, type='template', non-deleted) each flagged
+# is_default; POST marks one as the operator's Confirm & Originate default. The default lives in the
+# operator-owned business.documenso_template_defaults (keyed by documenso_id) — the projector/re-grab
+# NEVER touch it, and this picker is its SOLE writer. Replaces the legacy documenso-templates registry
+# picker for mirror-path templates (e.g. 14503, which the legacy registry doesn't contain). Service-token gated.
+app.include_router(documenso_template_defaults_router)
 
 # engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
 # engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident
