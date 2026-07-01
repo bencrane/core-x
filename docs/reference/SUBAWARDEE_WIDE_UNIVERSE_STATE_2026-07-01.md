@@ -20,7 +20,7 @@
 | **Shipped** | PR [#854](https://github.com/bencrane/core-x/pull/854) — `build_wide` mode on `pipelines/usaspending/subawardee_work_profile.py`. Merged to `main` at `512ef52`. Default `build` path is value-identical (canonical never touched). |
 | **New table** | `s3://data-sink/active/subawardee_work_profile_wide/` — **191,693** firms (vs canonical **25,450**), floor **2021-01-01**, 34 cols, BTREE `subawardee_uei`/`subawardee_parent_uei`/`subawardee_state_code`. |
 | **Feed refreshed** | `usaspending_api_fresh/contract_subaward` via `daily 40` (append): **199,901 → 321,204** rows, distinct subawardees **25,450 → 27,610**, recent edge **2026-06-05 → 2026-06-29**. |
-| **Open gap** | The capability card (`capability_profile`) does **not** auto-reflect the wide universe. Its recommendation leg (`capability_lanes`) is fed by a narrow 25K table (`subaward_naics_psc`); it covers only **27,459 / 191,693 (14%)** of the wide firms. Not a blocker — a bounded 3-rebuild chain (§6). |
+| **Rebuild chain** | **CLOSED (2026-07-01).** All three steps executed in order (§6): `subaward_naics_psc_wide` (61,686 contract subawardees, ~100% combo) → adjacency + `capability_lanes` rebuilt wide (114,779 firms) → `capability_profile` rebuilt on the wide activity table (**245,617 rows**, was 78,219). The card reflects the wide universe end-to-end. |
 | **Inherited ceilings** | Prime rail freshness caps at **2026-04-23** (FPDS bulk-mirror horizon; the API-fresh prime feed exists but is unwired). Sentinel future sub-dates ride through the source (clamp `≤ 2026-12-31` on read). |
 
 ---
@@ -125,10 +125,12 @@ Two independent reasons it will not reflect the wide universe without work:
 1. **Widen the combo table — ✅ EXECUTED 2026-07-01 → `subaward_naics_psc_wide`.** Built by `scripts/build_subaward_naics_psc_wide.py`: union of `subaward_search` ≥ 2021 **∪** the API-fresh feed (dedup on subaward identity, mirror preferred), **procurement-only** (`prime_award_unique_key LIKE 'CONT_%'`), with the prime PSC attached via the indexed FPDS `recipient_uei` pushdown → award-key match. Written to a **distinct** table; narrow `subaward_naics_psc` untouched.
    - **Result: 627,582 lines · 61,686 distinct subawardees · 99.9% PSC/combo coverage** · schema-identical to the narrow · 5 BTREE indices · action range 2021-01-01 → 2026-08-24.
    - **Key finding — the recommendable pool is 25,450 → 61,686 contract subawardees (2.4×), NOT 191K.** Grant/assistance subawards (`ASST_*`, ~1.29M lines in the raw mirror) have **no PSC** (PSC is a contracts-only concept; grants use CFDA) and cannot form a NAICS×PSC lane. So ~128K of the wide work_profile's subawardees are structurally unreachable by the recommender — a property of the data, not a fixable gap. Reading the *whole* mirror looks like ~30% PSC coverage purely from grant dilution; contract-only is ~100%.
-2. **Re-run `capability_lanes`** pointed at `subaward_naics_psc_wide` — a one-line source change at `scripts/build_capability_lanes.py:59` (Step 1 wrote a distinct table rather than overwriting), then re-run → emits lanes for the ~61,686 contract subawardees.
-3. **Re-run `capability_profile`** with its `wp` source pointed at `subawardee_work_profile_wide` (one-line change at `scripts/build_capability_profile.py:52`) — after step 2, so the card gains both the wide activity panel and wide recommendations together, avoiding the 86%-shell state.
+2. **Re-run `capability_lanes` — ✅ EXECUTED 2026-07-01 (as 2a + 2b).**
+   - **2a (execution detail the chain under-specified):** the demand graph lanes target (`subaward_combo_nodes`/`edges`, built by `scripts/build_combo_adjacency.py`) was itself narrow-sourced; leaving it would have silently capped coverage (wide firms whose combos aren't in the narrow graph get no seeds/anchors). Its only live consumer is `capability_lanes` (the other readers are scripts lanes superseded), so it was re-pointed to `subaward_naics_psc_wide` and rebuilt in place: **5,524 nodes (was 1,391, 4×) · 914,764 directed edges**, over 61,622 firm portfolios.
+   - **2b:** `capability_lanes` re-pointed (`:59`) and rebuilt: **1,080,056 rows · 114,779 firms covered** (was 77,532) — sub-history 60,447 · DSBS 59,398 · prime-history 21,553. Tiers: subbed-hop 554,520 · declared 446,332 · primed-direct 47,909 · primed-hop 31,295. 98% of the 61,622 wide contract subawardees landed ≥1 lane.
+3. **Re-run `capability_profile` — ✅ EXECUTED 2026-07-01.** `wp` source re-pointed to `subawardee_work_profile_wide` (`:52`), rebuilt: **245,617 rows** (was 78,219) — `active_sub` 191,285 (60,447 with lanes) · `dsbs_prospect` 54,332 (all with lanes) · with ≥1 lane 114,779. Lane-less `active_sub` rows are dominated by grant-only subawardees — structural (no PSC lane exists for grants), documented, correct. All 5 worked-example subs verified on the card with 10 lanes each.
 
-> Do steps 1→2→3 **in order**. Pointing `wp` at the wide table *before* widening the recommender produces the 164K lane-less shells; the lockstep is the whole point.
+> Steps 1→2→3 were executed **in order** on 2026-07-01 (the lockstep mattered: pointing `wp` at the wide table before widening the recommender would have produced 164K lane-less shells). **The chain is CLOSED — the card now reflects the wide universe end-to-end.**
 
 **Independent follow-ups (not required for the reflow, but the next real gaps):**
 
@@ -171,7 +173,7 @@ Spot checks used this session:
 - Work profiles: `subawardee_work_profile` (25,450, canonical) · **`subawardee_work_profile_wide`** (191,693, new).
 - Sub sources: `usaspending/subaward_search` (9.80M, bulk) · `usaspending_api_fresh/contract_subaward` (321,204, API-fresh) · `subaward_naics_psc` (199,901, narrow combo) · **`subaward_naics_psc_wide`** (627,582 lines / 61,686 contract subawardees, wide combo — §6 step 1).
 - Prime sources: `usaspending/transaction_search_fpds` (107.25M) · `usaspending/award_search` (78.64M) · `usaspending_api_fresh/contract_prime_txn` (1.99M, unwired).
-- Card cluster: `capability_profile` (78,219) · `capability_lanes` (77,532 UEIs) · `sba_dsbs_certified_firms` · `govcon_subawardee_designations`.
+- Card cluster (all rebuilt wide 2026-07-01): `capability_profile` (**245,617**) · `capability_lanes` (**114,779 UEIs / 1,080,056 rows**) · `subaward_combo_nodes` (**5,524**) / `subaward_combo_edges` (**914,764**) · `sba_dsbs_certified_firms` · `govcon_subawardee_designations`.
 
 **Ops:** `ops.subawardee_work_profile_runs` (build ledger) · `ops.usaspending_api_subaward_fresh_runs` (feed ledger).
 
