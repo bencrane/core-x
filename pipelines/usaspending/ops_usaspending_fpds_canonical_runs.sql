@@ -34,8 +34,20 @@ CREATE TABLE IF NOT EXISTS ops.usaspending_fpds_canonical_runs (
 -- initialized before this column existed pick it up here. archive→monthly rename: RENAME the legacy
 -- column in place when present (preserves history), THEN ensure the new column exists for schemas
 -- that never had the legacy one. Both guarded (IF EXISTS / IF NOT EXISTS) → idempotent + order-safe.
-ALTER TABLE ops.usaspending_fpds_canonical_runs
-    RENAME COLUMN IF EXISTS archive_corrections_applied TO monthly_corrections_applied;
+-- Postgres has no RENAME COLUMN IF EXISTS; guard the legacy rename in a DO block (idempotent,
+-- order-safe: only renames when the legacy column is present and the new one is not).
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'ops' AND table_name = 'usaspending_fpds_canonical_runs'
+                 AND column_name = 'archive_corrections_applied')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'ops' AND table_name = 'usaspending_fpds_canonical_runs'
+                 AND column_name = 'monthly_corrections_applied') THEN
+        ALTER TABLE ops.usaspending_fpds_canonical_runs
+            RENAME COLUMN archive_corrections_applied TO monthly_corrections_applied;
+    END IF;
+END $$;
 ALTER TABLE ops.usaspending_fpds_canonical_runs
     ADD COLUMN IF NOT EXISTS monthly_corrections_applied bigint;
 CREATE INDEX IF NOT EXISTS usaspending_fpds_canonical_runs_status_idx
