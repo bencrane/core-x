@@ -21,10 +21,10 @@ SOURCE (live hq-x Postgres, read-only via the DuckDB postgres scanner):
 TARGET (Gen-3 system of record — native Lance v2.1):
     s3://data-sink/active/phone_resolutions/
 
-GRAIN / PK. ``contact_id`` is the PK and is unique upstream (39,985 rows = 39,985 distinct), so the
-projection is a straight 1:1 copy — no dedup. EXPAND/CONTRACT: the dataset now also carries
-``person_id`` (== contact_id, same value, BTREE-indexed) as the go-forward person key; contact_id
-stays for backward compat (dropped only in Phase 2). ``blitz_phone_raw`` and ``attempts`` (both jsonb) are
+GRAIN / PK. Upstream ``contact_id`` is the PK and is unique (39,985 rows = 39,985 distinct), so the
+projection is a straight 1:1 copy — no dedup. EXPAND/CONTRACT complete: the dataset carries
+``person_id`` (== the upstream contact_id value, BTREE-indexed) as the sole person key; the physical
+``contact_id`` column is DROPPED (Phase 2). ``blitz_phone_raw`` and ``attempts`` (both jsonb) are
 carried losslessly as JSON string columns (full mirror); the 10 flat columns are the typed verbatim
 projection. NOTHING is normalized: a landed ``phone_status='unverified'`` stays verbatim forever —
 no value is ever reinterpreted or reclassified.
@@ -38,7 +38,7 @@ rebuild reproduces identical values. Prefer ``append`` for every routine refresh
 callback wiring into the landing rail.
 
 INDEXES:
-    BTREE  : person_id (PK, == contact_id), contact_id (legacy, backward-compat), person_linkedin_url (→ active/people), company_domain (→ firmographics_blitz), phone
+    BTREE  : person_id (PK, == upstream contact_id value), person_linkedin_url (→ active/people), company_domain (→ firmographics_blitz), phone
     BITMAP : phone_status, phone_type, source_vendor, country_code   (categorical filter accelerators)
 
     modal run    pipelines/gtm/materialize_phone_resolutions.py::init_ops      # create ops table (HQX)
@@ -69,24 +69,25 @@ MAX_BYTES_PER_FILE = 90 * 1024**3
 DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000  # DuckDB → Arrow streaming batch (out-of-core: never buffer the full table)
 
-# Scalar index plan. person_id (== contact_id) is the new BTREE-indexed person key; contact_id
-# stays indexed for backward compat (dropped only in Phase 2).
+# Scalar index plan. person_id (== upstream contact_id) is the BTREE-indexed person key; the
+# physical contact_id column is dropped (Phase 2) — only person_id is written/indexed.
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["person_id", "contact_id", "person_linkedin_url", "company_domain", "phone"],
+    "BTREE": ["person_id", "person_linkedin_url", "company_domain", "phone"],
     "BITMAP": ["phone_status", "phone_type", "source_vendor", "country_code"],
 }
 
-# Column projection order (mirrors ops.phone_resolutions exactly).
+# Column projection order (mirrors ops.phone_resolutions, minus the dropped contact_id — the
+# upstream contact_id is still READ, but only to source person_id; it is not a written column).
 _COLS = [
-    "contact_id", "phone", "phone_status", "source_vendor", "phone_type", "company_domain",
+    "phone", "phone_status", "source_vendor", "phone_type", "company_domain",
     "person_linkedin_url", "country_code", "blitz_phone_raw", "attempts", "batch_label",
     "resolved_at",
 ]
 # jsonb → VARCHAR (lossless JSON text), carried verbatim — the raw source of truth.
 _JSON_COLS = {"blitz_phone_raw", "attempts"}
 # Upstream-guaranteed non-null (verified 2026-06-24: all 39,985 rows populated on each).
-# person_id mirrors contact_id (same value), so it inherits the same NOT-NULL guarantee.
-_NOT_NULL = {"person_id", "contact_id", "person_linkedin_url", "resolved_at"}
+# person_id mirrors the upstream contact_id (same value), so it inherits the NOT-NULL guarantee.
+_NOT_NULL = {"person_id", "person_linkedin_url", "resolved_at"}
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -144,7 +145,8 @@ def _schema():
 
 def _sql(where: str = "") -> str:
     """Straight 1:1 verbatim projection (no dedup, no normalization). jsonb → VARCHAR (lossless).
-    person_id mirrors contact_id verbatim (EXPAND/CONTRACT: same value, new BTREE-indexed key)."""
+    person_id is sourced from the upstream contact_id verbatim (same value, BTREE-indexed key);
+    the physical contact_id column is not written (Phase-2 drop)."""
     proj = ",\n        ".join(
         f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c for c in _COLS
     )

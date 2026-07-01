@@ -507,10 +507,10 @@ def _most_senior_per_company(prows: list[dict]) -> list[dict]:
         comp = str(p["company_id"])
         if comp not in best or _title_rank(p.get("title")) > _title_rank(best[comp].get("title")):
             best[comp] = p
-    # `people` is a Lance PERSON dataset: read its person id from `person_id` (BTREE-indexed),
-    # falling back to legacy `contact_id` for a partition not yet expanded. The resolver output
-    # emits BOTH keys (mirrored) — the Postgres corex.contact insert still reads `contact_id`.
-    return [{"person_id": str(pid := p.get("person_id") or p.get("contact_id")),
+    # `people` is a Lance PERSON dataset: read its person id from `person_id` (BTREE-indexed).
+    # The resolver output emits BOTH keys (contact_id mirrors person_id) for downstream
+    # back-compat — the physical `contact_id` column no longer exists on the dataset.
+    return [{"person_id": str(pid := p.get("person_id")),
              "contact_id": str(pid), "company_id": str(p["company_id"]),
              "normalized_domain": p.get("normalized_domain"), "full_name": p.get("full_name"),
              "title": p.get("title")} for p in best.values()]
@@ -559,9 +559,9 @@ def _resolve_contacts(rows: list[dict], result_key: str) -> list[dict]:
     if result_key == "contact_id":
         out = []
         for r in rows:
-            cid = r.get("person_id") or r.get("contact_id")
-            if cid:
-                out.append({"person_id": str(cid), "contact_id": str(cid),
+            pid = r.get("person_id")
+            if pid:
+                out.append({"person_id": str(pid), "contact_id": str(pid),
                             "company_id": str(r.get("company_id") or ""),
                             "normalized_domain": r.get("normalized_domain"),
                             "full_name": r.get("full_name"), "title": r.get("title")})

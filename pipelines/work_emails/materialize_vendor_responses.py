@@ -56,22 +56,22 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 25000  # rows carry verbatim provider blobs → smaller batches
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "person_id"],
+    "BTREE": ["person_id"],
     "BITMAP": ["source_vendor"],
 }
 
 # Straight 1:1 projection of ops.email_resolutions. Raw provider columns → JSON text (lossless).
-# person_id mirrors contact_id (same value); it has no source column, so _sql aliases it.
+# person_id is the written PK; it sources the upstream contact_id column via the alias below.
 _COLS = [
-    "contact_id", "person_id", "email", "source_vendor", "source_tier", "certainty",
+    "person_id", "email", "source_vendor", "source_tier", "certainty",
     "company_domain", "person_linkedin_url",
     "icypeas_raw", "leadmagic_raw", "blitz_email_raw",
     "batch_label", "resolved_at",
 ]
-_NOT_NULL = {"contact_id", "person_id", "resolved_at"}
+_NOT_NULL = {"person_id", "resolved_at"}
 _INT_COLS = {"source_tier"}
 _JSON_COLS = {"icypeas_raw", "leadmagic_raw", "blitz_email_raw"}  # whole-blob VERBATIM via CAST AS VARCHAR
-_ALIAS_COLS = {"person_id": "contact_id"}  # projected as <source> AS <col> (no own source column)
+_ALIAS_COLS = {"person_id": "contact_id"}  # projected as <upstream source> AS <col> (no own source column)
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -350,7 +350,7 @@ def append_vendor_responses(trigger_callback_url: str | None = None) -> dict:
             print(f"new/updated rows since {wm.isoformat()}: {rows_source:,}")
             if rows_source:
                 new_tbl = con.sql(_sql(where)).to_arrow_table().cast(_schema())
-                (ds.merge_insert("contact_id")
+                (ds.merge_insert("person_id")
                    .when_matched_update_all()
                    .when_not_matched_insert_all()
                    .execute(new_tbl))
@@ -388,7 +388,7 @@ def reindex() -> dict:
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 10, memory=8192)
 def verify() -> dict:
-    """Read-back: row count, contact_id uniqueness invariant, schema, indexes, BTREE probe."""
+    """Read-back: row count, person_id uniqueness invariant, schema, indexes, BTREE probe."""
     import pyarrow.compute as pc
 
     import lance
@@ -396,22 +396,22 @@ def verify() -> dict:
     so = _r2_storage_options()
     ds = lance.dataset(DATASET_URI, storage_options=so)
     n = ds.count_rows()
-    keys = ds.to_table(columns=["contact_id"])
-    distinct_key = pc.count_distinct(keys.column("contact_id")).as_py()
+    keys = ds.to_table(columns=["person_id"])
+    distinct_key = pc.count_distinct(keys.column("person_id")).as_py()
     unique_ok = (n == distinct_key)
 
-    sample = next((v for v in keys.column("contact_id").to_pylist() if v), None)
-    probe = ds.scanner(columns=["contact_id"],
-                       filter=f"contact_id = '{sample}'").to_table().num_rows if sample else -1
+    sample = next((v for v in keys.column("person_id").to_pylist() if v), None)
+    probe = ds.scanner(columns=["person_id"],
+                       filter=f"person_id = '{sample}'").to_table().num_rows if sample else -1
     out = {
-        "uri": DATASET_URI, "rows": n, "distinct_contact_id": distinct_key,
+        "uri": DATASET_URI, "rows": n, "distinct_person_id": distinct_key,
         "unique_invariant_ok": unique_ok, "schema": [f.name for f in ds.schema],
-        "indexes": _committed_index_names(so), f"probe_contact_id={sample!r}": probe,
+        "indexes": _committed_index_names(so), f"probe_person_id={sample!r}": probe,
     }
-    print(f"{DATASET}: {n:,} rows · distinct(contact_id)={distinct_key:,} · unique_ok={unique_ok}")
+    print(f"{DATASET}: {n:,} rows · distinct(person_id)={distinct_key:,} · unique_ok={unique_ok}")
     print(f"  indexes={out['indexes']}")
     if not unique_ok:
-        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(contact_id)={distinct_key}")
+        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(person_id)={distinct_key}")
     return out
 
 

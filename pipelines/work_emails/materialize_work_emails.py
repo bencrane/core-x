@@ -57,7 +57,7 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "person_id", "email_norm", "company_domain"],
+    "BTREE": ["person_id", "email_norm", "company_domain"],
     "BITMAP": ["verification_status", "source_vendor", "mv_resultcode"],
 }
 
@@ -103,8 +103,7 @@ def _schema():
 
     ts = pa.timestamp("us", tz="UTC")
     return pa.schema([
-        pa.field("contact_id",          pa.string(), nullable=False),  # PK · BTREE
-        pa.field("person_id",           pa.string(), nullable=False),  # == contact_id · BTREE
+        pa.field("person_id",           pa.string(), nullable=False),  # PK · BTREE
         pa.field("email",               pa.string(), nullable=True),   # VERBATIM as resolved (may be NULL)
         pa.field("email_norm",          pa.string(), nullable=True),   # derived bridge · BTREE
         pa.field("verification_status", pa.string(), nullable=False),  # BITMAP
@@ -166,7 +165,6 @@ def _sql(where: str = "") -> str:
         WINDOW w AS (PARTITION BY contact_id ORDER BY resolved_at DESC NULLS LAST)
     )
     SELECT
-        contact_id,
         contact_id AS person_id,
         email,
         nullif(lower(trim(email)), '') AS email_norm,
@@ -414,7 +412,7 @@ def append_work_emails(trigger_callback_url: str | None = None) -> dict:
             print(f"new/updated contacts since {wm.isoformat()}: {rows_source:,}")
             if rows_source:
                 new_tbl = con.sql(_sql(where)).to_arrow_table().cast(_schema())
-                (ds.merge_insert("contact_id")
+                (ds.merge_insert("person_id")
                    .when_matched_update_all()
                    .when_not_matched_insert_all()
                    .execute(new_tbl))
@@ -452,7 +450,7 @@ def reindex() -> dict:
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 10, memory=8192)
 def verify() -> dict:
-    """Read-back: row count, contact_id uniqueness invariant, schema, indexes, BTREE probe."""
+    """Read-back: row count, person_id uniqueness invariant, schema, indexes, BTREE probe."""
     import pyarrow.compute as pc
 
     import lance
@@ -460,22 +458,22 @@ def verify() -> dict:
     so = _r2_storage_options()
     ds = lance.dataset(DATASET_URI, storage_options=so)
     n = ds.count_rows()
-    keys = ds.to_table(columns=["contact_id"])
-    distinct_key = pc.count_distinct(keys.column("contact_id")).as_py()
+    keys = ds.to_table(columns=["person_id"])
+    distinct_key = pc.count_distinct(keys.column("person_id")).as_py()
     unique_ok = (n == distinct_key)
 
-    sample = next((v for v in keys.column("contact_id").to_pylist() if v), None)
-    probe = ds.scanner(columns=["contact_id"],
-                       filter=f"contact_id = '{sample}'").to_table().num_rows if sample else -1
+    sample = next((v for v in keys.column("person_id").to_pylist() if v), None)
+    probe = ds.scanner(columns=["person_id"],
+                       filter=f"person_id = '{sample}'").to_table().num_rows if sample else -1
     out = {
-        "uri": DATASET_URI, "rows": n, "distinct_contact_id": distinct_key,
+        "uri": DATASET_URI, "rows": n, "distinct_person_id": distinct_key,
         "unique_invariant_ok": unique_ok, "schema": [f.name for f in ds.schema],
-        "indexes": _committed_index_names(so), f"probe_contact_id={sample!r}": probe,
+        "indexes": _committed_index_names(so), f"probe_person_id={sample!r}": probe,
     }
-    print(f"{DATASET}: {n:,} rows · distinct(contact_id)={distinct_key:,} · unique_ok={unique_ok}")
+    print(f"{DATASET}: {n:,} rows · distinct(person_id)={distinct_key:,} · unique_ok={unique_ok}")
     print(f"  indexes={out['indexes']}")
     if not unique_ok:
-        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(contact_id)={distinct_key}")
+        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(person_id)={distinct_key}")
     return out
 
 
