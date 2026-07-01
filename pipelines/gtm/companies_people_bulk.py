@@ -67,8 +67,7 @@ docs/reference/00_ACTIVE_SINK_CATALOG.md for the fleet-wide catalog.
         that was FICTION — corrected 2026-06-30. Work-email data lives in the SEPARATE datasets
         active/work_emails, active/work_email_mv_validations, and active/email_verifications,
         keyed by contact_id — NOT merged into the people grain.)
-            person_id             uuid → VARCHAR   (EXPAND/CONTRACT person key, == contact_id)  BTREE
-            contact_id            uuid → VARCHAR   (legacy person key, == person_id; Phase-2 drop)
+            person_id             uuid → VARCHAR   (sole person key; Phase-2 drop of contact_id done)  BTREE
             company_id            uuid → VARCHAR   (foreign key → companies.company_id)   BTREE
             normalized_domain     VARCHAR          (DENORMALIZED from the person's company, for
                                                     instant domain lookups — derived from the joined
@@ -188,10 +187,10 @@ INDEXES: dict[str, dict[str, list[str]]] = {
     # verification_status BITMAP index (confirmed on the live dataset 2026-06-24: 13 cols, 4
     # indices). Listed here so every reindex/overwrite REBUILDS it instead of silently dropping
     # it — which would degrade the work-email verification filter's bitmap pushdown.
-    # person_id (== contact_id, the EXPAND/CONTRACT go-forward person key) is BTREE-indexed so the
-    # person point-lookup is index pushdown; the column mirrors contact_id verbatim (Phase-2 drops
-    # contact_id). The original committed set (company_id / normalized_domain / person_linkedin_url
-    # BTREE + verification_status BITMAP) is preserved as-is.
+    # person_id (the EXPAND/CONTRACT go-forward person key, sourced from p.id) is BTREE-indexed so the
+    # person point-lookup is index pushdown; the physical contact_id column is dropped (Phase 2). The
+    # original committed set (company_id / normalized_domain / person_linkedin_url BTREE +
+    # verification_status BITMAP) is preserved as-is.
     "people": {
         "BTREE": ["person_id", "company_id", "normalized_domain", "person_linkedin_url"],
         "BITMAP": ["verification_status"],
@@ -294,7 +293,8 @@ FROM hqx.dexarchive.companies
 def _sql_people() -> str:
     # normalized_domain is denormalized from the person's company (LEFT JOIN on the FK, which
     # is verified complete — 0 orphans), so a person's anchor matches its company's exactly.
-    # person_id mirrors contact_id verbatim (EXPAND/CONTRACT: same value, new BTREE-indexed key).
+    # person_id is sourced from p.id (EXPAND/CONTRACT complete: the go-forward, BTREE-indexed
+    # person key). The physical contact_id column is DROPPED (Phase 2) — no longer written.
     # DRIFT HAZARD: this projects the original 9 columns + person_id. The live dataset has since grown
     # work_email / work_email_norm / verification_status / mv_resultcode (+ a verification_status
     # BITMAP). This SQL feeds the RETIRED ingest overwrite (people is severed/refused) — if ever
@@ -302,7 +302,6 @@ def _sql_people() -> str:
     return f"""
 SELECT
     CAST(p.id AS VARCHAR)                 AS person_id,
-    CAST(p.id AS VARCHAR)                 AS contact_id,
     CAST(p.company_id AS VARCHAR)         AS company_id,
     {_normalized_domain('c.domain')}      AS normalized_domain,
     nullif(trim(p.full_name), '')         AS full_name,

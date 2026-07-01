@@ -33,13 +33,13 @@ from apps.gtm_mcp.src.tools import corex
 # beta.io:  a single VP at a different company.
 _PEOPLE = {
     "acme.com": [
-        {"person_id": "c-ceo", "contact_id": "c-ceo", "company_id": "co-acme",
+        {"person_id": "c-ceo", "company_id": "co-acme",
          "normalized_domain": "acme.com", "full_name": "Ada Chief", "title": "Chief Executive Officer"},
-        {"person_id": "c-analyst", "contact_id": "c-analyst", "company_id": "co-acme",
+        {"person_id": "c-analyst", "company_id": "co-acme",
          "normalized_domain": "acme.com", "full_name": "Bo Junior", "title": "Analyst"},
     ],
     "beta.io": [
-        {"person_id": "c-vp", "contact_id": "c-vp", "company_id": "co-beta",
+        {"person_id": "c-vp", "company_id": "co-beta",
          "normalized_domain": "beta.io", "full_name": "Cy Veep", "title": "VP Engineering"},
     ],
 }
@@ -123,24 +123,24 @@ def test_recipient_uei_fails_loud_when_bridge_unregistered(monkeypatch):
 
 # ── unchanged paths still resolve ────────────────────────────────────────────────────────────
 def test_contact_id_path_passes_rows_through(wired):
-    # person_id-keyed row (EXPAND) resolves; a legacy contact_id-only row still resolves (fallback)
-    rows = [{"person_id": "x1", "contact_id": "x1", "company_id": "co1", "normalized_domain": "x.com",
+    # person_id-keyed rows resolve; the response mirrors contact_id from person_id
+    rows = [{"person_id": "x1", "company_id": "co1", "normalized_domain": "x.com",
              "full_name": "X One", "title": "CTO"},
-            {"contact_id": "x2", "company_id": "co2", "normalized_domain": "y.com",
+            {"person_id": "x2", "company_id": "co2", "normalized_domain": "y.com",
              "full_name": "Y Two", "title": "COO"},
-            {"contact_id": None}]  # dropped
+            {"person_id": None}]  # dropped
     out = corex._resolve_contacts(rows, "contact_id")
     assert len(out) == 2
     assert out[0]["contact_id"] == "x1" and out[0]["person_id"] == "x1" and out[0]["company_id"] == "co1"
-    # legacy contact_id-only input mirrors into both keys
+    # contact_id mirrors person_id in the response surface
     assert out[1]["contact_id"] == "x2" and out[1]["person_id"] == "x2"
 
 
 def test_company_id_path_resolves_via_people(monkeypatch):
     people = [
-        {"person_id": "c-ceo", "contact_id": "c-ceo", "company_id": "co-acme",
+        {"person_id": "c-ceo", "company_id": "co-acme",
          "normalized_domain": "acme.com", "full_name": "Ada Chief", "title": "Chief Executive Officer"},
-        {"person_id": "c-analyst", "contact_id": "c-analyst", "company_id": "co-acme",
+        {"person_id": "c-analyst", "company_id": "co-acme",
          "normalized_domain": "acme.com", "full_name": "Bo Junior", "title": "Analyst"},
     ]
     monkeypatch.setattr(

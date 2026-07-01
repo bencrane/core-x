@@ -74,9 +74,9 @@ def wired(tmp_path, monkeypatch):
                           "normalized_domain": dom, "company_linkedin_url": f"li/{i}",
                           "source_platform": "fixture", **{k: f"c{i}{k}" for k in _FILLER}})
         # two people per domain → list grouping is non-trivial.
-        # EXPAND migration: people carries BOTH person_id and contact_id (same value).
+        # The physical contact_id column is dropped: people carries person_id ONLY.
         for j in range(2):
-            people.append({"person_id": f"ct{i}_{j}", "contact_id": f"ct{i}_{j}",
+            people.append({"person_id": f"ct{i}_{j}",
                            "company_id": f"co{i}",
                            "normalized_domain": dom, "full_name": f"Person {i}.{j}",
                            "first_name": f"F{i}", "last_name": f"L{i}", "title": "VP",
@@ -156,6 +156,8 @@ def test_search_people_by_domains_one_scan_lists(wired):
     for rows in out["by_domain"].values():
         for r in rows:
             assert set(r.keys()) <= set(PEOPLE_DOC)
+            # back-compat: contact_id is surfaced mirroring person_id (no physical column)
+            assert r["contact_id"] == r["person_id"]
     assert counter.get("people", 0) == 1
 
 

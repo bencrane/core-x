@@ -73,7 +73,7 @@ _COMPANY_COLUMNS = [
     "company_linkedin_url", "source_platform",
 ]
 _PEOPLE_COLUMNS = [
-    "person_id", "contact_id", "company_id", "normalized_domain", "full_name",
+    "person_id", "company_id", "normalized_domain", "full_name",
     "first_name", "last_name", "title", "person_linkedin_url", "source_platform",
 ]
 
@@ -149,6 +149,10 @@ def search_people_by_domain(domain: str) -> dict[str, Any]:
         .to_table()
     )
     rows = tbl.to_pylist()
+    # Back-compat: surface `contact_id` mirroring `person_id` (there is no physical
+    # contact_id column to read — the response value is the person_id).
+    for r in rows:
+        r["contact_id"] = r.get("person_id")
     return {"normalized_domain": norm, "match_count": len(rows), "people": rows}
 
 

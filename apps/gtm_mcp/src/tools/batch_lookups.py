@@ -196,7 +196,13 @@ def search_people_by_domains(domains: list[str]) -> dict[str, Any]:
     ``match_count`` is the TOTAL found-row count. An empty / whitespace-only batch returns
     ``{"requested":0,"match_count":0,"by_domain":{}}`` and issues NO scan.
     """
-    return _search_by_domains(domains, "people", _PEOPLE_DOC)
+    out = _search_by_domains(domains, "people", _PEOPLE_DOC)
+    # Back-compat: surface `contact_id` mirroring `person_id` (no physical contact_id
+    # column to read — the response value is the person_id).
+    for rows in out["by_domain"].values():
+        for r in rows:
+            r["contact_id"] = r.get("person_id")
+    return out
 
 
 def _search_by_domains(domains: list[str], dataset: str, doc: list[str]) -> dict[str, Any]:

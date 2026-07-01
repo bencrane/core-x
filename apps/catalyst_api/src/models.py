@@ -676,6 +676,10 @@ class PersonMatch(_Model):
 
     @classmethod
     def from_row(cls, r: dict[str, Any]) -> "PersonMatch":
+        # The physical contact_id column is dropped from active/people; person_id is the
+        # sole stored id. The response's contact_id is kept for external back-compat but now
+        # MIRRORS person_id (never read from a contact_id column — it no longer exists).
+        pid = r.get("person_id")
         return cls(
             title=r.get("title"),
             full_name=r.get("full_name"),
@@ -683,8 +687,8 @@ class PersonMatch(_Model):
             last_name=r.get("last_name"),
             company_id=r.get("company_id"),
             normalized_domain=r.get("normalized_domain"),
-            contact_id=r.get("contact_id"),
-            person_id=(r.get("person_id") or r.get("contact_id")),
+            contact_id=pid,
+            person_id=pid,
             source_platform=r.get("source_platform"),
         )
 
