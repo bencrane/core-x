@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
-from ..cal import book, booking_runs
+from ..cal import book, booking_runs, confirm
 from ..cal.book import CalBookingError
 from ..close import client as close_client
 from ..close.client import CloseApiError
@@ -151,6 +151,23 @@ async def book_calendar(body: BookRequest) -> BookResponse:
             event_type_slug=parts["event_type_slug"],
         )
         await conn.commit()
+
+    # Confirmation email (Resend) — cal.com is silent to attendees, so this is the booker's ONLY
+    # confirmation. Best-effort: the booking is already recorded, so a send failure never fails the
+    # response. Idempotent on the booking uid (Resend Idempotency-Key). The join URL comes off the
+    # create-booking response (v2 `location`), so no inbound webhook is involved.
+    try:
+        await confirm.send_booking_confirmation(
+            to_email=parts["attendee"]["email"],
+            to_name=parts["attendee"]["name"],
+            event_slug=parts["event_type_slug"],
+            start_iso=parts["start"],
+            tz_name=parts["attendee"]["timeZone"],
+            join_url=created.get("location") or created.get("meetingUrl"),
+            idempotency_key=cal_booking_uid or close_activity_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — confirmation is best-effort; the booking already succeeded
+        logger.warning("booking confirmation send errored for %s: %s", close_activity_id, exc)
 
     logger.info(
         "cal-book ok: activity=%s slug=%s cal_uid=%s start=%s",
