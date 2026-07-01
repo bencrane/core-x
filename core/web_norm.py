@@ -86,6 +86,23 @@ _GENERIC_DOMAINS = (
     "blogspot.com", "sites.google.com", "g.page", "behance.net", "wa.me", "t.me", "calendly.com",
     "indiamart.com", "yelp.com", "etsy.com", "amazon.com", "ebay.com", "tiktok.com", "pinterest.com",
     "github.io", "wixsite.com", "weebly.com", "godaddysites.com",
+    # --- ISP/telco webmail (curated from the DSBS email-suffix audit + the 514 additional_website review) ---
+    "comcast.net", "att.net", "verizon.net", "sbcglobal.net", "bellsouth.net", "cox.net", "charter.net",
+    "frontier.com", "earthlink.net", "roadrunner.com", "windstream.net", "centurylink.net", "optonline.net",
+    "juno.com", "netzero.net", "mac.com", "rocketmail.com", "gvtc.com",
+    # --- directory / listing / registry / agent-locator (resolve to an unrelated brand, not the firm) ---
+    "psychologytoday.com", "veteranownedbusiness.com", "mybaseguide.com", "orcid.org",
+    "agents.allstate.com", "newyorklife.com", "kw.com",
+    # --- doc / file / cloud host ---
+    "drive.google.com", "docs.google.com", "acrobat.adobe.com", "storage.googleapis.com", "canva.com", "dropbox.com",
+    # --- search / share / url-shortener ---
+    "google.com", "share.google", "tinyurl.com", "tiny.cc",
+    # --- aggregator / buying co-op / brand-network (one host, many unrelated tenants) ---
+    "fedlinks.com", "doitbest.com", "avoyatravel.com", "johncmaxwellgroup.com",
+    # --- marketplace / retailer ---
+    "napaonline.com", "uhaul.com", "snap.com", "stores.ebay.com",
+    # --- franchisor brands (a franchisee is not the corporate LinkedIn) ---
+    "advantaclean.com", "uslawns.com", "redboxplus.com", "myvoda.com", "greasemonkeyauto.com",
 )
 
 
