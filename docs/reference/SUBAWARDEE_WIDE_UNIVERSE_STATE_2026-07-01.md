@@ -122,8 +122,10 @@ Two independent reasons it will not reflect the wide universe without work:
 
 **To make the capability card reflect the wide universe (not a blocker — three bounded rebuilds):**
 
-1. **Widen `subaward_naics_psc` from 25K → 191K.** Rebuild it over the `subaward_search` ≥ 2021 population instead of the narrow API-fresh feed. The one non-trivial step: to get the **prime's PSC** (absent from `subaward_search`), join each subaward → its prime award → FPDS: `subaward_search.unique_award_key → transaction_search_fpds.generated_unique_award_id → product_or_service_code` (+ `naics_code`). This is the *same* indexed FPDS join already run for the wide build's prime rail — routine, similar runtime, no new pattern. Overwrite in place so downstream reads pick it up unchanged.
-2. **Re-run `capability_lanes`** — no code change; it reads the now-wider `subaward_naics_psc` and emits lanes for the full universe.
+1. **Widen the combo table — ✅ EXECUTED 2026-07-01 → `subaward_naics_psc_wide`.** Built by `scripts/build_subaward_naics_psc_wide.py`: union of `subaward_search` ≥ 2021 **∪** the API-fresh feed (dedup on subaward identity, mirror preferred), **procurement-only** (`prime_award_unique_key LIKE 'CONT_%'`), with the prime PSC attached via the indexed FPDS `recipient_uei` pushdown → award-key match. Written to a **distinct** table; narrow `subaward_naics_psc` untouched.
+   - **Result: 627,582 lines · 61,686 distinct subawardees · 99.9% PSC/combo coverage** · schema-identical to the narrow · 5 BTREE indices · action range 2021-01-01 → 2026-08-24.
+   - **Key finding — the recommendable pool is 25,450 → 61,686 contract subawardees (2.4×), NOT 191K.** Grant/assistance subawards (`ASST_*`, ~1.29M lines in the raw mirror) have **no PSC** (PSC is a contracts-only concept; grants use CFDA) and cannot form a NAICS×PSC lane. So ~128K of the wide work_profile's subawardees are structurally unreachable by the recommender — a property of the data, not a fixable gap. Reading the *whole* mirror looks like ~30% PSC coverage purely from grant dilution; contract-only is ~100%.
+2. **Re-run `capability_lanes`** pointed at `subaward_naics_psc_wide` — a one-line source change at `scripts/build_capability_lanes.py:59` (Step 1 wrote a distinct table rather than overwriting), then re-run → emits lanes for the ~61,686 contract subawardees.
 3. **Re-run `capability_profile`** with its `wp` source pointed at `subawardee_work_profile_wide` (one-line change at `scripts/build_capability_profile.py:52`) — after step 2, so the card gains both the wide activity panel and wide recommendations together, avoiding the 86%-shell state.
 
 > Do steps 1→2→3 **in order**. Pointing `wp` at the wide table *before* widening the recommender produces the 164K lane-less shells; the lockstep is the whole point.
@@ -162,11 +164,12 @@ Spot checks used this session:
 - `pipelines/usaspending/subawardee_work_profile.py` — `build` (canonical) + **`build_wide`** (this session). Population, floor, and output URI are mode-selected.
 - `pipelines/usaspending/usaspending_api_subaward_fresh.py` — `backfill` / `daily` / `verify` for the API-fresh subaward feed (append-only, chunked, zombie-split).
 - `scripts/build_capability_profile.py` — the card assembly (reads canonical `subawardee_work_profile` at `:52`). Reflow target for §6 step 3.
-- `scripts/build_capability_lanes.py` — the recommender (reads `subaward_naics_psc`). Re-run target for §6 step 2.
+- `scripts/build_capability_lanes.py` — the recommender (reads `subaward_naics_psc` at `:59`). Re-point to `subaward_naics_psc_wide` + re-run for §6 step 2.
+- `scripts/build_subaward_naics_psc_wide.py` — **§6 step 1, EXECUTED.** Builds `subaward_naics_psc_wide` (union `subaward_search`≥2021 ∪ API-fresh, procurement-only, indexed FPDS PSC join).
 
 **Datasets (`s3://data-sink/active/<name>/`):**
 - Work profiles: `subawardee_work_profile` (25,450, canonical) · **`subawardee_work_profile_wide`** (191,693, new).
-- Sub sources: `usaspending/subaward_search` (9.80M, bulk) · `usaspending_api_fresh/contract_subaward` (321,204, API-fresh) · `subaward_naics_psc` (199,901, narrow combo w/ prime NAICS+PSC).
+- Sub sources: `usaspending/subaward_search` (9.80M, bulk) · `usaspending_api_fresh/contract_subaward` (321,204, API-fresh) · `subaward_naics_psc` (199,901, narrow combo) · **`subaward_naics_psc_wide`** (627,582 lines / 61,686 contract subawardees, wide combo — §6 step 1).
 - Prime sources: `usaspending/transaction_search_fpds` (107.25M) · `usaspending/award_search` (78.64M) · `usaspending_api_fresh/contract_prime_txn` (1.99M, unwired).
 - Card cluster: `capability_profile` (78,219) · `capability_lanes` (77,532 UEIs) · `sba_dsbs_certified_firms` · `govcon_subawardee_designations`.
 
