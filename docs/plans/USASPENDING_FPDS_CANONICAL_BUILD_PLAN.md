@@ -1,9 +1,12 @@
 # USAspending FPDS Canonical Transaction Table — Build Plan
 
 Plan of record for **building `usaspending_fpds_canonical_txn`** — a single typed-v2 Lance
-system-of-record that reconciles the four USAspending FPDS feeds (BULK pg-dump search table, the
-FRESH daily API feed, the monthly archive Full, the monthly archive Delta deletion ledger) into
-**one PK-grained canonical transaction table** under `s3://data-sink/active/`.
+system-of-record that reconciles the USAspending FPDS feeds (BULK pg-dump search table, the FRESH
+daily API feed, the MONTHLY bulk-download CSV — physically `usaspending_archive_full_fpds` + its
+`usaspending_archive_delta_fpds` deletion ledger) into **one PK-grained canonical transaction table**
+under `s3://data-sink/active/`. The merge is a **two-tier per-key argmax reconciliation** (Tier 1
+`BULK⊕MONTHLY`, Tier 2 `⊕FRESH`); MONTHLY competes on every shared key so its corrections + 12
+monthly-unique enrichment cols land (§3).
 
 Derived verbatim from the defect-resolved, column-validated design spec
 (`/tmp/fpds_canonical_build/design_spec.md`). Every column-presence and type claim traces to
@@ -62,82 +65,131 @@ correction is load-bearing for the merge and is locked below.
 
 | # | Original §e claim | VERIFIED ground truth | Consequence |
 |---|---|---|---|
-| 1 | "~80 BULK enrichment columns" | BULK is **378 cols**; the enrichment universe beyond the ~297 FPDS-overlap is **277**, not 80. The canonical carries a **curated 27-column** high-value subset (§1(c) of the spec), NOT all 277, and the rpt.*↔canonical crosswalk is encoded inline as paired projections (no standalone rename dict exists in-repo; `govcon_prime_trajectories.py` L224-266 is the authoritative crosswalk). | Enrichment set is a deliberate curation; the deferred ~250-col tail is recoverable in a v2 widening (§8). |
+| 1 | "~80 BULK enrichment columns" | BULK is **378 cols**; the enrichment universe beyond the ~297 FPDS-overlap is **277**, not 80. The canonical carries a **curated 27-column pg-only subset PLUS 12 MONTHLY-unique cols** (39 enrich total: the 27 rpt.* pg-only + the 2 TAS/federal-account + 10 officer-comp name/amount cols pg lacks), NOT all 277; the rpt.*↔canonical crosswalk is encoded inline as paired projections (`govcon_prime_trajectories.py` L224-266 is the authoritative crosswalk). | Enrichment set is a deliberate curation; the officer-comp block that §8 formerly deferred is now LANDED via MONTHLY. The remaining ~240-col tail is recoverable in a v2 widening (§8). |
 | 2 | `base_and_all_options_value` is numeric in BULK | In BULK it is typed **`string`** (schemas.json), unlike `federal_action_obligation`/`award_amount`/`total_funding_amount` which are native `double`. | The BULK projection MUST `TRY_CAST(s(base_and_all_options_value) AS DOUBLE)` — it cannot pass through. (`current_total_value_award` is likewise BULK `string`.) |
 | 3 | `recipient_zip_4_code` exists in BULK | BULK has **no zip4** — only `recipient_location_zip5`. | Canonical `recipient_zip_4_code` = NULL on BULK-sourced rows; FRESH/archive supply it. BULK's `recipient_location_zip5` is ALSO carried as a (c) enrichment column so the 5-digit is never lost. PoP zip: BULK has only `pop_zip5`, mapped best-effort (documented lossy) into `primary_place_of_performance_zip_4`. |
 | 4 | `correction_delete_ind` carries multiple delete codes | archive_delta `correction_delete_ind` takes only **`{'D': 656, NULL: 3,059,414}`** (total 3,060,070 rows / 302 cols). | The tombstone filter is exactly `correction_delete_ind = 'D'` (656 keys), fixed and exclusive; nothing else is a delete. |
-| 5 | archive_full spans all fiscal years | archive_full is **FY2026-only** (`action_date` 2025-10-01..2026-06-04), 2,975,677 rows / 300 cols; archive_delta 3,060,070 rows / 302 cols (extra cols: `correction_delete_ind`, `agency_id`, `archive_kind`, `archive_snapshot_stamp`, `archive_source_file`). | archive_full is mostly redundant against BULK/FRESH; it contributes only the rare archive-only correction. The sample window `--since 2025-10-01` therefore puts archive_full fully in-window. |
+| 5 | archive_full spans all fiscal years | MONTHLY (physical `usaspending_archive_full_fpds`) is **FY2026-only** (`action_date` 2025-10-01..2026-06-04), 2,975,677 rows / 300 cols; delta 3,060,070 rows / 302 cols (extra cols: `correction_delete_ind`, `agency_id`, `archive_kind`, `archive_snapshot_stamp`, `archive_source_file`). | MONTHLY is NOT backfill-only: it **competes for the volatile core on every shared key** (§3 Tier 1) — landing FY2026 corrections and its **12 monthly-unique enrichment cols** (TAS/federal-account funding + officer-comp) that pg leaves NULL. The sample window `--since 2025-10-01` puts MONTHLY fully in-window → complete correction+enrichment proof scope. |
 
 ---
 
-## 3. Merge design summary
+## 3. Merge design summary (TWO-TIER logical reconciliation — CURRENT design of record)
 
-The merge implements design_spec §3 exactly. The naive "UNION ALL of 109M+2M+3M then one global
-window dedup" forces a ~114M-row external sort — the exact OOM the fleet rules forbid. The plan pays
-the per-key collapse cost only on the small side and **once over BULK**.
+> **Supersession note.** An earlier revision of this section described a FLAT three-disjoint-universe
+> merge — a FRESH-only `b_wins` CASE ladder, `bulk_only`/`arch_survivors` anti-join survivor
+> universes, an `archive`-tagged leg used only for archive-only backfill, and a `canonical_source`
+> that "denotes which leg OWNS the PK." **That design no longer exists in the worker and its
+> line-anchored details must not be reintroduced** — applying them would REGRESS the shipped code
+> (they were exactly the defects PLAN_REVIEW P0-1 / P0-4 flagged). The design below is the current
+> code of record (`usaspending_fpds_canonical.py` `_merge_tail_sql`).
+
+The merge is a **two-tier per-key argmax reconciliation** producing **ONE physical artifact**
+(`s3://data-sink/active/usaspending_fpds_canonical_txn/` — unchanged). The naive "UNION ALL of
+109M+2M+3M then one global window dedup" forces a ~114M-row external sort — the exact OOM the fleet
+rules forbid. The plan pays the per-key collapse cost only on the small side and **once over BULK**,
+then reconciles the three ≤1-per-key collapses in a single window.
+
+**MONTHLY = the monthly bulk-download CSV feed** (source #2 in the operator's mental model). Its
+physical R2 upstream is still named `usaspending_archive_full_fpds` / `usaspending_archive_delta_fpds`;
+**renaming those datasets is a tracked follow-up.** In-code the semantic name is now **MONTHLY** — the
+`archive` src tag, ledger column, and docstrings were rolled to `monthly`; the URIs and the
+`archive_r`/`archive_proj` register handles were deliberately kept (commented) so the physical rename
+is a clean, separate change.
 
 ### Proven keys (the single most load-bearing fact)
-- Transaction key (PK): FRESH/archive `contract_transaction_unique_key` ≡ BULK
+- Transaction key (PK): FRESH/monthly `contract_transaction_unique_key` ≡ BULK
   `COALESCE(detached_award_proc_unique, transaction_unique_id)` — **govcon-verified byte-for-byte**
   (`govcon_prime_trajectories.py` L27-28, L219-232).
-- Award key: FRESH/archive `contract_award_unique_key` ≡ BULK `generated_unique_award_id`.
-- Two shared macros, defined ONCE, used identically in every projection AND every anti-join (this
-  uniformity is the §3.7 PK-disjointness proof):
+- Award key: FRESH/monthly `contract_award_unique_key` ≡ BULK `generated_unique_award_id`.
+- Two shared macros, defined ONCE, used identically in every projection:
   - `s(x) := nullif(nullif(trim(x), ''), '-NONE-')` — VARCHAR sentinel-null.
   - `kbulk(detached, txnuid) := s(COALESCE(s(detached), s(txnuid)))` — the OUTER `s()` applies the
     SAME `''`+`'-NONE-'` whole-string strip as FRESH, so a literal `-NONE-` whole-string key maps to
-    NULL on BOTH sides. Internal `-NONE-` tokens inside a real grammar key are preserved (s() strips
-    only the whole string, never substrings).
+    NULL on BOTH sides. Internal `-NONE-` tokens inside a real grammar key are preserved.
 
-### `bulk_latest` — the single collapse (serves all three roles)
-BULK is collapsed per key EXACTLY ONCE into a full-width per-key table carrying volatile-core +
-`last_modified_date` + all 27 enrichment columns. 109M scanned once. It serves three roles:
-- **Role A — precedence probe:** the FRESH leg LEFT JOINs into it to compare mtimes.
-- **Role B — enrichment source:** EVERY leg's enrichment comes from it, uniformly.
-- **Role C — BULK-only survivor body:** `bulk_only = bulk_latest ANTI JOIN fresh_keys`.
+### The three per-key collapses (≤1 row per key each)
+Each source is collapsed to latest-per-key with a deterministic tiebreaker BEFORE reconciliation:
+- **`fresh_latest`** — FRESH deduped: `last_modified_date DESC NULLS LAST, (federal_action_obligation
+  IS NULL) ASC, modification_number DESC, contract_award_unique_key DESC`.
+- **`bulk_latest`** — ONE per-key collapse over FULL BULK (109M scanned once): `last_modified_date
+  DESC NULLS LAST, (recipient_hash IS NULL) ASC, transaction_id DESC`. Enrichment-maximizing. It is
+  BOTH a core competitor AND the sole pg-enrichment source — **no separate `bl_probe` 107M copy is
+  materialized** (that duplicate was deleted; the collapse already carries the PARTITION key).
+- **`monthly_latest`** — collapse over the FULL MONTHLY projection (NOT an anti-joined survivor set),
+  so **monthly competes on every shared key** — THE fix. CORE dedup stays core-populatedness/mtime
+  (`last_modified_date DESC NULLS LAST, (federal_action_obligation IS NULL) ASC,
+  contract_award_unique_key DESC`).
 
-Dedup ORDER BY is **deterministic and enrichment-maximizing**:
-`last_modified_date DESC NULLS LAST, (recipient_hash IS NULL) ASC, transaction_id DESC NULLS LAST` —
-prefers the latest mtime, then the row that HAS enrichment (USAspending backfills hashes/TAS async),
-then a stable int64 surrogate. The 607 NULL-mtime BULK rows sort last within their key and survive
-only as a key's sole row. No arbitrary pick remains → §6 overwrite-idempotency holds.
+### TIER 1 — `bulk_base = bulk_latest ⊕ monthly_latest` (LOGICAL CTE, NOT materialized)
+Reconcile pg (BULK) with MONTHLY by per-key `argmax(last_modified_date)`; **equal-mtime tie →
+MONTHLY wins over pg** (`source_rank` MONTHLY=2 < BULK=3). This is the semantic "reconciled base" the
+enrichment fill draws from. **Decision: `bulk_base` is a documented `CREATE TEMP VIEW`, NOT a second
+physical Lance dataset.** Rationale: `argmax` is associative, so the CORE values `bulk_base` would
+emit are subsumed by the flat 3-way `core_winner` window below — materializing a second artifact would
+duplicate ~107M rows to no purpose. The single artifact `usaspending_fpds_canonical_txn/` is unchanged.
 
-### BLOCKER-1 — per-key precedence (`MAX(last_modified_date)`, tie-break FRESH)
-The volatile-core winner for a shared FRESH∩BULK key is the row with the later
-`last_modified_date`; on a tie OR FRESH-newer, FRESH wins. This is the **locked rule** recorded in
-the ops-ledger DDL header (`ledger_arch_ref.md` L94). The prior "FRESH unconditionally wins"
-shortcut is **rejected and removed** — it silently discarded real BULK corrections to old
-transactions (e.g. a 2019 txn de-obligated in a 2026 pg-dump carries a later BULK mtime; FRESH's
-daily window never re-touches the 2019 key, so under "FRESH always wins" the correction is never
-repaired — the staleness trap). Implementation is a cheap probe into the already-built `bulk_latest`
-hash table, NOT a second 109M pass. NULL-mtime on either side → treated as older → FRESH keeps the
-core (the safe tie-break-FRESH default; BULK's 607 NULL-mtime rows can never wrest a shared key).
+### TIER 2 — `canonical core = bulk_base ⊕ fresh_latest` (executed as ONE flat 3-way window)
+The volatile core is `argmax(last_modified_date)` over `{FRESH, MONTHLY, BULK}` with locked precedence
+**FRESH(1) > MONTHLY(2) > BULK(3)** on mtime ties. Because `argmax` is associative, the explicit
+two-tier order `(BULK⊕MONTHLY)⊕FRESH` is **byte-identical** to a single flat `row_number()` window over
+the vertical union of the three tagged collapses (`core_union` → `core_winner`). The flat window is
+the executed path. Tier-1 tie→MONTHLY and tier-2 tie→FRESH are both subsumed by the `source_rank`
+total order, and after the three upstream collapses there is at most one row per source per key, so
+`source_rank` alone disambiguates every cross-source mtime tie → **PK-uniqueness is structural**
+(one `row_number()=1` survivor per key), not anti-join-disjointness-dependent.
 
-### BLOCKER-2 — uniform enrichment coalesce from `bulk_latest`
-EVERY leg's 27 enrichment columns are sourced from `bulk_latest` for its txn_key — FRESH winners,
-archive winners, AND BULK-only survivors — via one `LEFT JOIN bulk_latest` whose REPLACE block is
-textually identical across legs. One enrichment row chosen once per key, applied everywhere. The
-FRESH-leg `b_wins` CASE (precedence) is **program-generated** from the §4 volatile-core column list
-(do not hand-transcribe 40+ CASEs); the enrichment REPLACE is always `b.<col>` regardless of who won
-the core, so no BULK signal is ever lost — only the staler volatile-core is discarded.
-`canonical_source` denotes which leg OWNS the PK (FRESH dedup owned it), NOT which source supplied
-each value; per-value provenance, if ever needed, is a v2 `volatile_core_source` column — do not
-overload `canonical_source`.
+**CORE byte-identity INVARIANT.** Emitted CORE is proven identical to the pre-two-tier build:
+`monthly.last_modified_date ≥ pg` on **100% of 2,189,379 shared FY2026 keys** (46,197 strictly-newer,
+2,143,182 equal, 0 older) on the `--since 2025-10-01` window. The strictly-newer monthly rows are
+exactly the landed corrections (`canonical_source='monthly'`); every other shared key keeps its
+pre-monthly core value.
 
-### Survivor universes + union + tombstone
-- `bulk_only` = `bulk_latest ANTI JOIN fresh_keys`.
-- `arch_survivors` = `archive_proj ANTI JOIN fresh_keys ANTI JOIN bulk_keys_full` (anti-join against
-  the **full** BULK key universe, not a survivor subset — an archive key that also exists in BULK is
-  owned by BULK), QUALIFY'd to latest-per-key deterministically.
-- Three **disjoint** key universes (FRESH ⊎ BULK-only ⊎ archive-only) → `UNION ALL BY NAME` (by
-  column name, never positional — eliminates the 50+ VARCHAR-column transposition hazard).
-- **Tombstone:** final hash-anti-join against the **656 delta-'D' keys**. The delta scanner is
-  filtered ONLY by `correction_delete_ind = 'D'` and NEVER receives `--since`/`action_date`
-  (BLOCKER: all 656 'D' rows have `action_date = NULL`, so any date predicate drops 100% of
-  tombstones). Delete-wins-always is the locked FPDS semantics; `reinstatement_candidates` (a 'D'
-  key whose survivor mtime is newer than the delta 'D' mtime) is LOGGED, not gated.
-- `fresh_keys`, `bulk_latest`, `bulk_keys_full`, `delete_keys` are referenced more than once →
-  registered as re-scannable materialized TEMP TABLEs (`.to_table()`), never single-pass readers.
+### `canonical_source` — the per-key winner, derived ONCE
+`canonical_source` is the winning core row's `src` tag ∈ **{fresh, bulk, monthly}**, derived exactly
+once as `w.src AS canonical_source` in `resolved`. It is the **true per-key winner**, NOT a partition
+literal and NOT "which leg owns the PK." (The three `*_proj` legs carry a typed-NULL `canonical_source`
+placeholder so the schema-identity gate compares identically; `resolved` EXCLUDEs the placeholder and
+re-derives from `w.src` — keeping the placeholder would collide and DuckDB would silently rename the
+derived column.)
+
+### Enrichment fill — pg-preferred `COALESCE(pg, monthly)` from the reconciled base
+Enrichment is overwritten in `resolved` INDEPENDENT of the core winner, via two LEFT JOINs to
+PK-unique collapses (no fan-out):
+- **27 pg-only enrich cols** (`feed_expr` None): plain `b.<col>` from `bulk_latest`. No monthly source
+  exists → no COALESCE.
+- **12 MONTHLY-unique enrich cols** — `treasury_accounts_funding_this_award`,
+  `federal_accounts_funding_this_award`, `highly_compensated_officer_1..5_name`, and
+  `highly_compensated_officer_1..5_amount` (all VARCHAR; the officer `*_amount` cols are raw strings —
+  NOT cast to DOUBLE). pg LACKS all 12, so the value is pg-preferred `COALESCE(b.<col>, m.<col>)`
+  sourced from the reconciled base. Today `b` is a typed-NULL placeholder for these 12 so the COALESCE
+  degenerates to `m.<col>`; the form is kept so a future pg schema add is picked up automatically.
+- **`recipient_uei` is CORE** (argmax-resolved), NOT pulled into an enrichment COALESCE.
+- The MONTHLY leg (`m`) is **`monthly_enrich_latest`** — a SEPARATE **enrichment-populatedness** dedup,
+  NOT `monthly_latest`'s core dedup. It ranks enrichment-populated rows ABOVE enrich-NULL rows for the
+  same key, then latest-mtime, then award-key surrogate. Required so a latest-but-enrich-NULL monthly
+  row cannot surface and forfeit the gain (empirically Δ=0 vs the latest-mtime dedup on the
+  `--since 2025-10-01` window, but locked as a cadence-robustness safeguard).
+
+### Tombstone (R6-scoped) − reinstatement (R5) → `canonical_out`
+Delete is **one coupled final-state op applied to `resolved`** (post fresh overlay, never to the base
+alone). The delta scanner is filtered ONLY by `correction_delete_ind = 'D'` and **NEVER** receives
+`--since`/`action_date`.
+- **R6 SNAPSHOT-STAMP SCOPING** (locked pre-2nd-cycle requirement): `delete_keys` is scoped to the
+  **latest `archive_snapshot_stamp`** present in the delta-'D' set. `archive_delta` is append-only and
+  stamped per monthly snapshot; without scoping an OLD-month delete tombstones forever. The stamp col
+  is added to `delta_scan_cols`; `delta_has_stamp` gates the scoping fragment (fall back to the whole
+  'D' set only if the feed lacks the column).
+- **R5 REINSTATEMENT GATE** (locked pre-2nd-cycle requirement): a 'D' tombstone is honored ONLY when
+  the WINNING reconciled-winner mtime is **NOT strictly newer** than the delete's `last_modified_date`
+  (`delta_lmt`). A strictly-newer non-'D' row REINSTATES the key — it must NOT be deleted. Implemented
+  as `LEFT JOIN delete_keys d … WHERE d.k IS NULL OR resolved.last_modified_date > d.delta_lmt`. The
+  earlier revision computed `delta_lmt` but never consumed it (dead scaffolding) and deleted all 656
+  'D' keys unconditionally — the P0-4 defect. **Ground fact:** 92/656 'D' keys are live (non-D) in
+  `monthly_full`; **39 are strictly-newer → those 39 survive** (the 39-key floor).
+
+### Fail-closed PK gate
+`count(*) == count(DISTINCT contract_transaction_unique_key)` on `canonical_out` **before publish** —
+raise on any dup (structural: one survivor per key). Also re-checked in `verify()` on read-back.
 
 ---
 
@@ -270,21 +322,23 @@ set-membership checks use `ANTI JOIN` (or `WHERE k IS NOT NULL` subqueries), **N
 | `pk_unique` | **TRUE (0 dupes), exact** | exact | `count(*) == count(DISTINCT contract_transaction_unique_key)`. Disjoint by construction (§3.7). ALSO the FAIL-CLOSED gate inside `build` BEFORE publish — not only a read-back assertion. |
 | `max(action_date)` | **2026-06-26** | exact | FRESH's frontier wins the latest dates (BULK maxes 2026-04-23). |
 | `delta_d_keys` | **656** | exact | distinct delta-'D' keys (the full tombstone set, `--since`-independent). |
-| `deletes_tombstoned` (keys actually removed) | ≤ 656 | — | distinct 'D' keys present in `merged` pre-tombstone. FULL: close to 198+ (known FRESH∩D overlap); SAMPLE: ≥1. Ledger column = keys ACTUALLY removed (≤656), not the constant 656. |
-| `reinstatement_candidates` | report (LOG only) | — | removed 'D' keys whose surviving-row mtime was strictly newer than the delta-'D' mtime. Logged, NOT gated (delete-wins-always). Non-zero ⇒ investigate. |
-| `fresh_only_tail` | **≈ 523,000** | ±50K | `fresh_latest ANTI JOIN bulk_keys_full` — the frontier nothing else has. |
-| `true_tail_null_enrichment` (GATED) | ≈ `fresh_only_tail` | ±50K | FRESH rows with NULL `recipient_hash` AND no `bulk_latest` match (the genuine tail). |
-| `bulkside_null_enrichment` (LOG only) | report | — | FRESH rows with NULL `recipient_hash` BUT a `bulk_latest` match (BULK's own hash NULL via async backfill). Split out so a blended rate neither fails a correct build nor masks a routing bug. |
-| `spot_join_20_keys` | 20/20 resolve, exact | exact | 20 known keys (pre-2020 BULK key, 2026-06 FRESH-only key, a tombstoned FRESH∩D key expected ABSENT, an archive-only key) — assert presence/absence + non-NULL enrichment on FRESH-sourced ones. |
-| `canonical_source` distribution | bulk ≫ fresh ≫ archive_full | — | sanity: bulk ≈ 105M, fresh ≈ 1.9M survivors, archive_full small (FY2026 corrections only). |
+| `deletes_tombstoned` (keys actually removed) | ≤ 656, **POST R5** | — | in-universe 'D' keys NOT R5-reinstated (reconciled-winner mtime ≤ `delta_lmt`). Under R5 the **39 strictly-newer 'D' keys SURVIVE** (the 39-key floor) and are NOT counted here. Ledger column = keys ACTUALLY removed. |
+| `deletes_reinstated` (R5, GATED behavior) | **39 present** on `--since 2025-10-01` | — | 'D' keys whose reconciled-winner mtime > `delta_lmt` — REINSTATED, must be PRESENT in `canonical_out`. `delta_lmt` is now CONSUMED (was dead scaffolding). Not delete-wins-always. |
+| `fresh_only_tail` | scope-dependent | — | `fresh_latest ANTI JOIN bulk_latest` — the frontier nothing else has (full-build ≈711K; scales with `--since`). |
+| `monthly_corrections_applied` (GATED > 0) | **> 0** | — | `canonical_out` keys with `canonical_source='monthly'` that BULK also holds — monthly WON the core (landed corrections). Zero ⇒ the fix regressed. |
+| `canonical_source` domain (GATED) | ⊆ {fresh, bulk, monthly} | exact | no `archive` tag may appear; NULL or out-of-domain ⇒ fail. |
+| `canonical_source` distribution | bulk ≫ fresh ≫ monthly | — | sanity: bulk dominant, fresh survivors, monthly = FY2026 corrections + monthly-only keys. |
 
-**Ops ledger** (`ops.usaspending_fpds_canonical_runs`, DDL in `ledger_arch_ref.md` §1): records
+**Ops ledger** (`ops.usaspending_fpds_canonical_runs`): records
 `rows_in_bulk/fresh/archive_full`, `rows_out`, `dedup_collapsed`, `fresh_only_tail`,
-`deletes_tombstoned` (keys actually removed), `max_action_date`, `columns`, `write_mode='overwrite'`,
+`deletes_tombstoned` (keys actually removed, POST R5), **`monthly_corrections_applied`** (monthly
+core-wins on keys BULK also holds), `max_action_date`, `columns`, `write_mode='overwrite'`,
 `indices_built`, `status`, `error_message`, timestamps. Written by `_record_run` (psycopg,
 `HQX_DB_URL_POOLED`) in a `finally:` on every terminal state; WARN-only on ledger failure ("audit
-must not mask the build"). The extra §7 diagnostics ride in the returned `verify` JSON, not as ledger
-columns — the ledger schema is unchanged from the proposed DDL.
+must not mask the build"). The `archive→monthly` rename is a guarded `ALTER … RENAME COLUMN IF EXISTS
+archive_corrections_applied TO monthly_corrections_applied` + `ADD COLUMN IF NOT EXISTS` forward-fill
+(idempotent, order-safe) so pre-existing ledger schemas pick up the column in place. The extra §7
+diagnostics ride in the returned `verify` JSON.
 
 ---
 
@@ -293,13 +347,15 @@ columns — the ledger schema is unchanged from the proposed DDL.
 Explicitly out of scope for this build; recoverable in a v2 widening without a schema migration
 (append columns, re-index — no rewrite of existing rows):
 
-- **The 297/378 column tail.** BULK: the ~250 remaining rpt.* columns — the full `*_desc` paired
-  description columns, the `officer_1..5_name/amount` exec-comp block, `legal_entity_foreign_*`,
+- **The 297/378 column tail.** BULK: the ~240 remaining rpt.* columns — the full `*_desc` paired
+  description columns, `legal_entity_foreign_*`,
   `pop_*_population` demographics, `cfda_title`/`cfda_id`, `vendor_phone/fax`, raw-name variants, the
   bulk audit cols (`source_schema`, `source_table`, `usaspending_snapshot_date`, `ingested_at`,
   `etl_update_date`, `create_date`). FRESH: the ~210 remaining bulk_download columns — full
-  code/description pairs, COVID/IIJA supplemental amounts, `highly_compensated_officer_*`,
-  `usaspending_permalink`, `object_classes_funding_this_award`.
+  code/description pairs, COVID/IIJA supplemental amounts, `usaspending_permalink`,
+  `object_classes_funding_this_award`. (**Now LANDED**, no longer deferred: the MONTHLY-unique
+  `treasury_accounts_funding_this_award` / `federal_accounts_funding_this_award` +
+  `highly_compensated_officer_1..5_name/amount` block, sourced from MONTHLY via pg-preferred COALESCE — §3.)
 - **The bool↔Y/N flag reconciliation.** The ~80 socioeconomic flags (`woman_owned_business`,
   `service_disabled_veteran_o`, …) are typed **`bool` in BULK** but **Y/N VARCHAR in FRESH**.
   Carrying them now would impose a type-reconciliation tax; they are deferred as a separate, explicit

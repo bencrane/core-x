@@ -1,5 +1,26 @@
 # USAspending FPDS Canonical — Critical Plan Review
 
+> **STATUS UPDATE (post-implementation).** The two highest-impact findings below are now **RESOLVED
+> in shipped code** and are marked SUPERSEDED inline — do NOT re-apply their line-anchored fixes
+> (the line anchors point at a merge body that no longer exists; re-applying would REGRESS):
+> - **P0-1 (monthly corrections discarded) — SUPERSEDED / LANDED.** The anti-join survivor-universe
+>   design was replaced by the two-tier per-key argmax reconciliation (`bulk_base = BULK⊕MONTHLY`,
+>   then flat 3-way `core_winner`). MONTHLY now competes on every shared key; `canonical_source ∈
+>   {fresh,bulk,monthly}`; `monthly_corrections_applied` is a gated (>0) metric.
+> - **P1-3 (`bl_probe` 107M duplicate) — SUPERSEDED / LANDED.** `bl_probe` was deleted; the core
+>   resolution and enrichment joins reference `bulk_latest` directly on its PARTITION key.
+> - **P0-4 (monotonic tombstone accumulation) — CONFIRMED, now the locked R5+R6 requirement.** See
+>   the re-anchored P0-4 below: R6 scopes `delete_keys` to the latest `archive_snapshot_stamp`; R5
+>   consumes the (previously dead) `delta_lmt` to reinstate strictly-newer 'D' keys. Ground truth:
+>   **39 strictly-newer 'D' keys survive** (the 39-key floor).
+> - **Enrichment expansion LANDED.** 12 MONTHLY-unique cols (TAS/federal-account funding +
+>   officer-comp name/amount) added to `COLUMN_SPEC` as pg-preferred `COALESCE(pg, monthly)`, sourced
+>   from a separate enrichment-populatedness dedup (`monthly_enrich_latest`). Gains: TAS/federal
+>   +330,370 keys, officer-comp +507,542 keys.
+> - Consumer-repoint findings (P0-5, P0-6, P1-8) and the cadence/control-plane findings (P0-2, P0-3)
+>   remain OPEN as a separate follow-up track — the current change set is the reconciliation +
+>   enrichment + delete-gate core, not the repoint or the Trigger.dev cadence.
+
 Review of the build plan (`docs/plans/USASPENDING_FPDS_CANONICAL_BUILD_PLAN.md`), the worker
 (`pipelines/usaspending/usaspending_fpds_canonical.py`), the ops DDL
 (`pipelines/usaspending/ops_usaspending_fpds_canonical_runs.sql`), and the sole downstream consumer
@@ -80,8 +101,14 @@ operator's inclusion rationale. **This is the decision that must be made explici
 
 ### P0
 
-**P0-1 — Monthly-CSV corrections to BULK/FRESH-owned keys are silently discarded (F1 / L2-1 / F3-cadence).**
-Defect: `arch_survivors` (pipeline L466-474) anti-joins archive against the full BULK universe; the precedence
+**P0-1 — Monthly-CSV corrections to BULK/FRESH-owned keys are silently discarded (F1 / L2-1 / F3-cadence). — SUPERSEDED / RESOLVED IN SHIPPED CODE.**
+The fix below ("corrections must land") was implemented, but NOT as a separate 3-way anti-join fold —
+the entire survivor-universe design was replaced by the two-tier per-key argmax reconciliation (see
+BUILDPLAN §3). `arch_survivors`/`bulk_only`/`bl_probe` no longer exist. MONTHLY (`monthly_latest`)
+competes on every shared key; the flat `core_winner` window resolves `argmax(last_modified_date)` with
+precedence FRESH>MONTHLY>BULK; `canonical_source ∈ {fresh,bulk,monthly}`. The historical defect
+description is retained below for provenance ONLY — its line anchors are dead.
+Defect (historical): `arch_survivors` (pipeline L466-474) anti-joins archive against the full BULK universe; the precedence
 probe (`_b_wins_replace_block`, L370-384; `b_wins` at L374) is FRESH-vs-BULK only — archive_full has no precedence
 entry. Live probe: 46,234 shared keys carry strictly-newer archive mtime than BULK's 2026-04-23 snapshot (0
 older); all discarded. Plan §5 row-5 (L69) and §7 (L279) call archive a "corrections" source, which it is not.
@@ -112,13 +139,21 @@ the SAME R2 prefix (build L568-586) concurrently — prefix corruption the one-s
 Fix: any `schedules.task` for P0-2 MUST set a Trigger.dev `concurrencyKey` / `maxConcurrentRuns=1`, OR the
 dispatcher must refuse a launch when `modal app list` shows a live build.
 
-**P0-4 — Tombstone set accumulates monotonically across appended monthly snapshots (data-loss under cadence).**
-Defect: the delta scanner filters ONLY by `correction_delete_ind='D'` (L716-718) with NO `archive_snapshot_stamp`
+**P0-4 — Tombstone set accumulates monotonically across appended monthly snapshots (data-loss under cadence). — CONFIRMED; both remedies now IMPLEMENTED as the locked R5+R6 gates.**
+This is the confirmed R5/R6 defect. BOTH remedies the fix line offered were taken (they are
+complementary, not alternatives):
+- **R6 (scope to latest snapshot):** `delete_keys` is scoped to `max(archive_snapshot_stamp)` in the
+  delta-'D' set; `archive_snapshot_stamp` was added to `delta_scan_cols`, gated by `delta_has_stamp`.
+- **R5 (reinstatement gate):** the previously-DEAD `delta_lmt` (see P2-1) is now CONSUMED — a 'D'
+  tombstone is honored only when the reconciled-winner mtime ≤ `delta_lmt`; a strictly-newer non-'D'
+  row REINSTATES the key. Tombstone-minus-reinstatement is ONE coupled final-state op applied to
+  `resolved` (post fresh overlay). **Ground truth: 92/656 'D' keys are live in `monthly_full`; 39 are
+  strictly-newer → the 39-key floor SURVIVES** (must be PRESENT in `canonical_out`). "Delete-wins-
+  always" is no longer the semantics.
+Defect (historical): the delta scanner filters ONLY by `correction_delete_ind='D'` (L716-718) with NO `archive_snapshot_stamp`
 predicate; `delete_keys` (L506-511) unions all 'D' keys across every appended monthly snapshot (archive_delta is
 append-only and stamped). A key deleted in an old month stays tombstoned forever even if a later BULK/FRESH mtime
 or a newer snapshot legitimately reinstates it — and `reinstatement_candidates` is LOG-only.
-Fix: scope `delete_keys` to the latest `archive_snapshot_stamp` only, OR gate reinstatement (a 'D' key whose
-surviving-row `last_modified_date` is strictly newer than the delta-'D' mtime is reinstated, not merely logged).
 
 **P0-5 — Repoint of `materialize_active_awards.py` hard-breaks: `period_of_performance_potential_end_date` absent
 from `COLUMN_SPEC`, corrupting the active/done membership boundary (L6-01).**
@@ -167,8 +202,12 @@ table (hardcoded key list: pre-2020 BULK key present, 2026-06 FRESH-only key pre
 archive-only key present, non-NULL enrichment on FRESH-sourced); (b) `true_tail_null_enrichment` as a real
 fail-closed gate; (c) `reinstatement_candidates` as a logged count.
 
-**P1-3 — `bl_probe` is a full ~107M-row verbatim duplicate of `bulk_latest` (L4-01).**
-Defect: L478-479 `CREATE TEMP TABLE bl_probe AS SELECT *, contract_transaction_unique_key AS k FROM bulk_latest`
+**P1-3 — `bl_probe` is a full ~107M-row verbatim duplicate of `bulk_latest` (L4-01). — SUPERSEDED / RESOLVED IN SHIPPED CODE.**
+`bl_probe` was deleted. The core resolution joins against `bulk_latest` directly on
+`contract_transaction_unique_key` (its PARTITION key); the enrichment fill LEFT JOINs `bulk_latest`
+(pg) and `monthly_enrich_latest` (monthly) on the same key. No second full-width materialization
+remains. Historical defect retained for provenance only.
+Defect (historical): L478-479 `CREATE TEMP TABLE bl_probe AS SELECT *, contract_transaction_unique_key AS k FROM bulk_latest`
 — a second full-width materialization whose only delta is an aliased duplicate of the partition key. Directly
 contradicts plan §3 BLOCKER-1 (L112-113: "a cheap probe into the already-built `bulk_latest`, NOT a second 109M pass").
 Fix: delete the `bl_probe` CREATE. In `fresh_final` (L487) and `arch_final` (L495) join `bulk_latest b ON
@@ -239,11 +278,11 @@ This is a POV confirmation, not a code defect (the plan is correct by omission).
 
 ### P2
 
-**P2-1 — `delete_keys.delta_lmt` computed but never consumed — dead scaffolding for the un-implemented reinstatement
-check (F4-lens1).** `delete_keys` (L506-511) computes `max(...) AS delta_lmt` per 'D' key; the tombstone anti-join
-(L513-515) references only `d.k`. Fix: wire it — before the anti-join, count merged keys where surviving-row
-`max(last_modified_date) > d.delta_lmt`, emit as a LOG line + `verify()` JSON field, do NOT gate (delete-wins-always
-is locked). The plan promises this LOG signal in two places (§3 L138, §7 L274).
+**P2-1 — `delete_keys.delta_lmt` computed but never consumed — dead scaffolding (F4-lens1). — SUPERSEDED / RESOLVED (stronger than the fix asked).**
+`delta_lmt` is now CONSUMED by the R5 reinstatement gate (P0-4), and not merely as a LOG signal —
+it GATES survival: `WHERE d.k IS NULL OR resolved.last_modified_date > d.delta_lmt`. The original
+"do NOT gate (delete-wins-always is locked)" guidance is OBSOLETE — the locked semantics changed to
+tombstone-minus-reinstatement. Historical defect retained for provenance.
 
 **P2-2 — `canonical_out` and `bulk_final` are redundant full-width copies of the two largest tables (L4-03).**
 `canonical_out` (L518-519) is a self-admitted "defensive" `SELECT {canon_cols} FROM canonical`; `bulk_final` (L497)
