@@ -83,6 +83,11 @@ from pathlib import Path
 # on a ~107M-row BTREE build. Set BEFORE any lance call (ARCHITECTURE.md fleet rule).
 os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
+try:  # Modal is the production build substrate; the local CLI stays the dev/smoke path.
+    import modal
+except ImportError:
+    modal = None
+
 BUCKET = "data-sink"
 ACTIVE = "s3://data-sink/active"
 
@@ -395,7 +400,8 @@ def _proj_select(side: str, built_at_iso: str) -> str:
     side: 'bulk' | 'feed'. For 'feed', enrichment columns project as typed NULL placeholders.
     Provenance: built_at injected literal ONLY. canonical_source is NOT projected here — it is
     derived per-key from the winning core row's src tag in `resolved` (Variant B, INV-7), so the
-    three *_proj relations omit canonical_source IDENTICALLY and the schema-identity gate still passes."""
+    three projection legs omit canonical_source IDENTICALLY and the schema-identity gate (run on the
+    collapsed tables, which carry the projections' exact shapes) still passes."""
     lines = []
     for c in COLUMN_SPEC:
         canon = c["canonical"]
@@ -441,75 +447,30 @@ def _enrich_replace_block() -> str:
     return ",\n".join(parts)
 
 
-def _projections_sql(built_at_iso: str) -> str:
-    """The macros + the THREE per-source projection CREATEs (design §3.1). Executed as ONE
-    multi-statement script (DuckDB con.execute handles ;-separated statements natively), THEN the
-    schema-identity gate runs against bulk_proj/fresh_proj/archive_proj before the merge tail."""
+def _stage1_sql(built_at_iso: str) -> str:
+    """STAGE 1 — macros, the archive projection, and the three per-source collapses, with the
+    bulk/fresh projections INLINED into their collapse windows (P1-4 spill hygiene: the ~107M-row
+    bulk_proj duplicate materialization was the single largest spill contributor — 246 GB observed
+    on-disk before the collapses even completed on the first full-build attempt). archive_proj
+    stays materialized: it is small (~3M rows) and legitimately read twice (§3.4 core dedup +
+    §3.6b enrichment dedup). Executed as ONE multi-statement script; the schema-identity gate then
+    runs against the three COLLAPSED tables (identical canonical NAME+ORDER+TYPE by construction —
+    collapse = SELECT * EXCLUDE (rn) over a projection-shaped inner) before the stage-2 merge.
+
+    Also captured here, as 1-row m_* tables, every metric whose source table is dropped in stage 2
+    (free-as-you-go DROPs), plus the narrow bulk_keys set (1 col) that outlives bulk_latest for the
+    late monthly_corrections metric."""
     bulk_proj = _proj_select("bulk", built_at_iso)
     fresh_proj = _proj_select("feed", built_at_iso)
     arch_proj = _proj_select("feed", built_at_iso)
     return f"""{_MACROS}
--- ===== §3.1 per-source projections (identical canonical column NAME+ORDER+TYPE) ===== --
-CREATE TEMP TABLE bulk_proj AS
-SELECT
-{bulk_proj}
-FROM bulk_r;
-
-CREATE TEMP TABLE fresh_proj AS
-SELECT
-{fresh_proj}
-FROM fresh_r;
-
+-- ===== §3.1 archive projection (materialized ONCE; read twice: §3.4 + §3.6b) ===== --
 CREATE TEMP TABLE archive_proj AS
 SELECT
 {arch_proj}
 FROM archive_r;
-"""
 
-
-DELTA_STAMP_COL = "archive_snapshot_stamp"
-
-
-def _merge_tail_sql(delta_has_stamp: bool = True) -> str:
-    """The merge tail — TWO-TIER logical reconciliation, ONE physical artifact. Pipeline:
-      fresh_latest / bulk_latest / monthly_latest  (≤1 row per key each, deterministic collapse)
-        → bulk_base    (Tier 1, LOGICAL CTE — NOT materialized as a separate artifact: pg⊕monthly
-                        per-key argmax(last_modified_date); equal-mtime tie → monthly WINS over pg)
-        → core_union   (UNION ALL BY NAME of the three collapsed CORES, each tagged src+source_rank)
-        → core_winner  (Tier 2, SINGLE 3-way window: argmax(last_modified_date) per key, total-order
-                        tiebreak — associativity-equivalent to (bulk_base ⊕ fresh_latest); tie→FRESH)
-        → monthly_enrich_latest (§3.6b enrichment-populatedness dedup — the monthly leg of the fill)
-        → resolved     (LEFT JOIN bulk_latest [pg] + LEFT JOIN monthly_enrich_latest [monthly] →
-                        branched enrichment REPLACE [COALESCE pg-preferred for the 12 monthly-unique
-                        cols, plain pg for the 27] + w.src AS canonical_source)
-        → canonical_out(R6-scoped tombstone with R5 reinstatement + locked canonical projection)
-
-    TWO-TIER INVARIANT (CORE byte-identity): the emitted CORE is argmax(last_modified_date) over
-    {FRESH, BULK, MONTHLY}. argmax is associative, so the explicit two-tier framing
-    (bulk_base = BULK⊕MONTHLY, then canonical = bulk_base⊕FRESH) is IDENTICAL to the flat 3-way
-    window kept below. The tier-1 equal-mtime tie (monthly>pg) is subsumed by source_rank
-    (MONTHLY=2 < BULK=3) in the flat window; the tier-2 tie (fresh) by FRESH=1. Proven on the
-    --since 2025-10-01 window: monthly.mtime ≥ pg on 100% of 2,189,379 shared FY2026 keys (0 older),
-    so the flat window emits byte-identical CORE. bulk_base is retained as a documented LOGICAL CTE
-    so the reconciled base is the semantic source of the enrichment fill; it is NOT a second physical
-    Lance dataset — the single artifact usaspending_fpds_canonical_txn/ is unchanged.
-
-    THE FIX (correction landing): MONTHLY competes for the volatile core on EVERY key (monthly_latest
-    is collapsed over the FULL monthly projection, not an anti-joined survivor set), so a
-    strictly-newer monthly correction lands for keys shared with BULK/FRESH. PK-uniqueness is
-    structural (row_number()=1 over ≤1-per-source collapses). Pure string; references the *_proj TEMP
-    TABLEs + archive_delta_D relation. Executed as ONE multi-statement script."""
-    enrich_block = _enrich_replace_block()
-    canon_cols = ", ".join(_canon_order())
-    # R6 stamp scoping fragments — only when the delta feed actually carries the stamp column.
-    if delta_has_stamp:
-        latest_stamp_expr = f"max({DELTA_STAMP_COL}) AS s"
-        stamp_predicate = (f", latest WHERE {DELTA_STAMP_COL} = latest.s "
-                           f"OR (latest.s IS NULL AND {DELTA_STAMP_COL} IS NULL)")
-    else:
-        latest_stamp_expr = "CAST(NULL AS VARCHAR) AS s"
-        stamp_predicate = ""
-    return f"""-- ===== §3.2 FRESH dedup → latest-per-key (deterministic tiebreaker) ===== --
+-- ===== §3.2 FRESH dedup → latest-per-key (projection INLINED; fresh_proj never materialized) ===== --
 CREATE TEMP TABLE fresh_latest AS
 SELECT * EXCLUDE (rn) FROM (
   SELECT *, row_number() OVER (
@@ -518,14 +479,18 @@ SELECT * EXCLUDE (rn) FROM (
                      (federal_action_obligation IS NULL) ASC,
                      modification_number DESC NULLS LAST,
                      contract_award_unique_key DESC NULLS LAST) AS rn
-  FROM fresh_proj
+  FROM (
+    SELECT
+{fresh_proj}
+    FROM fresh_r
+  )
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
 
--- ===== §3.3 single bulk_latest collapse (one row per BULK txn_key; ONE 107M scan) ===== --
--- enrichment-maximizing deterministic dedup: latest mtime, then prefer populated enrichment,
--- then stable transaction_id surrogate. bulk_latest is the SOLE enrichment source (role B) AND a
--- competitor in the core resolution (role A/C) — no separate 107M×78 bl_probe copy is materialized.
+-- ===== §3.3 single bulk_latest collapse (projection INLINED; ONE 107M scan, bulk_proj never
+-- materialized). Enrichment-maximizing deterministic dedup: latest mtime, then prefer populated
+-- enrichment, then stable transaction_id surrogate. bulk_latest is the SOLE pg enrichment source
+-- (role B) AND a competitor in the core resolution (role A/C). ===== --
 CREATE TEMP TABLE bulk_latest AS
 SELECT * EXCLUDE (rn) FROM (
   SELECT *,
@@ -535,7 +500,11 @@ SELECT * EXCLUDE (rn) FROM (
                     (recipient_hash IS NULL) ASC,
                     transaction_id DESC NULLS LAST
          ) AS rn
-  FROM bulk_proj
+  FROM (
+    SELECT
+{bulk_proj}
+    FROM bulk_r
+  )
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
 
@@ -560,7 +529,73 @@ SELECT * EXCLUDE (rn) FROM (
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
 
--- ===== §3.4b TIER-1 bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized) ===== --
+-- ===== §3.4k narrow BULK key set (1 col) — outlives bulk_latest for late metrics ===== --
+CREATE TEMP TABLE bulk_keys AS
+SELECT contract_transaction_unique_key AS k FROM bulk_latest;
+
+-- ===== early metric captures (1-row each) — sources dropped at stage-2 boundaries ===== --
+CREATE TEMP TABLE m_rows_in_fresh AS SELECT count(*) AS c FROM fresh_r;
+CREATE TEMP TABLE m_rows_in_archive AS SELECT count(*) AS c FROM archive_proj;
+-- BULK is consumed exactly once by the inlined collapse (single-pass reader) — the raw scanned
+-- count cannot be re-taken. BULK is proven PK-unique (107,250,527 distinct == rowcount), so the
+-- post-collapse count equals rows scanned; if BULK ever grows dup keys, dedup_collapsed
+-- undercounts by exactly those dups (documented, not silent).
+CREATE TEMP TABLE m_rows_in_bulk AS SELECT count(*) AS c FROM bulk_latest;
+CREATE TEMP TABLE m_fresh_only_tail AS
+SELECT count(*) AS c FROM fresh_latest f
+ANTI JOIN bulk_keys b ON f.contract_transaction_unique_key = b.k;
+"""
+
+
+DELTA_STAMP_COL = "archive_snapshot_stamp"
+
+
+def _stage2_sql(delta_has_stamp: bool = True) -> str:
+    """STAGE 2 — the merge: TWO-TIER logical reconciliation, ONE physical artifact. Pipeline:
+      (stage-1 collapses: fresh_latest / bulk_latest / monthly_latest, ≤1 row per key each)
+        → bulk_base    (Tier 1, LOGICAL CTE — NOT materialized as a separate artifact: pg⊕monthly
+                        per-key argmax(last_modified_date); equal-mtime tie → monthly WINS over pg)
+        → core_union   (UNION ALL BY NAME of the three collapsed CORES, each tagged src+source_rank)
+        → core_winner  (Tier 2, SINGLE 3-way window: argmax(last_modified_date) per key, total-order
+                        tiebreak — associativity-equivalent to (bulk_base ⊕ fresh_latest); tie→FRESH)
+        → monthly_enrich_latest (§3.6b enrichment-populatedness dedup — the monthly leg of the fill)
+        → resolved     (LEFT JOIN bulk_latest [pg] + LEFT JOIN monthly_enrich_latest [monthly] →
+                        branched enrichment REPLACE [COALESCE pg-preferred for the 12 monthly-unique
+                        cols, plain pg for the 27] + w.src AS canonical_source)
+        → canonical_out(R6-scoped tombstone with R5 reinstatement + locked canonical projection)
+
+    P1-4 SPILL HYGIENE: every giant TEMP TABLE is DROPped at its last-reader boundary (free-as-you-go),
+    and the metrics whose sources are dropped are captured first as 1-row m_* tables (stage 1 +
+    m_merged / m_deletes / m_monthly_corr here). Peak concurrent spill is bounded by the join inputs
+    of the widest single statement (~3 wide ~107M-row relations at `resolved`), not by the sum of
+    every intermediate (~6 wide tables ≈ 350-520 GB unbounded, the first-attempt failure mode).
+
+    TWO-TIER INVARIANT (CORE byte-identity): the emitted CORE is argmax(last_modified_date) over
+    {FRESH, BULK, MONTHLY}. argmax is associative, so the explicit two-tier framing
+    (bulk_base = BULK⊕MONTHLY, then canonical = bulk_base⊕FRESH) is IDENTICAL to the flat 3-way
+    window kept below. The tier-1 equal-mtime tie (monthly>pg) is subsumed by source_rank
+    (MONTHLY=2 < BULK=3) in the flat window; the tier-2 tie (fresh) by FRESH=1. Proven on the
+    --since 2025-10-01 window: monthly.mtime ≥ pg on 100% of 2,189,379 shared FY2026 keys (0 older),
+    so the flat window emits byte-identical CORE. bulk_base is retained as a documented LOGICAL CTE
+    so the reconciled base is the semantic source of the enrichment fill; it is NOT a second physical
+    Lance dataset — the single artifact usaspending_fpds_canonical_txn/ is unchanged.
+
+    THE FIX (correction landing): MONTHLY competes for the volatile core on EVERY key (monthly_latest
+    is collapsed over the FULL monthly projection, not an anti-joined survivor set), so a
+    strictly-newer monthly correction lands for keys shared with BULK/FRESH. PK-uniqueness is
+    structural (row_number()=1 over ≤1-per-source collapses). Pure string; references the stage-1
+    collapses + archive_delta_D relation. Executed as ONE multi-statement script."""
+    enrich_block = _enrich_replace_block()
+    canon_cols = ", ".join(_canon_order())
+    # R6 stamp scoping fragments — only when the delta feed actually carries the stamp column.
+    if delta_has_stamp:
+        latest_stamp_expr = f"max({DELTA_STAMP_COL}) AS s"
+        stamp_predicate = (f", latest WHERE {DELTA_STAMP_COL} = latest.s "
+                           f"OR (latest.s IS NULL AND {DELTA_STAMP_COL} IS NULL)")
+    else:
+        latest_stamp_expr = "CAST(NULL AS VARCHAR) AS s"
+        stamp_predicate = ""
+    return f"""-- ===== §3.4b TIER-1 bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized) ===== --
 -- Explicit two-tier framing: reconcile pg (bulk) with monthly by per-key argmax(last_modified_date);
 -- equal-mtime tie → MONTHLY WINS over pg (rank 2 < 3). This is the semantic "reconciled base" the
 -- enrichment fill (§3.7) draws from. It is a documented VIEW, not a second Lance artifact; the CORE
@@ -591,6 +626,13 @@ SELECT CAST('monthly' AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, a.*
 UNION ALL BY NAME
 SELECT CAST('bulk'    AS VARCHAR) AS src, CAST(3 AS INTEGER) AS source_rank, b.* FROM bulk_latest b;
 
+-- P1-4 boundary: core_union was the last reader of fresh_latest and monthly_latest (their metrics
+-- were captured in stage 1). bulk_base is documentation-only (never queried) and must go before its
+-- base tables. bulk_latest LIVES ON (enrichment source at §3.7).
+DROP VIEW bulk_base;
+DROP TABLE fresh_latest;
+DROP TABLE monthly_latest;
+
 -- ===== §3.6 SINGLE 3-way per-key core resolution: argmax(last_modified_date) (= flat two-tier) ===== --
 -- Provably total order: after the three upstream collapses there is AT MOST one row per source per
 -- key, so source_rank alone disambiguates every cross-source mtime tie; the trailing award-key term
@@ -606,6 +648,10 @@ SELECT * EXCLUDE (rn, source_rank) FROM (
                      contract_award_unique_key DESC NULLS LAST) AS rn
   FROM core_union
 ) WHERE rn = 1;
+
+-- P1-4 boundary: core_winner supersedes core_union. Capture the merged-count metric first.
+CREATE TEMP TABLE m_merged AS SELECT count(*) AS c FROM core_winner;
+DROP TABLE core_union;
 
 -- ===== §3.6b monthly ENRICHMENT-populatedness dedup (the monthly leg of the COALESCE) ===== --
 -- SEPARATE from monthly_latest's CORE dedup (§3.4): that one ranks on core-populatedness/mtime and
@@ -628,6 +674,9 @@ SELECT * EXCLUDE (rn) FROM (
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
 
+-- P1-4 boundary: monthly_enrich_latest was archive_proj's second and last reader.
+DROP TABLE archive_proj;
+
 -- ===== §3.7 enrichment fill: pg (bulk_latest) + monthly (monthly_enrich_latest) ===== --
 -- Both LEFT JOINs are to PK-unique per-key collapses → no fan-out. The enrichment REPLACE (§3.7
 -- builder) overwrites the enrich half: plain b.<col> for the 27 pg-only cols; pg-preferred
@@ -649,6 +698,13 @@ SELECT
 FROM core_winner w
 LEFT JOIN bulk_latest b ON w.contract_transaction_unique_key = b.contract_transaction_unique_key
 LEFT JOIN monthly_enrich_latest m ON w.contract_transaction_unique_key = m.contract_transaction_unique_key;
+
+-- P1-4 boundary: resolved supersedes core_winner + both enrichment legs. bulk_latest's late metric
+-- (monthly_corrections) reads the narrow bulk_keys captured in stage 1, so the 107M-wide table goes
+-- here. rows_in_bulk was captured in stage 1 (m_rows_in_bulk).
+DROP TABLE core_winner;
+DROP TABLE monthly_enrich_latest;
+DROP TABLE bulk_latest;
 
 -- ===== §3.8 tombstone (R6-scoped) − reinstatement (R5) → canonical_out ===== --
 -- delta scanner is filtered ONLY by correction_delete_ind='D' (caller side); NEVER --since.
@@ -676,19 +732,39 @@ SELECT {canon_cols} FROM resolved
 LEFT JOIN delete_keys d ON resolved.contract_transaction_unique_key = d.k
 WHERE d.k IS NULL
    OR (resolved.last_modified_date IS NOT NULL AND resolved.last_modified_date > d.delta_lmt);
+
+-- ===== late metric captures, then the last P1-4 boundary ===== --
+-- deletes_tombstoned = delete-keys present in resolved that were ACTUALLY dropped — i.e. NOT
+-- R5-reinstated (the complement of the reinstatement predicate; post-R5 truth, not raw 'D' matches).
+CREATE TEMP TABLE m_deletes AS
+SELECT count(DISTINCT r.contract_transaction_unique_key) AS c FROM resolved r
+JOIN delete_keys d ON r.contract_transaction_unique_key = d.k
+WHERE r.last_modified_date IS NULL OR r.last_modified_date <= d.delta_lmt;
+-- monthly_corrections_applied = canonical keys the MONTHLY core WON over a key BULK also holds —
+-- the true correction count. SEMI JOIN on the narrow bulk_keys (bulk_latest already dropped).
+CREATE TEMP TABLE m_monthly_corr AS
+SELECT count(*) AS c FROM canonical_out co
+SEMI JOIN bulk_keys b ON co.contract_transaction_unique_key = b.k
+WHERE co.canonical_source = 'monthly';
+
+DROP TABLE resolved;
+DROP TABLE delete_keys;
+DROP TABLE bulk_keys;
 """
 
 
 def _build_merge_sql(*, built_at_iso: str, since: str | None) -> str:
-    """The FULL merge SQL (projections + tail) concatenated — for inspection / print_merge_sql ONLY.
-    build() executes _projections_sql() and _merge_tail_sql() separately so the schema-identity gate
-    can run between them. No R2 access here; safe to print.
+    """The FULL merge SQL (stage 1 + stage 2) concatenated — for inspection / print_merge_sql ONLY.
+    build() executes _stage1_sql() and _stage2_sql() separately so the schema-identity gate can run
+    between them (against the collapsed tables). No R2 access here; safe to print.
 
     --since note: the predicate is pushed into the THREE DATA scanners (caller/build side), NEVER the
     delta scanner. Carried here only as a comment marker for traceability."""
     since_note = (f"-- --since={since} pushed into the THREE data scanners only "
                   f"(delta NEVER filtered)\n" if since else "")
-    return since_note + _projections_sql(built_at_iso) + "\n" + _merge_tail_sql()
+    return (since_note + _stage1_sql(built_at_iso)
+            + "\n-- [build() runs the schema-identity gate HERE, on the collapsed tables]\n"
+            + _stage2_sql())
 
 
 def log(m):
@@ -805,21 +881,23 @@ def init_ops() -> None:
     log("ops DDL applied")
 
 
-def _assert_projection_schema_identity(con) -> None:
-    """§4 enforcement — PROGRAMMATIC, not aspirational. The three *_proj relations MUST emit
-    byte-identical (name, type) sequences before any union. Raise on mismatch (hard build failure
-    rather than a silent transposition)."""
+def _assert_collapse_schema_identity(con) -> None:
+    """§4 enforcement — PROGRAMMATIC, not aspirational. The three per-source COLLAPSES (which are
+    SELECT * EXCLUDE (rn) over projection-shaped inners, so they carry the projections' exact
+    (name, type) sequences) MUST be byte-identical before any union. Raise on mismatch (hard build
+    failure rather than a silent transposition). P1-4 note: the gate moved from the *_proj trio to
+    the collapsed tables because the bulk/fresh projections are inlined and never materialized."""
     sigs = {}
-    for name in ("bulk_proj", "fresh_proj", "archive_proj"):
+    for name in ("bulk_latest", "fresh_latest", "monthly_latest"):
         rows = con.execute(f"DESCRIBE {name}").fetchall()  # (column_name, column_type, ...)
         sigs[name] = [(r[0], r[1]) for r in rows]
-    base = sigs["bulk_proj"]
+    base = sigs["bulk_latest"]
     for name, sig in sigs.items():
         if sig != base:
             diff = [(b, s) for b, s in zip(base, sig) if b != s]
             raise RuntimeError(
-                f"projection schema mismatch: {name} != bulk_proj. "
-                f"first divergences (bulk_proj vs {name}): {diff[:5]}")
+                f"collapse schema mismatch: {name} != bulk_latest. "
+                f"first divergences (bulk_latest vs {name}): {diff[:5]}")
 
 
 def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
@@ -882,15 +960,19 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         con.register("archive_delta_D", delta_ds.scanner(
             columns=delta_scan_cols, filter="correction_delete_ind = 'D'").to_table())
 
-        # Phase 1: build the three projections (one multi-statement script), then ENFORCE schema
-        # identity before any union (§4 — programmatic gate). Phase 2: the merge tail.
-        con.execute(_projections_sql(built_at_iso))
-        _assert_projection_schema_identity(con)
-        con.execute(_merge_tail_sql(delta_has_stamp=delta_has_stamp))
+        # Stage 1: archive projection + the three collapses (bulk/fresh projections INLINED — P1-4),
+        # then ENFORCE schema identity on the collapsed tables before any union (§4 — programmatic
+        # gate). Stage 2: the merge with free-as-you-go DROPs; metrics whose sources are dropped
+        # were captured as 1-row m_* tables at the correct boundaries.
+        con.execute(_stage1_sql(built_at_iso))
+        _assert_collapse_schema_identity(con)
+        con.execute(_stage2_sql(delta_has_stamp=delta_has_stamp))
 
-        rows_in_bulk = con.execute("SELECT count(*) FROM bulk_proj").fetchone()[0]
-        rows_in_fresh = con.execute("SELECT count(*) FROM fresh_proj").fetchone()[0]
-        rows_in_archive_full = con.execute("SELECT count(*) FROM archive_proj").fetchone()[0]
+        # rows_in_bulk = post-collapse count (BULK proven PK-unique → equals rows scanned; the
+        # single-pass reader cannot be re-counted after the inlined collapse — see _stage1_sql).
+        rows_in_bulk = con.execute("SELECT c FROM m_rows_in_bulk").fetchone()[0]
+        rows_in_fresh = con.execute("SELECT c FROM m_rows_in_fresh").fetchone()[0]
+        rows_in_archive_full = con.execute("SELECT c FROM m_rows_in_archive").fetchone()[0]
 
         rows_out = con.execute("SELECT count(*) FROM canonical_out").fetchone()[0]
         pk_total, pk_distinct = con.execute(
@@ -906,28 +988,16 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                 f"count(DISTINCT contract_transaction_unique_key)={pk_distinct:,} "
                 f"({pk_total - pk_distinct:,} dup keys). Aborting publish.")
 
-        fresh_only_tail = con.execute(
-            "SELECT count(*) FROM fresh_latest f ANTI JOIN bulk_latest b "
-            "ON f.contract_transaction_unique_key = b.contract_transaction_unique_key").fetchone()[0]
-        # deletes_tombstoned = delete-keys present in resolved that were ACTUALLY dropped — i.e. NOT
-        # R5-reinstated (reinstatement = reconciled winner mtime > delta_lmt). Count the complement of
-        # the reinstatement predicate so this reflects post-R5 truth, not the raw 'D' match count.
-        deletes_tombstoned = con.execute(
-            "SELECT count(DISTINCT r.contract_transaction_unique_key) FROM resolved r "
-            "JOIN delete_keys d ON r.contract_transaction_unique_key = d.k "
-            "WHERE r.last_modified_date IS NULL OR r.last_modified_date <= d.delta_lmt").fetchone()[0]
-        # rows_out INVARIANT: distinct-key count of core_union = |FRESH∪BULK∪MONTHLY keys| (the old
-        # three-disjoint-partition union count); landing a correction REPLACES a key's core, never
-        # adds/removes a key. core_winner has exactly that count (one survivor per key).
-        merged_rows = con.execute("SELECT count(*) FROM core_winner").fetchone()[0]
+        # All intermediate-table metrics come from the 1-row m_* captures (their giant sources are
+        # already dropped by the stage-2 P1-4 boundaries; comments on each live at the capture site).
+        fresh_only_tail = con.execute("SELECT c FROM m_fresh_only_tail").fetchone()[0]
+        deletes_tombstoned = con.execute("SELECT c FROM m_deletes").fetchone()[0]
+        # rows_out INVARIANT: distinct-key count of core_union = |FRESH∪BULK∪MONTHLY keys|; landing a
+        # correction REPLACES a key's core, never adds/removes a key. core_winner had exactly that
+        # count (one survivor per key) — captured as m_merged before its drop.
+        merged_rows = con.execute("SELECT c FROM m_merged").fetchone()[0]
         dedup_collapsed = int(rows_in_bulk + rows_in_fresh + rows_in_archive_full - merged_rows)
-        # monthly_corrections_applied (grafted audit metric): canonical keys the MONTHLY core WON
-        # over a key BULK also holds — the true correction count (≈46,234 minus any FRESH-even-newer).
-        # SEMI JOIN (NULL-safe), NOT IN. Bounded above by the monthly∩bulk strictly-newer set.
-        monthly_corrections_applied = con.execute(
-            "SELECT count(*) FROM canonical_out c SEMI JOIN bulk_latest b "
-            "ON c.contract_transaction_unique_key = b.contract_transaction_unique_key "
-            "WHERE c.canonical_source = 'monthly'").fetchone()[0]
+        monthly_corrections_applied = con.execute("SELECT c FROM m_monthly_corr").fetchone()[0]
         max_action_date = con.execute("SELECT max(action_date) FROM canonical_out").fetchone()[0]
 
         log(f"core_winner={merged_rows:,} rows_out={rows_out:,} fresh_only_tail={fresh_only_tail:,} "
@@ -1099,6 +1169,63 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
         "pass": not failures,
     }
     return out
+
+
+# =========================================================================================== #
+# Modal entrypoint — the production substrate for the full build. The first full-build attempt on
+# a 48 GiB / 313 GiB-free laptop died to session-coupled SIGKILL + unbounded spill; a Modal
+# container is isolated (immune to harness/session restarts), sized for the index-stage external
+# sort (LANCE_BYPASS_SPILLING ⇒ RAM-bound, flagged ≥96 GiB), and carries dedicated ephemeral NVMe
+# for DuckDB spill + the local Lance stage. Zero new secrets/endpoints: existing named secrets
+# only. The local CLI below remains the dev/smoke path — both wrap the same build()/index()/verify().
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py                      # build
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd index
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd verify
+# =========================================================================================== #
+if modal is not None:
+    _image = (
+        modal.Image.debian_slim(python_version="3.12")
+        .pip_install("duckdb>=1.5,<2", "pylance>=7", "lancedb>=0.15", "pyarrow>=17",
+                     "psycopg[binary]>=3.2", "boto3>=1.34")
+        .env({
+            # module-top constants read env at import — image env is the injection point.
+            "FPDS_CANONICAL_DUCKDB_MEM": "160GB",
+            "FPDS_CANONICAL_DUCKDB_THREADS": "16",
+            "FPDS_CANONICAL_DUCKDB_TEMP_DIR": "/tmp/fpds_canonical_duckdb",
+            "FPDS_CANONICAL_SCRATCH": "/tmp/fpds_canonical_stage",
+        })
+    )
+    modal_app = modal.App("usaspending-fpds-canonical", image=_image)
+    _SECRETS = [modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")]
+
+    # NO auto-retries anywhere (pipeline discipline): a failed build is diagnosed, never re-fired
+    # blind. ephemeral_disk expands /tmp → DuckDB spill + the local Lance stage both land on it.
+    @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 12, memory=196_608, cpu=16.0,
+                        ephemeral_disk=512_000, retries=0)
+    def build_fn(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
+        return build(since=since, target_uri=target_uri)
+
+    # Index = the RAM-bound external sort (LANCE_BYPASS_SPILLING) — sized ≥96 GiB with headroom.
+    @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 6, memory=196_608, cpu=8.0,
+                        ephemeral_disk=131_072, retries=0)
+    def index_fn(target_uri: str = CANONICAL_URI) -> dict:
+        return index(target_uri=target_uri)
+
+    @modal_app.function(secrets=_SECRETS, timeout=60 * 45, memory=32_768, cpu=4.0, retries=0)
+    def verify_fn(target_uri: str = CANONICAL_URI) -> dict:
+        return verify(target_uri=target_uri)
+
+    @modal_app.local_entrypoint()
+    def modal_main(cmd: str = "build", since: str = "", target_uri: str = CANONICAL_URI):
+        s = since or None
+        if cmd == "build":
+            print(json.dumps(build_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
+        elif cmd == "index":
+            print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
+        elif cmd == "verify":
+            print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
+        else:
+            raise SystemExit(f"unknown --cmd: {cmd} (build|index|verify)")
 
 
 # =========================================================================================== #
