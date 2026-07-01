@@ -28,8 +28,10 @@
 > spine (`source_platform='dexarchive_staffing_agencies'`, PK `person_id`=dex `id`,
 > `company_id`=`target_company_id` → FK-resolves 1:1 to the companies cohort, 0 orphans) via
 > `pipelines/gtm/backfill_staffing_agencies_people.py`. `people` **69,242 → 98,805** rows;
-> schema/index set unchanged (4 BTREE rebuilt). Identity-only — `title` on 15,008; work-email
-> is a separate downstream grain (`active/work_emails`, keyed by `person_id`).
+> schema/index set unchanged (4 BTREE rebuilt). Identity-only — `title` on 15,008 at landing,
+> then gap-filled to **21,363** (72.3%) via `active/clay_find_people` (canonical LinkedIn-URL
+> match, `title`-only in-place update) by `pipelines/gtm/enrich_staffing_people_title_from_clay.py`;
+> work-email is a separate downstream grain (`active/work_emails`, keyed by `person_id`).
 
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
