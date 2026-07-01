@@ -6,6 +6,14 @@
 > column counts, and committed indices below are exact as of that probe. Re-run the
 > probe to refresh; do not hand-edit the numbers.
 
+> **Update 2026-07-01 — `person_id` migration.** The person id was renamed
+> `contact_id`→`person_id` across `people` + the 6 person-FK datasets (`email_verifications`,
+> `icp_people_for_email`, `phone_resolutions`, `work_email_mv_validations`,
+> `work_email_vendor_responses`, `work_emails`) via zero-downtime expand/contract: each
+> `contact_id`/`contact_id_idx` is now `person_id`/`person_id_idx`, and `people` gained a
+> `BTREE(person_id)` (it never had a `contact_id` index). The 7 rows + marquee + headline index
+> total below are updated for this; a full re-probe will refresh everything else.
+
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -29,7 +37,7 @@ That document is Gen-2 archaeology; **this** document is the live Gen-3 truth.
 | — nested datasets (under 8 container prefixes) | 83 |
 | Total rows across all datasets | **2,857,205,647** |
 | Non-Lance prefixes (blob stores / serving / staging) | 6 |
-| Committed scalar/vector indices | 1,927 (1,067 BTREE · 856 BITMAP · 3 IVF_PQ · 1 LABEL_LIST) |
+| Committed scalar/vector indices | 1,928 (1,068 BTREE · 856 BITMAP · 3 IVF_PQ · 1 LABEL_LIST) |
 | Datasets with zero committed indices | 93 (mostly USASpending API reference dims) |
 
 **Container prefixes** hold multiple nested Lance datasets rather than being a
@@ -51,7 +59,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_master_entities` | 1,541,566 | 68 | 3 (BTREE) |
 | `entity_profile_gold` | 1,541,566 | 22 | 6 |
 | `companies` (GTM) | 25,405 | 21 | 6 (2 BTREE + 4 BITMAP) |
-| `people` (GTM) | 69,242 | 9 | 3 (BTREE) |
+| `people` (GTM) | 69,242 | 9 | 4 (BTREE) |
 | `company_target_industries` (GTM) | 2,050 | 6 | 3 (2 BTREE + 1 BITMAP) |
 
 > The three **GTM identity grains** (`companies` / `people` /
@@ -386,25 +394,25 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `company_target_industries` | 2,050 | 6 | BTree(company_id); BTree(normalized_domain); Bitmap(target_industry) |
 | `demand_company_target_verticals` | 36,665 | 7 | BTree(company_id); BTree(normalized_domain); Bitmap(target_industry) |
 | `discovered_websets` | 5 | 21 | BTree(discovered_domain); BTree(exa_webset_id); BTree(exa_item_id) |
-| `email_verifications` | 1,971 | 14 | BTree(contact_id); BTree(email); BTree(company_domain); Bitmap(verification_status); Bitmap(mv_resultcode) |
+| `email_verifications` | 1,971 | 14 | BTree(person_id); BTree(email); BTree(company_domain); Bitmap(verification_status); Bitmap(mv_resultcode) |
 | `firmographics_blitz` | 255,418 | 23 | BTree(domain_norm); BTree(uei); Bitmap(industry); Bitmap(employee_size_band); Bitmap(company_type); Bitmap(hq_region) |
 | `firmographics_company_map_serving` | 255,848 | 35 | BTree(uei); BTree(addr_hash); BTree(domain_norm); BTree(primary_naics); BTree(latest_award_action_date); BTree(founded_year); BTree(entity_active_obligated_usd); BTree(award_count); Bitmap(naics2); Bitmap(industry); Bitmap(employee_size_band); Bitmap(company_type); Bitmap(physical_address_state); Bitmap(has_federal_awards); Bitmap(is_active) |
 | `gtm_prime_targets` | 4,011 | 25 | BTree(recipient_uei); BTree(primary_naics); BTree(dollar_growth); BTree(obligated_t12m); BTree(new_awards_t12m); BTree(award_growth); BTree(subaward_dollars); BTree(n_distinct_subs); Bitmap(vertical); Bitmap(known_subcontractor); Bitmap(outreach_motion) |
-| `icp_people_for_email` | 35,708 | 13 | BTree(contact_id); BTree(person_linkedin_url); BTree(company_domain) |
+| `icp_people_for_email` | 35,708 | 13 | BTree(person_id); BTree(person_linkedin_url); BTree(company_domain) |
 | `icp_waterfall_targets` | 40,417 | 7 | BTree(target_key); BTree(company_linkedin_url); BTree(normalized_domain) |
 | `parallel_research` | 12 | 11 | BTree(company_id); BTree(run_id); BTree(parallel_run_id) |
 | `parallel_research_raw` | 10 | 6 | BTree(run_id); BTree(parallel_run_id) |
 | `pdl_companies` | 35,446,771 | 12 | BTree(pdl_company_id); BTree(company_name); BTree(linkedin_url); BTree(domain); BTree(locality); BTree(year_founded); Bitmap(industry); Bitmap(country); Bitmap(region); Bitmap(employee_size_range) |
 | `pdl_normalized_companies` | 35,446,771 | 15 | BTree(pdl_company_id); BTree(company_name_norm); BTree(company_legal_base); BTree(normalized_domain); BTree(linkedin_slug); Bitmap(is_generic_domain) |
-| `people` | 69,242 | 9 | BTree(company_id); BTree(normalized_domain); BTree(person_linkedin_url) |
-| `phone_resolutions` | 62,128 | 13 | BTree(contact_id); BTree(person_linkedin_url); BTree(company_domain); BTree(phone); Bitmap(phone_status); Bitmap(phone_type); Bitmap(source_vendor); Bitmap(country_code) |
+| `people` | 69,242 | 9 | BTree(company_id); BTree(normalized_domain); BTree(person_linkedin_url); BTree(person_id) |
+| `phone_resolutions` | 62,128 | 13 | BTree(person_id); BTree(person_linkedin_url); BTree(company_domain); BTree(phone); Bitmap(phone_status); Bitmap(phone_type); Bitmap(source_vendor); Bitmap(country_code) |
 | `prospeo_company_export` | 10,711 | 77 | BTree(record_id); BTree(prospeo_company_id); BTree(domain_norm); BTree(company_domain); Bitmap(company_country_code); Bitmap(company_state); Bitmap(capital_provider_json_capital_type); Bitmap(ag_financing_classification_is_ag_financing_provider) |
 | `sfnet_main_contacts` | 168 | 18 | BTree(normalized_domain); BTree(linkedin_url); BTree(resolved_contact_id); BTree(resolved_company_id); BTree(sfnet_person_id); BTree(sfnet_company_id) |
 | `staffing_agencies` | 24,398 | 16 | BTree(domain_norm); BTree(company_linkedin_url); Bitmap(employee_band); Bitmap(firmo_source) |
 | `title_enrichment` | 15,668 | 14 | BTree(person_linkedin_url_norm); BTree(person_linkedin_url); BTree(record_id); BTree(title_norm); Bitmap(normalized_level); Bitmap(normalized_function); Bitmap(confidence); Bitmap(model); Bitmap(source) |
-| `work_email_mv_validations` | 77,570 | 13 | BTree(contact_id); BTree(email); Bitmap(verification_status); Bitmap(mv_resultcode); Bitmap(source_table) |
-| `work_email_vendor_responses` | 62,442 | 13 | BTree(contact_id); Bitmap(source_vendor) |
-| `work_emails` | 110,212 | 16 | BTree(contact_id); BTree(email_norm); BTree(company_domain); Bitmap(verification_status); Bitmap(source_vendor); Bitmap(mv_resultcode) |
+| `work_email_mv_validations` | 77,570 | 13 | BTree(person_id); BTree(email); Bitmap(verification_status); Bitmap(mv_resultcode); Bitmap(source_table) |
+| `work_email_vendor_responses` | 62,442 | 13 | BTree(person_id); Bitmap(source_vendor) |
+| `work_emails` | 110,212 | 16 | BTree(person_id); BTree(email_norm); BTree(company_domain); Bitmap(verification_status); Bitmap(source_vendor); Bitmap(mv_resultcode) |
 
 ### GovCon
 
