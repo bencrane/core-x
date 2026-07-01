@@ -61,7 +61,7 @@ def test_match_variants_cover_canonical_form_first():
 # ── Response composition ──────────────────────────────────────────────────────
 def _row(**kw):
     base = {
-        "contact_id": None, "company_id": None, "normalized_domain": None,
+        "contact_id": None, "person_id": None, "company_id": None, "normalized_domain": None,
         "full_name": None, "first_name": None, "last_name": None,
         "title": None, "person_linkedin_url": None, "source_platform": None,
     }
@@ -71,8 +71,8 @@ def _row(**kw):
 
 def test_from_rows_picks_first_nonnull_title_and_surfaces_all_matches():
     rows = [
-        _row(title=None, full_name="Alex Kigel", company_id="c1"),
-        _row(title="Managing Director", full_name="Alex Kigel", company_id="c1"),
+        _row(title=None, full_name="Alex Kigel", company_id="c1", contact_id="p1", person_id="p1"),
+        _row(title="Managing Director", full_name="Alex Kigel", company_id="c1", contact_id="p1", person_id="p1"),
     ]
     d = PersonByLinkedInResponse.from_rows("https://www.linkedin.com/in/alexkigel/", rows).model_dump(by_alias=True)
     assert d["found"] is True
@@ -81,6 +81,9 @@ def test_from_rows_picks_first_nonnull_title_and_surfaces_all_matches():
     assert d["matchCount"] == 2                        # duplicate observations are NOT collapsed
     assert len(d["matches"]) == 2
     assert d["linkedinUrl"] == "https://www.linkedin.com/in/alexkigel/"
+    # EXPAND/CONTRACT: both the legacy contact_id and the new person_id ride the wire (mirrored value).
+    assert d["matches"][0]["contactId"] == "p1"
+    assert d["matches"][0]["personId"] == "p1"
 
 
 def test_from_rows_empty_is_not_found():

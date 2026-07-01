@@ -12,15 +12,17 @@ MECHANICS. Read active/title_enrichment (person key + verbatim LinkedIn + raw ti
 active/people (LinkedIn) → anti-join on the normalized LinkedIn key (the ONLY bridge; people
 stores person_linkedin_url verbatim, so BOTH sides are normalized identically before the
 compare) → for each missing person build a people-contract row and merge_insert
-when_not_matched on contact_id. Existing people rows are NEVER read-modified — pure insert.
+when_not_matched on person_id. Existing people rows are NEVER read-modified — pure insert.
 
-GRAIN / IDEMPOTENCY. One inserted row per missing person_linkedin_url_norm. contact_id is
-DETERMINISTIC — uuid5 over an app-scoped namespace + the normalized LinkedIn key — so a re-run is
+GRAIN / IDEMPOTENCY. One inserted row per missing person_linkedin_url_norm. person_id (and its
+verbatim-mirror contact_id) is DETERMINISTIC — uuid5 over an app-scoped namespace + the normalized
+LinkedIn key — so a re-run is
 a pure no-op once converged (the persons are now in the spine by LinkedIn → anti-join drops them,
 and when_not_matched would skip the same deterministic id anyway). Double-safe.
 
 STUB SHAPE (deliberate, reversible). title_enrichment carries NO company or name, so inserted
-rows populate ONLY person_linkedin_url + title (raw_job_title); company_id / normalized_domain /
+rows populate ONLY person_id + contact_id (identical) + person_linkedin_url + title (raw_job_title);
+company_id / normalized_domain /
 full_name / first_name / last_name — and every drifted work-email column — are NULL.
 source_platform='title_enrichment' tags the cohort so it is identifiable and removable in one
 predicate. These are identity stubs pending firmographic/name enrichment from a richer source.
@@ -106,8 +108,12 @@ def main() -> None:
         return
 
     norm = missing.column("person_linkedin_url_norm").to_pylist()
+    person_ids = [str(uuid.uuid5(_NS, k)) for k in norm]
     known = {
-        "contact_id": [str(uuid.uuid5(_NS, k)) for k in norm],
+        # EXPAND/CONTRACT: person_id is the go-forward person key; contact_id mirrors it verbatim
+        # (same deterministic uuid5) so both carry an identical value on every inserted row.
+        "person_id": person_ids,
+        "contact_id": person_ids,
         "title": missing.column("raw_job_title").to_pylist(),
         "person_linkedin_url": missing.column("person_linkedin_url").to_pylist(),
         "source_platform": [SOURCE_PLATFORM] * n,
@@ -118,8 +124,8 @@ def main() -> None:
         schema=schema,
     )
 
-    # Insert-only; existing rows are never touched. Deterministic contact_id ⇒ idempotent re-run.
-    people_ds.merge_insert("contact_id").when_not_matched_insert_all().execute(new_rows)
+    # Insert-only; existing rows are never touched. Deterministic person_id ⇒ idempotent re-run.
+    people_ds.merge_insert("person_id").when_not_matched_insert_all().execute(new_rows)
 
     after = lance.dataset(PEOPLE_URI, storage_options=so)
     print(f"inserted {n:,} → active/people now {after.count_rows():,} rows "

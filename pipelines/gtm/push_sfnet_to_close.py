@@ -13,7 +13,7 @@ SOURCES (Gen-3 Lance, read via R2):
     active/phone_resolutions    — best phone (prefer phone_type='mobile')   [Power Dialer fuel]
     active/work_emails          — best work email + MillionVerifier verdict (mv_result/mv_quality)
     active/companies            — company_linkedin_url (via resolved_company_id)
-    Phone/email joined by contact_id OR normalized person_linkedin_url (max coverage).
+    Phone/email joined by person_id OR normalized person_linkedin_url (max coverage).
 
 CLOSE MAPPING:
     Lead.name                 ← company_name
@@ -106,9 +106,9 @@ def assemble():
     con = duckdb.connect(); con.execute("SET memory_limit='6GB';")
     reg = {
         "mc": (f"{ACTIVE}/sfnet_main_contacts/", None),
-        "ppl": (f"{ACTIVE}/people/", ["contact_id", "first_name", "last_name"]),
-        "ph": (f"{ACTIVE}/phone_resolutions/", ["contact_id", "person_linkedin_url", "phone", "phone_type", "phone_status", "resolved_at"]),
-        "we": (f"{ACTIVE}/work_emails/", ["contact_id", "person_linkedin_url", "email", "verification_status", "mv_result", "mv_quality", "resolved_at"]),
+        "ppl": (f"{ACTIVE}/people/", ["person_id", "first_name", "last_name"]),
+        "ph": (f"{ACTIVE}/phone_resolutions/", ["person_id", "person_linkedin_url", "phone", "phone_type", "phone_status", "resolved_at"]),
+        "we": (f"{ACTIVE}/work_emails/", ["person_id", "person_linkedin_url", "email", "verification_status", "mv_result", "mv_quality", "resolved_at"]),
         "co": (f"{ACTIVE}/companies/", ["company_id", "company_linkedin_url", "firmo_linkedin_url"]),
     }
     for name, (uri, cols) in reg.items():
@@ -119,8 +119,8 @@ def assemble():
 
     # best phone per key (prefer mobile, then most recent)
     con.execute(f"""CREATE TABLE ph_best AS
-        SELECT contact_id, {_norm_li('person_linkedin_url')} li, phone, phone_type FROM (
-          SELECT *, row_number() OVER (PARTITION BY contact_id
+        SELECT person_id, {_norm_li('person_linkedin_url')} li, phone, phone_type FROM (
+          SELECT *, row_number() OVER (PARTITION BY person_id
             ORDER BY (lower(coalesce(phone_type,''))='mobile') DESC, resolved_at DESC) rn
           FROM ph WHERE phone IS NOT NULL) WHERE rn=1""")
     con.execute(f"""CREATE TABLE ph_li AS
@@ -128,8 +128,8 @@ def assemble():
         WHERE li IS NOT NULL GROUP BY li""")
     # best email per key (prefer good quality, then recent)
     con.execute(f"""CREATE TABLE we_best AS
-        SELECT contact_id, {_norm_li('person_linkedin_url')} li, email, verification_status, mv_result, mv_quality FROM (
-          SELECT *, row_number() OVER (PARTITION BY contact_id ORDER BY
+        SELECT person_id, {_norm_li('person_linkedin_url')} li, email, verification_status, mv_result, mv_quality FROM (
+          SELECT *, row_number() OVER (PARTITION BY person_id ORDER BY
             (lower(coalesce(mv_quality,''))='good') DESC,
             (lower(coalesce(verification_status,'')) IN ('ok','valid','deliverable')) DESC,
             resolved_at DESC) rn
@@ -154,10 +154,10 @@ def assemble():
           coalesce(ec.mv_quality, el.mv_quality)      AS email_mv_quality,
           coalesce(co.company_linkedin_url, co.firmo_linkedin_url) AS company_linkedin_url
         FROM mc
-        LEFT JOIN ppl p     ON p.contact_id = mc.resolved_contact_id
-        LEFT JOIN ph_best pc ON pc.contact_id = mc.resolved_contact_id
+        LEFT JOIN ppl p     ON p.person_id = mc.resolved_contact_id
+        LEFT JOIN ph_best pc ON pc.person_id = mc.resolved_contact_id
         LEFT JOIN ph_li   pl ON pl.li = mc.linkedin_url AND mc.linkedin_url IS NOT NULL
-        LEFT JOIN we_best ec ON ec.contact_id = mc.resolved_contact_id
+        LEFT JOIN we_best ec ON ec.person_id = mc.resolved_contact_id
         LEFT JOIN we_li   el ON el.li = mc.linkedin_url AND mc.linkedin_url IS NOT NULL
         LEFT JOIN co        ON co.company_id = mc.resolved_company_id
         ORDER BY mc.company_name, mc.person_name

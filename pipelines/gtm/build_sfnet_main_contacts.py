@@ -198,11 +198,11 @@ def build(csv_path: str) -> None:
         raise SystemExit("null/empty sfnet_person_id — PK contract violated (bad person_profile_url?)")
 
     con.register("p_r", lance.dataset(PEOPLE_URI, storage_options=so).scanner(
-        columns=["contact_id", "company_id", "normalized_domain", "full_name",
+        columns=["person_id", "company_id", "normalized_domain", "full_name",
                  "person_linkedin_url", "source_platform"]).to_reader())
     con.execute(f"""
         CREATE TABLE ppl AS
-        SELECT contact_id, normalized_domain,
+        SELECT person_id AS contact_id, normalized_domain,
                {_norm_li('person_linkedin_url')} AS li_norm,
                {_norm_name('full_name')} AS name_norm,
                (source_platform='sfnet') AS is_sfnet

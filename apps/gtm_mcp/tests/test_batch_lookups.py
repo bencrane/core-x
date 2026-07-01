@@ -37,7 +37,7 @@ batch_lookups = pytest.importorskip(
 
 COMPANY_DOC = ["company_id", "company_name", "normalized_domain",
                "company_linkedin_url", "source_platform"]
-PEOPLE_DOC = ["contact_id", "company_id", "normalized_domain", "full_name",
+PEOPLE_DOC = ["person_id", "contact_id", "company_id", "normalized_domain", "full_name",
               "first_name", "last_name", "title", "person_linkedin_url", "source_platform"]
 SAM_ENTITY_DOC = ["uei", "cage_code", "primary_naics", "legal_business_name"]
 _FILLER = [f"filler_{i}" for i in range(8)]
@@ -73,9 +73,11 @@ def wired(tmp_path, monkeypatch):
         companies.append({"company_id": f"co{i}", "company_name": f"Company {i}",
                           "normalized_domain": dom, "company_linkedin_url": f"li/{i}",
                           "source_platform": "fixture", **{k: f"c{i}{k}" for k in _FILLER}})
-        # two people per domain → list grouping is non-trivial
+        # two people per domain → list grouping is non-trivial.
+        # EXPAND migration: people carries BOTH person_id and contact_id (same value).
         for j in range(2):
-            people.append({"contact_id": f"ct{i}_{j}", "company_id": f"co{i}",
+            people.append({"person_id": f"ct{i}_{j}", "contact_id": f"ct{i}_{j}",
+                           "company_id": f"co{i}",
                            "normalized_domain": dom, "full_name": f"Person {i}.{j}",
                            "first_name": f"F{i}", "last_name": f"L{i}", "title": "VP",
                            "person_linkedin_url": f"li/in/{i}_{j}", "source_platform": "fixture",

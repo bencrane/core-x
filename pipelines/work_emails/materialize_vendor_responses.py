@@ -56,20 +56,22 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 25000  # rows carry verbatim provider blobs → smaller batches
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id"],
+    "BTREE": ["contact_id", "person_id"],
     "BITMAP": ["source_vendor"],
 }
 
 # Straight 1:1 projection of ops.email_resolutions. Raw provider columns → JSON text (lossless).
+# person_id mirrors contact_id (same value); it has no source column, so _sql aliases it.
 _COLS = [
-    "contact_id", "email", "source_vendor", "source_tier", "certainty",
+    "contact_id", "person_id", "email", "source_vendor", "source_tier", "certainty",
     "company_domain", "person_linkedin_url",
     "icypeas_raw", "leadmagic_raw", "blitz_email_raw",
     "batch_label", "resolved_at",
 ]
-_NOT_NULL = {"contact_id", "resolved_at"}
+_NOT_NULL = {"contact_id", "person_id", "resolved_at"}
 _INT_COLS = {"source_tier"}
 _JSON_COLS = {"icypeas_raw", "leadmagic_raw", "blitz_email_raw"}  # whole-blob VERBATIM via CAST AS VARCHAR
+_ALIAS_COLS = {"person_id": "contact_id"}  # projected as <source> AS <col> (no own source column)
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -129,10 +131,14 @@ def _schema():
 
 def _sql(where: str = "") -> str:
     """Straight 1:1 projection. The three provider raw jsonb columns → VARCHAR (lossless JSON
-    text, whole blob, never split). Column order matches _schema()."""
-    proj = ",\n        ".join(
-        f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c for c in _COLS
-    )
+    text, whole blob, never split). Alias columns (person_id) project <source> AS <col>.
+    Column order matches _schema()."""
+    def _p(c: str) -> str:
+        if c in _ALIAS_COLS:
+            return f"{_ALIAS_COLS[c]} AS {c}"
+        return f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c
+
+    proj = ",\n        ".join(_p(c) for c in _COLS)
     return f"""
         SELECT
         {proj},

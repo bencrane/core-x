@@ -2,7 +2,7 @@
 """Sync the Close lead/contact crosswalk: core-x Lance ledger → hq-x public.close_crosswalk.
 
 The Close→Insights webhook resolves an incoming call (close_lead_id / close_contact_id) to a
-briefing anchor (normalized_domain) + the active/people contact_id. That resolution table lives
+briefing anchor (normalized_domain) + the active/people person_id. That resolution table lives
 in hq-x Postgres (read by the BFF on the service-role key). This job mirrors the SoR mapping
 (active/close_sfnet_leads, written by push_sfnet_to_close.py) into it.
 
@@ -45,21 +45,21 @@ def main() -> int:
     con.register("mc_r", lance.dataset(f"{ACTIVE}/sfnet_main_contacts/", storage_options=so).scanner(
         columns=["sfnet_person_id", "company_name", "linkedin_url"]).to_reader())
     con.register("ph_r", lance.dataset(f"{ACTIVE}/phone_resolutions/", storage_options=so).scanner(
-        columns=["contact_id", "person_linkedin_url", "phone", "phone_type", "resolved_at"]).to_reader())
+        columns=["person_id", "person_linkedin_url", "phone", "phone_type", "resolved_at"]).to_reader())
     con.execute("CREATE TABLE led AS SELECT * FROM led_r")
     con.execute("CREATE TABLE mc AS SELECT * FROM mc_r")
     # contact_phone = the SAME best phone the push sent to Close (so it equals the number Close
     # dials, i.e. the webhook's remote_phone). Best = prefer mobile, then most recent; digits only.
     con.execute(f"""
         CREATE TABLE ph_best AS
-        SELECT contact_id, {_NL.format(c='person_linkedin_url')} li,
+        SELECT person_id, {_NL.format(c='person_linkedin_url')} li,
                regexp_replace(phone,'[^0-9]','','g') AS digits
         FROM (
-          SELECT *, row_number() OVER (PARTITION BY contact_id
+          SELECT *, row_number() OVER (PARTITION BY person_id
             ORDER BY (lower(coalesce(phone_type,''))='mobile') DESC, resolved_at DESC) rn
           FROM ph_r WHERE phone IS NOT NULL) WHERE rn=1
     """)
-    con.execute("CREATE TABLE ph_cid AS SELECT contact_id, any_value(digits) digits FROM ph_best WHERE contact_id IS NOT NULL GROUP BY 1")
+    con.execute("CREATE TABLE ph_cid AS SELECT person_id, any_value(digits) digits FROM ph_best WHERE person_id IS NOT NULL GROUP BY 1")
     con.execute("CREATE TABLE ph_li AS SELECT li, any_value(digits) digits FROM ph_best WHERE li IS NOT NULL GROUP BY 1")
     rows = con.execute(f"""
         SELECT l.close_contact_id, l.close_lead_id, l.normalized_domain, l.resolved_contact_id,
@@ -67,7 +67,7 @@ def main() -> int:
                nullif(coalesce(pc.digits, pl.digits), '') AS contact_phone
         FROM led l
         LEFT JOIN mc ON mc.sfnet_person_id = l.sfnet_person_id
-        LEFT JOIN ph_cid pc ON pc.contact_id = l.resolved_contact_id
+        LEFT JOIN ph_cid pc ON pc.person_id = l.resolved_contact_id
         LEFT JOIN ph_li  pl ON pl.li = {_NL.format(c='mc.linkedin_url')} AND mc.linkedin_url IS NOT NULL
         WHERE l.close_contact_id IS NOT NULL
     """).fetchall()

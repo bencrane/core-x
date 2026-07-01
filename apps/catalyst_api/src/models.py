@@ -671,6 +671,7 @@ class PersonMatch(_Model):
     company_id: str | None = None
     normalized_domain: str | None = None
     contact_id: str | None = None
+    person_id: str | None = None
     source_platform: str | None = None
 
     @classmethod
@@ -683,6 +684,7 @@ class PersonMatch(_Model):
             company_id=r.get("company_id"),
             normalized_domain=r.get("normalized_domain"),
             contact_id=r.get("contact_id"),
+            person_id=(r.get("person_id") or r.get("contact_id")),
             source_platform=r.get("source_platform"),
         )
 

@@ -52,17 +52,19 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "email", "company_domain"],
+    "BTREE": ["contact_id", "person_id", "email", "company_domain"],
     "BITMAP": ["verification_status", "mv_resultcode"],
 }
 
+# person_id mirrors contact_id (same value); it has no source column, so _sql aliases it.
 _COLS = [
-    "contact_id", "email", "verification_status", "mv_resultcode", "mv_result",
+    "contact_id", "person_id", "email", "verification_status", "mv_resultcode", "mv_result",
     "mv_quality", "mv_subresult", "source", "company_domain", "mv_raw", "attempts",
     "batch_label", "resolved_at",
 ]
-_NOT_NULL = {"contact_id", "email", "verification_status", "resolved_at"}
+_NOT_NULL = {"contact_id", "person_id", "email", "verification_status", "resolved_at"}
 _JSON_COLS = {"mv_raw", "attempts"}
+_ALIAS_COLS = {"person_id": "contact_id"}  # projected as <source> AS <col> (no own source column)
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -121,10 +123,14 @@ def _schema():
 
 
 def _sql(where: str = "") -> str:
-    """Straight 1:1 projection. jsonb columns → VARCHAR (lossless JSON text)."""
-    proj = ",\n        ".join(
-        f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c for c in _COLS
-    )
+    """Straight 1:1 projection. jsonb columns → VARCHAR (lossless JSON text). Alias columns
+    (person_id) project <source> AS <col>."""
+    def _p(c: str) -> str:
+        if c in _ALIAS_COLS:
+            return f"{_ALIAS_COLS[c]} AS {c}"
+        return f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c
+
+    proj = ",\n        ".join(_p(c) for c in _COLS)
     return f"""
         SELECT
         {proj},

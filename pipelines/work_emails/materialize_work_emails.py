@@ -57,7 +57,7 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "email_norm", "company_domain"],
+    "BTREE": ["contact_id", "person_id", "email_norm", "company_domain"],
     "BITMAP": ["verification_status", "source_vendor", "mv_resultcode"],
 }
 
@@ -104,6 +104,7 @@ def _schema():
     ts = pa.timestamp("us", tz="UTC")
     return pa.schema([
         pa.field("contact_id",          pa.string(), nullable=False),  # PK · BTREE
+        pa.field("person_id",           pa.string(), nullable=False),  # == contact_id · BTREE
         pa.field("email",               pa.string(), nullable=True),   # VERBATIM as resolved (may be NULL)
         pa.field("email_norm",          pa.string(), nullable=True),   # derived bridge · BTREE
         pa.field("verification_status", pa.string(), nullable=False),  # BITMAP
@@ -166,6 +167,7 @@ def _sql(where: str = "") -> str:
     )
     SELECT
         contact_id,
+        contact_id AS person_id,
         email,
         nullif(lower(trim(email)), '') AS email_norm,
         verification_status,

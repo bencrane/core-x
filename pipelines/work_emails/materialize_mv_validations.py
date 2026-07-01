@@ -57,7 +57,7 @@ DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000
 
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "email"],
+    "BTREE": ["contact_id", "person_id", "email"],
     "BITMAP": ["verification_status", "mv_resultcode", "source_table"],
 }
 
@@ -104,6 +104,7 @@ def _schema():
     ts = pa.timestamp("us", tz="UTC")
     return pa.schema([
         pa.field("contact_id",          pa.string(), nullable=False),  # PK · BTREE
+        pa.field("person_id",           pa.string(), nullable=False),  # == contact_id · BTREE
         pa.field("email",               pa.string(), nullable=True),   # validated email (verbatim) · BTREE
         pa.field("verification_status", pa.string(), nullable=True),   # BITMAP
         pa.field("mv_resultcode",       pa.int64(),  nullable=True),   # BITMAP · derived pull-out
@@ -150,7 +151,7 @@ def _sql(where: str = "") -> str:
         FROM unified
     )
     SELECT
-        contact_id, email, verification_status,
+        contact_id, contact_id AS person_id, email, verification_status,
         mv_resultcode, mv_result, mv_quality, mv_subresult,
         mv_raw, source_table, company_domain, batch_label, resolved_at,
         now() AS materialized_at
