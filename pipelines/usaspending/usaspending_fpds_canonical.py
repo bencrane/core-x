@@ -1201,13 +1201,14 @@ if modal is not None:
     # NO auto-retries anywhere (pipeline discipline): a failed build is diagnosed, never re-fired
     # blind. ephemeral_disk expands /tmp → DuckDB spill + the local Lance stage both land on it.
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 12, memory=196_608, cpu=16.0,
-                        ephemeral_disk=512_000, retries=0)
+                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
     def build_fn(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         return build(since=since, target_uri=target_uri)
 
     # Index = the RAM-bound external sort (LANCE_BYPASS_SPILLING) — sized ≥96 GiB with headroom.
+    # No ephemeral_disk: its pressure is RAM, not local disk (Modal's floor is 512 GiB — wasteful here).
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 6, memory=196_608, cpu=8.0,
-                        ephemeral_disk=131_072, retries=0)
+                        retries=0)
     def index_fn(target_uri: str = CANONICAL_URI) -> dict:
         return index(target_uri=target_uri)
 
