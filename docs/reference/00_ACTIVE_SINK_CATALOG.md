@@ -43,6 +43,17 @@
 > write, since `work_emails` is an overwrite projection of the HQX email arms). `work_emails`
 > **110,212 → 139,775** rows; cohort FK-joins the people spine 29,563/29,563, 0 orphans. MV verdict
 > carried: verified 20,174 · risky 6,670 · unresolved 2,719.
+
+> **Update 2026-07-01 — LeadMagic mobile enrichment on staffing decision-makers → `phone_resolutions`.**
+> Ran the deployed `leadmagic-phone-finder-resolve` Trigger.dev task (prod) over the 12,127 owner-level +
+> VP decision-makers at 1–1,000-employer staffing firms (title-classified exclude-first), passing
+> `profile_url`+`work_email` per LeadMagic's highest-match-rate guidance. Canonical protocol: Trigger →
+> universal dispatcher → Modal `run_leadmagic_phone` → `ops.phone_resolutions` (`source_vendor='leadmagic'`,
+> `batch_label='dexarchive_staffing_dm_2026-07-01'`) → `materialize_phone_resolutions.py::run`. **10,591
+> mobiles found (87.3% hit rate)**, 1,536 free misses, 52,955 credits, 0 errors. `phone_resolutions`
+> **62,128 → 89,038** rows; the 10,591 mobiles key by `person_id` into the spine (staffing-cohort mobile
+> coverage 0 → 35.8%). Trigger helper: `scripts/trigger_leadmagic_phone_run.mjs`.
+
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -434,7 +445,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `pdl_companies` | 35,446,771 | 12 | BTree(pdl_company_id); BTree(company_name); BTree(linkedin_url); BTree(domain); BTree(locality); BTree(year_founded); Bitmap(industry); Bitmap(country); Bitmap(region); Bitmap(employee_size_range) |
 | `pdl_normalized_companies` | 35,446,771 | 15 | BTree(pdl_company_id); BTree(company_name_norm); BTree(company_legal_base); BTree(normalized_domain); BTree(linkedin_slug); Bitmap(is_generic_domain) |
 | `people` | 98,805 | 9 | BTree(company_id); BTree(normalized_domain); BTree(person_linkedin_url); BTree(person_id) |
-| `phone_resolutions` | 62,128 | 13 | BTree(person_id); BTree(person_linkedin_url); BTree(company_domain); BTree(phone); Bitmap(phone_status); Bitmap(phone_type); Bitmap(source_vendor); Bitmap(country_code) |
+| `phone_resolutions` | 89,038 | 13 | BTree(person_id); BTree(person_linkedin_url); BTree(company_domain); BTree(phone); Bitmap(phone_status); Bitmap(phone_type); Bitmap(source_vendor); Bitmap(country_code) |
 | `prospeo_company_export` | 10,711 | 77 | BTree(record_id); BTree(prospeo_company_id); BTree(domain_norm); BTree(company_domain); Bitmap(company_country_code); Bitmap(company_state); Bitmap(capital_provider_json_capital_type); Bitmap(ag_financing_classification_is_ag_financing_provider) |
 | `sfnet_main_contacts` | 168 | 18 | BTree(normalized_domain); BTree(linkedin_url); BTree(resolved_contact_id); BTree(resolved_company_id); BTree(sfnet_person_id); BTree(sfnet_company_id) |
 | `staffing_agencies` | 24,398 | 16 | BTree(domain_norm); BTree(company_linkedin_url); Bitmap(employee_band); Bitmap(firmo_source) |
