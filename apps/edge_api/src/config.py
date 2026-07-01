@@ -153,6 +153,27 @@ def close_booking_field_map() -> dict:
     return {}
 
 
+# ── Booking confirmation email (Resend) — the attendee's ONLY confirmation ────────────────────────
+# cal.com is configured silent to attendees (org "Disable all booking emails to guests"), so edge_api
+# sends the confirmation itself from the create path (/internal/cal/book) via Resend.
+def resend_api_key() -> str | None:
+    """Resend API key (``re_...``) for the booking confirmation email. From ``core-x/prd``
+    (``RESEND_API_KEY``). When unset, the confirmation is skipped (best-effort, logged)."""
+    return os.environ.get("RESEND_API_KEY")
+
+
+def booking_email_from() -> str:
+    """The ``From`` header for the booking confirmation — a display name + address on a
+    Resend-VERIFIED domain (else Resend rejects the send). Override with ``BOOKING_EMAIL_FROM``."""
+    return os.environ.get("BOOKING_EMAIL_FROM", "Engineered Demand <bookings@engineereddemand.com>")
+
+
+def booking_email_reply_to() -> str | None:
+    """Optional ``Reply-To`` for the booking confirmation (e.g. the rep's address). Unset → Resend
+    uses the ``From``. Override with ``BOOKING_EMAIL_REPLY_TO``."""
+    return os.environ.get("BOOKING_EMAIL_REPLY_TO")
+
+
 def docraptor_api_key() -> str | None:
     """DocRaptor API key. Used in LIVE mode (``test=false``) — test output is watermarked."""
     return os.environ.get("DOCRAPTOR_API_KEY")
