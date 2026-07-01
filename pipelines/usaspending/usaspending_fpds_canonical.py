@@ -12,20 +12,34 @@ CANONICAL VOCABULARY = the FPDS bulk_download/awards names (FRESH/archive carry 
 BULK is crosswalked into that vocabulary via the rpt.* map. BULK-only enrichment columns keep
 their rpt.* names verbatim.
 
-MERGE (design_spec.md §3, defect-resolved):
+MERGE (TWO-TIER logical reconciliation; monthly-CSV corrections land + monthly-unique enrichment):
   • s()/kbulk() sentinel macros applied IDENTICALLY on every source — whole-string ''/'-NONE-' → NULL.
-  • fresh_latest: FRESH deduped to latest-per-key (deterministic tiebreaker).
-  • bulk_latest: ONE per-key collapse over FULL BULK (enrichment-maximizing deterministic dedup),
-    serving THREE roles — (A) the per-key precedence probe, (B) the uniform enrichment source for
-    EVERY leg, (C) the BULK-only survivor body. 109M scanned ONCE.
-  • Precedence (BLOCKER-1): per shared FRESH∩BULK key the volatile-core winner is MAX(last_modified_date),
-    tie-break FRESH — BULK wins the core ONLY when STRICTLY newer; NOT "FRESH always wins".
-  • Enrichment (BLOCKER-2): always sourced from bulk_latest per key, uniformly across all legs.
-  • bulk_only + arch_survivors anti-joins (archive anti-joins bulk_keys_full, the FULL BULK universe).
-  • UNION ALL BY NAME of the three disjoint key universes (no positional transposition).
-  • Tombstone: ANTI JOIN on the delta-'D' keys. The delta scanner is filtered ONLY by
-    correction_delete_ind='D' and NEVER receives --since (all 656 'D' rows have action_date=NULL).
-  • Fail-closed PK-uniqueness gate raises BEFORE publish on any dup.
+  • fresh_latest / bulk_latest / monthly_latest: EACH source collapsed to latest-per-key (deterministic
+    tiebreaker). bulk_latest is ONE per-key collapse over FULL BULK (109M scanned ONCE). monthly_latest
+    is collapsed over the FULL monthly projection (NOT an anti-joined survivor set), so monthly competes
+    on shared keys — THE fix. (MONTHLY = the monthly bulk-download CSV feed; its physical R2 upstream is
+    still named usaspending_archive_*_fpds — a tracked rename follow-up. In-code the semantic name is
+    MONTHLY.)
+  • TIER 1  bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized): per-key
+    argmax(last_modified_date); equal-mtime tie → MONTHLY wins over pg. The reconciled base is the
+    semantic source of the enrichment fill.
+  • TIER 2  canonical core = bulk_base ⊕ fresh_latest: per-key argmax; tie → FRESH. argmax is
+    associative, so this two-tier order is executed as ONE flat 3-way row_number() window over the
+    union of the three collapsed cores (source_rank FRESH<MONTHLY<BULK) — emitted CORE stays
+    byte-identical to the pre-two-tier build (monthly.mtime ≥ pg on 100% of shared FY2026 keys).
+  • Enrichment: pg-preferred fill from the reconciled base. 27 pg-only enrich cols = plain bulk_latest;
+    12 monthly-unique cols (Treasury/federal-account funding + highly_compensated_officer_1..5 name +
+    amount — pg LACKS all 12) = COALESCE(pg, monthly), monthly leg from a SEPARATE
+    enrichment-populatedness dedup (monthly_enrich_latest). LEFT JOINs to PK-unique collapses → no
+    fan-out. recipient_uei is CORE (argmax-resolved), NOT enrichment.
+  • canonical_source: derived ONCE as the winning core row's src tag (fresh|bulk|monthly) — the true
+    per-key winner, never a partition literal.
+  • Tombstone (R6-scoped) − reinstatement (R5): delete_keys is scoped to the LATEST
+    archive_snapshot_stamp (an old-month delete must not tombstone forever). A 'D' key is honored only
+    when the reconciled winner mtime is NOT strictly newer than the delete mtime; a strictly-newer
+    non-'D' row REINSTATES the key. One coupled final-state op applied to `resolved` (post fresh
+    overlay). The delta scanner is filtered ONLY by correction_delete_ind='D' and NEVER receives --since.
+  • Fail-closed PK-uniqueness gate raises BEFORE publish on any dup (structural: one survivor per key).
 
 DISCIPLINES (d.8 / fleet rules):
   • module-top os.environ.setdefault("LANCE_BYPASS_SPILLING","true") BEFORE any import lance.
@@ -275,6 +289,36 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": "total_funding_amount", "duck_type": "DOUBLE", "group": "enrich",
      "bulk_expr": "total_funding_amount", "feed_expr": None},
 
+    # ---- (c2) MONTHLY-unique enrichment (canonical-vocab; pg/BULK LACKS all 12 → bulk_expr None =
+    #   typed NULL on the BULK leg; monthly/archive is the SOLE populated source via feed_expr s()).
+    #   COALESCE(pg, monthly) per key in the enrich block degenerates to monthly-only (pg absent),
+    #   but the COALESCE form ships correctly and future-proofs a pg schema add. Names + TAS/federal-
+    #   account lists stay VARCHAR; officer *_amount cols are typed DOUBLE (proven 0/507,542 non-castable). ----
+    {"canonical": "treasury_accounts_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(treasury_accounts_funding_this_award)"},
+    {"canonical": "federal_accounts_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(federal_accounts_funding_this_award)"},
+    {"canonical": "highly_compensated_officer_1_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_1_name)"},
+    {"canonical": "highly_compensated_officer_2_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_2_name)"},
+    {"canonical": "highly_compensated_officer_3_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_3_name)"},
+    {"canonical": "highly_compensated_officer_4_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_4_name)"},
+    {"canonical": "highly_compensated_officer_5_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_5_name)"},
+    {"canonical": "highly_compensated_officer_1_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_1_amount) AS DOUBLE)"},
+    {"canonical": "highly_compensated_officer_2_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_2_amount) AS DOUBLE)"},
+    {"canonical": "highly_compensated_officer_3_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_3_amount) AS DOUBLE)"},
+    {"canonical": "highly_compensated_officer_4_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_4_amount) AS DOUBLE)"},
+    {"canonical": "highly_compensated_officer_5_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)"},
+
     # ---- (d) provenance ----
     {"canonical": "canonical_source", "duck_type": "VARCHAR", "group": "prov",
      "bulk_expr": None, "feed_expr": None},   # literal per leg
@@ -346,16 +390,21 @@ def _feed_source_cols() -> list[str]:
 # =========================================================================================== #
 # Generated SQL builders (pure strings — NO R2; safe to print for inspection)
 # =========================================================================================== #
-def _proj_select(side: str, source_literal: str, built_at_iso: str) -> str:
+def _proj_select(side: str, built_at_iso: str) -> str:
     """Generate ONE per-source projection SELECT body in the canonical column order.
     side: 'bulk' | 'feed'. For 'feed', enrichment columns project as typed NULL placeholders.
-    Provenance: canonical_source literal + built_at injected literal."""
+    Provenance: built_at injected literal ONLY. canonical_source is NOT projected here — it is
+    derived per-key from the winning core row's src tag in `resolved` (Variant B, INV-7), so the
+    three *_proj relations omit canonical_source IDENTICALLY and the schema-identity gate still passes."""
     lines = []
     for c in COLUMN_SPEC:
         canon = c["canonical"]
         if c["group"] == "prov":
             if canon == "canonical_source":
-                lines.append(f"  '{source_literal}' AS canonical_source")
+                # Derived downstream (w.src AS canonical_source in `resolved`); projected as a typed
+                # NULL placeholder here so the projection carries the column in the locked order and
+                # the schema-identity gate compares it identically across all three legs.
+                lines.append(f"  {_typed_null(c)} AS canonical_source")
             else:  # built_at
                 lines.append(f"  TIMESTAMP '{built_at_iso}' AS built_at")
             continue
@@ -367,27 +416,28 @@ def _proj_select(side: str, source_literal: str, built_at_iso: str) -> str:
     return ",\n".join(lines)
 
 
-def _b_wins_replace_block() -> str:
-    """The §3.5 REPLACE block for the FRESH leg: (i) precedence-resolved volatile-core via the
-    SINGLE b_wins predicate applied to EVERY core column + last_modified_date; (ii) uniform
-    enrichment always from bulk_latest (b). PROGRAM-GENERATED from COLUMN_SPEC — no hand-transcription."""
-    b_wins = "(b.k IS NOT NULL AND b.last_modified_date > f.last_modified_date)"
+def _enrich_replace_block() -> str:
+    """The §3.7 enrichment REPLACE block for `resolved`: overwrite every enrichment column keyed on
+    the transaction key, INDEPENDENT of which source won the volatile core. PROGRAM-GENERATED from
+    COLUMN_SPEC — no hand-transcription. The volatile-core winner is already resolved in
+    `core_winner`, so this block touches ONLY the enrichment half.
+
+    Variant C — BRANCH per enrichment column by source availability:
+      • pg-only enrich (feed_expr None; the 27 rpt.* cols): plain b.<col> from bulk_latest (pg). No
+        monthly source exists → no COALESCE.
+      • monthly-unique enrich (feed_expr set; the 12 TAS/federal + officer-comp cols): pg LACKS these
+        canonical columns entirely, so the value is pg-preferred COALESCE(b.<col>, m.<col>) sourced
+        from the reconciled bulk_base = pg⊕monthly. The pg leg (b) is a typed NULL placeholder for
+        these 12 (bulk_expr None), so today the COALESCE degenerates to m.<col>; the form is kept so
+        a future pg schema add is picked up automatically. m = monthly_enrich_latest (an
+        enrichment-populatedness dedup, NOT monthly_latest's core dedup — see §3.6b)."""
     parts = []
-    # (i) volatile-core (group 'core') — every column, identical predicate.
-    for c in _cols("core"):
-        col = c["canonical"]
-        parts.append(f"    CASE WHEN {b_wins} THEN b.{col} ELSE f.{col} END AS {col}")
-    # (ii) enrichment — always b (NULL when no BULK match: the genuine FRESH-only tail).
     for c in _cols("enrich"):
         col = c["canonical"]
-        parts.append(f"    b.{col} AS {col}")
-    return ",\n".join(parts)
-
-
-def _arch_enrich_replace_block() -> str:
-    """archive_final REPLACE: enrichment only (b.* is NULL by construction — arch keys ∉ BULK).
-    Generated identically to the (ii) enrichment half so the REPLACE targets match the other legs."""
-    parts = [f"    b.{c['canonical']} AS {c['canonical']}" for c in _cols("enrich")]
+        if c["feed_expr"] is None:
+            parts.append(f"    b.{col} AS {col}")
+        else:
+            parts.append(f"    COALESCE(b.{col}, m.{col}) AS {col}")
     return ",\n".join(parts)
 
 
@@ -395,9 +445,9 @@ def _projections_sql(built_at_iso: str) -> str:
     """The macros + the THREE per-source projection CREATEs (design §3.1). Executed as ONE
     multi-statement script (DuckDB con.execute handles ;-separated statements natively), THEN the
     schema-identity gate runs against bulk_proj/fresh_proj/archive_proj before the merge tail."""
-    bulk_proj = _proj_select("bulk", "bulk", built_at_iso)
-    fresh_proj = _proj_select("feed", "fresh", built_at_iso)
-    arch_proj = _proj_select("feed", "archive_full", built_at_iso)
+    bulk_proj = _proj_select("bulk", built_at_iso)
+    fresh_proj = _proj_select("feed", built_at_iso)
+    arch_proj = _proj_select("feed", built_at_iso)
     return f"""{_MACROS}
 -- ===== §3.1 per-source projections (identical canonical column NAME+ORDER+TYPE) ===== --
 CREATE TEMP TABLE bulk_proj AS
@@ -417,14 +467,48 @@ FROM archive_r;
 """
 
 
-def _merge_tail_sql() -> str:
-    """The merge tail (design §3.2–§3.6): dedup → bulk_latest collapse → survivor universes →
-    precedence-resolved core + uniform enrichment → UNION ALL BY NAME → tombstone → canonical_out.
-    Pure string; references the *_proj TEMP TABLEs created by _projections_sql + the registered
-    archive_delta_D relation. Executed as ONE multi-statement script."""
-    b_wins_block = _b_wins_replace_block()
-    arch_enrich_block = _arch_enrich_replace_block()
+DELTA_STAMP_COL = "archive_snapshot_stamp"
+
+
+def _merge_tail_sql(delta_has_stamp: bool = True) -> str:
+    """The merge tail — TWO-TIER logical reconciliation, ONE physical artifact. Pipeline:
+      fresh_latest / bulk_latest / monthly_latest  (≤1 row per key each, deterministic collapse)
+        → bulk_base    (Tier 1, LOGICAL CTE — NOT materialized as a separate artifact: pg⊕monthly
+                        per-key argmax(last_modified_date); equal-mtime tie → monthly WINS over pg)
+        → core_union   (UNION ALL BY NAME of the three collapsed CORES, each tagged src+source_rank)
+        → core_winner  (Tier 2, SINGLE 3-way window: argmax(last_modified_date) per key, total-order
+                        tiebreak — associativity-equivalent to (bulk_base ⊕ fresh_latest); tie→FRESH)
+        → monthly_enrich_latest (§3.6b enrichment-populatedness dedup — the monthly leg of the fill)
+        → resolved     (LEFT JOIN bulk_latest [pg] + LEFT JOIN monthly_enrich_latest [monthly] →
+                        branched enrichment REPLACE [COALESCE pg-preferred for the 12 monthly-unique
+                        cols, plain pg for the 27] + w.src AS canonical_source)
+        → canonical_out(R6-scoped tombstone with R5 reinstatement + locked canonical projection)
+
+    TWO-TIER INVARIANT (CORE byte-identity): the emitted CORE is argmax(last_modified_date) over
+    {FRESH, BULK, MONTHLY}. argmax is associative, so the explicit two-tier framing
+    (bulk_base = BULK⊕MONTHLY, then canonical = bulk_base⊕FRESH) is IDENTICAL to the flat 3-way
+    window kept below. The tier-1 equal-mtime tie (monthly>pg) is subsumed by source_rank
+    (MONTHLY=2 < BULK=3) in the flat window; the tier-2 tie (fresh) by FRESH=1. Proven on the
+    --since 2025-10-01 window: monthly.mtime ≥ pg on 100% of 2,189,379 shared FY2026 keys (0 older),
+    so the flat window emits byte-identical CORE. bulk_base is retained as a documented LOGICAL CTE
+    so the reconciled base is the semantic source of the enrichment fill; it is NOT a second physical
+    Lance dataset — the single artifact usaspending_fpds_canonical_txn/ is unchanged.
+
+    THE FIX (correction landing): MONTHLY competes for the volatile core on EVERY key (monthly_latest
+    is collapsed over the FULL monthly projection, not an anti-joined survivor set), so a
+    strictly-newer monthly correction lands for keys shared with BULK/FRESH. PK-uniqueness is
+    structural (row_number()=1 over ≤1-per-source collapses). Pure string; references the *_proj TEMP
+    TABLEs + archive_delta_D relation. Executed as ONE multi-statement script."""
+    enrich_block = _enrich_replace_block()
     canon_cols = ", ".join(_canon_order())
+    # R6 stamp scoping fragments — only when the delta feed actually carries the stamp column.
+    if delta_has_stamp:
+        latest_stamp_expr = f"max({DELTA_STAMP_COL}) AS s"
+        stamp_predicate = (f", latest WHERE {DELTA_STAMP_COL} = latest.s "
+                           f"OR (latest.s IS NULL AND {DELTA_STAMP_COL} IS NULL)")
+    else:
+        latest_stamp_expr = "CAST(NULL AS VARCHAR) AS s"
+        stamp_predicate = ""
     return f"""-- ===== §3.2 FRESH dedup → latest-per-key (deterministic tiebreaker) ===== --
 CREATE TEMP TABLE fresh_latest AS
 SELECT * EXCLUDE (rn) FROM (
@@ -437,12 +521,11 @@ SELECT * EXCLUDE (rn) FROM (
   FROM fresh_proj
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
-CREATE TEMP TABLE fresh_keys AS
-  SELECT DISTINCT contract_transaction_unique_key AS k FROM fresh_latest;
 
--- ===== §3.3 single bulk_latest collapse (one row per BULK txn_key; roles A/B/C) ===== --
+-- ===== §3.3 single bulk_latest collapse (one row per BULK txn_key; ONE 107M scan) ===== --
 -- enrichment-maximizing deterministic dedup: latest mtime, then prefer populated enrichment,
--- then stable transaction_id surrogate.
+-- then stable transaction_id surrogate. bulk_latest is the SOLE enrichment source (role B) AND a
+-- competitor in the core resolution (role A/C) — no separate 107M×78 bl_probe copy is materialized.
 CREATE TEMP TABLE bulk_latest AS
 SELECT * EXCLUDE (rn) FROM (
   SELECT *,
@@ -455,68 +538,144 @@ SELECT * EXCLUDE (rn) FROM (
   FROM bulk_proj
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
-CREATE TEMP TABLE bulk_keys_full AS
-  SELECT contract_transaction_unique_key AS k FROM bulk_latest;
 
--- ===== §3.3b survivor key universes (disjoint by construction) ===== --
-CREATE TEMP TABLE bulk_only AS
-SELECT b.* FROM bulk_latest b
-ANTI JOIN fresh_keys f ON b.contract_transaction_unique_key = f.k;
+-- ===== §3.4 MONTHLY collapse → latest-per-key over the FULL monthly projection (THE fix) ===== --
+-- NOTE: the physical R2 upstream is still usaspending_archive_full_fpds (registered as archive_r →
+-- archive_proj); renaming that dataset is a tracked follow-up. In-code the SEMANTIC name is MONTHLY
+-- (the monthly bulk-download CSV feed). Built over the ENTIRE monthly projection (NOT an anti-joined
+-- survivor set), so monthly competes on shared keys. monthly lacks a stable transaction surrogate →
+-- contract_award_unique_key (the same surrogate fresh_latest uses). monthly_full is FY2026-only
+-- (2025-10-01..2026-06-04): under --since 2025-10-01 monthly_latest is the COMPLETE monthly universe
+-- = complete correction-proof scope. CORE dedup ordering stays core-populatedness/mtime (do NOT
+-- switch to enrichment-populatedness here — that would perturb the core argmax; §3.6b handles the
+-- enrichment-first monthly row SEPARATELY).
+CREATE TEMP TABLE monthly_latest AS
+SELECT * EXCLUDE (rn) FROM (
+  SELECT *, row_number() OVER (
+            PARTITION BY contract_transaction_unique_key
+            ORDER BY last_modified_date DESC NULLS LAST,
+                     (federal_action_obligation IS NULL) ASC,
+                     contract_award_unique_key DESC NULLS LAST) AS rn
+  FROM archive_proj
+  WHERE contract_transaction_unique_key IS NOT NULL
+) WHERE rn = 1;
 
-CREATE TEMP TABLE arch_survivors AS
-SELECT a.* FROM archive_proj a
-ANTI JOIN fresh_keys     f ON a.contract_transaction_unique_key = f.k
-ANTI JOIN bulk_keys_full bk ON a.contract_transaction_unique_key = bk.k
-WHERE a.contract_transaction_unique_key IS NOT NULL
-QUALIFY row_number() OVER (PARTITION BY a.contract_transaction_unique_key
-                           ORDER BY a.last_modified_date DESC NULLS LAST,
-                                    (a.federal_action_obligation IS NULL) ASC,
-                                    a.contract_award_unique_key DESC NULLS LAST) = 1;
-
--- ===== §3.5 precedence-resolved volatile-core + uniform enrichment from bulk_latest ===== --
--- b_wins := (b.k IS NOT NULL AND b.last_modified_date > f.last_modified_date)  -- STRICTLY newer; tie→FRESH
-CREATE TEMP TABLE bl_probe AS
-  SELECT *, contract_transaction_unique_key AS k FROM bulk_latest;
-
-CREATE TEMP TABLE fresh_final AS
-SELECT
-  f.* REPLACE (
-{b_wins_block}
+-- ===== §3.4b TIER-1 bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized) ===== --
+-- Explicit two-tier framing: reconcile pg (bulk) with monthly by per-key argmax(last_modified_date);
+-- equal-mtime tie → MONTHLY WINS over pg (rank 2 < 3). This is the semantic "reconciled base" the
+-- enrichment fill (§3.7) draws from. It is a documented VIEW, not a second Lance artifact; the CORE
+-- values it would emit are subsumed by the flat 3-way core_winner below (argmax associativity), so
+-- it is defined for clarity/traceability and to name the tier boundary — the flat window remains the
+-- executed path, keeping emitted CORE byte-identical to the pre-two-tier build.
+CREATE TEMP VIEW bulk_base AS
+SELECT * EXCLUDE (src, source_rank, rn) FROM (
+  SELECT *, row_number() OVER (
+            PARTITION BY contract_transaction_unique_key
+            ORDER BY last_modified_date DESC NULLS LAST, source_rank ASC,
+                     contract_award_unique_key DESC NULLS LAST) AS rn
+  FROM (
+    SELECT CAST('monthly' AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, m.* FROM monthly_latest m
+    UNION ALL BY NAME
+    SELECT CAST('bulk'    AS VARCHAR) AS src, CAST(3 AS INTEGER) AS source_rank, b.* FROM bulk_latest b
   )
-FROM fresh_latest f
-LEFT JOIN bl_probe b ON f.contract_transaction_unique_key = b.k;
+) WHERE rn = 1;
 
-CREATE TEMP TABLE arch_final AS
+-- ===== §3.5 three collapsed CORES → vertical union, each tagged src + source_rank ===== --
+-- src CAST identically as VARCHAR and source_rank as INTEGER in all three arms so BY-NAME union
+-- types align. source_rank encodes the locked precedence FRESH(1) > MONTHLY(2) > BULK(3) — which is
+-- exactly the two-tier order flattened: tier-2 tie→FRESH (rank 1), tier-1 tie→MONTHLY (rank 2 < 3).
+CREATE TEMP TABLE core_union AS
+SELECT CAST('fresh'   AS VARCHAR) AS src, CAST(1 AS INTEGER) AS source_rank, f.* FROM fresh_latest f
+UNION ALL BY NAME
+SELECT CAST('monthly' AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, a.* FROM monthly_latest a
+UNION ALL BY NAME
+SELECT CAST('bulk'    AS VARCHAR) AS src, CAST(3 AS INTEGER) AS source_rank, b.* FROM bulk_latest b;
+
+-- ===== §3.6 SINGLE 3-way per-key core resolution: argmax(last_modified_date) (= flat two-tier) ===== --
+-- Provably total order: after the three upstream collapses there is AT MOST one row per source per
+-- key, so source_rank alone disambiguates every cross-source mtime tie; the trailing award-key term
+-- is defense-in-depth. NULL mtime sorts LAST (= oldest) per BLOCKER-1. Exactly one survivor per key
+-- (row_number()=1) → PK-uniqueness is structural, not anti-join-disjointness-dependent. This flat
+-- window is argmax-associativity-identical to Tier2(bulk_base ⊕ fresh_latest); see §3.4b.
+CREATE TEMP TABLE core_winner AS
+SELECT * EXCLUDE (rn, source_rank) FROM (
+  SELECT *, row_number() OVER (
+            PARTITION BY contract_transaction_unique_key
+            ORDER BY last_modified_date DESC NULLS LAST,
+                     source_rank ASC,
+                     contract_award_unique_key DESC NULLS LAST) AS rn
+  FROM core_union
+) WHERE rn = 1;
+
+-- ===== §3.6b monthly ENRICHMENT-populatedness dedup (the monthly leg of the COALESCE) ===== --
+-- SEPARATE from monthly_latest's CORE dedup (§3.4): that one ranks on core-populatedness/mtime and
+-- can surface a latest-but-enrich-NULL row, forfeiting the gain. Here rank ENRICHMENT-populated rows
+-- ABOVE enrich-NULL rows for the same key, then latest-mtime among equally-populated, then a stable
+-- award-key surrogate. On the --since 2025-10-01 window the delta vs the latest-mtime dedup is
+-- empirically 0 (every key's latest-mtime monthly row already carries its enrichment), so CORE stays
+-- byte-identical; it is REQUIRED as a cadence-robustness safeguard for a future core-only monthly
+-- re-dump that lands a newer enrich-NULL row. Keyed downstream on the txn key → ≤1 row per key.
+CREATE TEMP TABLE monthly_enrich_latest AS
+SELECT * EXCLUDE (rn) FROM (
+  SELECT *, row_number() OVER (
+            PARTITION BY contract_transaction_unique_key
+            ORDER BY (treasury_accounts_funding_this_award IS NULL
+                      AND federal_accounts_funding_this_award IS NULL
+                      AND highly_compensated_officer_1_name IS NULL) ASC,
+                     last_modified_date DESC NULLS LAST,
+                     contract_award_unique_key DESC NULLS LAST) AS rn
+  FROM archive_proj
+  WHERE contract_transaction_unique_key IS NOT NULL
+) WHERE rn = 1;
+
+-- ===== §3.7 enrichment fill: pg (bulk_latest) + monthly (monthly_enrich_latest) ===== --
+-- Both LEFT JOINs are to PK-unique per-key collapses → no fan-out. The enrichment REPLACE (§3.7
+-- builder) overwrites the enrich half: plain b.<col> for the 27 pg-only cols; pg-preferred
+-- COALESCE(b.<col>, m.<col>) for the 12 monthly-unique cols (pg is a typed-NULL placeholder for
+-- those, so today COALESCE = m.<col>; the reconciled bulk_base semantics = pg-preferred fill). b is
+-- NULL for archive-only/fresh-only keys; m is NULL for fresh-only/pg-only keys. canonical_source is
+-- derived HERE, exactly once, as the winning core row's src tag (INV-7) — the true per-key winner
+-- (fresh|bulk|monthly), never a partition literal.
+-- EXCLUDE the placeholder canonical_source carried up from the projections (typed NULL) as well as
+-- src, then re-derive canonical_source := w.src. Excluding the placeholder is REQUIRED: keeping it
+-- would collide with `w.src AS canonical_source` and DuckDB would silently rename the derived column
+-- (canonical_source_1), leaving the locked-order projection to read the all-NULL placeholder.
+CREATE TEMP TABLE resolved AS
 SELECT
-  a.* REPLACE (
-{arch_enrich_block}
-  )
-FROM arch_survivors a
-LEFT JOIN bl_probe b ON a.contract_transaction_unique_key = b.k;
+  w.* EXCLUDE (src, canonical_source) REPLACE (
+{enrich_block}
+  ),
+  w.src AS canonical_source
+FROM core_winner w
+LEFT JOIN bulk_latest b ON w.contract_transaction_unique_key = b.contract_transaction_unique_key
+LEFT JOIN monthly_enrich_latest m ON w.contract_transaction_unique_key = m.contract_transaction_unique_key;
 
-CREATE TEMP TABLE bulk_final AS SELECT * FROM bulk_only;
-
--- ===== §3.6 union three disjoint survivor sets (BY NAME) → tombstone anti-join ===== --
-CREATE TEMP TABLE merged AS
-SELECT * FROM fresh_final
-UNION ALL BY NAME SELECT * FROM bulk_final
-UNION ALL BY NAME SELECT * FROM arch_final;
-
+-- ===== §3.8 tombstone (R6-scoped) − reinstatement (R5) → canonical_out ===== --
 -- delta scanner is filtered ONLY by correction_delete_ind='D' (caller side); NEVER --since.
+-- R6 SNAPSHOT-STAMP SCOPING: delta 'D' rows accumulate across monthly snapshots; an OLD-month delete
+-- must NOT tombstone forever. Scope delete_keys to the LATEST archive_snapshot_stamp present in the
+-- delta-'D' set (a single scalar), so only the current snapshot's deletes apply. Guarded by
+-- has_stamp: if the delta feed lacks the stamp column, fall back to the whole 'D' set (no scoping).
 CREATE TEMP TABLE delete_keys AS
-SELECT DISTINCT s(contract_transaction_unique_key) AS k,
+WITH d AS (SELECT * FROM archive_delta_D WHERE s(contract_transaction_unique_key) IS NOT NULL),
+     latest AS (SELECT {latest_stamp_expr} FROM d)
+SELECT s(contract_transaction_unique_key) AS k,
        max(TRY_CAST(replace(s(last_modified_date),'+00','') AS TIMESTAMP)) AS delta_lmt
-FROM archive_delta_D
-WHERE s(contract_transaction_unique_key) IS NOT NULL
+FROM d {stamp_predicate}
 GROUP BY 1;
 
-CREATE TEMP TABLE canonical AS
-SELECT m.* FROM merged m
-ANTI JOIN delete_keys d ON m.contract_transaction_unique_key = d.k;
-
--- final projection in the locked canonical order (defensive — UNION BY NAME already aligned)
+-- R5 REINSTATEMENT GATE: a delete tombstone is honored ONLY when the WINNING RECONCILED-winner row
+-- (post Tier-2, in `resolved`) is NOT strictly newer than the delete's last_modified_date. If the
+-- reconciled winner mtime > delta_lmt, the key was RE-INSTATED by a newer (non-'D') source row after
+-- the delete — do NOT tombstone it. Ground fact (--since 2025-10-01): 92/656 'D' keys are live in
+-- monthly_full; 39 are strictly-newer → those 39 survive. Tombstone-minus-reinstatement is ONE
+-- coupled final-state op applied AFTER the fresh overlay (to `resolved`, never to the base alone).
+-- Implemented as a LEFT JOIN + WHERE: keep a row unless it matches a delete that is NOT reinstated.
 CREATE TEMP TABLE canonical_out AS
-SELECT {canon_cols} FROM canonical;
+SELECT {canon_cols} FROM resolved
+LEFT JOIN delete_keys d ON resolved.contract_transaction_unique_key = d.k
+WHERE d.k IS NULL
+   OR (resolved.last_modified_date IS NOT NULL AND resolved.last_modified_date > d.delta_lmt);
 """
 
 
@@ -607,8 +766,8 @@ def _duck():
 
 
 def _record_run(*, rows_in_bulk, rows_in_fresh, rows_in_archive_full, rows_out, dedup_collapsed,
-                fresh_only_tail, deletes_tombstoned, max_action_date, columns, write_mode,
-                indices_built, status, error, started, completed) -> None:
+                fresh_only_tail, deletes_tombstoned, monthly_corrections_applied, max_action_date,
+                columns, write_mode, indices_built, status, error, started, completed) -> None:
     import psycopg
     dsn = os.environ.get("HQX_DB_URL_POOLED")
     if not dsn:
@@ -624,10 +783,12 @@ def _record_run(*, rows_in_bulk, rows_in_fresh, rows_in_archive_full, rows_out, 
             cur.execute(
                 "INSERT INTO ops.usaspending_fpds_canonical_runs (feed, rows_in_bulk, rows_in_fresh, "
                 "rows_in_archive_full, rows_out, dedup_collapsed, fresh_only_tail, deletes_tombstoned, "
-                "max_action_date, columns, write_mode, indices_built, status, error_message, "
-                "started_at, completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "monthly_corrections_applied, max_action_date, columns, write_mode, indices_built, "
+                "status, error_message, started_at, completed_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (FEED, rows_in_bulk, rows_in_fresh, rows_in_archive_full, rows_out, dedup_collapsed,
-                 fresh_only_tail, deletes_tombstoned, max_action_date, columns, write_mode,
+                 fresh_only_tail, deletes_tombstoned, monthly_corrections_applied, max_action_date,
+                 columns, write_mode,
                  ",".join(indices_built) if indices_built else None, status,
                  (error or "")[:2000] or None, started, completed))
             conn.commit()
@@ -673,6 +834,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
     status, error = "error", None
     rows_in_bulk = rows_in_fresh = rows_in_archive_full = 0
     rows_out = dedup_collapsed = fresh_only_tail = deletes_tombstoned = 0
+    monthly_corrections_applied = 0
     max_action_date = None
     metrics: dict = {}
     con = None
@@ -700,8 +862,11 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         bulk_scan_cols = [c for c in _bulk_source_cols() if c in bulk_present]
         fresh_scan_cols = [c for c in feed_keys_core if c in fresh_present]
         arch_scan_cols = [c for c in feed_keys_core if c in arch_present]
+        # R6: archive_snapshot_stamp scopes delete_keys to the LATEST monthly snapshot. Include it in
+        # the delta scan when present; delta_has_stamp gates the scoping fragments in _merge_tail_sql.
         delta_scan_cols = [c for c in ("contract_transaction_unique_key", "last_modified_date",
-                                       "correction_delete_ind") if c in delta_present]
+                                       "correction_delete_ind", DELTA_STAMP_COL) if c in delta_present]
+        delta_has_stamp = DELTA_STAMP_COL in delta_present
 
         con = _duck()
         log(f"registering sources (since={since}) → target {target_uri}")
@@ -721,7 +886,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         # identity before any union (§4 — programmatic gate). Phase 2: the merge tail.
         con.execute(_projections_sql(built_at_iso))
         _assert_projection_schema_identity(con)
-        con.execute(_merge_tail_sql())
+        con.execute(_merge_tail_sql(delta_has_stamp=delta_has_stamp))
 
         rows_in_bulk = con.execute("SELECT count(*) FROM bulk_proj").fetchone()[0]
         rows_in_fresh = con.execute("SELECT count(*) FROM fresh_proj").fetchone()[0]
@@ -731,25 +896,44 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         pk_total, pk_distinct = con.execute(
             "SELECT count(*), count(DISTINCT contract_transaction_unique_key) FROM canonical_out"
         ).fetchone()
-        # FAIL-CLOSED PK gate — raise BEFORE publish on any dup.
+        # FAIL-CLOSED gate — raise BEFORE publish. This single equality is BOTH INV-1 (PK-unique:
+        # exactly one row per key) AND INV-4 (rows_out == distinct-key count: landing a correction
+        # REPLACES a key's core, never adds/removes a key). rows_out == pk_total by construction, so
+        # pk_total == pk_distinct is precisely rows_out == distinct-key count.
         if pk_total != pk_distinct:
             raise RuntimeError(
-                f"PK-uniqueness gate FAILED: count(*)={pk_total:,} != "
+                f"PK/rows_out gate FAILED (INV-1+INV-4): count(*)={pk_total:,} != "
                 f"count(DISTINCT contract_transaction_unique_key)={pk_distinct:,} "
                 f"({pk_total - pk_distinct:,} dup keys). Aborting publish.")
 
         fresh_only_tail = con.execute(
-            "SELECT count(*) FROM fresh_latest f ANTI JOIN bulk_keys_full b "
-            "ON f.contract_transaction_unique_key = b.k").fetchone()[0]
+            "SELECT count(*) FROM fresh_latest f ANTI JOIN bulk_latest b "
+            "ON f.contract_transaction_unique_key = b.contract_transaction_unique_key").fetchone()[0]
+        # deletes_tombstoned = delete-keys present in resolved that were ACTUALLY dropped — i.e. NOT
+        # R5-reinstated (reinstatement = reconciled winner mtime > delta_lmt). Count the complement of
+        # the reinstatement predicate so this reflects post-R5 truth, not the raw 'D' match count.
         deletes_tombstoned = con.execute(
-            "SELECT count(DISTINCT m.contract_transaction_unique_key) FROM merged m "
-            "JOIN delete_keys d ON m.contract_transaction_unique_key = d.k").fetchone()[0]
-        merged_rows = con.execute("SELECT count(*) FROM merged").fetchone()[0]
+            "SELECT count(DISTINCT r.contract_transaction_unique_key) FROM resolved r "
+            "JOIN delete_keys d ON r.contract_transaction_unique_key = d.k "
+            "WHERE r.last_modified_date IS NULL OR r.last_modified_date <= d.delta_lmt").fetchone()[0]
+        # rows_out INVARIANT: distinct-key count of core_union = |FRESH∪BULK∪MONTHLY keys| (the old
+        # three-disjoint-partition union count); landing a correction REPLACES a key's core, never
+        # adds/removes a key. core_winner has exactly that count (one survivor per key).
+        merged_rows = con.execute("SELECT count(*) FROM core_winner").fetchone()[0]
         dedup_collapsed = int(rows_in_bulk + rows_in_fresh + rows_in_archive_full - merged_rows)
+        # monthly_corrections_applied (grafted audit metric): canonical keys the MONTHLY core WON
+        # over a key BULK also holds — the true correction count (≈46,234 minus any FRESH-even-newer).
+        # SEMI JOIN (NULL-safe), NOT IN. Bounded above by the monthly∩bulk strictly-newer set.
+        monthly_corrections_applied = con.execute(
+            "SELECT count(*) FROM canonical_out c SEMI JOIN bulk_latest b "
+            "ON c.contract_transaction_unique_key = b.contract_transaction_unique_key "
+            "WHERE c.canonical_source = 'monthly'").fetchone()[0]
         max_action_date = con.execute("SELECT max(action_date) FROM canonical_out").fetchone()[0]
 
-        log(f"merged={merged_rows:,} rows_out={rows_out:,} fresh_only_tail={fresh_only_tail:,} "
-            f"deletes_tombstoned={deletes_tombstoned:,} max_action_date={max_action_date}")
+        log(f"core_winner={merged_rows:,} rows_out={rows_out:,} fresh_only_tail={fresh_only_tail:,} "
+            f"deletes_tombstoned={deletes_tombstoned:,} "
+            f"monthly_corrections_applied={monthly_corrections_applied:,} "
+            f"max_action_date={max_action_date}")
 
         # ── stream the result to a LOCAL Lance dir; boto3-publish (NO direct-R2 write) ──
         reader = con.sql("SELECT * FROM canonical_out").to_arrow_reader(batch_size=200_000)
@@ -772,6 +956,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                    "rows_in_archive_full": int(rows_in_archive_full), "rows_out": int(rows_out),
                    "dedup_collapsed": int(dedup_collapsed), "fresh_only_tail": int(fresh_only_tail),
                    "deletes_tombstoned": int(deletes_tombstoned),
+                   "monthly_corrections_applied": int(monthly_corrections_applied),
                    "max_action_date": max_action_date, "pk_unique": True,
                    "columns": len(COLUMN_SPEC), "files_published": int(published),
                    "write_mode": "overwrite", "status": status}
@@ -785,7 +970,9 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         _record_run(rows_in_bulk=int(rows_in_bulk), rows_in_fresh=int(rows_in_fresh),
                     rows_in_archive_full=int(rows_in_archive_full), rows_out=int(rows_out),
                     dedup_collapsed=int(dedup_collapsed), fresh_only_tail=int(fresh_only_tail),
-                    deletes_tombstoned=int(deletes_tombstoned), max_action_date=max_action_date,
+                    deletes_tombstoned=int(deletes_tombstoned),
+                    monthly_corrections_applied=int(monthly_corrections_applied),
+                    max_action_date=max_action_date,
                     columns=len(COLUMN_SPEC), write_mode="overwrite",
                     indices_built=None, status=status, error=error,
                     started=started, completed=dt.datetime.now(dt.timezone.utc))
@@ -821,8 +1008,28 @@ def index(target_uri: str = CANONICAL_URI) -> dict:
 
 
 def verify(target_uri: str = CANONICAL_URI) -> dict:
-    """§5 assertions on read-back. Independent scanner → DuckDB. Set-membership via ANTI JOIN
-    (never NOT IN — NULL-poison). Returns JSON."""
+    """§5/§7 assertions on read-back. Independent scanner → DuckDB. Set-membership via ANTI JOIN
+    (never NOT IN — NULL-poison). Returns JSON with a `pass` verdict and a `failures` list.
+
+    §7 RE-BASELINED CENTERLINES (two-tier reconciliation; monthly corrections land + enrichment fill).
+    Absolute row counts scale with --since, so the GATED assertions are scope-independent
+    structural invariants; the absolute numbers below are recorded as the full-build (--since NULL)
+    reference and the --since 2025-10-01 proof scope, not hard-coded gate thresholds.
+
+      metric                        full-build reference     --since 2025-10-01 (proof)
+      rows_out                      ≈ |FRESH∪BULK∪MONTHLY| − tombstones + reinstatements
+      fresh_only_tail (keys∉BULK)   ≈ FRESH-only key count                        (scope-dependent)
+      deletes_tombstoned            present-in-universe D-keys, POST R5 reinstatement (39-key floor
+                                    survives on the --since 2025-10-01 window)
+      monthly_corrections_applied   ≥ monthly-only + shared monthly-wins
+                                    (monthly is the per-key core winner; > 0 REQUIRED)
+      canonical_source ∈ {fresh,bulk,monthly}; BULK dethroned on every shared key where a newer
+        (or equal-mtime, monthly-ranked-higher) source exists.
+
+    GATES (raise / verdict=fail): INV-1 PK-unique; INV-4 rows_out == distinct-key count;
+    built_at_distinct == 1; canonical_source domain ⊆ {fresh,bulk,monthly}; INV-7 zero monthly-labeled
+    keys with a strictly-newer present fresh/bulk mtime (cannot check cross-source on the read model →
+    surfaced as canonical_source_bad_domain only); monthly_corrections_applied > 0."""
     import lance
     so = _r2_so()
     ds = lance.dataset(target_uri, storage_options=so)
@@ -834,7 +1041,7 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
     con = _duck()
     # Two distinct names: register() creates a VIEW named c_src; CREATE TEMP TABLE c then
     # materializes from it. Using the same name for both collides ("View c already exists" on
-    # DuckDB 1.5.4). Materialize because the six downstream queries multi-scan c, and a single-pass
+    # DuckDB 1.5.4). Materialize because the downstream queries multi-scan c, and a single-pass
     # .to_reader() registered directly would exhaust after the first scan (scaffold_ref §6).
     con.register("c_src", ds.scanner().to_reader())
     con.execute("CREATE TEMP TABLE c AS SELECT * FROM c_src")
@@ -852,7 +1059,27 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
     enrich_on_fresh = con.execute(
         "SELECT count(*) FROM c WHERE canonical_source='fresh' AND recipient_hash IS NOT NULL"
     ).fetchone()[0]
+    # §7 monthly-corrections centerline: monthly is the per-key CORE winner (INV-3 fix landed).
+    monthly_corrections_applied = con.execute(
+        "SELECT count(*) FROM c WHERE canonical_source = 'monthly'").fetchone()[0]
+    # canonical_source domain gate (INV-7): only the three legal winner tags may appear.
+    bad_source_domain = con.execute(
+        "SELECT count(*) FROM c WHERE canonical_source IS NULL "
+        "OR canonical_source NOT IN ('fresh','bulk','monthly')").fetchone()[0]
     con.close()
+
+    failures: list[str] = []
+    if total != distinct:
+        failures.append(f"INV-1/INV-4 PK-unique+rows_out: count(*)={total:,} != "
+                        f"distinct_key={distinct:,} ({total - distinct:,} dup keys)")
+    if built_at_distinct != 1:
+        failures.append(f"built_at not a single literal: built_at_distinct={built_at_distinct}")
+    if bad_source_domain:
+        failures.append(f"INV-7 canonical_source domain: {bad_source_domain:,} rows NULL or "
+                        f"∉ {{fresh,bulk,monthly}}")
+    if monthly_corrections_applied <= 0:
+        failures.append("monthly_corrections_applied == 0 — corrections did NOT land "
+                        "(monthly never won a core; the P0-1 fix regressed)")
 
     out = {
         "uri": target_uri,
@@ -863,9 +1090,13 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
         "max_action_date": str(mx_action) if mx_action is not None else None,
         "built_at_distinct": int(built_at_distinct),   # must be 1 (single injected literal)
         "canonical_source_distribution": {k: int(v) for k, v in src_dist.items()},
+        "canonical_source_bad_domain": int(bad_source_domain),
+        "monthly_corrections_applied": int(monthly_corrections_applied),
         "fresh_rows_with_enrichment": int(enrich_on_fresh),
         "columns": len(ds.schema.names),
         "indices": idx,
+        "failures": failures,
+        "pass": not failures,
     }
     return out
 
