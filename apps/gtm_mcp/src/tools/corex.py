@@ -507,7 +507,11 @@ def _most_senior_per_company(prows: list[dict]) -> list[dict]:
         comp = str(p["company_id"])
         if comp not in best or _title_rank(p.get("title")) > _title_rank(best[comp].get("title")):
             best[comp] = p
-    return [{"contact_id": str(p["contact_id"]), "company_id": str(p["company_id"]),
+    # `people` is a Lance PERSON dataset: read its person id from `person_id` (BTREE-indexed),
+    # falling back to legacy `contact_id` for a partition not yet expanded. The resolver output
+    # emits BOTH keys (mirrored) — the Postgres corex.contact insert still reads `contact_id`.
+    return [{"person_id": str(pid := p.get("person_id") or p.get("contact_id")),
+             "contact_id": str(pid), "company_id": str(p["company_id"]),
              "normalized_domain": p.get("normalized_domain"), "full_name": p.get("full_name"),
              "title": p.get("title")} for p in best.values()]
 
@@ -519,7 +523,7 @@ def _resolve_by_domains(domains: list[str]) -> list[dict]:
     if not domains:
         return []
     pres = database.query(
-        f"""SELECT contact_id, company_id, normalized_domain, full_name, title
+        f"""SELECT person_id, company_id, normalized_domain, full_name, title
             FROM people WHERE normalized_domain IN ({_sql_in_list(domains)})""",
         datasets={"people"}, max_rows=1000,
     )
@@ -555,9 +559,10 @@ def _resolve_contacts(rows: list[dict], result_key: str) -> list[dict]:
     if result_key == "contact_id":
         out = []
         for r in rows:
-            cid = r.get("contact_id")
+            cid = r.get("person_id") or r.get("contact_id")
             if cid:
-                out.append({"contact_id": str(cid), "company_id": str(r.get("company_id") or ""),
+                out.append({"person_id": str(cid), "contact_id": str(cid),
+                            "company_id": str(r.get("company_id") or ""),
                             "normalized_domain": r.get("normalized_domain"),
                             "full_name": r.get("full_name"), "title": r.get("title")})
         return out
@@ -572,7 +577,7 @@ def _resolve_contacts(rows: list[dict], result_key: str) -> list[dict]:
     if not company_ids:
         return []
     pres = database.query(
-        f"""SELECT contact_id, company_id, normalized_domain, full_name, title
+        f"""SELECT person_id, company_id, normalized_domain, full_name, title
             FROM people WHERE company_id IN ({_sql_in_list(company_ids)})""",
         datasets={"people"}, max_rows=1000,
     )

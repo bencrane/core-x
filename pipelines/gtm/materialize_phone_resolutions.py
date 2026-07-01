@@ -22,21 +22,23 @@ TARGET (Gen-3 system of record — native Lance v2.1):
     s3://data-sink/active/phone_resolutions/
 
 GRAIN / PK. ``contact_id`` is the PK and is unique upstream (39,985 rows = 39,985 distinct), so the
-projection is a straight 1:1 copy — no dedup. ``blitz_phone_raw`` and ``attempts`` (both jsonb) are
+projection is a straight 1:1 copy — no dedup. EXPAND/CONTRACT: the dataset now also carries
+``person_id`` (== contact_id, same value, BTREE-indexed) as the go-forward person key; contact_id
+stays for backward compat (dropped only in Phase 2). ``blitz_phone_raw`` and ``attempts`` (both jsonb) are
 carried losslessly as JSON string columns (full mirror); the 10 flat columns are the typed verbatim
 projection. NOTHING is normalized: a landed ``phone_status='unverified'`` stays verbatim forever —
 no value is ever reinterpreted or reclassified.
 
 REFRESH — NO CLOBBER. ``append`` is the routine path and the operator-facing invariant: read
-max(resolved_at) already in Lance, pull rows strictly newer, and merge_insert on contact_id with
-``when_not_matched_insert_all`` — only net-new contact_ids land; an already-materialized row is
+max(resolved_at) already in Lance, pull rows strictly newer, and merge_insert on person_id with
+``when_not_matched_insert_all`` — only net-new persons land; an already-materialized row is
 NEVER updated, so its first-landed values are frozen. ``run`` (full overwrite) exists for the
 initial hydrate and intentional rebuilds ONLY; because the upstream ledger is event-append, a
 rebuild reproduces identical values. Prefer ``append`` for every routine refresh. No cron, no
 callback wiring into the landing rail.
 
 INDEXES:
-    BTREE  : contact_id (PK), person_linkedin_url (→ active/people), company_domain (→ firmographics_blitz), phone
+    BTREE  : person_id (PK, == contact_id), contact_id (legacy, backward-compat), person_linkedin_url (→ active/people), company_domain (→ firmographics_blitz), phone
     BITMAP : phone_status, phone_type, source_vendor, country_code   (categorical filter accelerators)
 
     modal run    pipelines/gtm/materialize_phone_resolutions.py::init_ops      # create ops table (HQX)
@@ -67,9 +69,10 @@ MAX_BYTES_PER_FILE = 90 * 1024**3
 DATA_STORAGE_VERSION = "2.1"
 READ_BATCH_ROWS = 50000  # DuckDB → Arrow streaming batch (out-of-core: never buffer the full table)
 
-# Scalar index plan.
+# Scalar index plan. person_id (== contact_id) is the new BTREE-indexed person key; contact_id
+# stays indexed for backward compat (dropped only in Phase 2).
 INDEXES: dict[str, list[str]] = {
-    "BTREE": ["contact_id", "person_linkedin_url", "company_domain", "phone"],
+    "BTREE": ["person_id", "contact_id", "person_linkedin_url", "company_domain", "phone"],
     "BITMAP": ["phone_status", "phone_type", "source_vendor", "country_code"],
 }
 
@@ -82,7 +85,8 @@ _COLS = [
 # jsonb → VARCHAR (lossless JSON text), carried verbatim — the raw source of truth.
 _JSON_COLS = {"blitz_phone_raw", "attempts"}
 # Upstream-guaranteed non-null (verified 2026-06-24: all 39,985 rows populated on each).
-_NOT_NULL = {"contact_id", "person_linkedin_url", "resolved_at"}
+# person_id mirrors contact_id (same value), so it inherits the same NOT-NULL guarantee.
+_NOT_NULL = {"person_id", "contact_id", "person_linkedin_url", "resolved_at"}
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -128,7 +132,7 @@ def _schema():
         return pa.field(name, typ, nullable=name not in _NOT_NULL)
 
     ts = pa.timestamp("us", tz="UTC")
-    cols = []
+    cols = [f("person_id", pa.string())]  # NEW person key (== contact_id); mirrors it verbatim
     for name in _COLS:
         if name == "resolved_at":
             cols.append(f(name, ts))
@@ -139,12 +143,14 @@ def _schema():
 
 
 def _sql(where: str = "") -> str:
-    """Straight 1:1 verbatim projection (no dedup, no normalization). jsonb → VARCHAR (lossless)."""
+    """Straight 1:1 verbatim projection (no dedup, no normalization). jsonb → VARCHAR (lossless).
+    person_id mirrors contact_id verbatim (EXPAND/CONTRACT: same value, new BTREE-indexed key)."""
     proj = ",\n        ".join(
         f"CAST({c} AS VARCHAR) AS {c}" if c in _JSON_COLS else c for c in _COLS
     )
     return f"""
         SELECT
+        contact_id AS person_id,
         {proj},
         now() AS materialized_at
         FROM hqx.ops.phone_resolutions
@@ -331,7 +337,7 @@ def ingest_phone_resolutions(trigger_callback_url: str | None = None) -> dict:
 @app.function(secrets=_SECRETS, timeout=60 * 30, memory=16384, cpu=4.0)
 def append_phone_resolutions(trigger_callback_url: str | None = None) -> dict:
     """Routine NO-CLOBBER refresh: watermark = max(resolved_at) already in Lance; pull rows strictly
-    newer; merge_insert on contact_id with when_not_matched_insert_all (only net-new contact_ids
+    newer; merge_insert on person_id with when_not_matched_insert_all (only net-new persons
     land — an already-materialized row is NEVER updated, so its first-landed values are frozen)."""
     import datetime as dt
 
@@ -360,7 +366,7 @@ def append_phone_resolutions(trigger_callback_url: str | None = None) -> dict:
             print(f"new rows since {wm.isoformat()}: {rows_source:,}")
             if rows_source:
                 new_tbl = con.sql(_sql(where)).to_arrow_table().cast(_schema())
-                ds.merge_insert("contact_id").when_not_matched_insert_all().execute(new_tbl)
+                ds.merge_insert("person_id").when_not_matched_insert_all().execute(new_tbl)
         finally:
             con.close()
         rows_total = lance.dataset(DATASET_URI, storage_options=so).count_rows()
@@ -395,7 +401,7 @@ def reindex() -> dict:
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 10, memory=8192)
 def verify() -> dict:
-    """Read-back: row count, contact_id uniqueness invariant, person_linkedin_url join coverage,
+    """Read-back: row count, person_id uniqueness invariant, person_linkedin_url join coverage,
     schema, indexes, BTREE probe."""
     import pyarrow.compute as pc
 
@@ -404,29 +410,29 @@ def verify() -> dict:
     so = _r2_storage_options()
     ds = lance.dataset(DATASET_URI, storage_options=so)
     n = ds.count_rows()
-    keys = ds.to_table(columns=["contact_id", "person_linkedin_url"])
-    distinct_contact = pc.count_distinct(keys.column("contact_id")).as_py()
-    unique_ok = (n == distinct_contact)
+    keys = ds.to_table(columns=["person_id", "person_linkedin_url"])
+    distinct_person = pc.count_distinct(keys.column("person_id")).as_py()
+    unique_ok = (n == distinct_person)
     purl = keys.column("person_linkedin_url")
     person_url_nonnull = n - purl.null_count
     distinct_person_url = pc.count_distinct(purl).as_py()
 
-    sample = next((v for v in keys.column("contact_id").to_pylist() if v), None)
-    probe = ds.scanner(columns=["contact_id"],
-                       filter=f"contact_id = '{sample}'").to_table().num_rows if sample else -1
+    sample = next((v for v in keys.column("person_id").to_pylist() if v), None)
+    probe = ds.scanner(columns=["person_id"],
+                       filter=f"person_id = '{sample}'").to_table().num_rows if sample else -1
     out = {
-        "uri": DATASET_URI, "rows": n, "distinct_contact_id": distinct_contact,
+        "uri": DATASET_URI, "rows": n, "distinct_person_id": distinct_person,
         "unique_invariant_ok": unique_ok, "person_linkedin_url_nonnull": person_url_nonnull,
         "distinct_person_linkedin_url": distinct_person_url,
         "schema": [f.name for f in ds.schema], "indexes": _committed_index_names(so),
-        f"probe_contact_id={sample!r}": probe,
+        f"probe_person_id={sample!r}": probe,
     }
-    print(f"{DATASET}: {n:,} rows · distinct(contact_id)={distinct_contact:,} · unique_ok={unique_ok}")
+    print(f"{DATASET}: {n:,} rows · distinct(person_id)={distinct_person:,} · unique_ok={unique_ok}")
     print(f"  person_linkedin_url: {person_url_nonnull:,} non-null · {distinct_person_url:,} distinct")
     print(f"  indexes={out['indexes']}")
-    print(f"  probe contact_id={sample!r} → {probe} row(s)")
+    print(f"  probe person_id={sample!r} → {probe} row(s)")
     if not unique_ok:
-        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(contact_id)={distinct_contact}")
+        raise RuntimeError(f"uniqueness invariant FAILED: rows={n} != distinct(person_id)={distinct_person}")
     return out
 
 

@@ -652,7 +652,7 @@ def subaward_history_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
 # recur — re-observations across runs/companies), so the lookup returns the (capped) set and
 # the route surfaces every distinct (title, company) rather than silently collapsing them.
 _PEOPLE_COLS = [
-    "contact_id", "company_id", "normalized_domain", "full_name", "first_name",
+    "person_id", "contact_id", "company_id", "normalized_domain", "full_name", "first_name",
     "last_name", "title", "person_linkedin_url", "source_platform",
 ]
 # A LinkedIn /in/ slug as stored: lowercase alnum + hyphen, with dot/underscore/%-encoding

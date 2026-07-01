@@ -73,7 +73,7 @@ _COMPANY_COLUMNS = [
     "company_linkedin_url", "source_platform",
 ]
 _PEOPLE_COLUMNS = [
-    "contact_id", "company_id", "normalized_domain", "full_name",
+    "person_id", "contact_id", "company_id", "normalized_domain", "full_name",
     "first_name", "last_name", "title", "person_linkedin_url", "source_platform",
 ]
 
@@ -131,8 +131,10 @@ def search_people_by_domain(domain: str) -> dict[str, Any]:
 
     Input normalization matches ``search_company_by_domain``. Returns
     ``{"normalized_domain", "match_count", "people": [...]}``; each person has
-    ``contact_id, company_id, normalized_domain, full_name, first_name,
+    ``person_id, contact_id, company_id, normalized_domain, full_name, first_name,
     last_name, title, person_linkedin_url, source_platform`` (capped at 50).
+    ``person_id`` mirrors ``contact_id`` (both are the person's id; ``contact_id``
+    is retained for backward compatibility).
     """
     norm = _normalize_domain(domain)
     if not norm:
