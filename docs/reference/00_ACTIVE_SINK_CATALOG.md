@@ -54,6 +54,14 @@
 > **62,128 → 89,038** rows; the 10,591 mobiles key by `person_id` into the spine (staffing-cohort mobile
 > coverage 0 → 35.8%). Trigger helper: `scripts/trigger_leadmagic_phone_run.mjs`.
 
+> **Update 2026-07-01 — SAM-native labor universe → `sam_labor_universe`.** New derived dataset:
+> `sam_master_entities` filtered to 9 labor/services NAICS families (5613 Employment · 5614/5612/5619
+> Support · 5413 Eng · 5415 IT · 5416 Consulting · 238 Specialty Trade · 236 Building), joined to a
+> canonical domain (`sam_master_domains`, 1/uei), flagged `in_our_staffing` (domain also in
+> `staffing_agencies`). 318,291 entities → **160,048 with a domain**, of which **157,744 net-new**
+> (`in_our_staffing=false`) — SAM-registered labor firms absent from our dex-archive staffing list.
+> BTREE(uei, normalized_domain) · BITMAP(naics_family, in_our_staffing). Built by
+> `scripts/build_sam_labor_universe.py`.
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -613,6 +621,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_attachment_worklist_T3` | 6,089 | 20 | — |
 | `sam_business_type_code_dict` | 12 | 11 | BTree(code); BTree(namespace); BTree(designation_key) |
 | `sam_master_contacts` | 4,373,319 | 13 | BTree(uei) |
+| `sam_labor_universe` | 160,048 | 9 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing) |
 | `sam_master_domains` | 709,546 | 5 | BTree(normalized_domain); BTree(uei) |
 | `sam_master_entities` | 1,541,566 | 68 | BTree(uei); BTree(primary_naics); BTree(cage_code) |
 | `sam_normalized_entities` | 1,541,566 | 11 | BTree(uei); BTree(normalized_legal_name); BTree(legal_name_base); BTree(cage_code); BTree(primary_naics); Bitmap(is_active) |
