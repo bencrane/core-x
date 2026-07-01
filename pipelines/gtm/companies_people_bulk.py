@@ -38,59 +38,72 @@ TARGET (Gen-3 system of record — native Lance v2.1):
     direct writes (manual seeds + exa.ai websets + Waterfall ICP). reindex / verify still operate
     on the standalone datasets.
 
-MINIMAL SCHEMAS (every identifier is STRICT VARCHAR — uuid rendered as its canonical
-hyphenated text, the fleet convention; string equality is the join semantics):
+LIVE GRAIN — verified 2026-06-30 against s3://data-sink/active/{companies,people,
+company_target_industries} (read-only lance probe: count_rows / schema / list_indices).
+The datasets are severed and have grown FAR beyond the original dexarchive projection —
+these figures are the live truth, not the historical seed. See
+docs/reference/00_ACTIVE_SINK_CATALOG.md for the fleet-wide catalog.
 
-    companies
-        company_id            uuid → VARCHAR   (primary key)
-        company_name          VARCHAR          (nullable)
-        normalized_domain     VARCHAR          (the core anchor; null ONLY when missing)
-        company_linkedin_url  VARCHAR          (nullable)
-        source_platform       VARCHAR          (lineage — e.g. prospeo-parallel.ai, sfnet, exa-all)
+    companies  ── LIVE: 25,405 rows · 21 columns · 6 indices (2 BTREE + 4 BITMAP)
+        The original 5-column projection below is the WORKER's minimal output shape. The live
+        dataset carries 16 additional firmographic columns added by direct enrichment writes
+        (Blitz/PDL/firmo materialization) — the worker no longer defines the full schema.
+        Original projection (this worker's _sql_companies):
+            company_id            uuid → VARCHAR   (primary key)
+            company_name          VARCHAR          (nullable)
+            normalized_domain     VARCHAR          (the core anchor; null ONLY when missing)
+            company_linkedin_url  VARCHAR          (nullable)
+            source_platform       VARCHAR          (lineage — e.g. prospeo-parallel.ai, sfnet, exa-all)
+        Live-only firmographic columns (all nullable): industry, employee_size_band,
+            employees_on_linkedin (int64), company_type, founded_year (int32), followers (int64),
+            specialties (list<string>), hq_city, hq_state, hq_region, hq_continent, uei,
+            firmo_linkedin_url, company_linkedin_source, firmo_match_key,
+            firmo_materialized_at (timestamp[us, UTC]).
 
-    people
-        contact_id            uuid → VARCHAR   (primary key)
-        company_id            uuid → VARCHAR   (foreign key → companies.company_id)
-        normalized_domain     VARCHAR          (DENORMALIZED from the person's company, for
-                                                instant domain lookups — derived from the joined
-                                                company row so it matches the company anchor exactly)
-        full_name             VARCHAR
-        first_name            VARCHAR          (nullable — split name where present)
-        last_name             VARCHAR          (nullable — split name where present)
-        title                 VARCHAR          (nullable)
-        person_linkedin_url   VARCHAR          (nullable — the person's linkedin.com URL)
-        source_platform       VARCHAR          (lineage)
-        ── LIVE DRIFT — NOT projected by _sql_people(); added in-place by the work-email
-           enrichment, confirmed on the live dataset 2026-06-24 (13 columns, 4 indices) ──
-        work_email            VARCHAR          (nullable — resolved work email)
-        work_email_norm       VARCHAR          (nullable — normalized work email)
-        verification_status   VARCHAR          (nullable — work-email verification verdict; BITMAP-indexed)
-        mv_resultcode         VARCHAR          (nullable — verifier raw result code)
-      DRIFT NOTE. _sql_people() below projects ONLY the original 9 columns. The ingest overwrite
-      path is RETIRED (people is severed/refused), but were it ever re-enabled it would WIPE these
-      4 drifted columns AND the verification_status BITMAP. In-place backfills round-trip
-      ds.to_table() so they preserve the columns — but they MUST rebuild the FULL INDEXES['people']
-      plan (BTREE + BITMAP) after their overwrite or the BITMAP is silently dropped, degrading the
-      work-email verification filter's bitmap pushdown until someone notices and reindexes.
+    people  ── LIVE: 69,242 rows · 9 columns · 3 indices (all BTREE)
+        The live schema is EXACTLY the 9-column projection _sql_people() emits — there is NO
+        work_email / work_email_norm / verification_status / mv_resultcode column on people and
+        NO BITMAP index. (An earlier docstring claimed a "13-column, 4-index work-email drift";
+        that was FICTION — corrected 2026-06-30. Work-email data lives in the SEPARATE datasets
+        active/work_emails, active/work_email_mv_validations, and active/email_verifications,
+        keyed by contact_id — NOT merged into the people grain.)
+            contact_id            uuid → VARCHAR   (primary key)          BTREE via company_id? no — see indices
+            company_id            uuid → VARCHAR   (foreign key → companies.company_id)   BTREE
+            normalized_domain     VARCHAR          (DENORMALIZED from the person's company, for
+                                                    instant domain lookups — derived from the joined
+                                                    company row so it matches the company anchor exactly)  BTREE
+            full_name             VARCHAR
+            first_name            VARCHAR          (nullable — split name where present)
+            last_name             VARCHAR          (nullable — split name where present)
+            title                 VARCHAR          (nullable)
+            person_linkedin_url   VARCHAR          (nullable — the person's linkedin.com URL)  BTREE
+            source_platform       VARCHAR          (lineage)
 
-    company_target_industries  (many-to-many edge grain — STRICT_SCHEMA-enforced types/nullability)
-        UNION of two legacy sources, normalized into one canonical target_industry vocabulary:
-        company_served_industries (served segments) + company_exa_industries (Exa tags, mapped).
-        company_id            String  NOT NULL  (foreign key → companies.company_id)
-        normalized_domain     String  NOT NULL  (DENORMALIZED from the companies join)
-        target_industry       String  NOT NULL  (canonical segment — served canonical_segment OR mapped Exa bucket)
-        source_platform       String  (nullable — origin cohort: sfnet, prospeo-parallel.ai, exa-all, …)
+    company_target_industries  ── LIVE: 2,050 rows · 6 columns · 3 indices (2 BTREE + 1 BITMAP)
+        Many-to-many edge grain (company → target industry). The live schema is 6 columns
+        (all nullable) — it carries two denormalized display columns (company_name,
+        company_linkedin_url) NOT present in this worker's 4-column STRICT_SCHEMA projection,
+        and target_industry is indexed BITMAP (low-cardinality categorical), not BTREE.
+        Live schema (verified 2026-06-30):
+            company_id            String  (foreign key → companies.company_id)   BTREE
+            normalized_domain     String  (DENORMALIZED from the companies join)  BTREE
+            company_name          String  (live-only display column)
+            company_linkedin_url  String  (live-only display column)
+            target_industry       String  (canonical segment)                    BITMAP
+            source_platform       String  (origin cohort: sfnet, prospeo-parallel.ai, exa-all, …)
 
 NORMALIZED_DOMAIN is the anchor. Built inline (NOT from core.name_norm, which is a *name*
 blocking key, not a domain rule): lower/trim → strip scheme → strip leading ``www.`` →
 strip path/query → strip trailing dots → NULL if emptied. Inlined deliberately — there is
 exactly one consumer today; if a second appears, lift it to core/ the way name_norm.py was
 (the fleet's inline-then-extract precedent). NOTE: ``normalized_domain`` is the *anchor* but
-is NOT unique in the source (743 non-null domains → 639 distinct; e.g. jpmorgan.com appears
-3× across exa-all / sfnet / prospeo). The directive mandates a *minimal* projection with NO
-merging, so all 748 company rows are preserved 1:1 (PK = company_id) and the BTREE on
-normalized_domain is a lookup index, not a uniqueness constraint. Domain-level dedup is a
-downstream resolution concern, explicitly out of scope here.
+is NOT unique in the source (in the original dexarchive seed: 743 non-null domains → 639
+distinct; e.g. jpmorgan.com appears 3× across exa-all / sfnet / prospeo). The directive
+mandates a *minimal* projection with NO merging, so every company row is preserved 1:1
+(PK = company_id) and the BTREE on normalized_domain is a lookup index, not a uniqueness
+constraint. Domain-level dedup is a downstream resolution concern, explicitly out of scope
+here. (The live companies dataset is now 25,405 rows — verified 2026-06-30 — grown well past
+the ~748-row dexarchive seed by direct enrichment writes; see the LIVE GRAIN block above.)
 
 person_linkedin_url SOURCING (verified, 2026-06-02). The directive flags
 ``raw_sfnet_people_enriched_with_linkedin`` as a possible source. Structural probe of all
