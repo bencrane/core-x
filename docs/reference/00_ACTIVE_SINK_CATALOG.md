@@ -33,6 +33,16 @@
 > match, `title`-only in-place update) by `pipelines/gtm/enrich_staffing_people_title_from_clay.py`;
 > work-email is a separate downstream grain (`active/work_emails`, keyed by `person_id`).
 
+> **Update 2026-07-01 — dex-archive staffing work emails → `work_emails`.** The staffing cohort's
+> supplied emails + their existing MillionVerifier verdicts (100% pre-verified, single 2026-04-20/21
+> bulk run) were landed into the HQX SoR arm `ops.email_verifications` (+29,563;
+> `contact_id`=dex `target_people.id`=`person_id`, `source='dexarchive_staffing_agencies'`,
+> `batch_label='dexarchive_staffing_agencies_2026-07-01'`) via
+> `pipelines/work_emails/backfill_dexarchive_staffing_email_verifications.py`, then projected into
+> Lance by the existing `materialize_work_emails.py::run` (full overwrite — NOT a direct Lance
+> write, since `work_emails` is an overwrite projection of the HQX email arms). `work_emails`
+> **110,212 → 139,775** rows; cohort FK-joins the people spine 29,563/29,563, 0 orphans. MV verdict
+> carried: verified 20,174 · risky 6,670 · unresolved 2,719.
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -431,7 +441,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `title_enrichment` | 15,668 | 14 | BTree(person_linkedin_url_norm); BTree(person_linkedin_url); BTree(record_id); BTree(title_norm); Bitmap(normalized_level); Bitmap(normalized_function); Bitmap(confidence); Bitmap(model); Bitmap(source) |
 | `work_email_mv_validations` | 77,570 | 13 | BTree(person_id); BTree(email); Bitmap(verification_status); Bitmap(mv_resultcode); Bitmap(source_table) |
 | `work_email_vendor_responses` | 62,442 | 13 | BTree(person_id); Bitmap(source_vendor) |
-| `work_emails` | 110,212 | 16 | BTree(person_id); BTree(email_norm); BTree(company_domain); Bitmap(verification_status); Bitmap(source_vendor); Bitmap(mv_resultcode) |
+| `work_emails` | 139,775 | 16 | BTree(person_id); BTree(email_norm); BTree(company_domain); Bitmap(verification_status); Bitmap(source_vendor); Bitmap(mv_resultcode) |
 
 ### GovCon
 
