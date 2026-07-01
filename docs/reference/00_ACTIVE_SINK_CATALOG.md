@@ -14,6 +14,14 @@
 > `BTREE(person_id)` (it never had a `contact_id` index). The 7 rows + marquee + headline index
 > total below are updated for this; a full re-probe will refresh everything else.
 
+> **Update 2026-07-01 — dex-archive staffing agencies → `companies`.** Appended the 24,398
+> vertical-tagged staffing agencies from `active/staffing_agencies` into the `companies` spine
+> (`source_platform='dexarchive_staffing_agencies'`, PK `company_id`=dex `target_company_id`,
+> `industry='Staffing and Recruiting'`) via `pipelines/gtm/backfill_staffing_agencies_companies.py`.
+> `companies` **25,405 → 49,803** rows; schema/index set unchanged (all 6 rebuilt to cover the new
+> fragment). The served-verticals (`industries_served`) and `revenue_range` are NOT carried — no
+> column exists on the spine; they remain in `active/staffing_agencies`.
+
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -58,7 +66,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `usaspending/award_search` | 78,636,657 | 154 | 3 |
 | `sam_master_entities` | 1,541,566 | 68 | 3 (BTREE) |
 | `entity_profile_gold` | 1,541,566 | 22 | 6 |
-| `companies` (GTM) | 25,405 | 21 | 6 (2 BTREE + 4 BITMAP) |
+| `companies` (GTM) | 49,803 | 21 | 6 (2 BTREE + 4 BITMAP) |
 | `people` (GTM) | 69,242 | 9 | 4 (BTREE) |
 | `company_target_industries` (GTM) | 2,050 | 6 | 3 (2 BTREE + 1 BITMAP) |
 
@@ -389,7 +397,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `clay_find_companies` | 201,550 | 36 | BTree(record_id); BTree(domain_norm); BTree(linkedin_slug); BTree(linkedin_company_id); Bitmap(is_generic_domain); Bitmap(domain_is_live); Bitmap(hq_country_iso); Bitmap(hq_state); Bitmap(hq_region) |
 | `clay_find_people` | 988,932 | 28 | BTree(record_id); BTree(person_id); BTree(linkedin_url_norm); BTree(domain_norm); Bitmap(loc_country_iso); Bitmap(loc_state); Bitmap(loc_region) |
 | `close_sfnet_leads` | 168 | 7 | BTree(sfnet_company_id); BTree(normalized_domain); BTree(close_lead_id) |
-| `companies` | 25,405 | 21 | Bitmap(industry); Bitmap(employee_size_band); Bitmap(company_type); Bitmap(hq_region); BTree(company_id); BTree(normalized_domain) |
+| `companies` | 49,803 | 21 | Bitmap(industry); Bitmap(employee_size_band); Bitmap(company_type); Bitmap(hq_region); BTree(company_id); BTree(normalized_domain) |
 | `company_addresses` | 1,584,946 | 53 | BTree(entity_key); BTree(uei); BTree(domain_norm); BTree(company_linkedin_url); BTree(primary_naics); BTree(legal_business_name); Bitmap(address_source); Bitmap(winner_state); Bitmap(winner_country_code); Bitmap(had_sam_physical); Bitmap(had_sam_mailing); Bitmap(had_prospeo); Bitmap(had_overture); Bitmap(had_blitz) |
 | `company_target_industries` | 2,050 | 6 | BTree(company_id); BTree(normalized_domain); Bitmap(target_industry) |
 | `demand_company_target_verticals` | 36,665 | 7 | BTree(company_id); BTree(normalized_domain); Bitmap(target_industry) |
