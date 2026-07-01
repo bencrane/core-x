@@ -30,7 +30,12 @@ Output: one row per subawardee_uei →
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' \
       --with 'psycopg[binary]>=3.2' \
-      python3 pipelines/usaspending/subawardee_work_profile.py <init_ops|build|verify> [years]
+      python3 pipelines/usaspending/subawardee_work_profile.py <init_ops|build|build_wide|verify> [years]
+
+``build``      → recent-cohort table (fresh 90-day subawardees, rolling 5y) → subawardee_work_profile/
+``build_wide`` → FULL subawardee universe since a fixed floor (default 2021-01-01), seeded from
+                 subaward_search ∪ fresh → subawardee_work_profile_wide/. The canonical ``build``
+                 table is NEVER touched by ``build_wide``.
 """
 from __future__ import annotations
 
@@ -46,6 +51,13 @@ PROFILE_URI = os.environ.get(
     "SUBAWARDEE_WORK_PROFILE_URI",
     "s3://data-sink/active/subawardee_work_profile",
 ).rstrip("/") + "/"
+# WIDE variant — the full subawardee universe since a fixed floor, written to a DISTINCT table
+# so the canonical recent-cohort table above is NEVER touched by the wide build.
+PROFILE_WIDE_URI = os.environ.get(
+    "SUBAWARDEE_WORK_PROFILE_WIDE_URI",
+    "s3://data-sink/active/subawardee_work_profile_wide",
+).rstrip("/") + "/"
+WIDE_FLOOR = os.environ.get("SUBAWARDEE_WORK_PROFILE_WIDE_FLOOR", "2021-01-01")
 
 SUB_FRESH_URI = os.environ.get(
     "USASPENDING_API_SUBAWARD_FRESH_URI",
@@ -89,7 +101,7 @@ def _batched(seq, n):
 
 # ─────────────────────────── build ───────────────────────────
 
-def build(years=DEFAULT_YEARS):
+def build(years=DEFAULT_YEARS, wide=False):
     import duckdb
     import lance
 
@@ -98,14 +110,17 @@ def build(years=DEFAULT_YEARS):
     os.makedirs(SCRATCH, exist_ok=True)
     os.makedirs(f"{SCRATCH}/spill", exist_ok=True)
     today = dt.datetime.now(dt.timezone.utc).date()
-    cutoff = (today - dt.timedelta(days=365 * years)).isoformat()
+    # wide: full subawardee universe from a fixed floor → PROFILE_WIDE_URI (canonical untouched).
+    # recent (default): rolling 5y window → PROFILE_URI, byte-identical to prior behavior.
+    cutoff = WIDE_FLOOR if wide else (today - dt.timedelta(days=365 * years)).isoformat()
+    out_uri = PROFILE_WIDE_URI if wide else PROFILE_URI
 
     con = duckdb.connect(f"{SCRATCH}/build.duckdb")
     con.execute("PRAGMA threads=4;")
     con.execute(f"PRAGMA temp_directory='{SCRATCH}/spill';")
     # idempotent re-run: clear working tables (the fp_/sb_ parquet scan caches persist for resume)
-    for _t in ("fresh", "fresh_dedup", "entities", "fp", "sb_search", "sb", "prime_agg",
-               "top_naics", "top_psc", "top_agency", "sub_agg", "sub_top_partners",
+    for _t in ("fresh", "fresh_dedup", "entities", "hist_pop", "pop", "fp", "sb_search", "sb",
+               "prime_agg", "top_naics", "top_psc", "top_agency", "sub_agg", "sub_top_partners",
                "sub_top_naics", "profile"):
         con.execute(f"DROP TABLE IF EXISTS {_t};")
 
@@ -176,8 +191,38 @@ def build(years=DEFAULT_YEARS):
                  arg_max(naics, adt)                           AS recent_top_naics_code,
                  arg_max(naics_desc, adt)                      AS recent_top_naics_description
           FROM fresh_dedup GROUP BY uei;""")
-        ueis = [r[0] for r in con.execute("SELECT uei FROM entities").fetchall()]
-        log(f"entities={len(ueis)}  window={cutoff}..{today}")
+
+        # ── 0b. population. recent: fresh subawardees only. wide: fresh ∪ EVERY subawardee in
+        #    subaward_search since the floor, carrying identity for the net-new firms. ──
+        if wide:
+            subs_pop = lance.dataset(SUBS_URI, storage_options=so)
+            con.register("srp", subs_pop.scanner(
+                columns=["sub_awardee_or_recipient_uei", "sub_awardee_or_recipient_legal",
+                         "sub_legal_entity_state_code", "sub_legal_entity_country_code",
+                         "sub_action_date"],
+                filter=(f"sub_action_date >= DATE '{cutoff}' "
+                        f"AND sub_action_date <= DATE '2026-12-31'")).to_reader())
+            con.execute("""CREATE TABLE hist_pop AS
+              SELECT nullif(trim(sub_awardee_or_recipient_uei),'')                             AS uei,
+                     arg_max(nullif(trim(sub_awardee_or_recipient_legal),''), sub_action_date) AS name,
+                     arg_max(nullif(trim(sub_legal_entity_state_code),''), sub_action_date)     AS state_code,
+                     arg_max(nullif(trim(sub_legal_entity_country_code),''), sub_action_date)   AS country_code
+              FROM srp WHERE nullif(trim(sub_awardee_or_recipient_uei),'') IS NOT NULL
+              GROUP BY 1;""")
+            con.unregister("srp")
+            con.execute("""CREATE TABLE pop AS
+              SELECT coalesce(e.uei, h.uei)                              AS uei,
+                     coalesce(e.subawardee_name, h.name)                 AS subawardee_name,
+                     e.subawardee_parent_uei                             AS subawardee_parent_uei,
+                     coalesce(e.subawardee_state_code, h.state_code)     AS subawardee_state_code,
+                     coalesce(e.subawardee_country_code, h.country_code) AS subawardee_country_code
+              FROM hist_pop h FULL OUTER JOIN entities e ON e.uei = h.uei;""")
+        else:
+            con.execute("""CREATE TABLE pop AS
+              SELECT uei, subawardee_name, subawardee_parent_uei,
+                     subawardee_state_code, subawardee_country_code FROM entities;""")
+        ueis = [r[0] for r in con.execute("SELECT uei FROM pop WHERE uei IS NOT NULL").fetchall()]
+        log(f"population={len(ueis)} (wide={wide})  window={cutoff}..{today}")
         batches = _batched(ueis, BATCH)
 
         # ── 1. PRIME role — FPDS 5y, recipient_uei index pushdown (window-cached for resume) ──
@@ -336,10 +381,10 @@ def build(years=DEFAULT_YEARS):
         snapshot = today.isoformat()
         con.execute(f"""CREATE TABLE profile AS
           SELECT
-            e.uei                                            AS subawardee_uei,
-            e.subawardee_name, e.subawardee_parent_uei,
-            e.subawardee_state_code, e.subawardee_country_code,
-            e.recent_subawards_90d,
+            pop.uei                                          AS subawardee_uei,
+            pop.subawardee_name, pop.subawardee_parent_uei,
+            pop.subawardee_state_code, pop.subawardee_country_code,
+            coalesce(e.recent_subawards_90d, 0)              AS recent_subawards_90d,
             coalesce(e.recent_subaward_amount_90d, 0.0)      AS recent_subaward_amount_90d,
             e.recent_latest_action_date,
             e.recent_top_prime_name, e.recent_top_prime_uei,
@@ -363,14 +408,15 @@ def build(years=DEFAULT_YEARS):
             stn.top                                          AS sub_top_naics,
             DATE '{snapshot}'                                AS snapshot_date,
             DATE '{cutoff}'                                  AS profile_window_start
-          FROM entities e
-          LEFT JOIN prime_agg p USING (uei)
-          LEFT JOIN top_naics tn ON tn.uei = e.uei
-          LEFT JOIN top_psc tp ON tp.uei = e.uei
-          LEFT JOIN top_agency ta ON ta.uei = e.uei
-          LEFT JOIN sub_agg s USING (uei)
-          LEFT JOIN sub_top_partners stp ON stp.uei = e.uei
-          LEFT JOIN sub_top_naics stn ON stn.uei = e.uei;""")
+          FROM pop
+          LEFT JOIN entities e ON e.uei = pop.uei
+          LEFT JOIN prime_agg p ON p.uei = pop.uei
+          LEFT JOIN top_naics tn ON tn.uei = pop.uei
+          LEFT JOIN top_psc tp ON tp.uei = pop.uei
+          LEFT JOIN top_agency ta ON ta.uei = pop.uei
+          LEFT JOIN sub_agg s ON s.uei = pop.uei
+          LEFT JOIN sub_top_partners stp ON stp.uei = pop.uei
+          LEFT JOIN sub_top_naics stn ON stn.uei = pop.uei;""")
 
         import pyarrow as pa
         tbl = con.execute("SELECT * FROM profile").arrow()
@@ -379,17 +425,17 @@ def build(years=DEFAULT_YEARS):
         rows = tbl.num_rows
         if rows == 0:
             raise RuntimeError("0 profile rows assembled")
-        lance.write_dataset(tbl, PROFILE_URI, mode="overwrite",
+        lance.write_dataset(tbl, out_uri, mode="overwrite",
                             data_storage_version=DATA_STORAGE_VERSION,
                             max_rows_per_file=MAX_ROWS_PER_FILE, storage_options=so)
-        ds = lance.dataset(PROFILE_URI, storage_options=so)
+        ds = lance.dataset(out_uri, storage_options=so)
         present = set(ds.schema.names)
         for c in INDEX_COLS:
             if c in present:
                 ds.create_scalar_index(c, index_type="BTREE")
                 log(f"  BTREE {c}")
         status = "success"
-        log(f"DONE rows={rows} cols={len(ds.schema.names)} -> {PROFILE_URI}")
+        log(f"DONE rows={rows} cols={len(ds.schema.names)} wide={wide} -> {out_uri}")
     except Exception as e:  # noqa: BLE001
         error = f"{type(e).__name__}: {e}"
         raise
@@ -471,12 +517,14 @@ def main():
     a2 = int(sys.argv[2]) if len(sys.argv) > 2 else None
     if cmd == "build":
         build(years=a2 or DEFAULT_YEARS)
+    elif cmd == "build_wide":
+        build(years=a2 or DEFAULT_YEARS, wide=True)
     elif cmd == "verify":
         verify()
     elif cmd == "init_ops":
         init_ops()
     else:
-        print(f"unknown command: {cmd} (init_ops|build|verify)"); sys.exit(2)
+        print(f"unknown command: {cmd} (init_ops|build|build_wide|verify)"); sys.exit(2)
 
 
 if __name__ == "__main__":
