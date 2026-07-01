@@ -20,8 +20,10 @@ TIERS (rank within firm by tier_order, then score, then lane demand; top 10):
 Target is ALWAYS a sub-demand node (subaward_combo_nodes) -> there's a roster to join;
 buyers = the primes who sub that lane out (top_primes).
 
-SOURCES (read-only): subaward_naics_psc, contract_prime_txn (recipient_uei -> prime combos),
-subaward_combo_nodes, subaward_combo_edges, sba_dsbs_certified_firms, sam_master_entities.
+SOURCES (read-only): subaward_naics_psc_wide (full 2021+ contract-subaward universe; was the
+narrow subaward_naics_psc before 2026-07-01), contract_prime_txn (recipient_uei -> prime combos),
+subaward_combo_nodes, subaward_combo_edges (rebuilt from the same wide source),
+sba_dsbs_certified_firms, sam_master_entities.
 TARGET: s3://data-sink/active/capability_lanes/  (overwrite; derived rollup)
     BTREE uei, dst_combo, dst_naics · BITMAP is_dsbs, evidence_tier
 
@@ -56,7 +58,7 @@ def main() -> int:
         con.register("_r", ds.scanner(columns=cols).to_table()); con.execute(f"CREATE TABLE {t} AS SELECT * FROM _r"); con.unregister("_r")
 
     # ── sub side: held combos, names, top primes per combo ───────────────────────────
-    reg("subaward_naics_psc", ["subawardee_uei","subawardee_name","prime_awardee_name","prime_naics_code","prime_psc_code","subaward_amount"], "_sub")
+    reg("subaward_naics_psc_wide", ["subawardee_uei","subawardee_name","prime_awardee_name","prime_naics_code","prime_psc_code","subaward_amount"], "_sub")
     con.execute("""CREATE TABLE sub AS SELECT upper(trim(subawardee_uei)) uei, subawardee_name snm, prime_awardee_name pn,
         prime_naics_code||'|'||prime_psc_code combo, coalesce(subaward_amount,0) amt FROM _sub
         WHERE subawardee_uei IS NOT NULL AND trim(subawardee_uei)<>'' AND prime_naics_code IS NOT NULL AND trim(prime_naics_code)<>'' AND prime_psc_code IS NOT NULL AND trim(prime_psc_code)<>''""")

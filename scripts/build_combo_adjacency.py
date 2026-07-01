@@ -11,13 +11,15 @@ WHY
     it already holds.
 
 SOURCE (Gen-3 SoR, read-only)
-    s3://data-sink/active/subaward_naics_psc/   (one row per FFATA subaward line; carries
-    subawardee_uei + prime_awardee_uei + prime NAICS + joined prime PSC + amount)
+    s3://data-sink/active/subaward_naics_psc_wide/   (one row per FFATA contract-subaward line,
+    full 2021+ universe; carries subawardee_uei + prime_awardee_uei + prime NAICS + joined
+    prime PSC + amount). Was the narrow subaward_naics_psc (25K firms) before 2026-07-01.
 
 NODE SET
-    The 1,391 (NAICS,PSC) combos that ACTUALLY get subcontracted — the set where sub demand
-    exists (vs ~28,600 combos in the full prime-contract universe). This is deliberate: a sub-
+    The (NAICS,PSC) combos that ACTUALLY get subcontracted — the set where sub demand exists
+    (vs ~28,600 combos in the full prime-contract universe). This is deliberate: a sub-
     rostering adjacency should live in the space where subcontracting actually happens.
+    (1,391 nodes on the narrow 25K source; wider on the 2021+ source.)
 
 TARGETS (Gen-3 native Lance v2.1, full-snapshot overwrite — derived rollup, not append SoR)
     s3://data-sink/active/subaward_combo_nodes/   one row per combo (1,391) — demand stats
@@ -45,7 +47,7 @@ from __future__ import annotations
 import os, sys
 import duckdb, lance
 
-SRC   = "s3://data-sink/active/subaward_naics_psc/"
+SRC   = "s3://data-sink/active/subaward_naics_psc_wide/"
 NODES = "s3://data-sink/active/subaward_combo_nodes/"
 EDGES = "s3://data-sink/active/subaward_combo_edges/"
 

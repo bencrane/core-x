@@ -5,13 +5,17 @@ Pure ASSEMBLY (no new analytics): fuses the golden activity record, designations
 recommendation surface into the single object the call screen reads. Role is a STATUS, not the
 name — `federal_status` + flags cover active subs and never-subbed DSBS in one shape.
 
-  identity + activity   <- subawardee_work_profile (sub-side + prime-side summaries, top lists)
+  identity + activity   <- subawardee_work_profile_wide (sub-side + prime-side summaries, top
+                           lists; full 2021+ universe — was the narrow subawardee_work_profile
+                           before 2026-07-01)
   designations[]        <- govcon_subawardee_designations (+ is_dsbs from the DSBS roster)
   recommended_lanes[]   <- capability_lanes (top-10/firm, evidence-tiered), nested
   (opportunities[]      <- Stage 4, later)
 
-POPULATION: firms with something to show — distinct UEIs in subawardee_work_profile (subs)
+POPULATION: firms with something to show — distinct UEIs in subawardee_work_profile_wide (subs)
 UNION capability_lanes (anyone with >=1 recommended lane, incl never-subbed DSBS).
+NOTE: grant-only subawardees (~2/3 of the wide universe) carry activity but no PSC lane —
+lane-less activity rows are expected and correct for them (grants have no NAICS×PSC lane).
 
 KNOWN v1 gaps (bounded, documented): (1) prime-side activity is sourced from work_profile, which
 only covers subs — a never-subbed-but-primed DSBS gets primed lanes but a sparse activity panel
@@ -49,7 +53,7 @@ def main() -> int:
         ds = lance.dataset(f"{A}/{name}/", storage_options=opt)
         con.register("_r", ds.scanner(columns=cols).to_table()); con.execute(f"CREATE TABLE {t} AS SELECT * FROM _r"); con.unregister("_r")
 
-    reg("subaward_work_profile" if False else "subawardee_work_profile", [
+    reg("subawardee_work_profile_wide", [
         "subawardee_uei","subawardee_name","subawardee_parent_uei","subawardee_state_code",
         "sub_amount_5y","sub_received_5y","sub_distinct_primes_5y","sub_distinct_prime_partners_5y",
         "recent_subawards_90d","recent_subaward_amount_90d","recent_latest_action_date","recent_top_prime_name",
