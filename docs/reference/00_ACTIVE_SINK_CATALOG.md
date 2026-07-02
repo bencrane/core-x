@@ -68,7 +68,16 @@
 > join over the 35M-row PDL datasets). All filter columns BITMAP-indexed so any slice
 > (`award_active AND pdl_employee_size_range='1-10'`, etc.) is an index scan, not a re-join.
 > 28,343 award-active · 94,544 PDL-matched.
-This is the **dataset index** for the persistence plane whose write mechanics are
+
+> **Update 2026-07-02 — SAM facilities/support labor (the NAICS-561 families missing from
+> `sam_labor_universe`).** Office Admin (5611), Travel (5615), Investigation & **Security incl.
+> security guards 561612** (5616), **Services to Buildings & Dwellings incl. janitorial/landscaping**
+> (5617). Inclusion bar = `entity_url` present; every UEI already in `sam_labor_universe` excluded
+> (0 overlap). Split by PDL match per operator rule (no PDL ⇒ no employee band to filter on):
+> `sam_facilities_labor_universe` (**9,886** PDL-matched, band + LinkedIn) + `sam_facilities_labor_no_pdl`
+> (**10,960** no match). Both carry `award_active`/`has_prime`/`has_subaward` + `in_our_staffing`.
+> Built by `scripts/build_sam_facilities_labor_universe.py`.
+
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
 system of record ([`ARCHITECTURE.md` §4](../../ARCHITECTURE.md)); this file is the
@@ -627,6 +636,8 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_attachment_worklist_T3` | 6,089 | 20 | — |
 | `sam_business_type_code_dict` | 12 | 11 | BTree(code); BTree(namespace); BTree(designation_key) |
 | `sam_master_contacts` | 4,373,319 | 13 | BTree(uei) |
+| `sam_facilities_labor_no_pdl` | 10,960 | 12 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward) |
+| `sam_facilities_labor_universe` | 9,886 | 14 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |
 | `sam_labor_universe` | 160,048 | 15 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |
 | `sam_master_domains` | 709,546 | 5 | BTree(normalized_domain); BTree(uei) |
 | `sam_master_entities` | 1,541,566 | 68 | BTree(uei); BTree(primary_naics); BTree(cage_code) |
