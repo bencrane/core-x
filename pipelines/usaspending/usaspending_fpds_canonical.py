@@ -922,6 +922,38 @@ def _gc_orphan_indices(s3, uri, keep_uuids: set[str]) -> int:
     return removed
 
 
+def _build_indices_local(local_ds: str) -> list[str]:
+    """Build the §4 BTREE/BITMAP scalar indices against a LOCAL Lance path; return the columns actually
+    indexed (schema-presence filtered). Opened with lance.dataset(local_ds) and NO storage_options → the
+    local-FS writer (no multipart), the ONLY R2-safe way to write indices (the native R2 object-writer
+    streams adaptive-sized parts R2 rejects: 400 InvalidPart, 'all non-trailing parts must have the same
+    length'). Shared by build() (indices written into local_ds BEFORE the single _publish_local_to_r2 →
+    published atomically WITH the data) and index() (indices written into the R2→local mirror BEFORE the
+    append-only delta publish). Idempotent: replace=True rebuilds cleanly; the TypeError fallback covers
+    older lance without the kwarg. Raises on the first failing column so callers fail-closed BEFORE any
+    R2 mutation."""
+    import lance
+    ds = lance.dataset(local_ds)                     # LOCAL — no storage_options, no R2 writer
+    present = set(ds.schema.names)
+    built: list[str] = []
+    log(f"indexing LOCAL ({ds.count_rows():,} rows)")
+    for col in [c for c in BTREE_COLS if c in present]:
+        try:
+            ds.create_scalar_index(col, index_type="BTREE", replace=True)
+        except TypeError:
+            ds.create_scalar_index(col, index_type="BTREE")
+        built.append(col)
+        log(f"  BTREE ✓ {col}")
+    for col in [c for c in BITMAP_COLS if c in present]:
+        try:
+            ds.create_scalar_index(col, index_type="BITMAP", replace=True)
+        except TypeError:
+            ds.create_scalar_index(col, index_type="BITMAP")
+        built.append(col)
+        log(f"  BITMAP ✓ {col}")
+    return built
+
+
 def _dataset_exists(uri, so) -> bool:
     import lance
     try:
@@ -1016,6 +1048,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
     monthly_corrections_applied = 0
     max_action_date = None
     metrics: dict = {}
+    built_idx: list[str] = []
     con = None
     local_ds = os.path.join(SCRATCH, "canonical_lance")
     try:
@@ -1116,8 +1149,32 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         con.close()
         con = None
 
+        # ── reclaim DuckDB RSS + spill BEFORE the RAM-heavy index sort (fold-isolation fix) ──
+        # The standalone index_fn ran the ≥96 GiB LANCE_BYPASS_SPILLING BTREE sort in a FRESH container;
+        # folded, that sort runs in the SAME container that just held a DUCK_MEM-limit DuckDB engine. glibc
+        # does not return freed arenas to the OS on its own → malloc_trim forces it, so residual DuckDB RSS
+        # cannot collide with the sort and trigger an OOM-SIGKILL — an out-of-band kill the except/finally
+        # below CANNOT catch (it would leave no ledger row). Dropping DUCK_TMP frees reconcile spill so the
+        # local index write cannot ENOSPC the shared ephemeral disk.
+        import ctypes
+        import gc as _gc
+        del reader
+        _gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except OSError:
+            pass  # non-glibc (e.g. local macOS dev); Modal's debian_slim image is glibc
+        shutil.rmtree(DUCK_TMP, ignore_errors=True)
+
+        # ── build §4 indices on the LOCAL dataset BEFORE publish (atomic fold) ──
+        # local-FS writer (no multipart, R2-safe); _publish_local_to_r2's os.walk uploads the resulting
+        # _indices/ together with the data fragments in ONE publish. A failed index raises HERE, before
+        # _s3() and the wipe-then-upload below ever run ⇒ the R2 SoR is never touched (all-or-nothing).
+        built_idx = _build_indices_local(local_ds)
+        log(f"indices built LOCALLY: {built_idx}")
+
         s3 = _s3()
-        log(f"publishing local Lance → {target_uri} (boto3 uniform-part)…")
+        log(f"publishing local Lance (data + indices) → {target_uri} (boto3 uniform-part)…")
         published = _publish_local_to_r2(s3, target_uri, local_ds)
         log(f"published {published} files → {target_uri}")
         status = "success"
@@ -1130,6 +1187,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                    "monthly_corrections_applied": int(monthly_corrections_applied),
                    "max_action_date": max_action_date, "pk_unique": True,
                    "columns": len(COLUMN_SPEC), "files_published": int(published),
+                   "indices_built": built_idx,
                    "write_mode": "overwrite", "status": status}
     except BaseException as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__} (no message)"
@@ -1145,7 +1203,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                     monthly_corrections_applied=int(monthly_corrections_applied),
                     max_action_date=max_action_date,
                     columns=len(COLUMN_SPEC), write_mode="overwrite",
-                    indices_built=None, status=status, error=error,
+                    indices_built=built_idx, status=status, error=error,
                     started=started, completed=dt.datetime.now(dt.timezone.utc))
         shutil.rmtree(SCRATCH, ignore_errors=True)
     return metrics
@@ -1165,34 +1223,16 @@ def index(target_uri: str = CANONICAL_URI) -> dict:
     Kept separate from build() for blast-radius isolation (a failed/half index never touches the data
     fragments). Idempotent: replace=True rebuilds cleanly and the GC prunes superseded index UUIDs.
     Columns absent from schema are skipped."""
-    import lance
     s3 = _s3()
     local_ds = os.path.join(SCRATCH, "index_lance")
     shutil.rmtree(local_ds, ignore_errors=True)
     os.makedirs(local_ds, exist_ok=True)
-    built: list[str] = []
     try:
         log(f"materializing {target_uri} → {local_ds} (boto3 mirror)…")
         got = _download_r2_to_local(s3, target_uri, local_ds)
         log(f"materialized {got} files")
         before = _relset(local_ds)                       # data fragments + committed manifest
-        ds = lance.dataset(local_ds)                     # LOCAL — no storage_options, no R2 writer
-        present = set(ds.schema.names)
-        log(f"indexing LOCAL ({ds.count_rows():,} rows)")
-        for col in [c for c in BTREE_COLS if c in present]:
-            try:
-                ds.create_scalar_index(col, index_type="BTREE", replace=True)
-            except TypeError:
-                ds.create_scalar_index(col, index_type="BTREE")
-            built.append(col)
-            log(f"  BTREE ✓ {col}")
-        for col in [c for c in BITMAP_COLS if c in present]:
-            try:
-                ds.create_scalar_index(col, index_type="BITMAP", replace=True)
-            except TypeError:
-                ds.create_scalar_index(col, index_type="BITMAP")
-            built.append(col)
-            log(f"  BITMAP ✓ {col}")
+        built = _build_indices_local(local_ds)           # LOCAL-FS index build (shared with build())
         after = _relset(local_ds)
         published = _publish_index_delta(s3, target_uri, local_ds, before)
         log(f"published {published} index/manifest file(s) → {target_uri} (append-only)")
