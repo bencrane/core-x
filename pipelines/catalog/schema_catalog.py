@@ -148,7 +148,9 @@ TARGETS: list[tuple[str, str]] = [
     ("usaspending", "s3://data-sink/active/contractor_award_summary/"),
     ("usaspending", "s3://data-sink/active/ffata_exec_comp/"),
     # gtm_mcp current substrate (for the entity-substrate decision comparison).
-    ("gtm", "s3://data-sink/active/companies/"),
+    # REPOINT → companies_canonical (source_platform extracted to the company_source_platforms sidecar).
+    ("gtm", "s3://data-sink/active/companies_canonical/"),
+    ("gtm", "s3://data-sink/active/company_source_platforms/"),
     ("gtm", "s3://data-sink/active/people/"),
     # Crosswalks / bridges — the resolution edges across spines.
     ("resolution", "s3://data-sink/active/crosswalk_sam_usaspending/"),

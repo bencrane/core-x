@@ -78,6 +78,16 @@
 > (**10,960** no match). Both carry `award_active`/`has_prime`/`has_subaward` + `in_our_staffing`.
 > Built by `scripts/build_sam_facilities_labor_universe.py`.
 
+> **Update 2026-07-02 — FPDS canonical transaction SoR now enumerated (post-probe build).**
+> `usaspending_fpds_canonical_txn` — the typed, PK-grained reconciliation of the three FPDS
+> transaction feeds (BULK ⊕ FRESH ⊕ MONTHLY) into one row per `contract_transaction_unique_key` —
+> was built after the 2026-06-30 probe, so the body below carried only the `_sample/…_sample` cut
+> (75 cols, under §Scratch/Staging). Added to **§USASpending**, **live-verified 2026-07-02**:
+> **108,181,354 rows · 131 cols · 17 indices** (10 BTREE + 7 BITMAP; `subcontracting_plan` bitmap is
+> the 17th, from the 88→131 spine expansion). Full field-level reference:
+> [`FPDS_CANONICAL_FIELD_DICTIONARY.md`](FPDS_CANONICAL_FIELD_DICTIONARY.md). Headline/marquee totals
+> above are NOT recomputed — a full re-probe refreshes those.
+
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
 system of record ([`ARCHITECTURE.md` §4](../../ARCHITECTURE.md)); this file is the
@@ -786,6 +796,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `usaspending_archive_full_fpds` | 2,975,677 | 300 | BTree(contract_transaction_unique_key); BTree(contract_award_unique_key); BTree(recipient_uei); BTree(action_date); BTree(last_modified_date); Bitmap(archive_snapshot_stamp) |
 | `usaspending_awards_map_serving` | 1,111,438 | 42 | BTree(action_date); BTree(action_obligated_usd); BTree(winner_uei); BTree(addr_hash); BTree(city); BTree(county); BTree(pop_city); BTree(awarding_sub_agency); BTree(psc_code); Bitmap(naics2); Bitmap(state); Bitmap(winner_type); Bitmap(pop_state); Bitmap(awarding_agency); Bitmap(set_aside); Bitmap(is_active); Bitmap(psc_category); Bitmap(fiscal_year); Bitmap(business_size); Bitmap(action_type); Bitmap(is_option_exercise); Bitmap(vertical); Bitmap(work_type); Bitmap(equipment_intensity); Bitmap(has_extracted_scope); Bitmap(requires_clearance); Bitmap(requires_cmmc); Bitmap(req_clearance_level_max) |
 | `usaspending_contracts_map_serving` | 1,075,214 | 36 | BTree(contract_obligated_usd); BTree(contract_ceiling_usd); BTree(naics_code); BTree(psc_code); BTree(awarding_sub_agency); BTree(last_action_date); BTree(winner_uei); BTree(contract_award_unique_key); BTree(action_count); Bitmap(naics2); Bitmap(psc_category); Bitmap(state); Bitmap(pop_state); Bitmap(awarding_agency); Bitmap(set_aside); Bitmap(business_size); Bitmap(vertical); Bitmap(work_type); Bitmap(equipment_intensity); Bitmap(is_active); Bitmap(fiscal_year); Bitmap(has_extracted_scope); Bitmap(requires_clearance); Bitmap(requires_cmmc); Bitmap(req_clearance_level_max) |
+| `usaspending_fpds_canonical_txn` | 108,181,354 | 131 | BTree(contract_transaction_unique_key); BTree(contract_award_unique_key); BTree(recipient_uei); BTree(action_date); BTree(last_modified_date); BTree(naics_code); BTree(product_or_service_code); BTree(federal_action_obligation); BTree(recipient_hash); BTree(award_id_piid); Bitmap(action_date_fiscal_year); Bitmap(type_of_set_aside_code); Bitmap(awarding_agency_code); Bitmap(award_type_code); Bitmap(idv_type_code); Bitmap(canonical_source); Bitmap(subcontracting_plan) |
 | `usaspending_winners_map_serving` | 67,378 | 31 | BTree(winner_uei); BTree(addr_hash); BTree(entity_obligated_usd); BTree(award_count); BTree(last_action_date); BTree(teaming_dollars_5y); BTree(n_teaming_primes); Bitmap(naics2); Bitmap(state); Bitmap(winner_type); Bitmap(has_extracted_scope); Bitmap(requires_clearance); Bitmap(requires_cmmc); Bitmap(req_clearance_level_max) |
 
 ### USPTO

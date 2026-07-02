@@ -1,0 +1,1531 @@
+{
+ "a_76_fair_act_action": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field.",
+  "type": "string"
+ },
+ "a_76_fair_act_action_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field.",
+  "type": "string"
+ },
+ "action_date": {
+  "definition": "The date the action being reported was issued / signed by the Government or a binding agreement was reached.",
+  "type": "date32[day]"
+ },
+ "action_type": {
+  "definition": "Code that provides information on any new (only applicable to financial assistance awards) or changes (applies to both procurement and financial assistance changes) made to the Federal prime award. Th",
+  "type": "string"
+ },
+ "action_type_description": {
+  "definition": "Description tag that explains the meaning of the code provided in the ActionType Field.",
+  "type": "string"
+ },
+ "afa_generated_unique": {
+  "definition": "System-generated database key used to uniquely identify each financial assistance transaction record and facilitate record lookup, correction, and deletion. A concatenation of AwardingSubTierAgencyCod",
+  "type": "string"
+ },
+ "agency_id": {
+  "definition": "The agency code identifies the department or agency that is responsible for the account.",
+  "type": "string"
+ },
+ "airport_authority": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "alaskan_native_owned_corpo": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "alaskan_native_servicing_i": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "american_indian_owned_busi": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is an American Indian Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "asian_pacific_american_own": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is an Asian-Pacific American Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "award_amount": {
+  "definition": "The total amount awarded to the prime award recipient.",
+  "type": "double"
+ },
+ "award_category": {
+  "type": "string"
+ },
+ "award_certified_date": {
+  "type": "date32[day]"
+ },
+ "award_date_signed": {
+  "type": "date32[day]"
+ },
+ "award_fiscal_year": {
+  "type": "int64"
+ },
+ "award_id": {
+  "definition": "The unique identifying Award ID of the prime award (PIID or FAIN).",
+  "type": "int64"
+ },
+ "award_update_date": {
+  "type": "timestamp[us]"
+ },
+ "awarding_agency_code": {
+  "definition": "A department or establishment of the Government as used in the Treasury Account Fund Symbol (TAFS).",
+  "type": "string"
+ },
+ "awarding_agency_id": {
+  "type": "int64"
+ },
+ "awarding_office_code": {
+  "definition": "Identifier of the level n organization that awarded, executed or is otherwise responsible for the transaction.",
+  "type": "string"
+ },
+ "awarding_office_name": {
+  "definition": "Name of the level n organization that awarded, executed or is otherwise responsible for the transaction.",
+  "type": "string"
+ },
+ "awarding_sub_tier_agency_c": {
+  "definition": "Identifier of the level 2 organization that awarded, executed or is otherwise responsible for the transaction.",
+  "type": "string"
+ },
+ "awarding_subtier_agency_abbreviation": {
+  "type": "string"
+ },
+ "awarding_subtier_agency_name": {
+  "definition": "Name of the level 2 organization that awarded, executed or is otherwise responsible for the transaction.",
+  "type": "string"
+ },
+ "awarding_subtier_agency_name_raw": {
+  "type": "string"
+ },
+ "awarding_toptier_agency_abbreviation": {
+  "type": "string"
+ },
+ "awarding_toptier_agency_id": {
+  "type": "int64"
+ },
+ "awarding_toptier_agency_name": {
+  "definition": "The name associated with a department or establishment of the Government as used in the Treasury Account Fund Symbol (TAFS).",
+  "type": "string"
+ },
+ "awarding_toptier_agency_name_raw": {
+  "type": "string"
+ },
+ "base_and_all_options_value": {
+  "definition": "For the Award it is the mutually agreed upon total contract value including all options (if any). For IDVs the value is the mutually agreed upon total contract value including all options (if any) AND",
+  "type": "string"
+ },
+ "base_exercised_options_val": {
+  "definition": "The contract value for the base contract and any options that have been exercised.",
+  "type": "string"
+ },
+ "black_american_owned_busin": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Black American Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "business_categories": {
+  "type": "string"
+ },
+ "business_funds_ind_desc": {
+  "definition": "Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessFundsIndicator Field.",
+  "type": "string"
+ },
+ "business_funds_indicator": {
+  "definition": "The Business Funds Indicator sometimes abbreviated BFI. Code indicating the award's applicability to the Recovery Act.",
+  "type": "string"
+ },
+ "business_types": {
+  "definition": "A code of a collection of indicators of different types of recipients based on socio-economic status and organization / business areas.",
+  "type": "string"
+ },
+ "business_types_desc": {
+  "definition": "Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessType Field.",
+  "type": "string"
+ },
+ "c1862_land_grant_college": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "c1890_land_grant_college": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "c1994_land_grant_college": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "c8a_program_participant": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is an 8(a) Program Participant Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "cage_code": {
+  "definition": "The CAGE Code of the entity. Used as a key to SAM. Maps to the Unique Entity ID.",
+  "type": "string"
+ },
+ "cfda_id": {
+  "type": "int64"
+ },
+ "cfda_number": {
+  "definition": "The number assigned to an Assistance Listing in the Catalog of Federal Domestic Assistance (CFDA) and SAM.gov.",
+  "type": "string"
+ },
+ "cfda_title": {
+  "definition": "The title of the Assistance Listing under which the Federal award was funded in the Catalog of Federal Domestic Assistance (CFDA) and SAM.gov.",
+  "type": "string"
+ },
+ "city_local_government": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "clinger_cohen_act_pla_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Clinger-Cohen Act Planning Compliance Field.",
+  "domain": "Y = Yes N = No",
+  "type": "string"
+ },
+ "clinger_cohen_act_planning": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Clinger-Cohen Act Planning Compliance Field.",
+  "domain": "Y = Yes N = No",
+  "type": "string"
+ },
+ "commercial_item_acqui_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Acquisition Procedures Field.",
+  "domain": "A = COMMERCIAL ITEM B = SUPPLIES OR SERVICES PURSUANT TO FAR 12.102(F) C = SERVI",
+  "type": "string"
+ },
+ "commercial_item_acquisitio": {
+  "definition": "Designates whether the solicitation used the special requirements for the acquisition of commercial items (or other supplies or services authorized to use commercial item procedures) intended to more",
+  "domain": "A = COMMERCIAL ITEM B = SUPPLIES OR SERVICES PURSUANT TO FAR 12.102(F) C = SERVI",
+  "type": "string"
+ },
+ "commercial_item_test_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Test Program Field.",
+  "domain": "Y = Yes N = No",
+  "type": "string"
+ },
+ "commercial_item_test_progr": {
+  "definition": "This field designates whether the acquisition utilized FAR 13.5 Test Program for Certain Commercial Items. The FAR 13.5 Test Program provides for the use of simplified acquisition procedures for the a",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "community_developed_corpor": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "community_development_corp": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "consolidated_contract": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Consolidated Contract Field.",
+  "domain": "A = CONSOLIDATED REQUIREMENTS B = CONSOLIDATED REQUIREMENTS WITH WRITTEN DETERMI",
+  "type": "string"
+ },
+ "consolidated_contract_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Consolidated Contract Field.",
+  "domain": "A = CONSOLIDATED REQUIREMENTS B = CONSOLIDATED REQUIREMENTS WITH WRITTEN DETERMI",
+  "type": "string"
+ },
+ "construction_wage_rat_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Wage Rate Requirements (Construction) Field.",
+  "type": "string"
+ },
+ "construction_wage_rate_req": {
+  "definition": "Indicates whether the transaction is subject to the Construction Wage Rate Requirements. The clause is 52.222-6 \"Construction Wage Rate Requirements\" -that goes with Wage Rate Requirements (Constructi",
+  "type": "string"
+ },
+ "contingency_humanitar_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Emergency Acquisition Field.",
+  "type": "string"
+ },
+ "contingency_humanitarian_o": {
+  "definition": "A designator of contract actions that support a declared contingency operation, a declared humanitarian or peacekeeping operation, or a declared presidential issued emergency declaration or a major di",
+  "type": "string"
+ },
+ "contract_award_type": {
+  "definition": "The type of award being entered by this transaction. Types of awards include Purchase Orders (PO), Delivery Orders (DO), Blanket Purchase Agreements (BPA) Calls and Definitive Contracts.",
+  "type": "string"
+ },
+ "contract_award_type_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the ContractAwardType Field.",
+  "type": "string"
+ },
+ "contract_bundling": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Bundling Field.",
+  "domain": "A = MISSION CRITICAL B = OMB Circular A-76 C = OTHER D = NOT A BUNDLED REQUIREME",
+  "type": "string"
+ },
+ "contract_bundling_descrip": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Bundling Field.",
+  "domain": "A = MISSION CRITICAL B = OMB Circular A-76 C = OTHER D = NOT A BUNDLED REQUIREME",
+  "type": "string"
+ },
+ "contract_financing": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Financing Field.",
+  "domain": "A = FAR 52.232-16 PROGRESS PAYMENTS C = PERCENTAGE OF COMPLETION PROGRESS PAYMEN",
+  "type": "string"
+ },
+ "contract_financing_descrip": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Financing Field.",
+  "domain": "A = FAR 52.232-16 PROGRESS PAYMENTS C = PERCENTAGE OF COMPLETION PROGRESS PAYMEN",
+  "type": "string"
+ },
+ "contracting_officers_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracting Officer's Determination of Business Size Field.",
+  "type": "string"
+ },
+ "contracting_officers_deter": {
+  "definition": "The Contracting Officer's determination of whether the selected contractor meets the small business size standard for award to a small business for the NAICS code that is applicable to the contract.",
+  "type": "string"
+ },
+ "contracts": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "corporate_entity_not_tax_e": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "corporate_entity_tax_exemp": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "correction_delete_ind_desc": {
+  "definition": "Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the CorrectionDeleteIndicator Field.",
+  "type": "string"
+ },
+ "correction_delete_indicatr": {
+  "definition": "A code to indicate how the record should be processed: correction to an existing record; deletion of a record; new record.",
+  "type": "string"
+ },
+ "cost_accounting_stand_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost Accounting Standards Clause Field.",
+  "type": "string"
+ },
+ "cost_accounting_standards": {
+  "definition": "Indicates whether the contract includes a Cost Accounting Standards clause.",
+  "type": "string"
+ },
+ "cost_or_pricing_data": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost or Pricing Data Field.",
+  "domain": "Y = YES N = NO W = NOT OBTAINED - WAIVED",
+  "type": "string"
+ },
+ "cost_or_pricing_data_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost or Pricing Data Field.",
+  "domain": "Y = YES N = NO W = NOT OBTAINED - WAIVED",
+  "type": "string"
+ },
+ "council_of_governments": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "country_of_product_or_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Country of Product or Service Origin Field.",
+  "type": "string"
+ },
+ "country_of_product_or_serv": {
+  "definition": "Identifies the country of product or service origin.",
+  "type": "string"
+ },
+ "county_local_government": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "create_date": {
+  "type": "timestamp[us]"
+ },
+ "current_total_value_award": {
+  "definition": "For procurement, the total amount obligated to date on a contract, including the base and exercised options.",
+  "type": "string"
+ },
+ "detached_award_proc_unique": {
+  "definition": "Derived element and system-generated database key used to uniquely identify each contract transaction record and facilitate record lookup, correction, and deletion. A concatenation of agencyID, Refere",
+  "type": "string"
+ },
+ "detached_award_procurement_id": {
+  "type": "int64"
+ },
+ "disaster_emergency_fund_codes": {
+  "definition": "Distinguishes whether the budgetary resources, obligations incurred, unobligated and obligated balances, and outlays are classified as disaster, emergency, wildfire suppression or none of the three. (",
+  "type": "string"
+ },
+ "dod_claimant_prog_cod_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DoD Claimant Program Code Field.",
+  "domain": "According to the GSA Federal Procurement Data System (FPDS), these are listed in",
+  "type": "string"
+ },
+ "dod_claimant_program_code": {
+  "definition": "A claimant program number designates a grouping of supplies, construction, or other services.",
+  "domain": "According to the GSA Federal Procurement Data System (FPDS), these are listed in",
+  "type": "string"
+ },
+ "domestic_or_foreign_e_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Domestic or Foreign Entity Field.",
+  "domain": "A = U.S. OWNED BUSINESS B = OTHER U.S. ENTITY (E.G. GOVERNMENT) C = FOREIGN-OWNE",
+  "type": "string"
+ },
+ "domestic_or_foreign_entity": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Domestic or Foreign Entity Field.",
+  "domain": "A = U.S. OWNED BUSINESS B = OTHER U.S. ENTITY (E.G. GOVERNMENT) C = FOREIGN-OWNE",
+  "type": "string"
+ },
+ "domestic_shelter": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "dot_certified_disadvantage": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "economically_disadvantaged": {
+  "definition": "https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is an Economically Disadvantaged Woman Owned Small Business or not. It can be derived from the SAM",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "educational_institution": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is an Educational Institution or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "emerging_small_business": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is an Emerging Small Business Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "epa_designated_produc_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field.",
+  "type": "string"
+ },
+ "epa_designated_product": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field.",
+  "type": "string"
+ },
+ "etl_update_date": {
+  "type": "timestamp[us]"
+ },
+ "evaluated_preference": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field.",
+  "domain": "NONE = NO PREFERENCE USED SDA = SDB PRICE EVALUATION ADJUSTMENT SPS = SDB PREFER",
+  "type": "string"
+ },
+ "evaluated_preference_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field.",
+  "domain": "NONE = NO PREFERENCE USED SDA = SDB PRICE EVALUATION ADJUSTMENT SPS = SDB PREFER",
+  "type": "string"
+ },
+ "extent_compete_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Extent Competed Field.",
+  "domain": "A = FULL AND OPEN COMPETITION B = NOT AVAILABLE FOR COMPETITION C = NOT COMPETED",
+  "type": "string"
+ },
+ "extent_competed": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Extent Competed Field.",
+  "type": "string"
+ },
+ "face_value_loan_guarantee": {
+  "definition": "The face value of the direct loan or loan guarantee.",
+  "type": "double"
+ },
+ "fain": {
+  "definition": "The Federal Award Identification Number (FAIN) is the unique ID within the Federal agency for each (non-aggregate) financial assistance award.",
+  "type": "string"
+ },
+ "fair_opportunity_limi_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Fair Opportunity Limited Sources Field.",
+  "domain": "URG = URGENCY ONE = ONLY ONE SOURCE - OTHER FOO = FOLLOW-ON ACTION FOLLOWING COM",
+  "type": "string"
+ },
+ "fair_opportunity_limited_s": {
+  "definition": "The type of statutory exception to Fair Opportunity.",
+  "domain": "URG = URGENCY ONE = ONLY ONE SOURCE - OTHER FOO = FOLLOW-ON ACTION FOLLOWING COM",
+  "type": "string"
+ },
+ "fed_biz_opps": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field.",
+  "type": "string"
+ },
+ "fed_biz_opps_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field.",
+  "type": "string"
+ },
+ "federal_accounts": {
+  "definition": "The Federal Account Symbol is derived from concatenating the agency identifier and the main account code.",
+  "type": "string"
+ },
+ "federal_action_obligation": {
+  "definition": "Amount of Federal government’s obligation, de-obligation, or liability, in dollars, for an award transaction.",
+  "type": "double"
+ },
+ "federal_agency": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "federally_funded_research": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "fiscal_action_date": {
+  "type": "date32[day]"
+ },
+ "fiscal_year": {
+  "definition": "The fiscal year in which the ActionDate occurs. Note that the Federal fiscal year begins on October 1 and ends on September 30, thus October 1, 2018 is the first day of the 2019 fiscal year.",
+  "type": "int64"
+ },
+ "for_profit_organization": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Profit Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "foreign_funding": {
+  "definition": "Indicates that a foreign government, international organization, or foreign military organization bears some of the cost of the acquisition.",
+  "type": "string"
+ },
+ "foreign_funding_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Foreign Funding Field.",
+  "type": "string"
+ },
+ "foreign_government": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "foreign_owned_and_located": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "foundation": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "funding_agency_code": {
+  "definition": "The 3-digit CGAC agency code of the department or establishment of the Government that provided the preponderance of the funds for an award and/or individual transactions related to an award.",
+  "type": "string"
+ },
+ "funding_agency_id": {
+  "type": "int64"
+ },
+ "funding_amount": {
+  "type": "double"
+ },
+ "funding_office_code": {
+  "definition": "Identifier of the level n organization that provided the preponderance of the funds obligated by this transaction.",
+  "domain": "Refer to the GSA IAE Federal Hierarchy from SAM.gov",
+  "type": "string"
+ },
+ "funding_office_name": {
+  "definition": "Name of the level n organization that provided the preponderance of the funds obligated by this transaction.",
+  "domain": "Refer to the GSA IAE Federal Hierarchy from SAM.gov",
+  "type": "string"
+ },
+ "funding_opportunity_goals": {
+  "definition": "A brief summary of the intended outcomes associated with the notice of funding opportunity. Applicable to Competitive Discretionary Grants and Cooperative Agreements.",
+  "type": "string"
+ },
+ "funding_opportunity_number": {
+  "definition": "An alphanumeric identifier that a Federal agency assigns to its funding opportunity announcement as part of the Notice of Funding Opportunity posted on the OMB-designated government wide web site (cur",
+  "type": "string"
+ },
+ "funding_sub_tier_agency_co": {
+  "definition": "Identifier of the level 2 organization that provided the preponderance of the funds obligated by this transaction.",
+  "domain": "See https://files.usaspending.gov/reference_data/agency_codes.csv (SUBTIER CODE",
+  "type": "string"
+ },
+ "funding_subtier_agency_abbreviation": {
+  "type": "string"
+ },
+ "funding_subtier_agency_name": {
+  "definition": "Name of the level 2 organization that provided the preponderance of the funds obligated by this transaction.",
+  "domain": "See https://files.usaspending.gov/reference_data/agency_codes.csv (SUBTIER NAME",
+  "type": "string"
+ },
+ "funding_subtier_agency_name_raw": {
+  "type": "string"
+ },
+ "funding_toptier_agency_abbreviation": {
+  "type": "string"
+ },
+ "funding_toptier_agency_id": {
+  "type": "int64"
+ },
+ "funding_toptier_agency_name": {
+  "definition": "Name of the department or establishment of the Government that provided the preponderance of the funds for an award and/or individual transactions related to an award.",
+  "type": "string"
+ },
+ "funding_toptier_agency_name_raw": {
+  "type": "string"
+ },
+ "generated_pragmatic_obligation": {
+  "type": "double"
+ },
+ "generated_unique_award_id": {
+  "definition": "Derived unique record key used by the Broker to identify the prime award. Note that this element is different from the AssistanceTransactionUniqueKey and the ContractTransactionUniqueKey in that it id",
+  "type": "string"
+ },
+ "government_furnished_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Government Furnished Property GFP Field.",
+  "type": "string"
+ },
+ "government_furnished_prope": {
+  "definition": "The contract uses equipment or property furnished by the government, pursuant to FAR 45.",
+  "type": "string"
+ },
+ "grants": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "hispanic_american_owned_bu": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Hispanic American Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "hispanic_servicing_institu": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "historically_black_college": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Historically Black College or University or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "historically_underutilized": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Historically Underutilized Business Zone (HUBZone) Firm or not. It can be derived from the SAM data element, 'Busines",
+  "type": "bool"
+ },
+ "hospital_flag": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Hospital or not. It can be derived from the SAM data element, 'Business Types'",
+  "type": "bool"
+ },
+ "housing_authorities_public": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "idv_type": {
+  "definition": "The type of Indefinite Delivery Vehicle being (IDV) loaded by this transaction. IDV Types include Government-Wide Acquisition Contract (GWAC), Multi-Agency Contract, Other Indefinite Delivery Contract",
+  "type": "string"
+ },
+ "idv_type_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the IDV_Type Field.",
+  "domain": "A = GWAC B = IDC C = FSS D = BOA E = BPA",
+  "type": "string"
+ },
+ "indian_tribe_federally_rec": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "indirect_federal_sharing": {
+  "definition": "The total amount of any single Federal award action that is allocated, per the award recipient’s approved award budget, to indirect costs.",
+  "type": "double"
+ },
+ "information_technolog_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Information Technology Commercial Item Category Field.",
+  "type": "string"
+ },
+ "information_technology_com": {
+  "definition": "A code that designates the commercial availability of an information technology product or service.",
+  "type": "string"
+ },
+ "ingested_at": {
+  "type": "timestamp[us, tz=Etc/UTC]"
+ },
+ "inherently_government_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Inherently Governmental Functions field.",
+  "domain": "CL = CLOSELY ASSOCIATED CT = CRITICAL FUNCTIONS OT = OTHER FUNCTIONS CL,CT = CLO",
+  "type": "string"
+ },
+ "inherently_government_func": {
+  "definition": "Indicates the type of the \"Inherently Governmental Function\" used on the action.",
+  "domain": "CL = CLOSELY ASSOCIATED CT = CRITICAL FUNCTIONS OT = OTHER FUNCTIONS CL,CT = CLO",
+  "type": "string"
+ },
+ "initial_report_date": {
+  "type": "timestamp[us]"
+ },
+ "inter_municipal_local_gove": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "interagency_contract_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Interagency Contracting Authority Field.",
+  "type": "string"
+ },
+ "interagency_contracting_au": {
+  "definition": "Indicates whether the transaction is an Economy Act or Statutory Authority.",
+  "type": "string"
+ },
+ "international_organization": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "interstate_entity": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "is_fpds": {
+  "type": "bool"
+ },
+ "joint_venture_economically": {
+  "definition": "https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Economically Disadvantaged Woman Owned Small Business or not. It can be derived",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "joint_venture_women_owned": {
+  "definition": "https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Woman Owned Small Business or not. It can be derived from the SAM data element,",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "labor_standards": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Service Contract Labor Standards Field.",
+  "type": "string"
+ },
+ "labor_standards_descrip": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Service Contract Labor Standards Field.",
+  "type": "string"
+ },
+ "labor_surplus_area_firm": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "last_modified_date": {
+  "definition": "The last modified date captures the change date.",
+  "type": "timestamp[us]"
+ },
+ "legal_entity_address_line1": {
+  "definition": "First line of the awardee or recipient’s legal business address where the office represented by the Unique Entity Identifier (as registered in the System for Award Management) is located.",
+  "type": "string"
+ },
+ "legal_entity_address_line2": {
+  "definition": "Second line of awardee or recipient’s legal business address.",
+  "type": "string"
+ },
+ "legal_entity_address_line3": {
+  "type": "string"
+ },
+ "legal_entity_city_code": {
+  "definition": "Five position city code from the validation authoritative list.",
+  "type": "string"
+ },
+ "legal_entity_foreign_city": {
+  "definition": "For foreign recipients only: name of the city in which the awardee or recipient’s legal business address is located.",
+  "type": "string"
+ },
+ "legal_entity_foreign_descr": {
+  "type": "string"
+ },
+ "legal_entity_foreign_posta": {
+  "definition": "For foreign recipients only: foreign postal code in which the awardee or recipient's legal business address is located.",
+  "type": "string"
+ },
+ "legal_entity_foreign_provi": {
+  "definition": "For foreign recipients only: name of the state or province in which the awardee or recipient’s legal business address is located.",
+  "type": "string"
+ },
+ "legal_entity_zip4": {
+  "definition": "USPS zoning code associated with the awardee or recipient’s legal business address. For domestic recipients only.",
+  "type": "string"
+ },
+ "legal_entity_zip_last4": {
+  "definition": "USPS four digit extension code associated with the awardee or recipient’s legal business address. This must be blank for non-US addresses",
+  "type": "string"
+ },
+ "limited_liability_corporat": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "local_area_set_aside": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field.",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "local_area_set_aside_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field.",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "local_government_owned": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "major_program": {
+  "definition": "The agency determined code for a major program within the agency. For an Indefinite Delivery Vehicle, this may be the name of a GWAC (e.g., ITOPS or COMMITS).",
+  "type": "string"
+ },
+ "manufacturer_of_goods": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "materials_supplies_article": {
+  "definition": "Indicates whether the transaction is subject to the Materials, Supplies, Articles, & Equip. The clause is 52.222-20 \"Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000\" - tha",
+  "type": "string"
+ },
+ "materials_supplies_descrip": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000 Field.",
+  "type": "string"
+ },
+ "minority_institution": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Minority Institution or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "minority_owned_business": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "modification_number": {
+  "definition": "The identifier of an action being reported that indicates the specific subsequent change to the initial award.",
+  "type": "string"
+ },
+ "multi_year_contract": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multi Year Contract Field.",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "multi_year_contract_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multi Year Contract Field.",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "multiple_or_single_aw_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multiple or Single Award IDV Field.",
+  "domain": "M = MULTIPLE AWARD S = SINGLE AWARD",
+  "type": "string"
+ },
+ "multiple_or_single_award_i": {
+  "definition": "Indicates whether the contract is one of many that resulted from a single solicitation, all of the contracts are for the same or similar items, and contracting officers are required to compare their r",
+  "domain": "M = MULTIPLE AWARD S = SINGLE AWARD",
+  "type": "string"
+ },
+ "municipality_local_governm": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "naics_code": {
+  "definition": "The identifier that represents the North American Industrial Classification System (NAICS) Code assigned to the solicitation and resulting award identifying the industry in which the contract requirem",
+  "type": "string"
+ },
+ "naics_description": {
+  "definition": "The title associated with the NAICS Code.",
+  "type": "string"
+ },
+ "national_interest_action": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the National Interest Action Field.",
+  "domain": "NONE = NONE H05K = HURRICANE KATRINA 2005 H05O = HURRICANE OPHELIA 2005 H05R = H",
+  "type": "string"
+ },
+ "national_interest_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the National Interest Action Field.",
+  "domain": "NONE = NONE H05K = HURRICANE KATRINA 2005 H05O = HURRICANE OPHELIA 2005 H05R = H",
+  "type": "string"
+ },
+ "native_american_owned_busi": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Native American Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "native_hawaiian_owned_busi": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "native_hawaiian_servicing": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "non_federal_funding_amount": {
+  "definition": "The amount of the award funded by non-Federal source(s), in dollars. Program Income (as defined in 2 CFR § 200.1) is not included until such time that Program Income is generated and credited to the a",
+  "type": "double"
+ },
+ "nonprofit_organization": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Nonprofit Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "number_of_actions": {
+  "definition": "The number input by the agency that identifies number of actions that are reported in one modification.",
+  "type": "string"
+ },
+ "number_of_offers_received": {
+  "definition": "The number of actual offers/bids received in response to the solicitation.",
+  "type": "string"
+ },
+ "officer_1_amount": {
+  "definition": "The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17",
+  "type": "double"
+ },
+ "officer_1_name": {
+  "definition": "The name of an individual identified as one of the five most highly compensated \"Executives.\" \"Executive\" means officers, managing partners, or any other employees in management positions.",
+  "type": "string"
+ },
+ "officer_2_amount": {
+  "definition": "The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17",
+  "type": "double"
+ },
+ "officer_2_name": {
+  "definition": "The name of an individual identified as one of the five most highly compensated \"Executives.\" \"Executive\" means officers, managing partners, or any other employees in management positions.",
+  "type": "string"
+ },
+ "officer_3_amount": {
+  "definition": "The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17",
+  "type": "double"
+ },
+ "officer_3_name": {
+  "definition": "The name of an individual identified as one of the five most highly compensated \"Executives.\" \"Executive\" means officers, managing partners, or any other employees in management positions.",
+  "type": "string"
+ },
+ "officer_4_amount": {
+  "definition": "The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17",
+  "type": "double"
+ },
+ "officer_4_name": {
+  "definition": "The name of an individual identified as one of the five most highly compensated \"Executives.\" \"Executive\" means officers, managing partners, or any other employees in management positions.",
+  "type": "string"
+ },
+ "officer_5_amount": {
+  "definition": "The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17",
+  "type": "double"
+ },
+ "officer_5_name": {
+  "definition": "The name of an individual identified as one of the five most highly compensated \"Executives.\" \"Executive\" means officers, managing partners, or any other employees in management positions.",
+  "type": "string"
+ },
+ "ordering_period_end_date": {
+  "definition": "For procurement, the date on which, for the award referred to by the action being reported, no additional orders referring to it may be placed. This date applies only to procurement indefinite deliver",
+  "type": "string"
+ },
+ "organizational_type": {
+  "definition": "The structure of the entity as defined by the IRS.",
+  "type": "string"
+ },
+ "original_loan_subsidy_cost": {
+  "definition": "The estimated long-term cost to the Government of a direct loan or loan guarantee, or modification thereof, calculated on a net present value basis, excluding administrative costs.",
+  "type": "double"
+ },
+ "other_minority_owned_busin": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "other_not_for_profit_organ": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "other_statutory_authority": {
+  "definition": "Indicates whether the transaction is subject to other statutory authority. If \"Interagency Contracting Authority\" is \"Other Statutory Authority\" then an entry is required in this data element.",
+  "type": "string"
+ },
+ "other_than_full_and_o_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Other than Full and Open Competition Field.",
+  "domain": "UNQ = UNIQUE SOURCE (FAR 6.302-1(B)(1)) FOC = FOLLOW-ON CONTRACT (FAR 6.302-1(A)",
+  "type": "string"
+ },
+ "other_than_full_and_open_c": {
+  "definition": "The designator for solicitation procedures other than full and open competition pursuant to FAR 6.3.",
+  "domain": "UNQ = UNIQUE SOURCE (FAR 6.302-1(B)(1)) FOC = FOLLOW-ON CONTRACT (FAR 6.302-1(A)",
+  "type": "string"
+ },
+ "parent_award_id": {
+  "definition": "The identifier of the procurement award under which the specific award is issued, such as a Federal Supply Schedule. This data element currently applies to procurement actions only.",
+  "type": "string"
+ },
+ "parent_recipient_hash": {
+  "type": "string"
+ },
+ "parent_recipient_name": {
+  "type": "string"
+ },
+ "parent_recipient_name_raw": {
+  "type": "string"
+ },
+ "parent_recipient_unique_id": {
+  "type": "string"
+ },
+ "parent_uei": {
+  "type": "string"
+ },
+ "partnership_or_limited_lia": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "performance_based_se_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Performance-Based Service Acquisition Field.",
+  "domain": "Y = YES - SERVICE WHERE PBA IS USED. N = NO - SERVICE WHERE PBA IS NOT USED. X =",
+  "type": "string"
+ },
+ "performance_based_service": {
+  "definition": "Indicates whether the contract action is a PBA of services as defined by FAR 37.601. A PBSA: a. Describes the requirements in terms of results required rather than the methods of performance of the wo",
+  "domain": "Y = YES - SERVICE WHERE PBA IS USED. N = NO - SERVICE WHERE PBA IS NOT USED. X =",
+  "type": "string"
+ },
+ "period_of_perf_potential_e": {
+  "definition": "For procurement, the date on which, for the award referred to by the action being reported if all potential pre-determined or pre-negotiated options were exercised, awardee effort is completed or the",
+  "type": "string"
+ },
+ "period_of_performance_current_end_date": {
+  "definition": "For procurement awards: The contract completion date based on the schedule in the contract. For an initial award, this is the scheduled completion date for the base contract and for any options exerci",
+  "type": "date32[day]"
+ },
+ "period_of_performance_start_date": {
+  "definition": "For procurement awards: Per the FPDS data dictionary, the date that the parties agree will be the starting date for the contract's requirements. This is the period of performance start date for the en",
+  "type": "date32[day]"
+ },
+ "piid": {
+  "definition": "The unique identifier of the specific award being reported.",
+  "type": "string"
+ },
+ "place_of_manufacture": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field.",
+  "type": "string"
+ },
+ "place_of_manufacture_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field.",
+  "type": "string"
+ },
+ "place_of_perform_zip_last4": {
+  "type": "string"
+ },
+ "place_of_performance_code": {
+  "definition": "A numeric code indicating where the predominant performance of the award will be accomplished.",
+  "domain": "00***** = Multi-State 00FORGN = Foreign XX00000 = Single ZIP code XX##### = City",
+  "type": "string"
+ },
+ "place_of_performance_forei": {
+  "definition": "For foreign places of performance: identify where the predominant performance of the award will be accomplished, describing it as specifically as possible.",
+  "type": "string"
+ },
+ "place_of_performance_scope": {
+  "definition": "A description of the geographic area to which the predominant performance of the award is applicable.",
+  "domain": "Multi-State State-wide County-wide City-wide Single ZIP code Foreign",
+  "type": "string"
+ },
+ "place_of_performance_zip4a": {
+  "definition": "United States ZIP code (five digits) concatenated with the additional +4 digits, identifying where the predominant performance of the award will be accomplished.",
+  "domain": "Data for validation purposes is sourced from USPS Postal Pro, though agencies ar",
+  "type": "string"
+ },
+ "planning_commission": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "pop_city_name": {
+  "type": "string"
+ },
+ "pop_congressional_code": {
+  "type": "string"
+ },
+ "pop_congressional_code_current": {
+  "type": "string"
+ },
+ "pop_congressional_population": {
+  "type": "int64"
+ },
+ "pop_country_code": {
+  "definition": "Country code where the predominant performance of the award will be accomplished.",
+  "type": "string"
+ },
+ "pop_country_name": {
+  "type": "string"
+ },
+ "pop_county_code": {
+  "type": "string"
+ },
+ "pop_county_fips": {
+  "type": "string"
+ },
+ "pop_county_name": {
+  "type": "string"
+ },
+ "pop_county_population": {
+  "type": "int64"
+ },
+ "pop_state_code": {
+  "definition": "United States Postal Service (USPS) two-letter abbreviation for the state or territory indicating where the predominant performance of the award will be accomplished. Identify States, the District of",
+  "type": "string"
+ },
+ "pop_state_fips": {
+  "type": "string"
+ },
+ "pop_state_name": {
+  "type": "string"
+ },
+ "pop_state_population": {
+  "type": "int64"
+ },
+ "pop_zip5": {
+  "definition": "United States ZIP code (five digits) concatenated with the additional +4 digits, identifying where the predominant performance of the award will be accomplished.",
+  "type": "string"
+ },
+ "port_authority": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "potential_total_value_awar": {
+  "definition": "For procurement, the total amount that could be obligated on a contract, if the base and all options are exercised.",
+  "type": "string"
+ },
+ "price_evaluation_adjustmen": {
+  "definition": "The percent difference between the award price and the lowest priced offer from a responsive, responsible non-HUBZone or non-SDB.",
+  "type": "string"
+ },
+ "private_university_or_coll": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "product_or_service_code": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Product or Service Code Field.",
+  "type": "string"
+ },
+ "product_or_service_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Product or Service Code Field.",
+  "type": "string"
+ },
+ "program_acronym": {
+  "definition": "The short name or title used for a GWAC or other contracting program. Examples include COMMITS, ITOPS, SEWP.",
+  "type": "string"
+ },
+ "program_activities": {
+  "definition": "A single field with associated program activities in order of funding dollars.",
+  "type": "string"
+ },
+ "program_system_or_equ_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DOD Acquisition Program field.",
+  "type": "string"
+ },
+ "program_system_or_equipmen": {
+  "definition": "Two codes that together identify the program and weapons system or equipment purchased by a DoD agency. The first character is a number 1-4 that identifies the DoD component. The last 3 characters ide",
+  "type": "string"
+ },
+ "published_fabs_id": {
+  "type": "int64"
+ },
+ "pulled_from": {
+  "definition": "Flag indicating whether the record was pulled from the award Atom feed or the IDV (Indefinite Delivery Vehicle) Atom Feed provided by FPDS.",
+  "type": "string"
+ },
+ "purchase_card_as_paym_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Purchase Card as Payment Method Field.",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "purchase_card_as_payment_m": {
+  "definition": "Indicates whether the method of payment is the Purchase Card. Agencies may issue formal contract documents and make payment using the Purchase Card. It is also permitted that agencies may report Purch",
+  "domain": "Y = YES N = NO",
+  "type": "string"
+ },
+ "receives_contracts_and_gra": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "recipient_hash": {
+  "type": "string"
+ },
+ "recipient_levels": {
+  "type": "string"
+ },
+ "recipient_location_city_name": {
+  "definition": "Name of the city in which the awardee or recipient’s legal business address is located.",
+  "type": "string"
+ },
+ "recipient_location_congressional_code": {
+  "type": "string"
+ },
+ "recipient_location_congressional_code_current": {
+  "type": "string"
+ },
+ "recipient_location_congressional_population": {
+  "type": "int64"
+ },
+ "recipient_location_country_code": {
+  "definition": "Code for the country in which the awardee or recipient is located, using the International Standard for country codes (ISO) 3166-1 Alpha-3 GENC Profile, minus the codes listed for those territories an",
+  "type": "string"
+ },
+ "recipient_location_country_name": {
+  "type": "string"
+ },
+ "recipient_location_county_code": {
+  "type": "string"
+ },
+ "recipient_location_county_fips": {
+  "type": "string"
+ },
+ "recipient_location_county_name": {
+  "definition": "Name of the county in which the awardee or recipient’s legal business address is located.",
+  "type": "string"
+ },
+ "recipient_location_county_population": {
+  "type": "int64"
+ },
+ "recipient_location_state_code": {
+  "definition": "United States Postal Service (USPS) two-letter abbreviation for the state or territory in which the awardee or recipient’s legal business address is located. Identify States, the District of Columbia,",
+  "type": "string"
+ },
+ "recipient_location_state_fips": {
+  "type": "string"
+ },
+ "recipient_location_state_name": {
+  "type": "string"
+ },
+ "recipient_location_state_population": {
+  "type": "int64"
+ },
+ "recipient_location_zip5": {
+  "type": "string"
+ },
+ "recipient_name": {
+  "definition": "The name of the awardee or recipient that relates to the unique identifier. For U.S. based companies, this name is what the business ordinarily files in formation documents with individual states (whe",
+  "type": "string"
+ },
+ "recipient_name_raw": {
+  "definition": "The name of the awardee or recipient that relates to the unique identifier. For U.S. based companies, this name is what the business ordinarily files in formation documents with individual states (whe",
+  "type": "string"
+ },
+ "recipient_uei": {
+  "definition": "The Unique Entity Identifier (UEI) for an awardee or recipient. A UEI is a unique alphanumeric code used to identify a specific commercial, nonprofit, or business entity.",
+  "type": "string"
+ },
+ "recipient_unique_id": {
+  "type": "string"
+ },
+ "record_type": {
+  "definition": "Code indicating whether an action is an aggregate record, a non-aggregate record, or a non-aggregate record to an individual recipient (PII-Redacted).",
+  "type": "int64"
+ },
+ "record_type_description": {
+  "definition": "Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the RecordType Field.",
+  "type": "string"
+ },
+ "recovered_materials_s_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Recovered Materials/Sustainability Field.",
+  "type": "string"
+ },
+ "recovered_materials_sustai": {
+  "definition": "Designates whether Recovered Material Certification and/or Estimate of Percentage of Recovered Material Content for EPA-Designated Products clauses were included in the contract.",
+  "type": "string"
+ },
+ "referenced_idv_agency_desc": {
+  "definition": "Name of the agency associated with the code in the Referenced IDV Agency Identifier.",
+  "domain": "Refer to the GSA Federal Procurement Data System (FPDS)",
+  "type": "string"
+ },
+ "referenced_idv_agency_iden": {
+  "definition": "Identifier used to link agency in FPDS to referenced IDV information.",
+  "domain": "Refer to the GSA Federal Procurement Data System (FPDS)",
+  "type": "string"
+ },
+ "referenced_idv_modificatio": {
+  "definition": "When reporting orders under Indefinite Delivery Vehicles (IDV) such as a GWAC, IDC, FSS, BOA, or BPA, report the Modification Number along with Procurement Instrument Identifier (Contract Number or Ag",
+  "type": "string"
+ },
+ "referenced_idv_type": {
+  "definition": "The type of Indefinite Delivery Vehicle (IDV) being loaded by the IDV referenced in this transaction. Referenced IDV Types include Government-Wide Acquisition Contract (GWAC), Multi-Agency Contract, O",
+  "domain": "A = GWAC B = IDC C = FSS D = BOA E = BPA",
+  "type": "string"
+ },
+ "referenced_idv_type_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced_IDV_Type Field.",
+  "domain": "A = GWAC B = IDC C = FSS D = BOA E = BPA",
+  "type": "string"
+ },
+ "referenced_mult_or_si_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced IDV Multiple or Single Field.",
+  "type": "string"
+ },
+ "referenced_mult_or_single": {
+  "definition": "Indicates whether the contract of the referenced IDV is one of many that resulted from a single solicitation, all of the contracts are for the same or similar items, and contracting officers are requi",
+  "type": "string"
+ },
+ "research": {
+  "definition": "The designator for type of research determined for the contract action.",
+  "type": "string"
+ },
+ "research_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Research Field.",
+  "type": "string"
+ },
+ "sai_number": {
+  "definition": "A number assigned by state (as opposed to federal) review agencies to the award during the grant application process.",
+  "type": "string"
+ },
+ "sam_exception": {
+  "definition": "The reason a vendor/contractor not registered in the mandated SAM system may be used in a purchase.",
+  "type": "string"
+ },
+ "sam_exception_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the SAM Exception Field.",
+  "type": "string"
+ },
+ "sba_certified_8_a_joint_ve": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "school_district_local_gove": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "school_of_forestry": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "sea_transportation": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field.",
+  "type": "string"
+ },
+ "sea_transportation_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field.",
+  "type": "string"
+ },
+ "self_certified_small_disad": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "service_disabled_veteran_o": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Service-Related Disabled Veteran Owned Business or not. It can be derived from the SAM data element, 'Business Types'",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "small_agricultural_coopera": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "small_business_competitive": {
+  "definition": "Indicates whether the contract was awarded to a U.S. business concern as a result of a solicitation issued on or after Jan 1, 1989 for the four designated industry groups or the ten targeted industry",
+  "domain": "Y = Yes N = No",
+  "type": "bool"
+ },
+ "small_disadvantaged_busine": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Small Disadvantaged Business Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "Y = Small Disadvantaged Business N = Other than Small Disadvantaged Business",
+  "type": "bool"
+ },
+ "sole_proprietorship": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "solicitation_date": {
+  "definition": "For award of a new contract, purchase order, task\\delivery order, or BPA Call valued above the SAT a solicitation issuance date must be provided, regardless of whether the new award: Was required to b",
+  "type": "date32[day]"
+ },
+ "solicitation_identifier": {
+  "definition": "Identifier used to link transactions in FPDS to solicitation information.",
+  "type": "string"
+ },
+ "solicitation_procedur_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Solicitation Procedures Field.",
+  "type": "string"
+ },
+ "solicitation_procedures": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Solicitation Procedures Field.",
+  "domain": "NP = NEGOTIATED PROPOSAL/QUOTE SB = SEALED BID TS = TWO STEP SP1 = SIMPLIFIED AC",
+  "type": "string"
+ },
+ "source_schema": {
+  "type": "string"
+ },
+ "source_table": {
+  "type": "string"
+ },
+ "state_controlled_instituti": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "subchapter_s_corporation": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "subcontinent_asian_asian_i": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Subcontinent Asian (Asian- Indian) American Owned Business or not. It can be derived from the SAM data element, 'Busi",
+  "type": "bool"
+ },
+ "subcontracting_plan": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Subcontracting Plan Field.",
+  "type": "string"
+ },
+ "subcontracting_plan_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Subcontracting Plan Field.",
+  "type": "string"
+ },
+ "tas_components": {
+  "type": "string"
+ },
+ "tas_paths": {
+  "type": "string"
+ },
+ "the_ability_one_program": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Sheltered Workshop (JWOD Provider) Organization or not. It can be derived from the SAM data element, 'Business Types'",
+  "type": "bool"
+ },
+ "total_funding_amount": {
+  "definition": "The sum of the FederalActionObligation and the Non-Federal Funding Amount.",
+  "type": "double"
+ },
+ "total_obligated_amount": {
+  "definition": "This is a system generated element providing the sum of all the amounts entered in the \"Action Obligation\" field for a particular PIID and Agency. Example: Contract has 9 Modifications under \"Transact",
+  "type": "string"
+ },
+ "township_local_government": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "transaction_description": {
+  "definition": "For procurement awards: Per the FPDS data dictionary, a brief, summary level, plain English, description of the contract, award, or modification. Additional information: the description field may also",
+  "type": "string"
+ },
+ "transaction_id": {
+  "type": "int64"
+ },
+ "transaction_number": {
+  "definition": "Tie Breaker for legal, unique transactions that would otherwise have the same key.",
+  "type": "string"
+ },
+ "transaction_unique_id": {
+  "definition": "Derived element and system-generated database key used to uniquely identify each contract transaction record and facilitate record lookup, correction, and deletion. A concatenation of agencyID, Refere",
+  "type": "string"
+ },
+ "transit_authority": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "treasury_account_identifiers": {
+  "type": "int64"
+ },
+ "tribal_college": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "tribally_owned_business": {
+  "definition": "https://www.sam.gov",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "type": {
+  "type": "string"
+ },
+ "type_description": {
+  "type": "string"
+ },
+ "type_description_raw": {
+  "type": "string"
+ },
+ "type_of_contract_pric_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the TypeOfContractPricing Field.",
+  "domain": "A = FIXED PRICE REDETERMINATION B = FIXED PRICE LEVEL OF EFFORT J = FIRM FIXED P",
+  "type": "string"
+ },
+ "type_of_contract_pricing": {
+  "definition": "The type of contract as defined in FAR Part 16 that applies to this procurement.",
+  "type": "string"
+ },
+ "type_of_idc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field.",
+  "type": "string"
+ },
+ "type_of_idc_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field.",
+  "type": "string"
+ },
+ "type_raw": {
+  "type": "string"
+ },
+ "type_set_aside": {
+  "definition": "The designator for type of set aside determined for the contract action.",
+  "type": "string"
+ },
+ "type_set_aside_description": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type Set Aside Field.",
+  "domain": "NONE = NO SET ASIDE USED SBA = SMALL BUSINESS SET ASIDE - TOTAL 8A = 8A COMPETED",
+  "type": "string"
+ },
+ "undefinitized_action": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Undefinitized Action Field.",
+  "domain": "A = LETTER CONTRACT B = OTHER UNDEFINITIZED ACTION X = NO",
+  "type": "string"
+ },
+ "undefinitized_action_desc": {
+  "definition": "Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Undefinitized Action Field.",
+  "domain": "A = LETTER CONTRACT B = OTHER UNDEFINITIZED ACTION X = NO",
+  "type": "string"
+ },
+ "update_date": {
+  "type": "timestamp[us]"
+ },
+ "uri": {
+  "definition": "Unique Record Identifier. An agency defined identifier that (when provided) is unique for every financial assistance action reported by that agency. USAspending.gov and the Broker use URI as the Award",
+  "type": "string"
+ },
+ "us_federal_government": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Federal Government Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "us_government_entity": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "us_local_government": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Local Government Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "us_state_government": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a State Government Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "type": "bool"
+ },
+ "us_tribal_government": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Tribal Government Organization or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "usaspending_snapshot_date": {
+  "type": "date32[day]"
+ },
+ "usaspending_unique_transaction_id": {
+  "type": "string"
+ },
+ "vendor_doing_as_business_n": {
+  "definition": "The doing business as name of the entity address.",
+  "type": "string"
+ },
+ "vendor_fax_number": {
+  "definition": "The fax number of the entity.",
+  "type": "string"
+ },
+ "vendor_phone_number": {
+  "definition": "The phone number of the entity.",
+  "type": "string"
+ },
+ "veteran_owned_business": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Veteran Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "veterinary_college": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "veterinary_hospital": {
+  "definition": "https://www.sam.gov",
+  "type": "bool"
+ },
+ "woman_owned_business": {
+  "definition": "List characteristic of the contractor such as whether the selected contractor is a Woman Owned Business or not. It can be derived from the SAM data element, 'Business Types'.",
+  "domain": "F = False T = True",
+  "type": "bool"
+ },
+ "women_owned_small_business": {
+  "definition": "https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Woman Owned Small Business or not. It can be derived from the SAM data element, 'Business Type",
+  "domain": "F = False T = True",
+  "type": "bool"
+ }
+}

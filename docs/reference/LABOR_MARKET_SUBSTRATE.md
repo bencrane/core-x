@@ -138,7 +138,15 @@ prime award (usaspending/FPDS): NAICS + PSC + place-of-performance COUNTY (FIPS)
   SOCs OEWS doesn't survey + O*NET-finer SOC splits) — **not** a key defect.
 - **SCA ↔ SOC**: no clean key join (SCA uses its own 5-digit codes). Bridged semantically via O*NET
   alternate titles + an LLM, or a **one-time crosswalk to build** (see §8).
-- **County FIPS**: `sam_wd_county_coverage.county_code` ↔ award place-of-performance county → the
+- **County geography**: `sam_wd_county_coverage.county_code` is a **SAM-internal code, NOT a Census
+  county FIPS** (values fall in a ~14343–20125 range and are non-unique across states) — do **not**
+  join it to the spine's `pop_county_fips` (a true 5-digit Census FIPS = 2-digit state + 3-digit
+  county). A naive `county_code = pop_county_fips` equality fabricates ~150 spurious county matches
+  (~$83B of garbage obligation). Only `sam_wd_county_coverage.state_code` binds cleanly (to
+  `primary_place_of_performance_state_code`). To bind SAM WD county geography to the spine, a
+  `(state, county_name) → Census FIPS` crosswalk against the Census `national_county2020` gazetteer
+  is **required**; an alias table must close the ~131-pair name-normalization residual (DE KALB,
+  St. Clair, Miami-Dade/DADE, St. Johns, AK census-area renames). The bound FIPS then reaches the
   actual priced labor rate in `sam_wd_rate_documents`.
 
 ---

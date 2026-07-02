@@ -10,8 +10,9 @@ geometric — no industry filter on the firm side, no agency filter on the award
 the same matrix powers many downstream selection workflows without re-running the math.
 
 UNIVERSE (firm side)
-  companies WHERE source_platform IN (epd_lec_status_candidates,
-                                       equipment_rental_candidates;  bare + 'enrichment:' prefix)
+  companies_canonical (company_id 1:1 PK; source_platform extracted to the sidecar)
+   ⨝ company_source_platforms ON company_id  WHERE source_platform IN
+       (epd_lec_status_candidates, equipment_rental_candidates;  bare + 'enrichment:' prefix)
    ⨝ company_addresses ON normalized_domain = domain_norm           — picks up uei + postal
    ⨝ zcta_zip_centroids ON winner_postal_code = zcta5               — picks up (lat, lon)
    one row per firm_domain (collapsed across multi-UEI SAM domains, preferring uei-present)
@@ -44,7 +45,11 @@ import os
 import sys
 
 A = "s3://data-sink/active"
-COMPANIES_URI = f"{A}/companies/"
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms
+# sidecar; the source-tag firm filter below is a JOIN to the sidecar, not a companies column).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{A}/companies_canonical/")
+COMPANY_SOURCE_PLATFORMS_URI = os.environ.get(
+    "COMPANY_SOURCE_PLATFORMS_URI", f"{A}/company_source_platforms/")
 ADDRESSES_URI = f"{A}/company_addresses/"
 AWARDS_URI    = f"{A}/govcon_active_awards/"
 ZCTA_URI      = f"{A}/zcta_zip_centroids/"
@@ -87,19 +92,23 @@ def build() -> dict:
     con.execute("PRAGMA threads=8")
     con.execute(f"SET memory_limit='{DUCK_MEM}'")
     con.register("co",   lance.dataset(COMPANIES_URI, storage_options=so))
+    con.register("csp",  lance.dataset(COMPANY_SOURCE_PLATFORMS_URI, storage_options=so))
     con.register("ca",   lance.dataset(ADDRESSES_URI, storage_options=so))
     con.register("aw",   lance.dataset(AWARDS_URI, storage_options=so))
     con.register("zcta", lance.dataset(ZCTA_URI, storage_options=so))
 
-    # ── 1. Candidate firms (filtered to ~enrichment tags only) ──
+    # ── 1. Candidate firms (filtered to ~enrichment tags only). source_platform now lives in
+    #    the company_source_platforms sidecar (csp), so the firm filter is a JOIN on company_id
+    #    into the sidecar, NOT a WHERE on a companies column. ──
     placeholders = ",".join(f"'{p}'" for p in CANDIDATE_PLATFORMS)
     con.execute(f"""
         CREATE TEMP TABLE target_candidates AS
         SELECT DISTINCT
-               nullif(trim(normalized_domain), '') AS firm_domain
+               nullif(trim(co.normalized_domain), '') AS firm_domain
         FROM co
-        WHERE source_platform IN ({placeholders})
-          AND normalized_domain IS NOT NULL
+        JOIN csp ON csp.company_id = co.company_id
+        WHERE csp.source_platform IN ({placeholders})
+          AND co.normalized_domain IS NOT NULL
     """)
 
     # ── 2. Resolve candidates → (uei, domain, postal) via company_addresses, deduped to 1 row

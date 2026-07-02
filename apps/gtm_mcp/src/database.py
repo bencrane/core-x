@@ -359,8 +359,15 @@ def _build_registry() -> dict[str, str]:
         log.warning("gtm-mcp: dataset discovery failed, falling back to core seed: %s", exc)
         reg = {}
 
-    reg.setdefault("companies", f"{ACTIVE_URI}/companies/")
-    reg.setdefault("people", f"{ACTIVE_URI}/people/")
+    # REPOINT: the "companies" relation resolves to the canonical dataset (source_platform
+    # extracted to the company_source_platforms sidecar; company_id still the 1:1 PK — NO dedup,
+    # all 117,037 rows preserved). Unconditional override so the documented "companies" alias is
+    # the SoR even though discovery also lists the raw "companies_canonical" name.
+    reg["companies"] = f"{ACTIVE_URI}/companies_canonical/"
+    # REPOINT: the "people" relation resolves to the canonical dataset (one row per human,
+    # source_platform extracted to the person_source_platforms sidecar). Discovery may also list
+    # the raw "people_canonical" name; this override makes the documented "people" alias the SoR.
+    reg["people"] = f"{ACTIVE_URI}/people_canonical/"
     reg.setdefault("contractor_award_summary", f"{ACTIVE_URI}/contractor_award_summary/")
 
     for name, env_var in (

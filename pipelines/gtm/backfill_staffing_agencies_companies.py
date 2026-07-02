@@ -21,13 +21,15 @@ COLUMN MAP (source → companies; every other companies column NULL, schema-conf
     company_name          → company_name
     domain_norm           → normalized_domain      (already in the companies anchor space)
     company_linkedin_url  → company_linkedin_url
-    (literal)             → source_platform = 'dexarchive_staffing_agencies'
     (literal)             → industry = 'Staffing and Recruiting'   (true by construction; live BITMAP value)
     employee_band         → employee_size_band     ('unknown' → NULL; vocab otherwise identical)
     year_founded (int64)  → founded_year (int32)
     NOT CARRIED: industries_served (11-vertical served verticals) and revenue_range have NO
       column in the companies spine. The canonical home for served-industries is the
       active/company_target_industries edge grain — materialized separately if required.
+
+    source_platform='dexarchive_staffing_agencies' is NOT written onto the company row — it
+    routes to the active/company_source_platforms sidecar via record_company_sources().
 
 INDEXES : company_id + normalized_domain (BTREE) and industry + employee_size_band (BITMAP)
           rebuilt (replace=True) so the resolution + categorical filters cover the new rows.
@@ -47,10 +49,13 @@ import duckdb
 import lance
 import pyarrow as pa
 
+from pipelines.gtm import _company_source as cs
+
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
+COMPANIES_URI = cs.COMPANIES_URI  # REPOINT → active/companies_canonical/ (no source_platform col)
 STAFFING_URI = os.environ.get("STAFFING_AGENCIES_URI", f"{ACTIVE}/staffing_agencies/")
 SOURCE_PLATFORM = "dexarchive_staffing_agencies"
+SOURCE_REF = "backfill:staffing_agencies_companies"
 REINDEX_BTREE = ["company_id", "normalized_domain"]
 REINDEX_BITMAP = ["industry", "employee_size_band"]
 
@@ -107,7 +112,6 @@ def main() -> int:
                 nullif(trim(company_name), '')                        AS company_name,
                 nullif(trim(domain_norm), '')                         AS normalized_domain,
                 nullif(trim(company_linkedin_url), '')                AS company_linkedin_url,
-                '{SOURCE_PLATFORM}'                                   AS source_platform,
                 'Staffing and Recruiting'                             AS industry,
                 CASE WHEN lower(trim(employee_band)) = 'unknown' THEN NULL
                      ELSE nullif(trim(employee_band), '') END         AS employee_size_band,
@@ -159,11 +163,17 @@ def main() -> int:
         ds.create_scalar_index(col, index_type="BITMAP")
         print(f"    BITMAP ✓ {col} (rebuilt)", flush=True)
 
-    _rule("verify — new cohort resolvable")
-    ds = lance.dataset(COMPANIES_URI, storage_options=so)
-    got = ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
-                     columns=["company_id", "company_name", "normalized_domain", "industry"]).to_table()
-    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} rows", flush=True)
+    _rule(f"record provenance → {cs.COMPANY_SOURCE_PLATFORMS_URI}")
+    added_ids = cand.column("company_id").to_pylist()
+    res = cs.record_company_sources(added_ids, SOURCE_PLATFORM, SOURCE_REF, so)
+    print(f"    sidecar (company_id, '{SOURCE_PLATFORM}') pairs merged (idempotent): "
+          f"{res['sidecar_candidates']:,}", flush=True)
+
+    _rule("verify — new cohort resolvable via sidecar")
+    src_ds = lance.dataset(cs.COMPANY_SOURCE_PLATFORMS_URI, storage_options=so)
+    got = src_ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
+                         columns=["company_id", "source_platform"]).to_table()
+    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} sidecar rows", flush=True)
     return 0
 
 

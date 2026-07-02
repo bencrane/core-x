@@ -36,9 +36,9 @@ batch_lookups = pytest.importorskip(
 )
 
 COMPANY_DOC = ["company_id", "company_name", "normalized_domain",
-               "company_linkedin_url", "source_platform"]
-PEOPLE_DOC = ["person_id", "contact_id", "company_id", "normalized_domain", "full_name",
-              "first_name", "last_name", "title", "person_linkedin_url", "source_platform"]
+               "company_linkedin_url"]
+PEOPLE_DOC = ["canonical_person_id", "person_id", "contact_id", "company_id", "normalized_domain",
+              "full_name", "first_name", "last_name", "title", "person_linkedin_url"]
 SAM_ENTITY_DOC = ["uei", "cage_code", "primary_naics", "legal_business_name"]
 _FILLER = [f"filler_{i}" for i in range(8)]
 
@@ -70,17 +70,21 @@ def wired(tmp_path, monkeypatch):
     people = []
     for i in range(20):
         dom = f"dom{i}.example.com"
+        # companies_canonical has NO source_platform column (it moved to the sidecar); the
+        # _FILLER cols simulate the wide undocumented row the projection must NOT return.
         companies.append({"company_id": f"co{i}", "company_name": f"Company {i}",
                           "normalized_domain": dom, "company_linkedin_url": f"li/{i}",
-                          "source_platform": "fixture", **{k: f"c{i}{k}" for k in _FILLER}})
+                          **{k: f"c{i}{k}" for k in _FILLER}})
         # two people per domain → list grouping is non-trivial.
-        # The physical contact_id column is dropped: people carries person_id ONLY.
+        # Canonical people: canonical_person_id is the key; source_platform lives in the sidecar
+        # (not projected here). The physical contact_id column is dropped: contact_id mirrors id.
         for j in range(2):
-            people.append({"person_id": f"ct{i}_{j}",
+            people.append({"canonical_person_id": f"cid{i}_{j}",
+                           "person_id": f"ct{i}_{j}",
                            "company_id": f"co{i}",
                            "normalized_domain": dom, "full_name": f"Person {i}.{j}",
                            "first_name": f"F{i}", "last_name": f"L{i}", "title": "VP",
-                           "person_linkedin_url": f"li/in/{i}_{j}", "source_platform": "fixture",
+                           "person_linkedin_url": f"li/in/{i}_{j}",
                            **{k: f"p{i}{j}{k}" for k in _FILLER}})
 
     paths = {}

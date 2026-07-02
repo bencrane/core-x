@@ -43,25 +43,19 @@ import os
 
 import duckdb
 import lance
-import pyarrow as pa
+
+from pipelines.gtm import _people_canonical as pc
 
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
-PEOPLE_URI = os.environ.get("GTM_PEOPLE_URI", f"{ACTIVE}/people/")
+# REPOINT: identity → canonical people; provenance → sidecar.
+PEOPLE_URI = pc.PEOPLE_URI
 POC_PEOPLE_URI = os.environ.get("DSBS_POC_PEOPLE_URI", f"{ACTIVE}/dsbs_poc_people/")
 SOURCE_PLATFORM = "dsbs_poc"
-REINDEX_BTREE = ["person_id", "company_id", "normalized_domain", "person_linkedin_url"]
+SOURCE_REF = "backfill:dsbs_poc_people"
 
 
 def _storage_options() -> dict:
-    ep = os.environ.get("R2_ENDPOINT")
-    if not ep and os.environ.get("R2_ACCOUNT_ID"):
-        ep = f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
-    return {
-        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
-        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
-        "endpoint": ep,
-        "region": "auto",
-    }
+    return pc.r2_storage_options()
 
 
 def _rule(t: str) -> None:
@@ -75,7 +69,6 @@ def main() -> int:
 
     so = _storage_options()
     people_ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    target_schema = people_ds.schema
     count_before = people_ds.count_rows()
 
     con = duckdb.connect()
@@ -83,15 +76,15 @@ def main() -> int:
     con.register("poc", lance.dataset(POC_PEOPLE_URI, storage_options=so).scanner(
         columns=["person_id", "uei", "best_domain", "poc_type",
                  "person_full_name", "person_title", "person_linkedin_url"]).to_reader())
-    con.register("pe", people_ds.scanner(columns=["person_id"]).to_reader())
 
     con.execute("CREATE TABLE pocp AS SELECT * FROM poc")
-    con.execute("CREATE TABLE existing AS SELECT DISTINCT person_id FROM pe")
 
-    # One row per NEW person_id. A person who is a POC at multiple DSBS firms picks a single
+    # One row per legacy person_id. A person who is a POC at multiple DSBS firms picks a single
     # company_id deterministically: both (contact_person AND principal) > contact_person >
     # current_principal, then min(uei). All person-level fields come from that picked row.
-    cand = con.execute(f"""
+    # NO source_platform column — provenance routes to the sidecar via land_people; idempotency
+    # is on canonical_person_id inside the merge_insert, so no existing-people anti-join here.
+    cand = con.execute("""
         WITH ranked AS (
             SELECT
                 person_id,
@@ -110,7 +103,6 @@ def main() -> int:
             WHERE person_id IS NOT NULL
               AND uei IS NOT NULL
               AND nullif(trim(person_linkedin_url), '') IS NOT NULL
-              AND person_id NOT IN (SELECT person_id FROM existing WHERE person_id IS NOT NULL)
         )
         SELECT
             person_id,
@@ -120,8 +112,7 @@ def main() -> int:
             nullif(trim(split_part(full_name, ' ', 1)), '')                              AS first_name,
             nullif(trim(substr(full_name, length(split_part(full_name, ' ', 1)) + 2)), '') AS last_name,
             title,
-            person_linkedin_url,
-            '{SOURCE_PLATFORM}' AS source_platform
+            person_linkedin_url
         FROM ranked
         WHERE rn = 1
         ORDER BY company_id, person_id
@@ -131,45 +122,29 @@ def main() -> int:
     got_title = sum(1 for v in cand.column("title").to_pylist() if v)
     got_li = sum(1 for v in cand.column("person_linkedin_url").to_pylist() if v)
     got_dom = sum(1 for v in cand.column("normalized_domain").to_pylist() if v)
-    _rule(f"resolved DSBS-POC people → active/people: {n:,}")
-    print(f"    source_platform            = '{SOURCE_PLATFORM}'", flush=True)
+    _rule(f"resolved DSBS-POC people → canonical people + sidecar: {n:,} candidate rows")
+    print(f"    source_platform            = '{SOURCE_PLATFORM}' (→ sidecar)", flush=True)
     print(f"    company_id (uei) populated = {n:,} / {n:,}", flush=True)
     print(f"    normalized_domain          = {got_dom:,} / {n:,}", flush=True)
     print(f"    title populated            = {got_title:,} / {n:,}", flush=True)
     print(f"    person_linkedin_url        = {got_li:,} / {n:,}", flush=True)
-    print(f"    people count               = {count_before:,} → {count_before + n:,}", flush=True)
+    print(f"    people count               = {count_before:,} (merge_insert on canonical_person_id)", flush=True)
 
     if n == 0:
-        print("\nNothing to add — idempotent no-op.", flush=True)
+        print("\nNothing to land — cohort empty.", flush=True)
         return 0
     if args.dry_run:
-        print(f"\n[dry-run] would append {n:,} rows to {PEOPLE_URI}. No write performed.", flush=True)
+        print(f"\n[dry-run] would land {n:,} candidate rows → {PEOPLE_URI} + sidecar. No write.", flush=True)
         for r in cand.slice(0, 8).to_pylist():
             print(f"      {str(r['full_name'])[:26]:26} cid={str(r['company_id'])[:14]:14} "
                   f"dom={str(r['normalized_domain'])[:24]:24} title={str(r['title'])[:24]}", flush=True)
         return 0
 
-    populated = {name: cand.column(name) for name in cand.schema.names}
-    arrays = [populated[f.name].cast(f.type) if f.name in populated else pa.nulls(n, f.type)
-              for f in target_schema]
-    new_tbl = pa.Table.from_arrays(arrays, schema=target_schema)
-
-    _rule(f"append → {PEOPLE_URI}")
-    lance.write_dataset(new_tbl, PEOPLE_URI, mode="append", storage_options=so)
+    _rule(f"land → {PEOPLE_URI} (identity) + sidecar (provenance)")
+    res = pc.land_people(cand, SOURCE_PLATFORM, SOURCE_REF, so)
     count_after = lance.dataset(PEOPLE_URI, storage_options=so).count_rows()
-    print(f"    rows: {count_before:,} → {count_after:,}  (+{count_after - count_before:,})", flush=True)
-    if count_after != count_before + n:
-        raise SystemExit(f"ABORT: expected +{n} rows, got +{count_after - count_before} — NOT reindexing.")
-
-    ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    for col in REINDEX_BTREE:
-        ds.create_scalar_index(col, index_type="BTREE")
-        print(f"    BTREE ✓ {col} (rebuilt)", flush=True)
-
-    _rule("verify")
-    ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    got = ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'", columns=["person_id"]).to_table()
-    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} people", flush=True)
+    print(f"    people rows: {count_before:,} → {count_after:,}  (+{count_after - count_before:,})", flush=True)
+    print(f"    sidecar candidates landed (merge_insert, idempotent): {res['sidecar_candidates']:,}", flush=True)
     return 0
 
 

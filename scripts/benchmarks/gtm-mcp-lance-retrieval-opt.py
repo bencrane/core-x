@@ -70,8 +70,8 @@ NAMES = ["companies", "people", "sam_master_entities", "sam_master_domains",
 # leaves the digest unchanged — correctness is pinned to the contract, not to leaked columns.
 COMPANY_DOC = ["company_id", "company_name", "normalized_domain",
                "company_linkedin_url", "source_platform"]
-PEOPLE_DOC = ["contact_id", "company_id", "normalized_domain", "full_name",
-              "first_name", "last_name", "title", "person_linkedin_url", "source_platform"]
+PEOPLE_DOC = ["canonical_person_id", "person_id", "company_id", "normalized_domain", "full_name",
+              "first_name", "last_name", "title", "person_linkedin_url"]
 
 # Fixture sizing — big enough that BTREE pushdown + projection matter, small enough to build
 # in a few seconds. WIDE filler columns simulate the real datasets where projection saves
@@ -119,12 +119,11 @@ def build_fixtures(tmp: Path) -> dict[str, str]:
     for i in range(N * 2):
         ci = i % N
         people.append({
-            "contact_id": f"ct{i}", "company_id": f"co{ci}",
+            "canonical_person_id": f"cid{i}", "person_id": f"ct{i}", "company_id": f"co{ci}",
             "normalized_domain": f"dom{ci}.example.com",
             "full_name": f"Person {i}", "first_name": f"First{i}", "last_name": f"Last{i}",
             "title": ("Chief Executive Officer" if i < N else "Analyst"),
             "person_linkedin_url": f"https://linkedin.com/in/{i}",
-            "source_platform": "fixture",
             **_filler("ppl", i, 6),
         })
 
