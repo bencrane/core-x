@@ -1,10 +1,11 @@
 """Reference loader — naics_psc_deliverable: the (naics_code, psc_code) -> deliverable / work_type
-classification for 15,576 award combos: the 5,000 highest-activity heads (tri-union of the 80%
+classification for 20,998 award combos: the 5,000 highest-activity heads (tri-union of the 80%
 transaction, vehicle, and dollar coverage heads over 2021+ FPDS prime data) + a 6,761-combo service
-extension (source_vintage govcon_active_awards_L_service_6761) + a 3,815-combo goods extension
-(source_vintage govcon_active_awards_goods_3815). The two extensions make the map FULLY COVER the
-entire govcon_active_awards universe (14,589 pairs: 8,690 service + 5,899 goods — every active award
-combo carries a deliverable + work_type).
+extension (govcon_active_awards_L_service_6761) + a 3,815-combo goods extension
+(govcon_active_awards_goods_3815) + a 5,422-combo subaward-frequency extension (subaward_head_5422).
+The extensions make the map FULLY COVER the entire govcon_active_awards universe (14,589 pairs) AND
+100% of every subaward in usaspending_subaward_canonical (1.30M subawards / $903.7B, resolved via the
+prime's naics+psc — a subaward carries no codes of its own). Verified 0 gap on both.
 
 WHAT IT IS. Each occurring (naics_code, psc_code) pair is classified into:
   - what_was_done : the DELIVERABLE — plain-English noun phrase of what the government OBTAINED
@@ -21,9 +22,9 @@ WHAT IT IS. Each occurring (naics_code, psc_code) pair is classified into:
 This is the BRIDGE that turns the frozen Stage-1 classified output into queryable labels: a downstream
 serving loader LEFT JOINs this table onto every award action on (naics_code, psc_code), so what_was_done
 / work_type become filterable columns. Award rows whose pair is not in this map (the long tail outside
-these 15,576 combos) get NULL labels (queryable as "unclassified").
+these 20,998 combos) get NULL labels (queryable as "unclassified").
 
-GRAIN  1 row per (naics_code, psc_code) pair. 15,576 rows (deduped on the pair key — the join must stay 1:1).
+GRAIN  1 row per (naics_code, psc_code) pair. 20,998 rows (deduped on the pair key — the join must stay 1:1).
 SoR    s3://data-sink/active/naics_psc_deliverable/   (Lance v2.1; derived, mode=overwrite)
 SOURCE pipelines/reference/data/naics_psc_deliverable.csv — the committed, frozen Stage-1 output
        (in-session Opus 4.8 classification; each pair enriched with official PSC/NAICS text + behavioral
