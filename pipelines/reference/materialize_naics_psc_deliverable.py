@@ -1,6 +1,8 @@
 """Reference loader — naics_psc_deliverable: the (naics_code, psc_code) -> deliverable / work_type
-classification for the 5,000 highest-activity award combos (tri-union of the 80% transaction,
-vehicle, and dollar coverage heads over 2021+ FPDS prime data).
+classification for 11,761 award combos: the 5,000 highest-activity heads (tri-union of the 80%
+transaction, vehicle, and dollar coverage heads over 2021+ FPDS prime data) + a 6,761-combo service
+extension pulled from naics_psc_labor_profile (the govcon active-awards service tail, source_vintage
+govcon_active_awards_L_service_6761) so the map now fully covers every service combo in that cache.
 
 WHAT IT IS. Each occurring (naics_code, psc_code) pair is classified into:
   - what_was_done : the DELIVERABLE — plain-English noun phrase of what the government OBTAINED
@@ -17,9 +19,9 @@ WHAT IT IS. Each occurring (naics_code, psc_code) pair is classified into:
 This is the BRIDGE that turns the frozen Stage-1 classified output into queryable labels: a downstream
 serving loader LEFT JOINs this table onto every award action on (naics_code, psc_code), so what_was_done
 / work_type become filterable columns. Award rows whose pair is not in this map (the long tail outside
-the top-5,000) get NULL labels (queryable as "unclassified").
+these 11,761 combos) get NULL labels (queryable as "unclassified").
 
-GRAIN  1 row per (naics_code, psc_code) pair. 5,000 rows (deduped on the pair key — the join must stay 1:1).
+GRAIN  1 row per (naics_code, psc_code) pair. 11,761 rows (deduped on the pair key — the join must stay 1:1).
 SoR    s3://data-sink/active/naics_psc_deliverable/   (Lance v2.1; derived, mode=overwrite)
 SOURCE pipelines/reference/data/naics_psc_deliverable.csv — the committed, frozen Stage-1 output
        (in-session Opus 4.8 classification; each pair enriched with official PSC/NAICS text + behavioral
