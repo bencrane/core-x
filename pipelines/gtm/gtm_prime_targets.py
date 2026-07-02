@@ -59,7 +59,7 @@ import sys
 FEED = "gtm_prime_targets"
 DATASET_URI = os.environ.get("GTM_PRIME_TARGETS_URI", "s3://data-sink/active/gtm_prime_targets/").rstrip("/") + "/"
 TRAJ_URI = "s3://data-sink/active/govcon_prime_trajectories/"
-SUB_URI = "s3://data-sink/active/usaspending/subaward_search/"
+SUB_URI = "s3://data-sink/active/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending/subaward_search)
 DATA_STORAGE_VERSION = "2.1"
 
 # ── ICP knobs (the only business parameters; change here to re-cut the cohort) ──
@@ -99,29 +99,26 @@ def _materialize(con):
 
     so = _r2_storage_options()
     con.register("traj", lance.dataset(TRAJ_URI, storage_options=so).to_table())
-    # ALL subaward signals come from subaward_search directly — the raw FFATA/FSRS transactional
-    # record, consistently keyed on the prime's awardee_or_recipient_uei. contractor_award_summary
-    # is deliberately NOT used: its lifetime_subaward_obligated is corrupted (free-text dollar
-    # sentinels → pass-through ratios in the thousands) and its subaward_total overcounts ~5x vs
-    # the raw records. Dollar guard drops negative/sentinel amounts; counts are garbage-immune.
+    # ALL subaward signals come from the reconciled subaward canonical (BULK∪FRESH, contract-only,
+    # deduped to one row per (prime_award_unique_key, subaward_number)) under canonical FRESH vocab.
+    # contractor_award_summary is deliberately NOT used (corrupted pass-through / ~5x overcount).
+    # Dollar guard drops negative/out-of-range amounts (the 1e13 sentinel is already nulled on-spine).
     # Signal is the FSRS self-report FLOOR — cold primes show 0 even when they subcontract.
     con.register("sub", lance.dataset(SUB_URI, storage_options=so).scanner(
-        columns=["awardee_or_recipient_uei", "sub_awardee_or_recipient_uei", "subaward_amount",
-                 "prime_award_group"],
-        filter="awardee_or_recipient_uei IS NOT NULL").to_reader())
-    # PROCUREMENT subawards only — excludes grant/assistance pass-through (state health/human-svc
-    # agencies sub-granting Medicaid/SNAP show billions in sub-grants against a tiny contract book,
-    # which is not contract subcontracting and explodes the pass-through ratio). Keeps the signal
-    # consistent with the govcon CONTRACT cohort.
+        columns=["prime_awardee_uei", "subawardee_uei", "subaward_amount"],
+        filter="prime_awardee_uei IS NOT NULL").to_reader())
+    # Contract subawards only — the canonical is procurement-scoped structurally (grant sub-granting
+    # that explodes the pass-through ratio is already excluded upstream). n_subawards / subaward_dollars
+    # are de-duplicated to one row per (prime, subaward_number): counts drop vs the raw report-grain
+    # feed (which double-counted FSRS report re-pulls ~2x) — a correctness fix, not a regression.
     con.execute("""
         CREATE OR REPLACE TEMP TABLE sub_roster AS
-        SELECT upper(trim(awardee_or_recipient_uei)) AS uei,
+        SELECT upper(trim(prime_awardee_uei)) AS uei,
                count(*) AS n_subawards,
-               count(DISTINCT NULLIF(upper(trim(sub_awardee_or_recipient_uei)), '')) AS n_distinct_subs,
-               sum(CASE WHEN TRY_CAST(subaward_amount AS DOUBLE) BETWEEN 0 AND 1e9
-                        THEN TRY_CAST(subaward_amount AS DOUBLE) ELSE 0 END) AS subaward_dollars
+               count(DISTINCT NULLIF(upper(trim(subawardee_uei)), '')) AS n_distinct_subs,
+               sum(CASE WHEN subaward_amount BETWEEN 0 AND 1e9
+                        THEN subaward_amount ELSE 0 END) AS subaward_dollars
         FROM sub
-        WHERE lower(coalesce(prime_award_group, '')) = 'procurement'
         GROUP BY 1
     """)
 
