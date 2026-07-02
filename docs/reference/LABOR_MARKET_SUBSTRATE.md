@@ -98,11 +98,32 @@ A §4(c) CBA WD has **no WHD rate register** — it is a *pointer* that cites th
 `/wdol/v1/cba/{_id}` is **key-less** (verified 200; the earlier "X-Auth-Token gated" note was wrong) but
 carries only employer × union × agency × locality × effective-dates — **no wage table**. SAM.gov hosts no
 copy of the CBA (every `/cba/{_id}/{attachments,files,document,download}` sub-path 404s). The wage/fringe
-schedule lives in the **external union contract**, resolved from independent corpora — DOL **OLMS CBA
-File** (primary; private+public 1,000+-employee units), **OPM** NAF CBAs (federal-sector; the NAF slice is
-wage-bearing), **Cornell ILR** (historical; DigitalCommons@ILR was retired in the 2020 migration to Cornell **eCommons** — the bepress `/do/oai/` endpoint is permanently dead (404 nginx), harvest instead via DSpace OAI-PMH at `ecommons.cornell.edu/server/oai/request` `set`-scoped to the Catherwood CBA collections + `perbcontracts`) — matched on the pointer's `(contractor, union, locality,
-dates)`. Structured `(occupation, rate, fringe)` extraction from those documents is a **pending** downstream
-dataset.
+schedule lives in the **external union contract**. The primary corpus — DOL **OLMS OPDR CBA File**
+(private + public 1,000+-employee units) — is now **harvested and landed** (§3.3.1: `olms_cba_index` /
+`olms_cba_documents` + 14.4 GB of contract PDFs in `olms_cba_blobs`), matched to the pointer on
+`(employer, union, locality, effective-dates)`. Two secondary corpora remain external/pending: **OPM** NAF
+CBAs (federal-sector; the NAF slice is wage-bearing) and **Cornell ILR** (historical; DigitalCommons@ILR
+was retired in the 2020 migration to Cornell **eCommons** — the bepress `/do/oai/` endpoint is permanently
+dead (404 nginx), harvest instead via DSpace OAI-PMH at `ecommons.cornell.edu/server/oai/request`
+`set`-scoped to the Catherwood CBA collections + `perbcontracts`). Structured `(occupation, rate, fringe)`
+extraction from the landed OLMS PDFs is a **pending** downstream dataset.
+
+### 3.3.1 DOL OLMS OPDR — the CBA contract corpus (the wage-bearing layer behind §4(c))
+
+The actual union contracts the SAM.gov §4(c) pointers cite. OLMS Online Public Disclosure Room (OPDR) is an
+AngularJS 1.x SPA over classic WebSphere servlets — **no REST, no auth, no cookie/session, no CSRF, no
+pagination**: the entire catalog is one POST, each contract one GET. Harvested key-less from a residential
+IP (2026-07-02); the list body is JSON mislabeled `text/xml` and MUST be latin-1 decoded.
+
+| dataset | rows | grain / keys | source |
+|---|---|---|---|
+| `olms_cba_index` | 4,849 | one row per CBA filing — `emp_name` × `union_name`(+trailing local #) × `location` × `exp_date` × `naics`(61%) × `no_of_emp`(60%); the join surface to `sam_wd_cba_pointers`; BTREE `doc_id`,`cba_pub_id`,`emp_name`; BITMAP `type`,`mod_id` | `olmsapps.dol.gov/olpdr/GetCBAFilerListServlet` (one POST `{clearCache:F}`, key-less) |
+| `olms_cba_documents` | 4,844 | one row per distinct `doc_id` — the R2-blob manifest (`r2_key`,`content_type`,`byte_len`,`sha256`,`fetch_status`); 4,843 fetched / 1 retry-exhausted; BTREE `doc_id`,`cba_pub_id`,`sha256`; BITMAP `content_type`,`fetch_status`,`mod_id` | `olmsapps.dol.gov/olpdr/Get[ECba]AttachmentServlet?docId=` (one GET each, key-less; `modId==10000`→eCBA servlet) |
+| `olms_cba_blobs/{docId}.pdf` | 4,843 | raw contract bytes as R2 objects — **14.4 GB** (15,478,782,264 B), 100% `application/pdf`, stored verbatim (bytes + content-type, never assumed PDF) | ↑ same GET, raw egress → `s3://data-sink/active/olms_cba_blobs/` |
+
+Join to `sam_wd_cba_pointers` is **fuzzy**: OLMS keys on `(emp_name, union_name, location→state, exp_date)`
+vs. the pointer's `(contractor, union, locality, effective-dates)` — free-text employer/union names and a
+city/state `location` blob (no clean state column). Hit-rate is the open measurement, not yet asserted.
 
 ### 3.4 O*NET 30.3 — the SOC semantic layer (45 datasets, 1,104,314 rows)
 
@@ -138,7 +159,7 @@ prime award (usaspending/FPDS): NAICS + PSC + place-of-performance COUNTY (FIPS)
   ├─ PSC ──► service-vs-product gate (first char) + (via LLM) labor categories
   │
   └─ county FIPS ──► sam_wd_county_coverage ──► sam_wd_rate_documents  (locality SCA/DBA rates)
-                     sam_wd_cba_pointers ──► [external union contract]  (§4(c) CBA-covered labor; wages off-platform)
+                     sam_wd_cba_pointers ┄fuzzy┄► olms_cba_index ─► olms_cba_documents ─► olms_cba_blobs  (§4(c) union-contract PDFs; landed 14.4GB, wage extraction pending)
 ```
 
 - **NAICS**: 6-digit on prime awards; OEWS carries it at 2/3/4/5/6-digit (`i_group`); EP matrix
@@ -185,6 +206,7 @@ prime award (usaspending/FPDS): NAICS + PSC + place-of-performance COUNTY (FIPS)
 | `pipelines/bls/ep_industry_occupation_matrix.py` | `bls_ep_industry_occupation_matrix_2024_2034` | scrapes 423 industries; seeded from landed `occupation.xlsx` Table 1.9; fail-closed on any industry |
 | `pipelines/bls/ep_occupation_workbook.py` | the 5 remaining `bls_ep_*` + EP upgrade | Tables 1.1/1.2/1.10/1.11/1.12 + 1.3–1.6 |
 | `pipelines/dol/ingest.py` | `dol_sca_*` (3 sinks) | pypdfium2 text; coverage-gated structured parse |
+| `pipelines/dol/olms_opdr_cba.py` | `olms_cba_index`, `olms_cba_documents` (+ `olms_cba_blobs` R2 objects) | `--index` one-POST catalog, `--documents --resume` raw-PDF blob crawl; key-less OLMS OPDR servlets; reuses BLS plumbing |
 | `pipelines/sam_gov/sam_wd_manifest.py` | `sam_wage_determinations`, `sam_wd_county_coverage`, `sam_wd_rate_documents`, `sam_wd_cba_pointers`, `sam_wd_cba_coverage` | `--run` manifest, `--rates` SCA/DBA rate stage, `--cba` CBA pointer stage; key-less frontend crawl |
 | `pipelines/onet/ingest.py` | all 45 `onet_*` | **registry-free auto-discovery** of the zip; robust to O*NET version |
 
