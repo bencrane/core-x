@@ -115,8 +115,10 @@ Trigger task. Manual: `modal run pipelines/usaspending/usaspending_subaward_cano
 - DIRECT-R2 write + index (non-giant; proven by `contractor_award_summary.py`). `data_storage_version="2.1"`.
 - `built_at` = ONE injected naive-UTC literal (NOT now()). `subaward_last_modified_date` via
   `replace(...,'+00','')+TRY_CAST` (NO strptime).
-- FSRS sentinels carried RAW (faithful SoR): `subaward_amount` 1.0e18, `subaward_action_date` 1900/2106;
-  the ledger max-date is clamped; consumers clamp for display.
+- FSRS sentinels NULLED on-spine: `subaward_amount` → NULL when abs > $100B; `subaward_action_date` → NULL
+  outside [1776-01-01, today]. The row survives, only the garbage value is nulled, so no consumer needs its
+  own clamp (a root-cause fix surfaced by the downstream-repoint analysis). Never perturbs reconciliation
+  (the argmax driver is `subaward_last_modified_date`).
 - NO auto-retries; overwrite idempotency. Programmatic schema-identity gate on the two collapses before union.
 
 ---

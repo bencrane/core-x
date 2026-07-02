@@ -50,9 +50,12 @@ DISCIPLINES (d.8 / fleet rules):
     non-giant default (proven by contractor_award_summary.py). data_storage_version="2.1".
   • built_at = ONE Python naive-UTC literal injected into both projections (NOT now()).
   • subaward_last_modified_date parsed via replace(...,'+00','')+TRY_CAST (NO strptime hard-abort).
-  • FSRS source-data quality: subaward_amount carries a 1.0e18 sentinel; subaward_action_date carries
-    1900/2106 sentinels. Carried RAW on the spine (faithful SoR); the ledger max-date metric is clamped to
-    [.., CURRENT_DATE] for sanity and consumers clamp for display (mirror contractor_award_summary).
+  • FSRS source-data quality: subaward_amount carries a ~1e13 garbage sentinel; subaward_action_date
+    carries 2106-style sentinels. Both are NULLED ON-SPINE (subaward_amount → NULL when abs > $100B;
+    subaward_action_date → NULL outside [1776-01-01, today]) — the ROW survives (the subaward happened),
+    only the garbage value → NULL, so downstream SUM(amount)/max(date) are never poisoned and no consumer
+    needs its own clamp. Mirrors contractor_award_summary's "null from sums, keep the row". Nulling
+    action_date never perturbs reconciliation (the argmax driver is subaward_last_modified_date).
   • NO auto-retries in pipeline logic; overwrite idempotency.
   • --since pushes subaward_action_date>= into BOTH data scanners (BULK date32; FRESH lexical ISO-10).
 
@@ -151,11 +154,16 @@ COLUMN_SPEC: list[dict] = [
      "feed_expr": "s(prime_award_piid)"},
     # ---- (b) core — DUAL-SOURCED reconciled facts (both legs) ----
     {"canonical": "subaward_amount", "duck_type": "DOUBLE", "group": "core",
-     "bulk_expr": "subaward_amount",
-     "feed_expr": "TRY_CAST(s(subaward_amount) AS DOUBLE)"},
+     # FSRS sentinel nulled on-spine (abs > $100B is data-entry garbage — max real award ~$161B): the
+     # row survives, the amount → NULL, so downstream SUM() is not poisoned (mirror contractor_award_summary).
+     "bulk_expr": "CASE WHEN abs(subaward_amount) <= 100000000000 THEN subaward_amount END",
+     "feed_expr": "CASE WHEN abs(TRY_CAST(s(subaward_amount) AS DOUBLE)) <= 100000000000 THEN TRY_CAST(s(subaward_amount) AS DOUBLE) END"},
     {"canonical": "subaward_action_date", "duck_type": "DATE", "group": "core",
-     "bulk_expr": "sub_action_date",
-     "feed_expr": "TRY_CAST(s(subaward_action_date) AS DATE)"},
+     # FSRS sentinel nulled on-spine (outside [1776-01-01, today] is garbage, e.g. 2106): row survives,
+     # date → NULL, so downstream max()/date filters are not poisoned. NOT the argmax driver (that is
+     # subaward_last_modified_date), so nulling here never perturbs reconciliation.
+     "bulk_expr": "CASE WHEN sub_action_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN sub_action_date END",
+     "feed_expr": "CASE WHEN TRY_CAST(s(subaward_action_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(subaward_action_date) AS DATE) END"},
     {"canonical": "subaward_action_date_fiscal_year", "duck_type": "BIGINT", "group": "core",
      "bulk_expr": "sub_fiscal_year",
      "feed_expr": "TRY_CAST(s(subaward_action_date_fiscal_year) AS BIGINT)"},
@@ -449,7 +457,8 @@ def _typed_null(c: dict) -> str:
 
 _PARSE_SKIP = {"s", "kbulk", "TRY_CAST", "COALESCE", "CAST", "AS", "DOUBLE", "BIGINT", "DATE",
                "TIMESTAMP", "VARCHAR", "INTEGER", "replace", "nullif", "trim", "NULL",
-               "upper", "lower", "substr", "concat", "concat_ws"}
+               "upper", "lower", "substr", "concat", "concat_ws",
+               "CASE", "WHEN", "THEN", "END", "BETWEEN", "AND", "abs", "CURRENT_DATE"}
 
 
 def _source_cols(kind: str) -> list[str]:

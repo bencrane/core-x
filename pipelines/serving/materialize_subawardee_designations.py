@@ -38,7 +38,7 @@ import os
 import sys
 
 ACTIVE = "s3://data-sink/active"
-SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUBAWARD_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 SME_URI = f"{ACTIVE}/sam_master_entities/"
 SERVING_URI = os.environ.get("SUBAWARDEE_DESIGNATIONS_URI", f"{ACTIVE}/govcon_subawardee_designations/")
 DATA_STORAGE_VERSION = "2.1"
