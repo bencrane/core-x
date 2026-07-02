@@ -87,6 +87,17 @@
 > the 17th, from the 88→131 spine expansion). Full field-level reference:
 > [`FPDS_CANONICAL_FIELD_DICTIONARY.md`](FPDS_CANONICAL_FIELD_DICTIONARY.md). Headline/marquee totals
 > above are NOT recomputed — a full re-probe refreshes those.
+> **Update 2026-07-02 — federal entity hierarchy → `entity_hierarchy`.** New derived dataset
+> (`pipelines/resolution/entity_hierarchy.py`): the corporate-family spine, one row per child
+> `uei` carrying `immediate_parent_uei` (raw reported edge) + `ultimate_parent_uei` (cycle-safe
+> transitive-closure root). Union of the authoritative in-SoR parent edges — `recipient_lookup`
+> (immediate, primary), `subaward_search` (FSRS ultimate), `govcon_active_awards` (immediate fill);
+> SAM `entity_registrations` carries no parent UEI and is not a source. Added to **§Resolution**,
+> **live-verified 2026-07-02**: **148,766 rows · 9 cols · 4 indices** (3 BTREE `uei` /
+> `immediate_parent_uei` / `ultimate_parent_uei` + 1 BITMAP `parent_source`). `parent_source`
+> distribution: recipient_lookup 82,383 · subaward_search 65,877 · govcon_active_awards 506. Depth
+> ≤ 4; 409 cycle-flagged. Design: [`ENTITY_HIERARCHY.md`](../plans/ENTITY_HIERARCHY.md). Headline/
+> marquee totals above are NOT recomputed — a full re-probe refreshes those.
 
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
