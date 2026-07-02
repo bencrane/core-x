@@ -202,6 +202,13 @@ COLUMN_SPEC: list[dict] = [
      "bulk_expr": "s(contract_award_type)", "feed_expr": "s(award_type_code)"},
     {"canonical": "idv_type_code", "duck_type": "VARCHAR", "group": "core",
      "bulk_expr": "s(idv_type)", "feed_expr": "s(idv_type_code)"},
+    {"canonical": "subcontracting_plan", "duck_type": "VARCHAR", "group": "core",
+     # FPDS subcontracting-plan CODE (A/B/C/D/E/F/G/H). BULK exposes the code as subcontracting_plan;
+     # FRESH + archive expose it as subcontracting_plan_code (their `subcontracting_plan` is the
+     # description, not used). Codes C/D/E/F/G/H ⇒ a plan is in place; A/B ⇒ none; NULL ⇒ not populated
+     # (~35% of txns). has_subcontracting_plan derives downstream: subcontracting_plan IN
+     # ('C','D','E','F','G','H') — the raw code is carried on the spine; the boolean lives in serving.
+     "bulk_expr": "s(subcontracting_plan)", "feed_expr": "s(subcontracting_plan_code)"},
     {"canonical": "construction_wage_rate_requirements_code", "duck_type": "VARCHAR", "group": "core",
      "bulk_expr": "s(construction_wage_rate_req)",  # NON-1:1 rename (truncated pg col name)
      "feed_expr": "s(construction_wage_rate_requirements_code)"},
@@ -341,7 +348,7 @@ BTREE_COLS = ["contract_transaction_unique_key", "contract_award_unique_key", "r
               "action_date", "last_modified_date", "naics_code", "product_or_service_code",
               "federal_action_obligation", "recipient_hash", "award_id_piid"]
 BITMAP_COLS = ["action_date_fiscal_year", "type_of_set_aside_code", "awarding_agency_code",
-               "award_type_code", "idv_type_code", "canonical_source"]
+               "award_type_code", "idv_type_code", "canonical_source", "subcontracting_plan"]
 
 
 # ---- COLUMN_SPEC derived helpers (all generated; nothing hand-transcribed) ---- #
