@@ -42,8 +42,8 @@ _Authoritative field definitions from the USAspending Data Dictionary (122 subaw
 ### Sub-award attribute / spending / recency
 | canonical | BULK rpt | FRESH download | note |
 |---|---|---|---|
-| `subaward_amount` | `subaward_amount` | `subaward_amount` | DOUBLE. **ONLY sub-grain-safe SUM.** Clamp 1.0e18 sentinel → $100B downstream |
-| `subaward_action_date` | `sub_action_date` | `subaward_action_date` | DATE. BTREE. Clamp 1900/2106 → [1776-01-01, today] downstream |
+| `subaward_amount` | `subaward_amount` | `subaward_amount` | DOUBLE. **ONLY sub-grain-safe SUM.** FSRS garbage sentinel (abs > $100B) NULLED on-spine — row survives, amount → NULL (safe to SUM directly, no consumer clamp) |
+| `subaward_action_date` | `sub_action_date` | `subaward_action_date` | DATE. BTREE. FSRS sentinel (outside [1776-01-01, today], e.g. 2106) NULLED on-spine — safe for max()/date filters directly |
 | `subaward_action_date_fiscal_year` | `sub_fiscal_year` | `subaward_action_date_fiscal_year` | BIGINT |
 | `subaward_last_modified_date` | `broker_updated_at` | `subaward_sam_report_last_modified_date` (parsed) | TIMESTAMP. **The unified reconciliation mod-frontier = the 2-way argmax driver.** BTREE. Analog of FPDS `last_modified_date` |
 | `subaward_description` | `subaward_description` | `subaward_description` | the LEAD capability signal (most-read field across consumers) |
@@ -151,7 +151,7 @@ _Authoritative field definitions from the USAspending Data Dictionary (122 subaw
 
 ## Grain / reconciliation hazards (carry to serving)
 1. **Sub-grain vs award-grain:** ONLY `subaward_amount` is subaward-grain and safe to SUM. Every `prime_award_*` column is prime-award-grain **repeated on every subaward row of that prime** → dedup to `prime_award_unique_key` before any award rollup; **NEVER SUM at sub grain.** `prime_award_amount` is the highest-blast-radius footgun.
-2. **Sentinels (carried RAW, faithful SoR):** `subaward_amount` 1.0e18 → clamp $100B; `subaward_action_date` 1900/2106 → clamp [1776-01-01, today]. The ledger `max_subaward_action_date` is already clamped.
+2. **Sentinels NULLED on-spine** (not carried raw — the repoint analysis showed carrying raw pushes a clamp burden onto every aggregating consumer): `subaward_amount` → NULL when abs > $100B (4 rows); `subaward_action_date` → NULL outside [1776-01-01, today] (2 rows). The ROW survives (the subaward happened), only the garbage value → NULL, so downstream `SUM(amount)` / `max(date)` are safe with no consumer-side clamp. Mirrors `contractor_award_summary`'s "null from sums, keep the row".
 3. **Source-correlated NULL cliffs:** every single-source enrich column is NULL on the opposite leg by construction → union-grain populatedness reads below the single-source pct. Read as `canonical_source` correlation, not data loss; do not impute.
 4. **Officer comp:** ~10-13% populated (only >$300k reporters). ~88% NULL is inherent — a forward capability surface, not a load-bearing read yet.
 
