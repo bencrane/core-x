@@ -12,16 +12,22 @@ custodial PSC won by an IT-NAICS firm) reach the full SOC vocabulary instead of 
 WHY COMBO GRAIN: the LLM runs once per (NAICS × PSC) pair — thousands — and every award/company
 joins to the cache for free. Mirrors naics_psc_deliverable (the prior-art LLM combo cache).
 
+CLASSIFICATION RUNS ONLY AS IN-SESSION SUBAGENTS. Default model = Opus 4.8, effort = xhigh.
+ZERO Anthropic API spend. There is no Batches-API path in this module: the in-session workflow
+(see pipelines/reference/labor_profile_insession/RUNBOOK.md) renders per-call prompts, fans them
+out to Opus/xhigh subagents (waves of 4), assembles their result files into an --agent-results
+JSON array, and hands that to `retrieve`. `retrieve` validates, runs the fail-closed combo gate,
+and materializes the two output datasets + indexes + ledger.
+
 STAGES (all fail-closed, resume via the frozen manifest — never re-derived from live data):
     manifest  derive worklist + references + OEWS/EP candidates → _naics_psc_labor_profile_manifest
-    submit    build Batches-API requests from the manifest (system prefix cached; enums pinned)
-    retrieve  poll batch → validate → materialize the two output datasets + indexes + ledger
+    retrieve  read --agent-results → validate → materialize the two output datasets + indexes + ledger
 
     doppler run -p core-x -c prd -- uv run --no-project --with 'pylance>=7' --with 'pyarrow>=17' \\
-      --with 'duckdb>=1.5,<2' --with 'anthropic>=0.100' --with 'psycopg[binary]>=3.2' \\
+      --with 'duckdb>=1.5,<2' --with 'psycopg[binary]>=3.2' \\
       python3 pipelines/reference/materialize_naics_psc_labor_profile.py manifest
-    ... submit                       # prints batch_id
-    ... retrieve --batch-ids <id>    # poll + materialize
+    # classify all calls in-session (Opus 4.8 / xhigh, waves of 4) -> per-call result files
+    ... retrieve --agent-results <agent_results.json>   # validate + materialize
 
 OUTPUT (Lance v2.1, active/):
     naics_psc_labor_profile             8,690 = one row per combo: titles, is_labor_play,
@@ -47,13 +53,13 @@ DETERMINISTIC LADDER (adversarially verified live):
     EP growth: bls_ep_industry_occupation_matrix, occupation_type='Line Item' (capital I),
     combined rows only (industry_code=naics_code; 611xxx/622xxx ownership splits fall to 3d).
 
-LLM (house batch idiom — classify_sub_self_reported_tags.py): Anthropic Message Batches API
-(50% price), model claude-sonnet-4-6, temperature=0, structured output via output_config
-json_schema with additionalProperties:false and the SOC/SCA vocabularies as string ENUMS.
-System prompt (byte-identical across calls, cache_control ephemeral): task rules + the 502-row
-SCA vocabulary (160-char first-sentence excerpts) + the 830-row detailed-SOC vocabulary.
-User payload per call: one NAICS (title/description/candidates) × ≤20 PSCs. custom_id =
-'{naics}:{chunk:02d}' resolved strictly against the manifest.
+LLM (in-session subagents — the naics_psc_deliverable house precedent, zero API billing):
+in-session Opus 4.8 / xhigh subagents, structured output constrained to the SOC/SCA vocabularies
+(additionalProperties:false; the enums live in _output_schema for shape reference). The shared
+system prompt (byte-identical across calls): task rules + the 502-row SCA vocabulary (160-char
+first-sentence excerpts) + the 830-row detailed-SOC vocabulary. User payload per call: one NAICS
+(title/description/candidates) × ≤20 PSCs. custom_id = '{naics}:{chunk:02d}' resolved strictly
+against the manifest.
 
 PROVENANCE (house convention per naics_psc_deliverable): prompt_version, model_id, generated_at,
 source_vintage + candidate provenance (resolution_level, oews_industry_code, candidates_sha256).
@@ -67,7 +73,6 @@ import json
 import os
 import re
 import sys
-import time
 
 os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
@@ -77,9 +82,11 @@ MANIFEST_URI = os.environ.get("NPLP_MANIFEST_URI", A + "_naics_psc_labor_profile
 PROFILE_URI = os.environ.get("NPLP_PROFILE_URI", A + "naics_psc_labor_profile/")
 CATEGORIES_URI = os.environ.get("NPLP_CATEGORIES_URI", A + "naics_psc_labor_profile_categories/")
 
+# Retained only as the `model` field on the request-shape objects _build_requests emits (a schema
+# record for in-session prompt rendering); no API is ever called with it.
 MODEL = "claude-sonnet-4-6"
-# model_id stamped on rows classified by IN-SESSION workflow subagents (--agent-results lane —
-# the naics_psc_deliverable house precedent; session-covered, zero API billing).
+# model_id stamped on every materialized row — classification is 100% in-session Opus/xhigh
+# subagents (the naics_psc_deliverable house precedent; session-covered, zero API billing).
 AGENT_MODEL_ID = "claude-opus-4-8:in-session"
 PROMPT_VERSION = "labor_profile_v2"
 SOURCE_VINTAGE = "govcon_active_awards_2026-07-01"
@@ -234,20 +241,46 @@ def build_manifest() -> dict:
     con = duckdb.connect()
     con.execute("PRAGMA threads=8")
 
-    # worklist: distinct service combos + award stats
-    g = _ds("govcon_active_awards").to_table(
-        columns=["naics_code", "naics_description", "psc_code", "psc_description",
-                 "psc_is_service", "total_dollars_obligated"])
-    con.register("g", g)
-    combos = con.execute("""
-        SELECT naics_code, psc_code,
-               any_value(naics_description) AS award_naics_desc,
-               any_value(psc_description)   AS award_psc_desc,
-               count(*)                      AS n_awards,
-               sum(total_dollars_obligated)  AS total_dollars_obligated
-        FROM g WHERE psc_is_service AND naics_code IS NOT NULL AND psc_code IS NOT NULL
-        GROUP BY 1,2""").fetchall()
-    print(f"worklist: {len(combos):,} service combos")
+    # worklist: distinct service combos + award stats.
+    # Default source = govcon_active_awards. Set NPLP_WORKLIST_CSV to an external, self-contained
+    # worklist CSV instead (columns: naics_code,psc_code[,naics_description][,psc_description]) —
+    # the in-session harness path (labor_profile_insession/). All downstream reference/OEWS/vocab
+    # machinery is identical; only the combo set changes. Combo tuple shape is preserved:
+    # (naics_code, psc_code, award_naics_desc, award_psc_desc, n_awards, total_dollars_obligated).
+    worklist_csv = os.environ.get("NPLP_WORKLIST_CSV")
+    if worklist_csv:
+        w = con.execute(
+            "SELECT * FROM read_csv_auto(?, header=true, all_varchar=true)", [worklist_csv]).fetchdf()
+        wcols = {c.lower(): c for c in w.columns}
+        if "naics_code" not in wcols or "psc_code" not in wcols:
+            raise RuntimeError(f"{worklist_csv}: worklist CSV must have naics_code + psc_code columns")
+        nc, pc = wcols["naics_code"], wcols["psc_code"]
+        ndc = wcols.get("naics_description")
+        pdc = wcols.get("psc_description")
+        con.register("wl", w)
+        combos = con.execute(f"""
+            SELECT CAST("{nc}" AS VARCHAR) AS naics_code, CAST("{pc}" AS VARCHAR) AS psc_code,
+                   {f'any_value("{ndc}")' if ndc else 'CAST(NULL AS VARCHAR)'} AS award_naics_desc,
+                   {f'any_value("{pdc}")' if pdc else 'CAST(NULL AS VARCHAR)'} AS award_psc_desc,
+                   1                          AS n_awards,
+                   0.0                        AS total_dollars_obligated
+            FROM wl WHERE "{nc}" IS NOT NULL AND "{pc}" IS NOT NULL
+            GROUP BY 1,2""").fetchall()
+        print(f"worklist (external {worklist_csv}): {len(combos):,} combos")
+    else:
+        g = _ds("govcon_active_awards").to_table(
+            columns=["naics_code", "naics_description", "psc_code", "psc_description",
+                     "psc_is_service", "total_dollars_obligated"])
+        con.register("g", g)
+        combos = con.execute("""
+            SELECT naics_code, psc_code,
+                   any_value(naics_description) AS award_naics_desc,
+                   any_value(psc_description)   AS award_psc_desc,
+                   count(*)                      AS n_awards,
+                   sum(total_dollars_obligated)  AS total_dollars_obligated
+            FROM g WHERE psc_is_service AND naics_code IS NOT NULL AND psc_code IS NOT NULL
+            GROUP BY 1,2""").fetchall()
+        print(f"worklist (govcon_active_awards): {len(combos):,} service combos")
 
     # references (dedup psc_reference to 1 row/code; naics_reference title fallback = award desc)
     nref_t = _ds("naics_reference").to_table()
@@ -433,7 +466,13 @@ def _output_schema(sca_codes: list[str], soc_codes: list[str]) -> dict:
 
 
 def _build_requests() -> tuple[list[dict], dict]:
-    """Manifest → Batches-API requests. Returns (requests, manifest_by_call)."""
+    """Manifest → per-call request objects. Returns (requests, manifest_by_call).
+
+    Used ONLY for IN-SESSION prompt rendering, not API submission: the in-session harness
+    (pipelines/reference/labor_profile_insession/) pulls `params.system[0].text` (shared vocab
+    block) and `params.messages[0].content` (per-call user payload) out of these objects to write
+    the system.txt + slim per-call files the Opus/xhigh subagents read. The `model`/`max_tokens`/
+    `output_config` fields are retained as a schema/shape record; nothing here calls any API."""
     sca_codes, sca_block, soc_codes, soc_block, _, _ = _vocabularies()
     system = [{"type": "text",
                "text": (SYSTEM_RULES
@@ -494,36 +533,16 @@ def _build_requests() -> tuple[list[dict], dict]:
     return requests, by_call
 
 
-def submit(missing_from: list[str] | None = None) -> None:
-    """Submit the classification batch. With --missing-from <batch_ids>, resubmit ONLY the
-    calls that did not succeed in those batches (e.g. after a credit-exhaustion partial)."""
-    import anthropic
-    client = anthropic.Anthropic()
-    requests, by_call = _build_requests()
-    if missing_from:
-        done = set()
-        for bid in missing_from:
-            for res in client.messages.batches.results(bid):
-                if res.result.type == "succeeded":
-                    done.add(res.custom_id)
-        requests = [r for r in requests if r["custom_id"] not in done]
-        print(f"missing-only resubmit: {len(done)} calls already succeeded, {len(requests)} to go")
-        if not requests:
-            print("nothing to submit — all calls already succeeded")
-            return
-    print(f"submitting {len(requests)} requests ({len(by_call)} calls) to Batches API, model={MODEL}")
-    batch = client.messages.batches.create(requests=requests)
-    print(json.dumps({"batch_id": batch.id, "n_requests": len(requests),
-                      "model": MODEL, "prompt_version": PROMPT_VERSION}))
-
-
-def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None = None) -> None:
-    import anthropic
+def retrieve(agent_results: str) -> None:
+    """Materialize from an IN-SESSION agent-results file. `agent_results` is a JSON array of
+    {custom_id, results} produced by the in-session Opus/xhigh subagents (custom_id = the
+    '{naics}_{chunk:02d}' call id; results = one object per PSC). Validates against the frozen
+    manifest + SOC/SCA vocabularies, runs the fail-closed combo gate, then writes both Lance
+    datasets + BTREE/BITMAP indexes + the ops ledger. No Anthropic API is touched."""
     import duckdb
     import pyarrow as pa
 
     started = dt.datetime.now(dt.timezone.utc)
-    client = anthropic.Anthropic()
     sca_codes, _, soc_codes, _, sca_titles, soc_titles = _vocabularies()
     sca_set, soc_set = set(sca_codes), set(soc_codes)
 
@@ -552,18 +571,6 @@ def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None =
         SELECT naics_code, occupation_code, any_value(emp_pct_change_2024_2034) FROM ep
         WHERE occupation_type='Line Item' AND industry_code=naics_code GROUP BY 1,2""").fetchall()}
 
-    # poll all batches
-    for bid in batch_ids:
-        while True:
-            b = client.messages.batches.retrieve(bid)
-            rc = b.request_counts
-            print(f"[{bid}] {b.processing_status} processing={rc.processing} "
-                  f"succeeded={rc.succeeded} errored={rc.errored} canceled={rc.canceled} "
-                  f"expired={rc.expired}", flush=True)
-            if b.processing_status == "ended":
-                break
-            time.sleep(poll_s)
-
     now = dt.datetime.now(dt.timezone.utc)
     gen_at = now.isoformat()
     prof_rows, cat_rows = [], []
@@ -577,36 +584,24 @@ def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None =
                 "prompt_version": PROMPT_VERSION, "model_id": engine,
                 "generated_at": gen_at, "source_vintage": SOURCE_VINTAGE}
 
-    # ── collect one results-list per call: batches ∪ optional in-session agent file ──
-    # payloads[cid] = (results_list, engine_model_id). First success wins across batches;
-    # the agent file (produced by in-session workflow subagents — the naics_psc_deliverable
-    # house precedent, zero API billing) fills calls no batch succeeded on.
+    # ── collect one results-list per call from the in-session agent-results file ──
+    # payloads[cid] = (results_list, engine_model_id). The file is produced by the in-session
+    # Opus/xhigh workflow subagents (the naics_psc_deliverable house precedent, zero API billing).
     payloads: dict[str, tuple[list, str]] = {}
-    for bid in batch_ids:
-        for res in client.messages.batches.results(bid):
-            cid = res.custom_id
-            if cid not in by_call:
-                failures.append(f"{cid}: not in manifest")
-                continue
-            if res.result.type != "succeeded" or cid in payloads:
-                continue
-            msg = res.result.message
-            text = next((blk.text for blk in msg.content if blk.type == "text"), "")
-            try:
-                payloads[cid] = (json.loads(text).get("results", []), MODEL)
-            except json.JSONDecodeError:
-                failures.append(f"{cid}: JSON parse failure")
-    if agent_results:
-        n_agent = 0
-        for entry in json.load(open(agent_results)):
-            cid = entry.get("custom_id")
-            if cid in by_call and cid not in payloads:
-                payloads[cid] = (entry.get("results", []), AGENT_MODEL_ID)
-                n_agent += 1
-        print(f"agent results merged: {n_agent} calls from {agent_results}")
+    n_agent = 0
+    for entry in json.load(open(agent_results)):
+        cid = entry.get("custom_id")
+        if cid not in by_call:
+            failures.append(f"{cid}: not in manifest")
+            continue
+        if cid in payloads:
+            continue
+        payloads[cid] = (entry.get("results", []), AGENT_MODEL_ID)
+        n_agent += 1
+    print(f"agent results loaded: {n_agent} calls from {agent_results}")
     for cid in by_call:
         if cid not in payloads:
-            failures.append(f"{cid}: no succeeded result in any source")
+            failures.append(f"{cid}: no result in the agent-results file")
 
     for cid in sorted(payloads):
         results, engine = payloads[cid]
@@ -681,9 +676,10 @@ def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None =
     if len(seen_combos) != expected_combos:
         status = "partial"
         print(f"RECONCILIATION GAP: {expected_combos - len(seen_combos)} combos missing — "
-              "dataset NOT written. Re-submit the missing calls, then retrieve again with all batch ids.")
+              "dataset NOT written. Re-run the in-session classification for the missing calls, "
+              "re-assemble the agent-results file, then retrieve again.")
         _record_run({"stage": "retrieve", "status": "gap", "combos": len(seen_combos),
-                     "calls": len(by_call), "categories": len(cat_rows), "model_id": MODEL,
+                     "calls": len(by_call), "categories": len(cat_rows), "model_id": AGENT_MODEL_ID,
                      "prompt_version": PROMPT_VERSION,
                      "stats": {"failures": failures[:200], "expected": expected_combos},
                      "error": f"{expected_combos - len(seen_combos)} combos missing",
@@ -701,7 +697,7 @@ def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None =
     print(f"wrote {len(prof_rows):,} -> {PROFILE_URI} ({built_p})")
     print(f"wrote {len(cat_rows):,} -> {CATEGORIES_URI} ({built_c})")
     _record_run({"stage": "retrieve", "status": status, "combos": len(seen_combos),
-                 "calls": len(by_call), "categories": len(cat_rows), "model_id": MODEL,
+                 "calls": len(by_call), "categories": len(cat_rows), "model_id": AGENT_MODEL_ID,
                  "prompt_version": PROMPT_VERSION,
                  "stats": {"failures": failures[:200], "profile_indexes": built_p,
                            "category_indexes": built_c},
@@ -713,22 +709,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="naics_psc_labor_profile — L2 combo→labor-category cache.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("manifest", help="derive + freeze the worklist/candidates manifest")
-    sp = sub.add_parser("submit", help="build + submit the Batches-API classification")
-    sp.add_argument("--missing-from", help="comma-separated prior batch ids — resubmit ONLY calls "
-                                           "that did not succeed in them")
-    rp = sub.add_parser("retrieve", help="poll batch, validate, materialize datasets")
-    rp.add_argument("--batch-ids", required=True, help="comma-separated batch ids")
-    rp.add_argument("--poll-s", type=int, default=60)
-    rp.add_argument("--agent-results", help="JSON array of {custom_id, results} from in-session "
-                                            "workflow subagents (fills calls no batch succeeded on)")
+    rp = sub.add_parser("retrieve", help="validate the in-session agent-results file + materialize")
+    rp.add_argument("--agent-results", required=True,
+                    help="JSON array of {custom_id, results} from the in-session Opus/xhigh "
+                         "workflow subagents (see labor_profile_insession/RUNBOOK.md)")
     args = ap.parse_args(argv)
     if args.cmd == "manifest":
         build_manifest()
-    elif args.cmd == "submit":
-        submit([b.strip() for b in args.missing_from.split(",")] if args.missing_from else None)
     else:
-        retrieve([b.strip() for b in args.batch_ids.split(",") if b.strip()], args.poll_s,
-                 agent_results=args.agent_results)
+        retrieve(agent_results=args.agent_results)
     return 0
 
 
