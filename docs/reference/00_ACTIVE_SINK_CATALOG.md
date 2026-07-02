@@ -98,6 +98,18 @@
 > distribution: recipient_lookup 82,383 · subaward_search 65,877 · govcon_active_awards 506. Depth
 > ≤ 4; 409 cycle-flagged. Design: [`ENTITY_HIERARCHY.md`](../plans/ENTITY_HIERARCHY.md). Headline/
 > marquee totals above are NOT recomputed — a full re-probe refreshes those.
+> **Update 2026-07-02 — company dedup crosswalk → `company_dedup_map`.** New derived dataset
+> (`pipelines/resolution/company_dedup_map.py`): the §3.1 non-destructive dedup bridge, one row per
+> `company_id` carrying `canonical_company_id` (= `min(company_id)` of its merge group).
+> UEI-first two-tier rule — merge on exact `uei` (authoritative; distinct UEIs never fuse), else
+> `coalesce(company_linkedin_url, normalized_domain) + legal_name_base(name_norm(company_name))`,
+> else singleton. `companies_canonical` is UNTOUCHED; the source-platform sidecar re-groups by join
+> with zero re-ingest. Added to **§Resolution**, **live-verified 2026-07-02** (adversarial 4-verifier
+> pass): **117,037 rows · 7 cols · 3 indices** (2 BTREE `company_id` / `canonical_company_id` +
+> 1 BITMAP `method`). ~2,007 merges → 115,030 canonical (719 exact-UEI · 1,288 name-gated · 0
+> subsidiary fusions vs 2,522 under a naive domain merge). Design:
+> [`COMPANY_DEDUP_MAP.md`](../plans/COMPANY_DEDUP_MAP.md). Headline/marquee totals above are NOT
+> recomputed — a full re-probe refreshes those.
 
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
