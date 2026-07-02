@@ -672,14 +672,17 @@ class PersonMatch(_Model):
     normalized_domain: str | None = None
     contact_id: str | None = None
     person_id: str | None = None
-    source_platform: str | None = None
+    # source_platform moved to the person_source_platforms sidecar. A canonical person can be
+    # observed under MULTIPLE sources, so this is a LIST (richer than the old single value),
+    # populated from a sidecar join by canonical_person_id. Empty when the sidecar has no row.
+    source_platforms: list[str] = []
 
     @classmethod
     def from_row(cls, r: dict[str, Any]) -> "PersonMatch":
-        # The physical contact_id column is dropped from active/people; person_id is the
-        # sole stored id. The response's contact_id is kept for external back-compat but now
-        # MIRRORS person_id (never read from a contact_id column — it no longer exists).
-        pid = r.get("person_id")
+        # canonical_person_id is the go-forward person key (sha256 of the canonical LinkedIn
+        # URL) — it is returned AS person_id. The response's contact_id is kept for external
+        # back-compat and MIRRORS person_id. The physical contact_id column no longer exists.
+        pid = r.get("canonical_person_id") or r.get("person_id")
         return cls(
             title=r.get("title"),
             full_name=r.get("full_name"),
@@ -689,7 +692,7 @@ class PersonMatch(_Model):
             normalized_domain=r.get("normalized_domain"),
             contact_id=pid,
             person_id=pid,
-            source_platform=r.get("source_platform"),
+            source_platforms=r.get("source_platforms") or [],
         )
 
 

@@ -651,9 +651,13 @@ def subaward_history_by_uei(uei: str, limit: int) -> list[dict[str, Any]]:
 # drift without re-normalizing the stored column. Multiple rows can share a URL (327 URLs
 # recur — re-observations across runs/companies), so the lookup returns the (capped) set and
 # the route surfaces every distinct (title, company) rather than silently collapsing them.
+# source_platform is DROPPED from people (it moved wholesale to the person_source_platforms
+# sidecar). canonical_person_id is the go-forward person key (sha256 of the canonical LinkedIn
+# URL); person_id remains the representative legacy id. The person-by-linkedin lookup still keys
+# on the person_linkedin_url BTREE (unchanged, and now canonical).
 _PEOPLE_COLS = [
-    "person_id", "company_id", "normalized_domain", "full_name", "first_name",
-    "last_name", "title", "person_linkedin_url", "source_platform",
+    "canonical_person_id", "person_id", "company_id", "normalized_domain", "full_name",
+    "first_name", "last_name", "title", "person_linkedin_url",
 ]
 # A LinkedIn /in/ slug as stored: lowercase alnum + hyphen, with dot/underscore/%-encoding
 # tolerated. Validated before interpolation (defense-in-depth alongside _sql_str quoting).
@@ -694,20 +698,46 @@ def _linkedin_match_variants(slug: str) -> list[str]:
     return out
 
 
+def source_platforms_for(canonical_person_ids: list[str]) -> dict[str, list[str]]:
+    """Sidecar join: ``canonical_person_id`` → sorted distinct ``source_platform`` list. One
+    BTREE ``IN`` scan of ``person_source_platforms`` for the whole (tiny) id set. ``{}`` on an
+    empty input; an id with no sidecar row is simply absent from the returned map."""
+    ids = [i for i in dict.fromkeys(canonical_person_ids) if i]
+    if not ids:
+        return {}
+    in_list = ", ".join(_sql_str(v) for v in ids)
+    rows = _scan(
+        config.PERSON_SOURCE_PLATFORMS_URI,
+        columns=["canonical_person_id", "source_platform"],
+        filter=f"canonical_person_id IN ({in_list})",
+    )
+    out: dict[str, set[str]] = {}
+    for r in rows:
+        cid, sp = r.get("canonical_person_id"), r.get("source_platform")
+        if cid and sp:
+            out.setdefault(cid, set()).add(sp)
+    return {cid: sorted(sps) for cid, sps in out.items()}
+
+
 def person_by_linkedin_url(url: str) -> list[dict[str, Any]]:
     """BTREE point-lookup on ``people.person_linkedin_url`` → the person's row(s) (title +
     identity), via the canonical-variant ``IN`` predicate. ``[]`` when the URL is not a
     parseable LinkedIn ``/in/`` person URL OR resolves to no stored person. Capped
     in-process (NOT via ``scanner(limit=)`` — the pylance limit-before-filter planner
     under-returns; the per-URL fan-out is naturally tiny, so the filtered rows are fetched
-    whole and cut here)."""
+    whole and cut here). Each row is enriched with ``source_platforms`` (a list) from a
+    BITMAP-cheap join to the person_source_platforms sidecar on ``canonical_person_id``."""
     slug = linkedin_slug(url)
     if not slug or not valid_linkedin_slug(slug):
         return []
     in_list = ", ".join(_sql_str(v) for v in _linkedin_match_variants(slug))
     rows = _scan(config.PEOPLE_URI, columns=_PEOPLE_COLS,
                  filter=f"person_linkedin_url IN ({in_list})")
-    return rows[:_PEOPLE_HARD_CAP]
+    rows = rows[:_PEOPLE_HARD_CAP]
+    sp_map = source_platforms_for([r.get("canonical_person_id") for r in rows])
+    for r in rows:
+        r["source_platforms"] = sp_map.get(r.get("canonical_person_id"), [])
+    return rows
 
 
 # ── Map surface: compiled filter object → Lance scanner predicate → GeoJSON ──

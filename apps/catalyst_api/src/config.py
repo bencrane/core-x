@@ -106,11 +106,18 @@ SUBAWARDEE_CAPABILITY_PROFILES_URI = os.environ.get(
 CONTRACT_SUBAWARD_URI = os.environ.get(
     "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"
 )
-# GTM people SoR (active/people, 1 row/contact, BTREE person_linkedin_url + company_id +
-# normalized_domain). Carries the person's title (job title) + identity + the verbatim
-# person_linkedin_url. Backs the /api/v1/people/by-linkedin point-lookup.
+# GTM people SoR (active/people_canonical, 1 row per canonical person, BTREE canonical_person_id +
+# person_linkedin_url + company_id + normalized_domain). Carries the person's title (job title) +
+# identity + the verbatim person_linkedin_url. Backs the /api/v1/people/by-linkedin point-lookup.
+# source_platform now lives in the person_source_platforms sidecar, not on people.
 PEOPLE_URI = os.environ.get(
-    "PEOPLE_LANCE_URI", "s3://data-sink/active/people/"
+    "PEOPLE_LANCE_URI", "s3://data-sink/active/people_canonical/"
+)
+# Provenance sidecar: (canonical_person_id × source_platform × legacy_person_id). BITMAP on
+# source_platform, BTREE on canonical_person_id. The person-by-linkedin response joins this by
+# canonical_person_id to surface every source_platform a person was observed under.
+PERSON_SOURCE_PLATFORMS_URI = os.environ.get(
+    "PERSON_SOURCE_PLATFORMS_LANCE_URI", "s3://data-sink/active/person_source_platforms/"
 )
 
 # ── Map serving tables (the portal map read surface) ─────────────────────────

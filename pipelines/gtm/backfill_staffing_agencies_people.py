@@ -44,29 +44,23 @@ import os
 
 import duckdb
 import lance
-import pyarrow as pa
+
+from pipelines.gtm import _people_canonical as pc
 
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
-PEOPLE_URI = os.environ.get("GTM_PEOPLE_URI", f"{ACTIVE}/people/")
+# REPOINT: identity lands in the canonical people dataset; provenance routes to the sidecar.
+PEOPLE_URI = pc.PEOPLE_URI
 COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
 ARCHIVE = "s3://data-sink/archive/dex/entities"
 TARGET_PEOPLE = f"{ARCHIVE}/target_people.parquet"
 CLAY_FIND_PEOPLE = f"{ARCHIVE}/clay_find_people.parquet"
 COHORT_SOURCE = "dexarchive_staffing_agencies"
 SOURCE_PLATFORM = "dexarchive_staffing_agencies"
-REINDEX_BTREE = ["person_id", "company_id", "normalized_domain", "person_linkedin_url"]
+SOURCE_REF = "backfill:staffing_agencies_people"
 
 
 def _storage_options() -> dict:
-    ep = os.environ.get("R2_ENDPOINT")
-    if not ep and os.environ.get("R2_ACCOUNT_ID"):
-        ep = f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
-    return {
-        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
-        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
-        "endpoint": ep,
-        "region": "auto",
-    }
+    return pc.r2_storage_options()
 
 
 def _r2_host() -> str:
@@ -85,13 +79,11 @@ def main() -> int:
 
     so = _storage_options()
     people_ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    target_schema = people_ds.schema
     count_before = people_ds.count_rows()
 
     cohort = lance.dataset(COMPANIES_URI, storage_options=so).scanner(
         filter=f"source_platform = '{COHORT_SOURCE}'",
         columns=["company_id", "normalized_domain"]).to_table()
-    existing = people_ds.to_table(columns=["person_id"])
 
     con = duckdb.connect()
     con.execute("SET memory_limit='6GB';")
@@ -100,9 +92,10 @@ def main() -> int:
         SECRET '{os.environ['R2_SECRET_ACCESS_KEY']}', ENDPOINT '{_r2_host()}',
         URL_STYLE 'path', REGION 'auto');""")
     con.register("cohort", cohort)
-    con.register("existing_people", existing)
 
-    # ── project the cohort's target_people → the people schema, deduped on person_id ──
+    # ── project the cohort's target_people → the people contract (NO source_platform column;
+    #    provenance routes to the sidecar via land_people). Idempotency is on canonical_person_id
+    #    inside land_people's merge_insert, so no existing-people anti-join is needed here. ──
     cand = con.execute(f"""
         WITH tp AS (
             SELECT
@@ -129,57 +122,35 @@ def main() -> int:
             tp.first_name,
             tp.last_name,
             cfp.title                                 AS title,
-            tp.person_linkedin_url,
-            '{SOURCE_PLATFORM}'                       AS source_platform
+            tp.person_linkedin_url
         FROM tp
         JOIN cohort c        ON tp.company_id = c.company_id
         LEFT JOIN cfp        ON tp.clay_pid   = cfp.clay_pid
-        WHERE tp.person_id NOT IN (SELECT person_id FROM existing_people WHERE person_id IS NOT NULL)
         ORDER BY tp.company_id, tp.person_id
     """).to_arrow_table()
 
     n = cand.num_rows
-    firms = con.execute("SELECT count(DISTINCT company_id) FROM cohort").fetchone()[0]
     got_title = sum(1 for v in cand.column("title").to_pylist() if v)
-    _rule(f"staffing-agency people to add → active/people: {n:,}")
-    print(f"    source_platform   = '{SOURCE_PLATFORM}'", flush=True)
+    _rule(f"staffing-agency people → canonical people + sidecar: {n:,} candidate rows")
+    print(f"    source_platform   = '{SOURCE_PLATFORM}' (→ sidecar)", flush=True)
     print(f"    title populated   = {got_title:,} / {n:,} (via clay; rest NULL — enrichment later)", flush=True)
-    print(f"    people count      = {count_before:,} → {count_before + n:,}", flush=True)
+    print(f"    people count      = {count_before:,} (merge_insert on canonical_person_id — idempotent)", flush=True)
 
     if n == 0:
-        print("\nNothing to add — every person_id already present (idempotent no-op).", flush=True)
+        print("\nNothing to land — cohort empty.", flush=True)
         return 0
     if args.dry_run:
-        print(f"\n[dry-run] would append {n:,} rows to {PEOPLE_URI}. No write performed.", flush=True)
+        print(f"\n[dry-run] would land {n:,} candidate rows → {PEOPLE_URI} + sidecar. No write.", flush=True)
         for r in cand.slice(0, 8).to_pylist():
             print(f"      {str(r['full_name'])[:26]:26} dom={str(r['normalized_domain'])[:24]:24} "
                   f"title={str(r['title'])[:32]}", flush=True)
         return 0
 
-    # ── conform to the exact people schema (all mapped; NULL-fill any absent) ──
-    populated = {name: cand.column(name) for name in cand.schema.names}
-    arrays = [populated[f.name].cast(f.type) if f.name in populated else pa.nulls(n, f.type)
-              for f in target_schema]
-    new_tbl = pa.Table.from_arrays(arrays, schema=target_schema)
-
-    _rule(f"append → {PEOPLE_URI}")
-    lance.write_dataset(new_tbl, PEOPLE_URI, mode="append", storage_options=so)
+    _rule(f"land → {PEOPLE_URI} (identity) + sidecar (provenance)")
+    res = pc.land_people(cand, SOURCE_PLATFORM, SOURCE_REF, so)
     count_after = lance.dataset(PEOPLE_URI, storage_options=so).count_rows()
-    print(f"    rows: {count_before:,} → {count_after:,}  (+{count_after - count_before:,})", flush=True)
-    if count_after != count_before + n:
-        raise SystemExit(f"ABORT: expected +{n} rows, got +{count_after - count_before} — NOT reindexing.")
-
-    ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    for col in REINDEX_BTREE:
-        ds.create_scalar_index(col, index_type="BTREE")  # replace=True default → covers new rows
-        print(f"    BTREE ✓ {col} (rebuilt)", flush=True)
-
-    _rule("verify — new cohort resolvable + FK-linked")
-    ds = lance.dataset(PEOPLE_URI, storage_options=so)
-    got = ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
-                     columns=["person_id", "company_id", "normalized_domain"]).to_table()
-    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} people "
-          f"across {len(set(got.column('company_id').to_pylist())):,} firms", flush=True)
+    print(f"    people rows: {count_before:,} → {count_after:,}  (+{count_after - count_before:,})", flush=True)
+    print(f"    sidecar candidates landed (merge_insert, idempotent): {res['sidecar_candidates']:,}", flush=True)
     return 0
 
 
