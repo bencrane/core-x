@@ -1,5 +1,7 @@
 # EPA Multi-Media Compliance × SBA/PPP — Entity Unification Blueprint
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** The core methodology (no shared hard ID → `name_norm + zip5` bridge, precision-ordered tiers) is still correct and the recommended `crosswalk_ppp_epa.py` is still unbuilt. But the EPA-side inventory this doc audits ("11 datasets") is far behind: `epa_npdes_dmrs` is now **422,447,436 rows** (was 67,597,592 — FY1982→FY2026 backfill), `epa_to_sos_bridge` is **406,191** (was 356,903), and the EPA plane now includes a built facility spine (`spine_epa_facility` 3,240,591; `spine_epa_facility_360` 76-col) + a built legal-entity layer: **`epa_permits`** (1,686,705, `PERMIT_NAME`+`normalized_legal_name`), **`epa_case_defendants`** (200,159, `DEFENDANT_NAME`), **`epa_entity_compliance`** (142,933). The §1.1 "gap" that `CASE_FACILITIES` is not a standing dataset is now closed by the built **`crosswalk_epa_registry_enforcement`** (161,173 rows, `REGISTRY_ID ↔ ACTIVITY_ID`) — Recommendation #5 is superseded. Identity finding UNCHANGED and load-bearing: NO EIN/UEI/DUNS/CAGE/LEI on either side; EPA→external resolution is name-based to Secretary-of-State via `epa_to_sos_bridge`, never to SAM's `uei`. Read `EPA_DATA_PLANE_STATE.md` first.
+
 Read-only data-forensics audit over `s3://data-sink/active/`. Pairs the EPA ECHO/FRS
 compliance layer (11 datasets) to the SBA Paycheck Protection Program credit spine (`ppp`)
 to determine whether — and how — the two can be united into one queryable entity surface.
@@ -93,6 +95,7 @@ All under `s3://data-sink/active/`. Built by `pipelines/ingest_epa/materialize_e
 - **Gap:** `epa_case_enforcements` / `epa_case_milestones` key on `ACTIVITY_ID` / `CASE_NUMBER`
   and link to `REGISTRY_ID` only through `CASE_FACILITIES`, which is **not** materialized as a
   standing dataset (it is read transiently inside the bridge build).
+  > **[SUPERSEDED 2026-07-02: gap closed. `crosswalk_epa_registry_enforcement` (161,173 rows, BTREE `REGISTRY_ID`+`ACTIVITY_ID`) is a built standing `ACTIVITY_ID ↔ REGISTRY_ID` edge; `rollup_epa_enforcement` (55,393) rolls case penalties to the facility grain. `epa_case_defendants` (200,159) is the standing defendant-name node.]**
 
 **EPA carries zero officers, zero POCs, and no EIN/UEI/DUNS/LEI** — confirmed across all 11
 schemas.
@@ -223,6 +226,7 @@ name-resolution**:
 5. **Close the EPA enforcement gap** if cases matter: materialize `CASE_FACILITIES`
    (`REGISTRY_ID` ↔ `ACTIVITY_ID`) as a standing dataset so `epa_case_enforcements` /
    `epa_case_milestones` attach to the REGISTRY_ID hub without a transient bridge-build read.
+   > **[SUPERSEDED 2026-07-02: DONE. Built as `crosswalk_epa_registry_enforcement` (161,173 rows, both keys BTREE). No longer an open recommendation.]**
 
 ## 7. Caveats (verified, not assumed)
 

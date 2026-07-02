@@ -1,5 +1,7 @@
 # EPA Legal Entities (Permits & Defendants) — Materialization Diagnostic & Build Plan
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** THIS PLAN WAS EXECUTED. Both name nodes are now built and live under `s3://data-sink/active/`: **`epa_permits`** = **1,686,705 rows** (27 cols; `PERMIT_NAME` ~683,453 distinct, `normalized_legal_name` ~620,223 distinct, keyed `REGISTRY_ID`/`EXTERNAL_PERMIT_NMBR`/`NPDES_ID`/`ACTIVITY_ID`, 1,013,316 distinct `REGISTRY_ID`) and **`epa_case_defendants`** = **200,159 rows** (`DEFENDANT_NAME` 160,484 distinct, keyed `ACTIVITY_ID`+`CASE_NUMBER`). NOTE: the defendant node shipped as **`epa_case_defendants`** at the raw `CASE_DEFENDANTS` grain (5 cols: `ACTIVITY_ID, CASE_NUMBER, DEFENDANT_NAME, NAMED_IN_COMPLAINT_FLAG, NAMED_IN_SETTLEMENT_FLAG`) — NOT as the joined `epa_defendants` (RID-attached, cartesian) artifact this plan's §2.2 specified; that joined variant does **not** exist in R2. Every "gate / KeyCount=0 / does-not-exist" claim below is HISTORICAL. Downstream GTM compliance summaries were also built on top: `epa_permit_compliance` (156,014), `epa_permit_parameter_compliance` (1,884,617), `epa_entity_compliance` (142,933) — see `EPA_NPDES_GTM_COMPLIANCE_LAYER.md`. Entity resolution target is Secretary-of-State (`sos_company_id` + `normalized_legal_name`) via `epa_to_sos_bridge` (406,191 rows) — there is **NO** UEI/DUNS/LEI on any EPA entity dataset; it is NOT linked to the SAM.gov federal-contractor identity. Read `EPA_DATA_PLANE_STATE.md` first for the full canonical map.
+
 Remediation spec for an architectural gap in the EPA data plane: the high-value corporate
 names **`PERMIT_NAME`** (ICIS-NPDES permittees) and **`DEFENDANT_NAME`** (federal enforcement
 defendants) — and their facility addresses — were never materialized into the active LanceDB
@@ -9,6 +11,8 @@ dropped. Downstream entity-resolution bridges cannot random-access them.
 
 This document delivers **Phase 1 (live diagnostic)** and **Phase 2 (schema + build plan)** only.
 The Python pipeline is intentionally **not** written here — it is gated on review of this plan.
+
+> **[SUPERSEDED 2026-07-02: plan executed — the pipeline was written and run. `epa_permits` = 1,686,705 rows and `epa_case_defendants` = 200,159 rows are live in `active/`. The review gate is closed.]**
 
 **Provenance / attestation.** Every figure below is a **live, read-only read of R2**, not a
 recon estimate. Harness: `boto3` central-directory random-access extract of single ZIP members
@@ -25,7 +29,7 @@ As-of: landing archives written **2026-06-03 00:39–00:47 UTC**; audit date **2
 
 | Verdict | Detail |
 |---|---|
-| **Gap confirmed (both ends)** | 🛑 `active/epa_permits/` and `active/epa_defendants/` **do not exist** in R2 (live `list_objects_v2`, `KeyCount=0`). The four source CSVs are present only inside `npdes_downloads.zip` / `case_downloads.zip`. The sibling event tables they must bind (`epa_npdes_dmrs`, `epa_case_enforcements`) **are** live. |
+| **Gap confirmed (both ends)** | 🛑 `active/epa_permits/` and `active/epa_defendants/` **do not exist** in R2 (live `list_objects_v2`, `KeyCount=0`). The four source CSVs are present only inside `npdes_downloads.zip` / `case_downloads.zip`. The sibling event tables they must bind (`epa_npdes_dmrs`, `epa_case_enforcements`) **are** live. <br>**[SUPERSEDED 2026-07-02: gap closed. `epa_permits` = 1,686,705 rows is now built and live. The defendant node landed as `epa_case_defendants` = 200,159 rows (raw CASE_DEFENDANTS grain), not the joined `epa_defendants` variant.]** |
 | **Source integrity** | ✅ All four members extracted clean. `PERMIT_NAME` 97.22% fill, `DEFENDANT_NAME` ~100%, both facility `REGISTRY_ID` sources ≥99.5%. |
 | **Permit→REGISTRY_ID join** | ✅ **Clean 1:1.** `ICIS_FACILITIES.NPDES_ID` is unique (max 1 row/NPDES_ID, 0 dupes). **99.53%** of permit rows resolve to a non-null `REGISTRY_ID`. |
 | **Defendant→REGISTRY_ID join** | ⚠️ **Many-to-many** (`ACTIVITY_ID` carries ≤852 defendants and ≤860 facilities). No defendant→facility FK exists in ECHO — the join is a per-case cartesian. Contained in practice (311,594 rows), but grain must be declared, not assumed. |

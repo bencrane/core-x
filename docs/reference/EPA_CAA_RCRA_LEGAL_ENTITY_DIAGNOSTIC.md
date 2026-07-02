@@ -1,5 +1,7 @@
 # EPA CAA (Air) & RCRA (Hazardous Waste) Legal Entities — Orphaned-Name Diagnostic
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** This diagnostic's REMEDIATION WAS EXECUTED. Both recommended name nodes (§3) are now built and live: **`epa_air_facilities`** = **278,944 rows** (20 cols; `REGISTRY_ID`, `PGM_SYS_ID`, `FACILITY_NAME`→`normalized_facility_name`) and **`epa_rcra_handlers`** = **1,578,504 rows** (17 cols; `REGISTRY_ID`, `RCRA_ID`, `normalized_facility_name`). Row counts match this doc's projections to the row. The "orphaned" verdict is now HISTORICAL for both. Read `EPA_DATA_PLANE_STATE.md` first.
+
 Probe of the two remaining high-value EPA regulatory archives — `ICIS-AIR_downloads.zip` (Clean Air
 Act) and `rcra_downloads.zip` (RCRAInfo hazardous waste) — to determine whether their primary
 legal/operating **corporate names** were orphaned in landing the same way the NPDES permit /

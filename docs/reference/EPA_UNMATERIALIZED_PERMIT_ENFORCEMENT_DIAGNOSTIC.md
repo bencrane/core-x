@@ -1,5 +1,7 @@
 # EPA Unmaterialized Planes — Permits, Co-Permittees, Owner/Operator & the Enforcement/Defendant Matrix
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** This diagnostic's central "unmaterialized" premise is now PARTIALLY FALSE for the two highest-value planes. **`epa_permits`** (permittee legal name) is BUILT = **1,686,705 rows** (`PERMIT_NAME` ~683,453 distinct, `normalized_legal_name` ~620,223 distinct). The **defendant name** plane is BUILT as **`epa_case_defendants`** = **200,159 rows** (`DEFENDANT_NAME` 160,484 distinct) — landed at the raw CASE_DEFENDANTS grain, NOT as the joined `epa_defendants` this doc anticipated. The whole "13 `epa_*` datasets" §1 baseline is far behind: the active plane is now ~126 `epa_*` source datasets PLUS the built facility spine (`spine_epa_facility` 3,240,591×30, `spine_epa_facility_360` 3,240,591×76, 6 `crosswalk_epa_registry_*`, 5 `rollup_epa_*`) and the legal-entity layer (`epa_permits`, `epa_case_defendants`, `epa_entity_compliance` 142,933, `epa_to_sos_bridge` 406,191). What REMAINS genuinely unmaterialized (still accurate): co-permittee umbrella relation, owner/operator history (no staged carrier), `CASE_ENFORCEMENT_TYPE` civil/criminal classifier, the case-snowflake penalty/conclusion/statute siblings, and the program-level formal/informal enforcement action tables. Read `EPA_DATA_PLANE_STATE.md` first.
+
 Read-only inventory + schema diagnostic of the EPA data plane, scoped to three planes the active
 `REGISTRY_ID` hub does **not** carry: **(1)** permit-level legal entity names, co-permittees, and
 owner/operator history; **(2)** the formal enforcement / civil-administrative / criminal-judicial
@@ -25,10 +27,10 @@ Prior attested recon this extends (not re-litigated here): `EPA_LEGAL_ENTITY_MAT
 
 | Plane | Carrier in landing zone | Materialized? | Verdict |
 |---|---|---|---|
-| **Permittee legal name** | `npdes_downloads.zip::ICIS_PERMITS.PERMIT_NAME` | 🛑 **No** — planned `epa_permits`, live `KeyCount=0` | Orphaned (transient-only in `build_bridge`). |
+| **Permittee legal name** | `npdes_downloads.zip::ICIS_PERMITS.PERMIT_NAME` | 🛑 **No** — planned `epa_permits`, live `KeyCount=0` | Orphaned (transient-only in `build_bridge`). **[SUPERSEDED 2026-07-02: now built — `epa_permits` = 1,686,705 rows]** |
 | **Co-permittees (general-permit umbrella)** | `npdes_master_general_permits.zip::ICIS_MASTER_GENERAL_PERMITS` + `ICIS_PERMITS.MASTER_EXTERNAL_PERMIT_NMBR` | 🛑 **No** — neither master table nor covered-permit node exists | Umbrella↔covered relation fully unmaterialized. |
 | **Facility owner/operator history** | **none staged** | 🛑 **No carrier** | **Un-landed, not merely unmaterialized.** No owner/operator entity+date table exists in any EPA bundle in R2. |
-| **Federal enforcement — defendant name** | `case_downloads.zip::CASE_DEFENDANTS` | 🛑 **No** — planned `epa_defendants`, live `KeyCount=0` | **Flat UPPERCASE string**; no address, no corporate id. |
+| **Federal enforcement — defendant name** | `case_downloads.zip::CASE_DEFENDANTS` | 🛑 **No** — planned `epa_defendants`, live `KeyCount=0` | **Flat UPPERCASE string**; no address, no corporate id. **[SUPERSEDED 2026-07-02: now built — `epa_case_defendants` = 200,159 rows (raw CASE_DEFENDANTS grain: ACTIVITY_ID, CASE_NUMBER, DEFENDANT_NAME, +2 flags). The RID-attached joined `epa_defendants` variant was NOT built.]** |
 | **Civil-admin / civil-judicial / criminal classifier** | `case_downloads.zip::CASE_ENFORCEMENT_TYPE` (121 codes) | 🛑 **No** | **Criminal cases cannot be isolated from the active SoR.** |
 | **Program-level enforcement actions (NPDES/Air/RCRA)** | 6 untouched `*_FORMAL/INFORMAL/ENFORCEMENT*` members | 🛑 **No** (only the federal `CASE_ENFORCEMENTS` header is active) | 6.7 M+ action rows orphaned; most directly `REGISTRY_ID`-bindable. |
 
@@ -39,6 +41,8 @@ enforcement payload tables** left in landing.
 ---
 
 ## 1. Active SoR baseline (live `pylance`, 2026-06-05)
+
+> **[SUPERSEDED 2026-07-02: this 13-dataset snapshot is stale. The active EPA plane is now ~126 `epa_*` source datasets plus the built facility spine + legal-entity layer. `epa_npdes_dmrs` shown here as 320.5M has since been backfilled to 422,447,436 (FY1982→FY2026). `epa_to_sos_bridge` shown as 356,903 is now 406,191. See `EPA_DATA_PLANE_STATE.md` for the current inventory.]**
 
 13 `epa_*` datasets exist under `s3://data-sink/active/`. This is the materialized universe the deltas below are measured against.
 
@@ -62,6 +66,8 @@ enforcement payload tables** left in landing.
 `epa_owner_operators`, `epa_co_permittees`, `epa_npdes_formal_actions`, `epa_npdes_informal_actions`,
 `epa_criminal_cases`.
 
+> **[SUPERSEDED 2026-07-02: `epa_permits` (1,686,705) is now built; the defendant name plane is built as `epa_case_defendants` (200,159). Still genuinely absent: `epa_defendants` (the joined variant), `epa_owner_operators`, `epa_co_permittees`, `epa_npdes_formal_actions`, `epa_npdes_informal_actions`, `epa_criminal_cases`.]**
+
 **Hub routing — `epa_program_links.PGM_SYS_ACRNM` → `REGISTRY_ID` (live):**
 
 | ACRNM | links | distinct `PGM_SYS_ID` | distinct `REGISTRY_ID` | Binds which orphan |
@@ -79,6 +85,8 @@ has **no route to `REGISTRY_ID`** — AFS is superseded by the `AIR` (ICIS-AIR) 
 ## 2. The Unmaterialized Permit Space
 
 ### 2.1 Permittee legal name — `ICIS_PERMITS` (planned `epa_permits`, not built)
+
+> **[SUPERSEDED 2026-07-02: BUILT. `epa_permits` = 1,686,705 rows, 27 cols, keyed `REGISTRY_ID`/`EXTERNAL_PERMIT_NMBR`/`NPDES_ID`/`ACTIVITY_ID`, carries `PERMIT_NAME` + `normalized_legal_name`. 1,013,316 distinct `REGISTRY_ID`.]**
 
 Confirmed `KeyCount=0`. Full grain/fill/bind in `EPA_LEGAL_ENTITY_MATERIALIZATION_PLAN.md`; summary:
 **1,694,646** permit-version rows · `PERMIT_NAME` **97.22%** → **1,013,316** distinct `REGISTRY_ID`.
@@ -131,7 +139,7 @@ the penalties detail, and the statutory citations are all in unmaterialized sibl
 
 | Member (orphaned) | Rows | Key(s) | Payload / why it matters |
 |---|--:|---|---|
-| `CASE_DEFENDANTS` | **200,159** | `ACTIVITY_ID`+`CASE_NUMBER` | **`DEFENDANT_NAME` 100% (160,484 distinct)** — the defendant legal-entity names. → planned `epa_defendants`. |
+| `CASE_DEFENDANTS` | **200,159** | `ACTIVITY_ID`+`CASE_NUMBER` | **`DEFENDANT_NAME` 100% (160,484 distinct)** — the defendant legal-entity names. → planned `epa_defendants`. **[SUPERSEDED 2026-07-02: built as `epa_case_defendants` = 200,159 rows at this raw grain]** |
 | `CASE_FACILITIES` | **202,509** | `ACTIVITY_ID` | `REGISTRY_ID` 99.60% (113,414 distinct) + address — the **only** corporate-id/geo carrier for a case. |
 | **`CASE_ENFORCEMENT_TYPE`** | **143,406** | `ACTIVITY_ID`+`CASE_NUMBER` | **`ENF_TYPE_CODE`/`_DESC` = 121 distinct** — the civil-administrative / civil-judicial / **criminal** classifier. |
 | `CASE_ENFORCEMENT_CONCLUSIONS` | **126,160** | `ACTIVITY_ID`,`ENF_CONCLUSION_ID` | settlement lodged/entered dates, `PRIMARY_LAW`, `FED_PENALTY_ASSESSED_AMT`, conclusion captions. |
