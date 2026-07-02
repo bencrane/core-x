@@ -51,12 +51,16 @@ COMPANY_SOURCE_PLATFORMS_URI = os.environ.get(
 # Sidecar idempotency key (grain = one row per company × source).
 SIDECAR_KEY = ["company_id", "source_platform"]
 
-# Sidecar Arrow schema (matches the built dataset). timestamp(us, UTC).
+# Sidecar Arrow schema — MUST match the committed dataset exactly. The coordinator built
+# company_source_platforms with first_seen_at in America/New_York; a UTC field type here is
+# rejected on append (Lance schema check is tz-strict, verified on the person sidecar twin). tz
+# is display metadata only — the stored instant is identical — so the schema is aligned to the
+# built dataset, not rebuilt.
 SIDECAR_SCHEMA = pa.schema(
     [
         pa.field("company_id", pa.string()),
         pa.field("source_platform", pa.string()),
-        pa.field("first_seen_at", pa.timestamp("us", tz="UTC")),
+        pa.field("first_seen_at", pa.timestamp("us", tz="America/New_York")),
         pa.field("source_ref", pa.string()),
     ]
 )
