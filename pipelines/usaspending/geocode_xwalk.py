@@ -48,6 +48,14 @@ FIRMO_URI = f"{ACTIVE}/firmographics_blitz/"
 SAM_DOMAINS_URI = f"{ACTIVE}/sam_master_domains/"
 EPG_URI = f"{ACTIVE}/entity_profile_gold/"
 WINDOW_DAYS = int(os.environ.get("GEOCODE_WINDOW_DAYS", "90"))
+# ── bedrock lanes (deep, all-time ≥ FLOOR — the migration off the rolling fresh feeds) ──
+# Prime recipients read the FPDS canonical (reconciled 2021+); subawardees read subaward_search (FSRS
+# bulk mirror — addresses live under sub_legal_entity_*, verified live); DSBS is the award-independent
+# registry universe. All feed the SAME accretive crosswalk.
+CANONICAL_URI = os.environ.get("GEOCODE_CANONICAL_URI", f"{ACTIVE}/usaspending_fpds_canonical_txn/")
+SUBAWARD_SEARCH_URI = os.environ.get("GEOCODE_SUBAWARD_SEARCH_URI", f"{ACTIVE}/usaspending/subaward_search/")
+DSBS_XWALK_URI = os.environ.get("GEOCODE_DSBS_XWALK_URI", f"{ACTIVE}/crosswalk_dsbs_sam/")
+FLOOR = os.environ.get("GEOCODE_FLOOR", "2021-01-01")  # all-time floor for the date-scoped bedrock lanes
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["addr_hash"]
 
@@ -202,6 +210,105 @@ def _worklist_epg_federal(so) -> list[tuple]:
     return rows
 
 
+def _worklist_prime_bedrock(so) -> list[tuple]:
+    """Distinct (addr_hash, street, city, state, zip5) over PRIME recipient addresses on the FPDS
+    canonical bedrock (usaspending_fpds_canonical_txn) since FLOOR — the deep, reconciled replacement
+    for the rolling-90d fresh-feed prime lane. action_date is a typed DATE ⇒ pushed down to Lance.
+    One row per addr_hash."""
+    import lance
+    c = lance.dataset(CANONICAL_URI, storage_options=so)
+    con = _duck()
+    con.register("c", c.scanner(
+        columns=["recipient_address_line_1", "recipient_city_name", "recipient_state_code",
+                 "recipient_zip_4_code", "action_date"],
+        filter=f"action_date >= DATE '{FLOOR}'").to_reader())
+    hexpr = addr_hash_sql("street", "city", "state", "zip")
+    sql = f"""
+    WITH a AS (
+        SELECT recipient_address_line_1 AS street, recipient_city_name AS city,
+               recipient_state_code AS state, recipient_zip_4_code AS zip FROM c),
+    h AS (
+        SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
+               upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
+        FROM a
+        WHERE street IS NOT NULL AND length(trim(street)) > 0
+          AND state IS NOT NULL AND length(trim(state)) > 0)
+    SELECT addr_hash, any_value(street) AS street, any_value(city) AS city,
+           any_value(state) AS state, any_value(zip5) AS zip5
+    FROM h GROUP BY addr_hash
+    """
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return rows
+
+
+def _worklist_subaward_bedrock(so) -> list[tuple]:
+    """Distinct (addr_hash, street, city, state, zip5) over SUBAWARDEE legal-entity addresses on the
+    subaward_search bedrock (FSRS bulk mirror, ~9.8M rows) since FLOOR — the deep replacement for the
+    rolling-90d fresh-feed sub lane. Addresses live under sub_legal_entity_* (verified live; NOT
+    subawardee_*). sub_action_date is TRY_CAST in DuckDB (type-agnostic — no Lance-pushdown gamble on
+    the bulk mirror's date typing). One row per addr_hash."""
+    import lance
+    s = lance.dataset(SUBAWARD_SEARCH_URI, storage_options=so)
+    con = _duck()
+    con.register("s", s.scanner(
+        columns=["sub_legal_entity_address_line1", "sub_legal_entity_city_name",
+                 "sub_legal_entity_state_code", "sub_legal_entity_zip5", "sub_action_date"]).to_reader())
+    hexpr = addr_hash_sql("street", "city", "state", "zip")
+    sql = f"""
+    WITH a AS (
+        SELECT sub_legal_entity_address_line1 AS street, sub_legal_entity_city_name AS city,
+               sub_legal_entity_state_code AS state, sub_legal_entity_zip5 AS zip
+        FROM s WHERE TRY_CAST(sub_action_date AS DATE) >= DATE '{FLOOR}'),
+    h AS (
+        SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
+               upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
+        FROM a
+        WHERE street IS NOT NULL AND length(trim(street)) > 0
+          AND state IS NOT NULL AND length(trim(state)) > 0)
+    SELECT addr_hash, any_value(street) AS street, any_value(city) AS city,
+           any_value(state) AS state, any_value(zip5) AS zip5
+    FROM h GROUP BY addr_hash
+    """
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return rows
+
+
+def _worklist_dsbs(so) -> list[tuple]:
+    """Distinct (addr_hash, street, city, state, zip5) for EVERY DSBS SAM.gov entity — award-INDEPENDENT.
+    crosswalk_dsbs_sam (~67k firms, 1/uei) ↦ entity_profile_gold.physical_address_*. No date filter
+    (a registry universe, not award activity). One row per addr_hash."""
+    import lance
+    dx = lance.dataset(DSBS_XWALK_URI, storage_options=so)
+    epg = lance.dataset(EPG_URI, storage_options=so)
+    con = _duck()
+    con.register("dx", dx.scanner(columns=["uei"]).to_reader())
+    con.register("epg", epg.scanner(columns=[
+        "uei", "physical_address_line_1", "physical_address_city",
+        "physical_address_state", "physical_address_zip_postal_code"]).to_reader())
+    hexpr = addr_hash_sql("street", "city", "state", "zip")
+    sql = f"""
+    WITH ueis AS (SELECT DISTINCT uei FROM dx WHERE uei IS NOT NULL AND length(trim(uei)) > 0),
+    a AS (
+        SELECT physical_address_line_1 AS street, physical_address_city AS city,
+               physical_address_state AS state, physical_address_zip_postal_code AS zip
+        FROM epg WHERE uei IN (SELECT uei FROM ueis)),
+    h AS (
+        SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
+               upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
+        FROM a
+        WHERE street IS NOT NULL AND length(trim(street)) > 0
+          AND state IS NOT NULL AND length(trim(state)) > 0)
+    SELECT addr_hash, any_value(street) AS street, any_value(city) AS city,
+           any_value(state) AS state, any_value(zip5) AS zip5
+    FROM h GROUP BY addr_hash
+    """
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return rows
+
+
 def _existing_hashes(so) -> set[str]:
     import lance
     try:
@@ -288,7 +395,7 @@ def _record_run(*, feed, window_days, worklist, already, geocoded, matched, tabl
         log(f"WARN: ops.* write failed: {exc}")
 
 
-def build(window_days: int = WINDOW_DAYS, source: str = "awards"):
+def build(window_days: int = WINDOW_DAYS, source: str = "awards", dry_run: bool = False):
     import lance
     started = dt.datetime.now(dt.timezone.utc)
     so = _r2_so()
@@ -306,8 +413,18 @@ def build(window_days: int = WINDOW_DAYS, source: str = "awards"):
         elif source == "epg_federal":
             worklist = _worklist_epg_federal(so)
             src = "entity_profile_gold has_federal_awards (all-time federal contractors)"
+        elif source == "prime":
+            worklist = _worklist_prime_bedrock(so)
+            src = f"FPDS canonical prime recipients ≥ {FLOOR} (bedrock)"
+        elif source == "subaward":
+            worklist = _worklist_subaward_bedrock(so)
+            src = f"subaward_search subawardee legal-entity ≥ {FLOOR} (bedrock)"
+        elif source == "dsbs":
+            worklist = _worklist_dsbs(so)
+            src = "all DSBS SAM.gov entities (crosswalk_dsbs_sam ↦ entity_profile_gold)"
         else:
-            raise ValueError(f"unknown source {source!r} (awards|blitz_sam|epg_federal)")
+            raise ValueError(
+                f"unknown source {source!r} (awards|blitz_sam|epg_federal|prime|subaward|dsbs)")
         worklist_n = len(worklist)
         log(f"worklist: {worklist_n:,} distinct addresses ({src})")
         existing = _existing_hashes(so)
@@ -315,6 +432,13 @@ def build(window_days: int = WINDOW_DAYS, source: str = "awards"):
         new = [r for r in worklist if r[0] not in existing]
         geocoded_n = len(new)
         log(f"already in xwalk: {already_n:,} · new to geocode: {geocoded_n:,}")
+
+        if dry_run:  # sizing only — no Census calls, no R2 write
+            status = "dry_run"
+            log(f"DRY RUN — no geocode, no write. gap={geocoded_n:,} "
+                f"(worklist {worklist_n:,} − existing {already_n:,})")
+            return {"source": source, "dry_run": True, "worklist": worklist_n,
+                    "already": already_n, "new": geocoded_n}
 
         dataset_exists = bool(existing)
         if new:
@@ -415,19 +539,29 @@ def init_ops():
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "verify"
-    arg = int(sys.argv[2]) if len(sys.argv) > 2 else WINDOW_DAYS
     if cmd == "build":
+        arg = int(sys.argv[2]) if len(sys.argv) > 2 else WINDOW_DAYS
         print(json.dumps(build(window_days=arg), indent=2, default=str))
     elif cmd == "build_blitz":
         print(json.dumps(build(source="blitz_sam"), indent=2, default=str))
     elif cmd == "build_epg_federal":
         print(json.dumps(build(source="epg_federal"), indent=2, default=str))
+    elif cmd == "build_prime":
+        print(json.dumps(build(source="prime"), indent=2, default=str))
+    elif cmd == "build_subaward":
+        print(json.dumps(build(source="subaward"), indent=2, default=str))
+    elif cmd == "build_dsbs":
+        print(json.dumps(build(source="dsbs"), indent=2, default=str))
+    elif cmd == "size":  # read-only sizing dry-run: size <prime|subaward|dsbs|awards|...>
+        src = sys.argv[2] if len(sys.argv) > 2 else "prime"
+        print(json.dumps(build(source=src, dry_run=True), indent=2, default=str))
     elif cmd == "verify":
         verify()
     elif cmd == "init_ops":
         init_ops()
     else:
-        print(f"unknown command: {cmd} (init_ops|build|build_blitz|build_epg_federal|verify)")
+        print(f"unknown command: {cmd} (init_ops|build|build_blitz|build_epg_federal|"
+              f"build_prime|build_subaward|build_dsbs|size <source>|verify)")
         sys.exit(2)
 
 
