@@ -59,10 +59,11 @@ PROFILE_WIDE_URI = os.environ.get(
 ).rstrip("/") + "/"
 WIDE_FLOOR = os.environ.get("SUBAWARDEE_WORK_PROFILE_WIDE_FLOOR", "2021-01-01")
 # FSRS subaward_amount is notoriously dirty (a $39.16T mis-keyed line verified 2026-07-01).
-# Sub-rail amounts with |value| above this are NULLed at ingest — a mis-key is an UNKNOWN,
-# not a capped value. Counts, dates, and medians are unaffected. FPDS prime obligations are
-# a different (clean) feed and are not guarded.
-AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "1e9"))
+# Only GROSS mis-keys are NULLed: the threshold sits in the empty gap between the largest REAL
+# line (~$5.5B) and the $39.16T impossible one, so plausible $1–5.5B megasubs are KEPT. A mis-key
+# is an UNKNOWN, not a capped value. Counts, dates, and medians are unaffected. FPDS prime
+# obligations are a different (clean) feed and are not guarded.
+AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "2e10"))  # $20B
 
 SUB_FRESH_URI = os.environ.get(
     "USASPENDING_API_SUBAWARD_FRESH_URI",

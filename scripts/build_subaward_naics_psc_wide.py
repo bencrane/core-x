@@ -40,9 +40,11 @@ FPDS = f"{A}/usaspending/transaction_search_fpds/"
 OUT = os.environ.get("SUBAWARD_NAICS_PSC_WIDE_URI", f"{A}/subaward_naics_psc_wide").rstrip("/") + "/"
 FLOOR = os.environ.get("SUBAWARD_NAICS_PSC_WIDE_FLOOR", "2021-01-01")
 # FSRS subaward_amount is notoriously dirty — a single mis-keyed line ($39.16T, verified
-# 2026-07-01) dominated every dollar sum. Amounts with |value| above this are NULLed at build
-# time (a mis-key is an UNKNOWN, not a capped value); counts/medians are unaffected.
-AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "1e9"))
+# 2026-07-01) dominated every dollar sum. Only GROSS mis-keys are NULLed: the threshold sits in
+# the empty gap between the largest REAL line (~$5.5B, a Lockheed megasub) and the $39.16T
+# impossible one — so all plausible $1–5.5B megasubs are KEPT (exactly one line exceeds it today).
+# A mis-key is an UNKNOWN, not a capped value → NULL, not clamp; counts/medians are unaffected.
+AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "2e10"))  # $20B
 FPDS_PSC_FLOOR = os.environ.get("SNPW_FPDS_FLOOR", "2018-01-01")  # bound the FPDS scan; active 2021+ awards land after this
 BATCH = 4000
 INDEX_COLS = ["subawardee_uei", "prime_awardee_uei", "prime_award_unique_key",
