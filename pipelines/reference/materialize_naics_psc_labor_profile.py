@@ -89,7 +89,7 @@ MODEL = "claude-sonnet-4-6"
 # subagents (the naics_psc_deliverable house precedent; session-covered, zero API billing).
 AGENT_MODEL_ID = "claude-opus-4-8:in-session"
 PROMPT_VERSION = "labor_profile_v2"
-SOURCE_VINTAGE = "govcon_active_awards_2026-07-01"
+SOURCE_VINTAGE = os.environ.get("NPLP_SOURCE_VINTAGE", "govcon_active_awards_2026-07-01")
 DATA_STORAGE_VERSION = "2.1"
 PSC_PER_CALL = 20
 TOP_N_CANDIDATES = 40
@@ -171,10 +171,35 @@ def _ds(name_or_uri: str):
     return lance.dataset(uri, storage_options=_so())
 
 
-def _write(tbl, uri: str, btree: list[str], bitmap: list[str]) -> list[str]:
+def _write(tbl, uri: str, btree: list[str], bitmap: list[str],
+           upsert_vintage: str | None = None) -> list[str]:
     import lance
-    lance.write_dataset(tbl, uri, mode="overwrite", data_storage_version=DATA_STORAGE_VERSION,
-                        storage_options=_so())
+    existing = None
+    if upsert_vintage is not None:
+        try:
+            existing = lance.dataset(uri, storage_options=_so())
+        except Exception:  # noqa: BLE001 — dataset does not exist yet; fall through to overwrite
+            existing = None
+    if existing is not None:
+        # Idempotent vintage-scoped upsert: drop any prior rows of THIS source_vintage, then append
+        # new fragments. Other vintages (e.g. the govcon lane) are untouched; re-runs of the same
+        # vintage are safe (delete-then-append, never duplicate). Fail loud on schema drift so a
+        # missing column (e.g. an un-backfilled psc_category) can never be silently dropped.
+        want = list(existing.schema.names)
+        have = set(tbl.schema.names)
+        missing = [c for c in want if c not in have]
+        extra = [c for c in tbl.schema.names if c not in want]
+        if missing or extra:
+            raise RuntimeError(
+                f"{uri}: append schema mismatch — SoR needs {missing} absent from new rows; "
+                f"new rows carry {extra} absent from SoR. Reconcile the schema (e.g. run the "
+                f"psc_category backfill) before appending vintage {upsert_vintage!r}.")
+        existing.delete(f"source_vintage = '{upsert_vintage}'")
+        lance.write_dataset(tbl.select(want), uri, mode="append",
+                            data_storage_version=DATA_STORAGE_VERSION, storage_options=_so())
+    else:
+        lance.write_dataset(tbl, uri, mode="overwrite", data_storage_version=DATA_STORAGE_VERSION,
+                            storage_options=_so())
     ds = lance.dataset(uri, storage_options=_so())
     present = {f.name for f in ds.schema}
     built = []
@@ -255,18 +280,41 @@ def build_manifest() -> dict:
         if "naics_code" not in wcols or "psc_code" not in wcols:
             raise RuntimeError(f"{worklist_csv}: worklist CSV must have naics_code + psc_code columns")
         nc, pc = wcols["naics_code"], wcols["psc_code"]
-        ndc = wcols.get("naics_description")
-        pdc = wcols.get("psc_description")
+        # Directive field-map (first present column wins; sane fallback otherwise):
+        #   award_naics_desc <- prime_naics_description | naics_description
+        #   award_psc_desc   <- prime_psc_description   | psc_name | psc_description
+        #   n_awards         <- n_subawards | n_awards | 1
+        #   total_dollars    <- subaward_dollars | total_dollars_obligated | 0.0
+        def _first(*names):
+            return next((wcols[n] for n in names if n in wcols), None)
+        ndc_c = _first("prime_naics_description", "naics_description")
+        pdc_c = _first("prime_psc_description", "psc_name", "psc_description")
+        naw_c = _first("n_subawards", "n_awards")
+        dol_c = _first("subaward_dollars", "total_dollars_obligated")
+        ndc = f'any_value("{ndc_c}")' if ndc_c else "CAST(NULL AS VARCHAR)"
+        pdc = f'any_value("{pdc_c}")' if pdc_c else "CAST(NULL AS VARCHAR)"
+        naw = f'COALESCE(any_value(TRY_CAST("{naw_c}" AS BIGINT)), 1)' if naw_c else "1"
+        dol = f'COALESCE(any_value(TRY_CAST("{dol_c}" AS DOUBLE)), 0.0)' if dol_c else "0.0"
+        # Optional lane filter (NPLP_LANE=service|product): prefer an explicit psc_is_service
+        # column, else derive from PSC code structure (numeric-leading = product, alpha = service).
+        where = [f'"{nc}" IS NOT NULL', f'"{pc}" IS NOT NULL']
+        lane = os.environ.get("NPLP_LANE")
+        if lane in ("service", "product"):
+            if "psc_is_service" in wcols:
+                val = "'true'" if lane == "service" else "'false'"
+                where.append(f'lower(CAST("{wcols["psc_is_service"]}" AS VARCHAR)) = {val}')
+            else:
+                where.append(f"""CAST("{pc}" AS VARCHAR) {'!~' if lane == 'service' else '~'} '^[0-9]'""")
         con.register("wl", w)
         combos = con.execute(f"""
             SELECT CAST("{nc}" AS VARCHAR) AS naics_code, CAST("{pc}" AS VARCHAR) AS psc_code,
-                   {f'any_value("{ndc}")' if ndc else 'CAST(NULL AS VARCHAR)'} AS award_naics_desc,
-                   {f'any_value("{pdc}")' if pdc else 'CAST(NULL AS VARCHAR)'} AS award_psc_desc,
-                   1                          AS n_awards,
-                   0.0                        AS total_dollars_obligated
-            FROM wl WHERE "{nc}" IS NOT NULL AND "{pc}" IS NOT NULL
+                   {ndc} AS award_naics_desc,
+                   {pdc} AS award_psc_desc,
+                   {naw} AS n_awards,
+                   {dol} AS total_dollars_obligated
+            FROM wl WHERE {' AND '.join(where)}
             GROUP BY 1,2""").fetchall()
-        print(f"worklist (external {worklist_csv}): {len(combos):,} combos")
+        print(f"worklist (external {worklist_csv}, lane={lane or 'all'}): {len(combos):,} combos")
     else:
         g = _ds("govcon_active_awards").to_table(
             columns=["naics_code", "naics_description", "psc_code", "psc_description",
@@ -295,7 +343,7 @@ def build_manifest() -> dict:
     con.register("pref", pref_t)
     pcols = [f.name for f in pref_t.schema]
     ptitle = next(c for c in ("psc_name", "title", "psc_title", "description") if c in pcols)
-    pextra = [c for c in ("full_description", "includes", "excludes", "notes") if c in pcols]
+    pextra = [c for c in ("full_description", "includes", "excludes", "notes", "psc_category") if c in pcols]
     order = []
     if "is_active" in pcols:
         order.append("is_active DESC")
@@ -389,6 +437,7 @@ def build_manifest() -> dict:
                     "psc_includes": pr.get("includes"),
                     "psc_excludes": pr.get("excludes"),
                     "psc_notes": pr.get("notes"),
+                    "psc_category": pr.get("psc_category"),
                     "n_awards": int(n_aw), "total_dollars_obligated": float(dollars or 0),
                     "resolution_level": ig, "oews_industry_code": key,
                     "oews_industry_title": ind_title.get((ig, key)),
@@ -624,6 +673,7 @@ def retrieve(agent_results: str) -> None:
             confs = [c.get("confidence") for c in cats if c.get("confidence") in CONFIDENCES]
             prof_rows.append({
                 "naics_code": m["naics_code"], "psc_code": psc,
+                "psc_category": m.get("psc_category"),
                 "naics_title": m["naics_title"], "psc_title": m["psc_title"],
                 "naics_description": m.get("naics_description"),
                 "psc_full_description": m.get("psc_full_description"),
@@ -637,6 +687,7 @@ def retrieve(agent_results: str) -> None:
             if not is_play:
                 cat_rows.append({
                     "naics_code": m["naics_code"], "psc_code": psc, "rank": None,
+                    "psc_category": m.get("psc_category"),
                     "soc_code": None, "soc_title": None, "off_pattern": None,
                     "sca_code": None, "sca_title": None, "role_class": None,
                     "confidence": None, "pct_of_industry": None, "a_median": None,
@@ -655,6 +706,7 @@ def retrieve(agent_results: str) -> None:
                 g = growth.get((key_i, soc)) if key_i.isdigit() else None
                 cat_rows.append({
                     "naics_code": m["naics_code"], "psc_code": psc, "rank": rank,
+                    "psc_category": m.get("psc_category"),
                     "soc_code": soc, "soc_title": soc_titles.get(soc),
                     "off_pattern": bool(c.get("off_pattern")),
                     "sca_code": sca, "sca_title": sca_titles.get(sca) if sca else None,
@@ -689,11 +741,13 @@ def retrieve(agent_results: str) -> None:
     ts = pa.array([now] * len(prof_rows), pa.timestamp("us", tz="UTC"))
     prof_t = pa.Table.from_pylist(prof_rows).append_column("ingested_at", ts)
     built_p = _write(prof_t, PROFILE_URI, ["naics_code", "psc_code"],
-                     ["is_labor_play", "resolution_level", "top_confidence"])
+                     ["is_labor_play", "resolution_level", "top_confidence", "psc_category"],
+                     upsert_vintage=SOURCE_VINTAGE)
     ts2 = pa.array([now] * len(cat_rows), pa.timestamp("us", tz="UTC"))
     cat_t = pa.Table.from_pylist(cat_rows).append_column("ingested_at", ts2)
     built_c = _write(cat_t, CATEGORIES_URI, ["naics_code", "psc_code", "soc_code", "sca_code"],
-                     ["role_class", "confidence", "off_pattern", "resolution_level"])
+                     ["role_class", "confidence", "off_pattern", "resolution_level", "psc_category"],
+                     upsert_vintage=SOURCE_VINTAGE)
     print(f"wrote {len(prof_rows):,} -> {PROFILE_URI} ({built_p})")
     print(f"wrote {len(cat_rows):,} -> {CATEGORIES_URI} ({built_c})")
     _record_run({"stage": "retrieve", "status": status, "combos": len(seen_combos),
