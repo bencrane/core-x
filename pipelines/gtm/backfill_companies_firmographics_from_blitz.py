@@ -25,10 +25,16 @@ fill from the matched firmo linkedin_url, else from clay_find_companies by domai
 overwriting a curated value. company_linkedin_source records which rail populated it
 ('own' | 'firmo' | 'clay' | NULL); firmo_linkedin_url retains the firmo URL verbatim.
 
-PRESERVATION. company_id, company_name, normalized_domain, source_platform are carried verbatim;
-company_linkedin_url is null-filled from firmo/clay (never overwritten); the row set is
-byte-identical (PK company_id, 1:1); only firmographic + provenance columns are new. Firmographic
-values are copied from the already-derived firmographics_blitz columns, not re-interpreted.
+PRESERVATION. company_id, company_name, normalized_domain are carried verbatim; company_linkedin_url
+is null-filled from firmo/clay (never overwritten); the row set is byte-identical (PK company_id,
+1:1 — NO dedup); only firmographic + provenance columns are new. Firmographic values are copied from
+the already-derived firmographics_blitz columns, not re-interpreted.
+
+SOURCE_PLATFORM. This worker reads + overwrites active/companies_canonical, which has NO
+source_platform column (it moved to the active/company_source_platforms sidecar). source_platform
+is therefore NOT in BASE_COLS and is NOT re-added — the overwrite never re-materializes it onto the
+company row. This writer introduces no NEW companies (it re-writes the existing 1:1 row set), so it
+records nothing to the sidecar.
 
 INDEXES:
     BTREE  : normalized_domain (existing), company_id (PK)
@@ -47,18 +53,22 @@ import re
 import lance
 import pyarrow as pa
 
+from pipelines.gtm import _company_source as _cs
+
 # Reuse the canonical SoR constants + writer params (single source of truth).
 _spec = importlib.util.spec_from_file_location(
     "cpb", os.path.join(os.path.dirname(__file__), "companies_people_bulk.py"))
 _cpb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cpb)
 
-# The pristine active/companies base columns. Re-reading ONLY these makes the worker
+# The pristine companies_canonical base columns. Re-reading ONLY these makes the worker
 # idempotent: a prior run's appended firmographic columns are dropped and recomputed fresh
-# (otherwise an overwrite would duplicate field names).
-BASE_COLS = ["company_id", "company_name", "normalized_domain", "company_linkedin_url", "source_platform"]
+# (otherwise an overwrite would duplicate field names). source_platform is NOT a base column —
+# it lives in the active/company_source_platforms sidecar and is never re-added here.
+BASE_COLS = ["company_id", "company_name", "normalized_domain", "company_linkedin_url"]
 
-COMPANIES_URI = _cpb.DATASET_URI["companies"]
+# REPOINT → active/companies_canonical/ (source_platform extracted to the sidecar).
+COMPANIES_URI = _cs.COMPANIES_URI
 FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", "s3://data-sink/active/firmographics_blitz/")
 CLAY_FIND_COMPANIES_URI = os.environ.get("CLAY_FIND_COMPANIES_URI", "s3://data-sink/active/clay_find_companies/")
 DATA_STORAGE_VERSION = _cpb.DATA_STORAGE_VERSION

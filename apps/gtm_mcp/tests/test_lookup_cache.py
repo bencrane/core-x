@@ -217,7 +217,7 @@ class _CountingDataset:
 def test_cache_applied_to_search_company_by_domain(tmp_path, monkeypatch):
     from apps.gtm_mcp.src.tools import audience
     rows = [{"company_id": "co1", "company_name": "Acme", "normalized_domain": "acme.com",
-             "company_linkedin_url": "li/1", "source_platform": "fixture"}]
+             "company_linkedin_url": "li/1"}]
     p = str(tmp_path / "companies.lance")
     lance.write_dataset(pa.Table.from_pylist(rows), p, mode="create")
     lance.dataset(p).create_scalar_index("normalized_domain", index_type="BTREE")

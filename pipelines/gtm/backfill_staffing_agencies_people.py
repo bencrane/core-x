@@ -15,8 +15,10 @@ SAFETY (this mutates the ~69k-row people SoR):
 SOURCE  (cold archive Parquet, DuckDB-over-R2):
     s3://data-sink/archive/dex/entities/target_people.parquet    (30,578 rows; PK id)
     s3://data-sink/archive/dex/entities/clay_find_people.parquet  (title via clay_find_person_id)
-SCOPE   : target_company_id ∈ the staffing cohort in active/companies
-          (source_platform='dexarchive_staffing_agencies') → 29,563 people / 6,725 firms.
+SCOPE   : target_company_id ∈ the staffing cohort — the company_ids tagged
+          source_platform='dexarchive_staffing_agencies' in the active/company_source_platforms
+          sidecar (source_platform is no longer a companies column), joined back to
+          companies_canonical for normalized_domain → 29,563 people / 6,725 firms.
 TARGET  : s3://data-sink/active/people/  (append)
 
 COLUMN MAP (source → people; 9-col schema):
@@ -44,13 +46,18 @@ import os
 
 import duckdb
 import lance
+import pyarrow as pa
 
 from pipelines.gtm import _people_canonical as pc
 
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
 # REPOINT: identity lands in the canonical people dataset; provenance routes to the sidecar.
 PEOPLE_URI = pc.PEOPLE_URI
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms
+# sidecar; the staffing-cohort filter below is a sidecar join on company_id).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies_canonical/")
+COMPANY_SOURCE_PLATFORMS_URI = os.environ.get(
+    "COMPANY_SOURCE_PLATFORMS_URI", f"{ACTIVE}/company_source_platforms/")
 ARCHIVE = "s3://data-sink/archive/dex/entities"
 TARGET_PEOPLE = f"{ARCHIVE}/target_people.parquet"
 CLAY_FIND_PEOPLE = f"{ARCHIVE}/clay_find_people.parquet"
@@ -81,9 +88,19 @@ def main() -> int:
     people_ds = lance.dataset(PEOPLE_URI, storage_options=so)
     count_before = people_ds.count_rows()
 
-    cohort = lance.dataset(COMPANIES_URI, storage_options=so).scanner(
+    # The staffing cohort is the set of company_ids tagged COHORT_SOURCE in the
+    # company_source_platforms sidecar (source_platform is no longer a companies column) —
+    # resolve those ids, then pull their (company_id, normalized_domain) from companies_canonical.
+    cohort_ids = lance.dataset(COMPANY_SOURCE_PLATFORMS_URI, storage_options=so).scanner(
         filter=f"source_platform = '{COHORT_SOURCE}'",
+        columns=["company_id"]).to_table().column("company_id").to_pylist()
+    cohort_id_set = {str(c) for c in cohort_ids if c is not None}
+    comp_tbl = lance.dataset(COMPANIES_URI, storage_options=so).scanner(
         columns=["company_id", "normalized_domain"]).to_table()
+    import pyarrow.compute as _pc
+    mask = _pc.is_in(comp_tbl.column("company_id"),
+                     value_set=pa.array(sorted(cohort_id_set), type=pa.string()))
+    cohort = comp_tbl.filter(mask)
 
     con = duckdb.connect()
     con.execute("SET memory_limit='6GB';")

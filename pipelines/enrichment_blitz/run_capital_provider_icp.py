@@ -48,7 +48,9 @@ def _lender_companies() -> list[dict]:
     con = duckdb.connect(); con.execute("SET memory_limit='6GB'")
     con.register("cps_r", lance.dataset("s3://data-sink/active/capital_provider_signals/", storage_options=so)
                  .scanner(columns=["normalized_domain", "is_capital_provider"]).to_reader())
-    con.register("co_r", lance.dataset("s3://data-sink/active/companies/", storage_options=so)
+    con.register("co_r", lance.dataset(
+        os.environ.get("GTM_COMPANIES_URI", "s3://data-sink/active/companies_canonical/"),
+        storage_options=so)  # REPOINT → companies_canonical (source_platform in the sidecar)
                  .scanner(columns=["normalized_domain", "company_linkedin_url", "firmo_linkedin_url"]).to_reader())
     con.execute("CREATE TABLE cps AS SELECT normalized_domain dom FROM cps_r WHERE is_capital_provider")
     con.execute("CREATE TABLE co AS SELECT normalized_domain dom, coalesce(company_linkedin_url, firmo_linkedin_url) li FROM co_r")

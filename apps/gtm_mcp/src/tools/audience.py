@@ -68,9 +68,11 @@ def _sql_str(value: str) -> str:
 # full wide row; the wide undocumented filler never crosses the object-store boundary. These
 # lists ARE the contract — adding a documented column means editing both the docstring and
 # this list. Order matches the docstrings.
+# source_platform DROPPED from companies (it moved to the company_source_platforms sidecar,
+# join on company_id). company_id remains the 1:1 primary key — NO dedup was performed.
 _COMPANY_COLUMNS = [
     "company_id", "company_name", "normalized_domain",
-    "company_linkedin_url", "source_platform",
+    "company_linkedin_url",
 ]
 # source_platform DROPPED from people (it moved to the person_source_platforms sidecar).
 # canonical_person_id is the go-forward person key (sha256 of the canonical LinkedIn URL);
@@ -102,13 +104,14 @@ def search_company_by_domain(domain: str) -> dict[str, Any]:
 
     The input is normalized to the stored anchor (scheme / ``www.`` / path /
     casing stripped), so ``https://www.JPMorgan.com/about`` and ``jpmorgan.com``
-    resolve identically. A domain is not unique (multiple source platforms may
-    carry the same company), so this returns every matching company row
-    (capped at 50).
+    resolve identically. A domain is not unique (several companies may share a
+    domain), so this returns every matching company row (capped at 50).
 
     Returns ``{"normalized_domain", "match_count", "companies": [...]}``; each
     company has ``company_id, company_name, normalized_domain,
-    company_linkedin_url, source_platform``.
+    company_linkedin_url``. ``source_platform`` is no longer a company column — a
+    company's origins live in the ``company_source_platforms`` sidecar (join on
+    ``company_id``).
     """
     norm = _normalize_domain(domain)
     if not norm:
@@ -208,7 +211,7 @@ def search_company_by_name(name: str) -> dict[str, Any]:
     predicate = f"{name_norm('company_name')} = {name_norm(_sql_str(name.strip()))}"
     sql = f"""
         SELECT company_id, company_name, normalized_domain,
-               company_linkedin_url, source_platform
+               company_linkedin_url
         FROM companies
         WHERE {predicate}
         LIMIT {_LOOKUP_LIMIT}

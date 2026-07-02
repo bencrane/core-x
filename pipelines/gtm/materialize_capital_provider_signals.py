@@ -33,7 +33,11 @@ import psycopg
 import pyarrow as pa
 
 DATASET_URI = os.environ.get("CAPITAL_PROVIDER_SIGNALS_URI", "s3://data-sink/active/capital_provider_signals/")
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", "s3://data-sink/active/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms
+# sidecar; curated lender origins below join the sidecar on company_id).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", "s3://data-sink/active/companies_canonical/")
+COMPANY_SOURCE_PLATFORMS_URI = os.environ.get(
+    "COMPANY_SOURCE_PLATFORMS_URI", "s3://data-sink/active/company_source_platforms/")
 DATA_STORAGE_VERSION = "2.1"
 MAX_ROWS_PER_FILE = 1048576
 MAX_BYTES_PER_FILE = 90 * 1024**3
@@ -199,12 +203,28 @@ def main() -> None:
                 indep[d] = (key, val)
     pg.close()
 
-    # 5. curated lender origins from active/companies (elfa/sfnet)
-    ds_c = lance.dataset(COMPANIES_URI, storage_options=storage_options())
-    ctbl = ds_c.to_table(columns=["normalized_domain", "source_platform"])
+    # 5. curated lender origins (elfa/sfnet/exa/exa-all). source_platform now lives in the
+    #    company_source_platforms sidecar → resolve the curated-tagged company_ids there, then
+    #    join back to companies_canonical for normalized_domain.
+    so_c = storage_options()
+    _placeholders = ", ".join("'" + p.replace("'", "''") + "'" for p in CURATED)
+    csp_tbl = lance.dataset(COMPANY_SOURCE_PLATFORMS_URI, storage_options=so_c).scanner(
+        columns=["company_id", "source_platform"],
+        filter=f"source_platform IN ({_placeholders})").to_table()
+    src_by_cid: dict[str, str] = {}
+    for cid, s in zip(csp_tbl.column("company_id").to_pylist(),
+                      csp_tbl.column("source_platform").to_pylist()):
+        # A company can carry several curated tags; keep the first stable one (matches the
+        # prior setdefault-on-domain behavior).
+        if cid is not None:
+            src_by_cid.setdefault(str(cid), s)
+    ds_c = lance.dataset(COMPANIES_URI, storage_options=so_c)
+    ctbl = ds_c.to_table(columns=["company_id", "normalized_domain"])
     curated: dict[str, str] = {}
-    for d, s in zip(ctbl.column("normalized_domain").to_pylist(), ctbl.column("source_platform").to_pylist()):
-        if d and s in CURATED:
+    for cid, d in zip(ctbl.column("company_id").to_pylist(),
+                      ctbl.column("normalized_domain").to_pylist()):
+        s = src_by_cid.get(str(cid)) if cid is not None else None
+        if d and s:
             dd = d.strip().lower()
             if valid(dd):
                 curated.setdefault(dd, s)

@@ -47,7 +47,8 @@ import modal
 
 # ── Active sink coordinates (overridable per-dataset, fleet convention) ──────
 _ACTIVE = "s3://data-sink/active"
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms sidecar).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies_canonical/")
 FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", f"{_ACTIVE}/firmographics_blitz/")
 SINK_BUCKET = "data-sink"
 

@@ -15,8 +15,10 @@ SAFETY (this mutates the 25k-row companies SoR):
 SOURCE  : s3://data-sink/active/sfnet_main_contacts/  (resolved_company_id IS NULL ⇒ absent)
 TARGET  : s3://data-sink/active/companies/            (append)
 NEW ROWS: company_id = sfnet_company_id (stable SFNet directory UUID),
-          company_name, normalized_domain populated from the directory; source_platform =
-          'sfnet-directory'; every other firmographic field NULL (schema-conformant).
+          company_name, normalized_domain populated from the directory; every other
+          firmographic field NULL (schema-conformant). source_platform='sfnet-directory' is
+          NOT a company column — it routes to the active/company_source_platforms sidecar via
+          record_company_sources().
           NOTE: re-added rows have NULL employee_size_band / employees_on_linkedin — the
           firm-size filter cannot disregard them until firmo enrichment runs over
           source_platform='sfnet-directory'.
@@ -39,10 +41,13 @@ import duckdb
 import lance
 import pyarrow as pa
 
+from pipelines.gtm import _company_source as cs
+
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
+COMPANIES_URI = cs.COMPANIES_URI  # REPOINT → active/companies_canonical/ (no source_platform col)
 SFNET_MC_URI = os.environ.get("SFNET_MC_URI", f"{ACTIVE}/sfnet_main_contacts/")
 SOURCE_PLATFORM = "sfnet-directory"
+SOURCE_REF = "backfill:sfnet_companies"
 REINDEX = ["company_id", "normalized_domain"]
 
 
@@ -115,12 +120,12 @@ def main() -> int:
         print(f"\n[dry-run] would append {n} rows to {COMPANIES_URI} (count {count_before:,} → {count_before + n:,}).", flush=True)
         return 0
 
-    # ── build schema-conformant rows (populate 4 fields, NULL the rest) ──────
+    # ── build schema-conformant rows (populate 3 fields, NULL the rest; source_platform
+    #    is NOT a company column — it routes to the sidecar below) ──────
     populated = {
         "company_id": cand.column("company_id").cast(pa.string()),
         "company_name": cand.column("company_name").cast(pa.string()),
         "normalized_domain": cand.column("normalized_domain").cast(pa.string()),
-        "source_platform": pa.array([SOURCE_PLATFORM] * n, pa.string()),
     }
     arrays = [populated[f.name].cast(f.type) if f.name in populated else pa.nulls(n, f.type)
               for f in target_schema]
@@ -138,11 +143,17 @@ def main() -> int:
         ds.create_scalar_index(col, index_type="BTREE")  # replace=True default → covers new rows
         print(f"    BTREE ✓ {col} (rebuilt)", flush=True)
 
-    _rule("verify — new rows resolvable via index")
-    ds = lance.dataset(COMPANIES_URI, storage_options=so)
-    got = ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
-                     columns=["company_id", "company_name", "normalized_domain"]).to_table()
-    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows} rows", flush=True)
+    _rule(f"record provenance → {cs.COMPANY_SOURCE_PLATFORMS_URI}")
+    added_ids = cand.column("company_id").to_pylist()
+    res = cs.record_company_sources(added_ids, SOURCE_PLATFORM, SOURCE_REF, so)
+    print(f"    sidecar (company_id, '{SOURCE_PLATFORM}') pairs merged (idempotent): "
+          f"{res['sidecar_candidates']:,}", flush=True)
+
+    _rule("verify — new rows resolvable via sidecar")
+    src_ds = lance.dataset(cs.COMPANY_SOURCE_PLATFORMS_URI, storage_options=so)
+    got = src_ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
+                         columns=["company_id", "source_platform"]).to_table()
+    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows} sidecar rows", flush=True)
     return 0
 
 
