@@ -7,11 +7,11 @@ over the trailing 5 years, in BOTH roles:
 
   • PRIME role   — every FPDS contract action it won directly
                    (``transaction_search_fpds``, recipient_uei index pushdown).
-  • SUBAWARD role — every procurement subaward it received: the ``subaward_search`` bulk
-                   mirror (sub_awardee_or_recipient_uei index pushdown) UNIONED with the
-                   90-day API-fresh feed, deduped on (award_key, subaward_number). The mirror
-                   LAGS the fresh feed, so the just-won subawards that defined this target set
-                   would otherwise be missing from the 5-year history.
+  • SUBAWARD role — every procurement subaward it received: the reconciled contract-subaward
+                   canonical (``usaspending_subaward_canonical``, already BULK∪FRESH-deduped to one
+                   row per (prime_award_unique_key, subaward_number)), topped up with the DAILY
+                   90-day API-fresh feed to close the canonical's rebuild-cadence gap so just-won
+                   subawards are never missing from the 5-year history.
 
 Plus a RECENT-WIN anchor from the 90-day feed (the line to reference in outreach).
 
@@ -70,7 +70,11 @@ SUB_FRESH_URI = os.environ.get(
     "s3://data-sink/active/usaspending_api_fresh/contract_subaward",
 ).rstrip("/") + "/"
 FPDS_URI = "s3://data-sink/active/usaspending/transaction_search_fpds/"
-SUBS_URI = "s3://data-sink/active/usaspending/subaward_search/"
+# SUBAWARD role now reads the reconciled contract-subaward canonical (BULK∪FRESH, one row per
+# (prime_award_unique_key, subaward_number)) instead of hand-rolling the subaward_search∪fresh union.
+# Contract-only by construction — matches this worker's "procurement subaward" scope (the old raw
+# subaward_search read carried NO grant filter, silently including grant subawards in the history).
+SUBAWARD_CANONICAL_URI = "s3://data-sink/active/usaspending_subaward_canonical/"
 
 DEFAULT_YEARS = 5
 BATCH = 4000                       # UEIs per index-pushdown scan
@@ -202,19 +206,18 @@ def build(years=DEFAULT_YEARS, wide=False):
         # ── 0b. population. recent: fresh subawardees only. wide: fresh ∪ EVERY subawardee in
         #    subaward_search since the floor, carrying identity for the net-new firms. ──
         if wide:
-            subs_pop = lance.dataset(SUBS_URI, storage_options=so)
+            subs_pop = lance.dataset(SUBAWARD_CANONICAL_URI, storage_options=so)
             con.register("srp", subs_pop.scanner(
-                columns=["sub_awardee_or_recipient_uei", "sub_awardee_or_recipient_legal",
-                         "sub_legal_entity_state_code", "sub_legal_entity_country_code",
-                         "sub_action_date"],
-                filter=(f"sub_action_date >= DATE '{cutoff}' "
-                        f"AND sub_action_date <= DATE '2026-12-31'")).to_reader())
+                columns=["subawardee_uei", "subawardee_name",
+                         "subawardee_state_code", "subawardee_country_code",
+                         "subaward_action_date"],
+                filter=f"subaward_action_date >= DATE '{cutoff}'").to_reader())  # canonical: 2106 sentinels nulled on-spine
             con.execute("""CREATE TABLE hist_pop AS
-              SELECT nullif(trim(sub_awardee_or_recipient_uei),'')                             AS uei,
-                     arg_max(nullif(trim(sub_awardee_or_recipient_legal),''), sub_action_date) AS name,
-                     arg_max(nullif(trim(sub_legal_entity_state_code),''), sub_action_date)     AS state_code,
-                     arg_max(nullif(trim(sub_legal_entity_country_code),''), sub_action_date)   AS country_code
-              FROM srp WHERE nullif(trim(sub_awardee_or_recipient_uei),'') IS NOT NULL
+              SELECT nullif(trim(subawardee_uei),'')                                        AS uei,
+                     arg_max(nullif(trim(subawardee_name),''), subaward_action_date)         AS name,
+                     arg_max(nullif(trim(subawardee_state_code),''), subaward_action_date)   AS state_code,
+                     arg_max(nullif(trim(subawardee_country_code),''), subaward_action_date) AS country_code
+              FROM srp WHERE nullif(trim(subawardee_uei),'') IS NOT NULL
               GROUP BY 1;""")
             con.unregister("srp")
             con.execute("""CREATE TABLE pop AS
@@ -264,42 +267,33 @@ def build(years=DEFAULT_YEARS, wide=False):
             con.execute(f"COPY fp TO '{fp_cache}' (FORMAT parquet);")
             log(f"FPDS prime scan done in {(time.time()-t0)/60:.1f}m -> cached")
 
-        # ── 2. SUBAWARD role — subaward_search 5y (sub uei index pushdown, window-cached) ──
-        # subaward_search is the USAspending bulk mirror and LAGS the 90-day API-fresh feed: the
-        # very subawards that defined this target set are not in it yet. So sb_search is UNIONED
-        # below with the fresh feed (fresh_dedup), deduped on (award_key, subaward_number).
-        sb_cache = f"{SCRATCH}/sb_{cutoff}.parquet"
-        if os.path.exists(sb_cache):
-            con.execute(f"CREATE TABLE sb_search AS SELECT * FROM '{sb_cache}';")
-            log(f"subaward scan: loaded cache {sb_cache}")
-        else:
-            con.execute("""CREATE TABLE sb_search(uei VARCHAR, award_key VARCHAR, subnum VARCHAR,
-                amt DOUBLE, adt DATE, prime_name VARCHAR, prime_uei VARCHAR,
-                naics VARCHAR, naics_desc VARCHAR);""")
-            subs = lance.dataset(SUBS_URI, storage_options=so)
-            t0 = time.time()
-            for bi, b in enumerate(batches):
-                flt = (f"sub_awardee_or_recipient_uei IN ({_inlist(b)}) "
-                       f"AND sub_action_date >= DATE '{cutoff}'")
-                tbl = subs.scanner(columns=[
-                    "sub_awardee_or_recipient_uei", "unique_award_key", "subaward_number",
-                    "subaward_amount", "sub_action_date", "awardee_or_recipient_legal",
-                    "awardee_or_recipient_uei", "naics", "naics_description"], filter=flt).to_table()
-                con.register("t", tbl)
-                con.execute(f"""INSERT INTO sb_search SELECT trim(sub_awardee_or_recipient_uei),
-                    trim(unique_award_key), nullif(trim(subaward_number),''),
-                    CASE WHEN abs(TRY_CAST(subaward_amount AS DOUBLE)) > {AMT_MAX:.0f}
-                         THEN NULL ELSE TRY_CAST(subaward_amount AS DOUBLE) END,
-                    TRY_CAST(sub_action_date AS DATE),
-                    nullif(trim(awardee_or_recipient_legal),''), nullif(trim(awardee_or_recipient_uei),''),
-                    nullif(trim(naics),''), nullif(trim(naics_description),'') FROM t;""")
-                con.unregister("t")
-                log(f"  subaward batch {bi+1}/{len(batches)} rows+={tbl.num_rows}")
-            con.execute(f"COPY sb_search TO '{sb_cache}' (FORMAT parquet);")
-            log(f"subaward scan done in {(time.time()-t0)/60:.1f}m -> cached")
+        # ── 2. SUBAWARD role — the reconciled contract-subaward canonical (already BULK∪FRESH-deduped
+        # to one row per (prime_award_unique_key, subaward_number)). Replaces the hand-rolled
+        # subaward_search scan + parquet cache + per-uei index-pushdown batching with a single fast
+        # scan. subaward_amount/date sentinels are already nulled on-spine; the stricter $20B AMT_MAX
+        # guard is re-applied here (nulls the $20B-$100B mis-key band the spine's $100B clamp lets by). ──
+        canon = lance.dataset(SUBAWARD_CANONICAL_URI, storage_options=so)
+        con.register("cn", canon.scanner(columns=[
+            "subawardee_uei", "prime_award_unique_key", "subaward_number", "subaward_amount",
+            "subaward_action_date", "prime_awardee_name", "prime_awardee_uei",
+            "prime_award_naics_code", "prime_award_naics_description"],
+            filter=f"subaward_action_date >= DATE '{cutoff}'").to_reader())
+        con.execute(f"""CREATE TABLE sb_search AS
+          SELECT trim(subawardee_uei)                     AS uei,
+                 trim(prime_award_unique_key)              AS award_key,
+                 nullif(trim(subaward_number),'')          AS subnum,
+                 CASE WHEN abs(subaward_amount) > {AMT_MAX:.0f} THEN NULL ELSE subaward_amount END AS amt,
+                 subaward_action_date                      AS adt,
+                 nullif(trim(prime_awardee_name),'')       AS prime_name,
+                 nullif(trim(prime_awardee_uei),'')        AS prime_uei,
+                 nullif(trim(prime_award_naics_code),'')        AS naics,
+                 nullif(trim(prime_award_naics_description),'') AS naics_desc
+          FROM cn WHERE nullif(trim(subawardee_uei),'') IS NOT NULL;""")
+        con.unregister("cn")
 
-        # union the lagging mirror with the fresh feed; dedup on subaward identity, preferring
-        # the mirror (richer fields) where a fresh win has already propagated.
+        # top up the canonical (fresh only up to its rebuild cadence) with the DAILY fresh feed so the
+        # just-won 90-day subawards that define this cohort are never missing from the 5y history;
+        # dedup on subaward identity, preferring the canonical (reconciled) over the fresh top-up.
         con.execute(f"""CREATE TABLE sb AS
           WITH u AS (
             SELECT uei, award_key, subnum, amt, adt, prime_name, prime_uei, naics, naics_desc, 0 AS pr
@@ -317,7 +311,7 @@ def build(years=DEFAULT_YEARS, wide=False):
             count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM sb_search s
                 WHERE s.uei=sb.uei AND s.award_key=sb.award_key
                   AND s.subnum IS NOT DISTINCT FROM sb.subnum)) FROM sb;""").fetchone()
-        log(f"subaward role: mirror={sbn[1]} union_distinct={sbn[0]} fresh_only_added={sbn[2]}")
+        log(f"subaward role: canonical={sbn[1]} union_distinct={sbn[0]} fresh_only_added={sbn[2]}")
 
         # ── 3. prime-role aggregates ──
         con.execute("""CREATE TABLE prime_agg AS

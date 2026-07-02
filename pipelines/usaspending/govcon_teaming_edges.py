@@ -55,7 +55,10 @@ SUB_FRESH_URI = os.environ.get(
     "s3://data-sink/active/usaspending_api_fresh/contract_subaward",
 ).rstrip("/") + "/"
 
-SUBS_URI = "s3://data-sink/active/usaspending/subaward_search/"
+# SUBAWARD role now reads the reconciled contract-subaward canonical (BULK∪FRESH, one row per
+# (prime_award_unique_key, subaward_number)) instead of hand-rolling the subaward_search∪fresh union.
+# Contract-only by construction; subaward_amount sentinels ($39T mis-key) already nulled on-spine.
+SUBAWARD_CANONICAL_URI = "s3://data-sink/active/usaspending_subaward_canonical/"
 
 DEFAULT_YEARS = 5
 BATCH = 4000  # UEIs per index-pushdown scan
@@ -111,47 +114,41 @@ def build(years=DEFAULT_YEARS):
     try:
         log(f"build: {years}y window -> {cutoff}  run_id={run_id}")
 
-        # ── 0. entity universe = subawardee_work_profile UEIs ──
+        # ── 0. entity universe = subawardee_work_profile UEIs (the profile cohort) ──
         profile_ds = lance.dataset(PROFILE_URI, storage_options=so)
-        ueis = sorted({v for v in profile_ds.scanner(
-            columns=["subawardee_uei"]).to_table().column("subawardee_uei").to_pylist() if v})
-        log(f"  profile universe: {len(ueis)} subawardee UEIs")
-        batches = _batched(ueis, BATCH)
+        con.register("prof_u_src", profile_ds.scanner(columns=["subawardee_uei"]).to_table())
+        con.execute("""CREATE TABLE prof_u AS
+          SELECT DISTINCT trim(subawardee_uei) AS uei FROM prof_u_src
+          WHERE nullif(trim(subawardee_uei), '') IS NOT NULL;""")
+        con.unregister("prof_u_src")
+        n_prof = con.execute("SELECT count(*) FROM prof_u").fetchone()[0]
+        log(f"  profile universe: {n_prof} subawardee UEIs")
 
-        # ── 1. subaward_search 5y (sub-uei index pushdown, window-cached for resume) ──
-        sb_cache = f"{SCRATCH}/sb_{cutoff}.parquet"
-        if os.path.exists(sb_cache):
-            con.execute(f"CREATE TABLE sb_search AS SELECT * FROM '{sb_cache}'")
-            log(f"  subaward_search scan: loaded cache {sb_cache}")
-        else:
-            con.execute("""CREATE TABLE sb_search(
-              sub_uei VARCHAR, sub_name VARCHAR, prime_uei VARCHAR, prime_name VARCHAR,
-              award_key VARCHAR, subnum VARCHAR, amt DOUBLE, adt DATE, naics VARCHAR)""")
-            subs = lance.dataset(SUBS_URI, storage_options=so)
-            t0 = time.time()
-            for bi, b in enumerate(batches):
-                flt = (f"sub_awardee_or_recipient_uei IN ({_inlist(b)}) "
-                       f"AND sub_action_date >= DATE '{cutoff}'")
-                tbl = subs.scanner(columns=[
-                    "sub_awardee_or_recipient_uei", "sub_awardee_or_recipient_legal",
-                    "awardee_or_recipient_uei", "awardee_or_recipient_legal",
-                    "unique_award_key", "subaward_number", "subaward_amount",
-                    "sub_action_date", "naics"], filter=flt).to_table()
-                con.register("t", tbl)
-                con.execute("""INSERT INTO sb_search SELECT
-                    trim(sub_awardee_or_recipient_uei),
-                    nullif(trim(sub_awardee_or_recipient_legal), ''),
-                    nullif(trim(awardee_or_recipient_uei), ''),
-                    nullif(trim(awardee_or_recipient_legal), ''),
-                    trim(unique_award_key), nullif(trim(subaward_number), ''),
-                    TRY_CAST(subaward_amount AS DOUBLE), TRY_CAST(sub_action_date AS DATE),
-                    nullif(trim(naics), '') FROM t""")
-                con.unregister("t")
-                log(f"  subaward batch {bi+1}/{len(batches)} rows+={tbl.num_rows}")
-            con.execute(f"COPY sb_search TO '{sb_cache}' (FORMAT parquet)")
-            log(f"  subaward_search scan done in {(time.time()-t0)/60:.1f}m -> cached")
+        # ── 1. the reconciled contract-subaward canonical (already BULK∪FRESH-deduped to one row per
+        # (prime_award_unique_key, subaward_number)), restricted to the profile cohort. Replaces the
+        # hand-rolled subaward_search scan + parquet cache + per-uei index-pushdown batching with a
+        # single fast scan; the fresh top-up (§2) closes the canonical's rebuild-cadence gap. ──
+        canon = lance.dataset(SUBAWARD_CANONICAL_URI, storage_options=so)
+        con.register("cn", canon.scanner(columns=[
+            "subawardee_uei", "subawardee_name", "prime_awardee_uei", "prime_awardee_name",
+            "prime_award_unique_key", "subaward_number", "subaward_amount",
+            "subaward_action_date", "prime_award_naics_code"],
+            filter=f"subaward_action_date >= DATE '{cutoff}'").to_reader())
+        con.execute("""CREATE TABLE sb_search AS
+          SELECT trim(subawardee_uei)                     AS sub_uei,
+                 nullif(trim(subawardee_name), '')         AS sub_name,
+                 nullif(trim(prime_awardee_uei), '')       AS prime_uei,
+                 nullif(trim(prime_awardee_name), '')      AS prime_name,
+                 trim(prime_award_unique_key)              AS award_key,
+                 nullif(trim(subaward_number), '')         AS subnum,
+                 subaward_amount                           AS amt,
+                 subaward_action_date                      AS adt,
+                 nullif(trim(prime_award_naics_code), '')  AS naics
+          FROM cn
+          WHERE trim(subawardee_uei) IN (SELECT uei FROM prof_u);""")
+        con.unregister("cn")
 
-        # ── 2. 90-day API-fresh feed (mirror lag fill) ──
+        # ── 2. 90-day API-fresh feed (tops up the canonical past its rebuild cadence) ──
         fresh_ds = lance.dataset(SUB_FRESH_URI, storage_options=so)
         con.register("rf", fresh_ds.scanner(columns=[
             "subawardee_uei", "subawardee_name", "prime_awardee_uei", "prime_awardee_name",
@@ -173,7 +170,7 @@ def build(years=DEFAULT_YEARS):
         con.unregister("rf")
 
         # ── 3. union + dedup to true subaward grain — the plan-§1 distinct-subawards basis ──
-        # Mirror rows (pr=0) outrank fresh re-pulls; within a source, latest revision wins.
+        # Canonical rows (pr=0) outrank fresh re-pulls; within a source, latest revision wins.
         con.execute("""CREATE TABLE sb AS
           WITH u AS (
             SELECT *, 0 AS pr FROM sb_search
