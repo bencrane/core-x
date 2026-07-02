@@ -437,7 +437,7 @@ CREATE MACRO kbulk(detached, txnuid) AS s(COALESCE(s(detached), s(txnuid)));
 # Index plan (design §4) — program-derived presence-filtered at index() time.
 BTREE_COLS = ["contract_transaction_unique_key", "contract_award_unique_key", "recipient_uei",
               "action_date", "last_modified_date", "naics_code", "product_or_service_code",
-              "federal_action_obligation", "recipient_hash", "award_id_piid"]
+              "federal_action_obligation", "recipient_hash", "award_id_piid", "pop_county_fips"]
 BITMAP_COLS = ["action_date_fiscal_year", "type_of_set_aside_code", "awarding_agency_code",
                "award_type_code", "idv_type_code", "canonical_source", "subcontracting_plan"]
 
@@ -1503,10 +1503,19 @@ if modal is not None:
                               "target_uri": target_uri, "since": s}, default=str))
         elif cmd == "index":
             print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
+        elif cmd == "index_spawn":
+            # Fire-and-forget index (mirrors build_spawn): submit index_fn + return the call_id in
+            # seconds, so a client capped well under the multi-hour index runtime cannot be killed
+            # mid-build (the append-only publish lands only at the very end — a mid-run client death
+            # would waste the whole sort). Pair with `modal run --detach` so the app + spawned call
+            # survive the client exit; poll R2 list_indices() (or `modal app logs`) for the new index.
+            call = index_fn.spawn(target_uri=target_uri)
+            print(json.dumps({"spawned": "index_fn", "call_id": call.object_id,
+                              "target_uri": target_uri}, default=str))
         elif cmd == "verify":
             print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
         else:
-            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|verify)")
+            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|index_spawn|verify)")
 
 
 # =========================================================================================== #
