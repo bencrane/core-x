@@ -61,7 +61,13 @@
 > `staffing_agencies`). 318,291 entities → **160,048 with a domain**, of which **157,744 net-new**
 > (`in_our_staffing=false`) — SAM-registered labor firms absent from our dex-archive staffing list.
 > BTREE(uei, normalized_domain) · BITMAP(naics_family, in_our_staffing). Built by
-> `scripts/build_sam_labor_universe.py`.
+> `scripts/build_sam_labor_universe.py`. **Enriched (15 cols):** per-firm federal-award history
+> (`has_prime` via `firmographics_company_map_serving`, `has_subaward` via
+> `usaspending_api_fresh/contract_subaward.subawardee_uei`, `award_active`) + PDL firmographics
+> (`pdl_matched`, `pdl_employee_size_range`, `pdl_company_linkedin_url`, single streaming DuckDB
+> join over the 35M-row PDL datasets). All filter columns BITMAP-indexed so any slice
+> (`award_active AND pdl_employee_size_range='1-10'`, etc.) is an index scan, not a re-join.
+> 28,343 award-active · 94,544 PDL-matched.
 This is the **dataset index** for the persistence plane whose write mechanics are
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
@@ -621,7 +627,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_attachment_worklist_T3` | 6,089 | 20 | — |
 | `sam_business_type_code_dict` | 12 | 11 | BTree(code); BTree(namespace); BTree(designation_key) |
 | `sam_master_contacts` | 4,373,319 | 13 | BTree(uei) |
-| `sam_labor_universe` | 160,048 | 9 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing) |
+| `sam_labor_universe` | 160,048 | 15 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |
 | `sam_master_domains` | 709,546 | 5 | BTree(normalized_domain); BTree(uei) |
 | `sam_master_entities` | 1,541,566 | 68 | BTree(uei); BTree(primary_naics); BTree(cage_code) |
 | `sam_normalized_entities` | 1,541,566 | 11 | BTree(uei); BTree(normalized_legal_name); BTree(legal_name_base); BTree(cage_code); BTree(primary_naics); Bitmap(is_active) |
