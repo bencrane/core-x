@@ -28,7 +28,9 @@ RESOLUTION (connect each directory main contact to the canonical grains):
         cleanup), the best match is chosen deterministically: prefer a source_platform='sfnet'
         row, then lexically-min contact_id. matched_contact_count records the multiplicity so
         the duplication is never hidden; match_method records which rule fired.
-    company_id  ← active/companies by normalized_domain (prefer the sfnet-tagged company row).
+    company_id  ← active/companies_canonical by normalized_domain (prefer the sfnet-tagged
+        company row — the sfnet tag now comes from a company_source_platforms sidecar join on
+        company_id, not a companies column).
     ~78% of contacts resolve; the residual ~37 are senior execs at large banks whose directory
     main contact is simply absent from active/people — i.e. net-new contacts to seed later.
     Unmatched rows are KEPT (match_method='unmatched'); the directory facts stand on their own.
@@ -47,7 +49,7 @@ SCHEMA (every id String; is_main_contact bool; matched_contact_count int32; ts t
     linkedin_url           VARCHAR            (normalized canonical, e.g. linkedin.com/in/xxx)
     linkedin_url_raw       VARCHAR            (as given; null if "No LinkedIn profile found"/empty)
     resolved_contact_id    VARCHAR            (→ active/people.contact_id; null if unmatched)
-    resolved_company_id    VARCHAR            (→ active/companies.company_id; null if no domain match)
+    resolved_company_id    VARCHAR            (→ active/companies_canonical.company_id; null if no domain match)
     matched_contact_count  INT32    NOT NULL  (# active/people rows the person hit; 0 if unmatched)
     match_method           VARCHAR  NOT NULL  (linkedin_url | name_domain | unmatched)
     source_platform        VARCHAR  NOT NULL  ('sfnet-directory')
@@ -77,7 +79,11 @@ import pyarrow as pa
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
 URI = os.environ.get("SFNET_MC_URI", f"{ACTIVE}/sfnet_main_contacts/")
 PEOPLE_URI = os.environ.get("GTM_PEOPLE_URI", f"{ACTIVE}/people/")
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms
+# sidecar; the sfnet company-tag tie-break below is a sidecar join on company_id).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies_canonical/")
+COMPANY_SOURCE_PLATFORMS_URI = os.environ.get(
+    "COMPANY_SOURCE_PLATFORMS_URI", f"{ACTIVE}/company_source_platforms/")
 
 RAW_BUCKET = "data-sink"
 RAW_KEY = "raw/sfnet_main_contacts/sfnet_directory_main_contacts_2026-06-26.csv"
@@ -209,12 +215,19 @@ def build(csv_path: str) -> None:
         FROM p_r
     """)
     con.register("c_r", lance.dataset(COMPANIES_URI, storage_options=so).scanner(
-        columns=["company_id", "normalized_domain", "source_platform"]).to_reader())
+        columns=["company_id", "normalized_domain"]).to_reader())
+    # source_platform now lives in the company_source_platforms sidecar → join on company_id to
+    # derive the sfnet tie-break flag (is_sfnet) instead of reading a companies column.
+    con.register("csp_r", lance.dataset(COMPANY_SOURCE_PLATFORMS_URI, storage_options=so).scanner(
+        columns=["company_id", "source_platform"],
+        filter="source_platform IN ('sfnet', 'sfnet-manual-resolve')").to_reader())
     con.execute("""
         CREATE TABLE comp AS
-        SELECT company_id, normalized_domain,
-               (source_platform IN ('sfnet','sfnet-manual-resolve')) AS is_sfnet
-        FROM c_r WHERE normalized_domain IS NOT NULL
+        SELECT c.company_id, c.normalized_domain,
+               (s.company_id IS NOT NULL) AS is_sfnet
+        FROM c_r c
+        LEFT JOIN (SELECT DISTINCT company_id FROM csp_r) s ON s.company_id = c.company_id
+        WHERE c.normalized_domain IS NOT NULL
     """)
 
     con.execute("""

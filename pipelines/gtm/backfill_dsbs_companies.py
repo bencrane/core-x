@@ -22,8 +22,11 @@ COLUMN MAP (source → companies; every other companies column NULL, schema-conf
     dsbs_legal_business_name   → company_name
     best_domain                → normalized_domain     (identity-first, junk-blocklisted; nullable)
     company_linkedin_url       → company_linkedin_url  (matched_domain → PDL; nullable)
-    (literal)                  → source_platform = 'dsbs'
     industry / size / founded left NULL — DSBS is multi-industry; no defensible literal.
+
+    source_platform='dsbs' is NOT written onto the company row — it routes to the
+    active/company_source_platforms sidecar via record_company_sources(). companies_canonical
+    carries no source_platform column.
 
 INDEXES : company_id + normalized_domain + uei (BTREE) rebuilt (replace=True) so resolution covers
           the new rows.
@@ -42,10 +45,13 @@ import duckdb
 import lance
 import pyarrow as pa
 
+from pipelines.gtm import _company_source as cs
+
 ACTIVE = os.environ.get("GTM_ACTIVE_ROOT", "s3://data-sink/active")
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{ACTIVE}/companies/")
+COMPANIES_URI = cs.COMPANIES_URI  # REPOINT → active/companies_canonical/ (no source_platform col)
 DSBS_XWALK_URI = os.environ.get("CROSSWALK_DSBS_SAM_URI", f"{ACTIVE}/crosswalk_dsbs_sam/")
 SOURCE_PLATFORM = "dsbs"
+SOURCE_REF = "backfill:dsbs_companies"
 REINDEX_BTREE = ["company_id", "normalized_domain", "uei"]
 
 
@@ -98,8 +104,7 @@ def main() -> int:
                 CAST(uei AS VARCHAR)                        AS uei,
                 nullif(trim(dsbs_legal_business_name), '')  AS company_name,
                 nullif(trim(best_domain), '')               AS normalized_domain,
-                nullif(trim(company_linkedin_url), '')      AS company_linkedin_url,
-                '{SOURCE_PLATFORM}'                         AS source_platform
+                nullif(trim(company_linkedin_url), '')      AS company_linkedin_url
             FROM dsbs
             WHERE uei IS NOT NULL AND trim(CAST(uei AS VARCHAR)) <> ''
         )
@@ -146,11 +151,17 @@ def main() -> int:
             ds.create_scalar_index(col, index_type="BTREE")
             print(f"    BTREE  ✓ {col} (rebuilt)", flush=True)
 
-    _rule("verify — new cohort resolvable")
-    ds = lance.dataset(COMPANIES_URI, storage_options=so)
-    got = ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
-                     columns=["company_id", "company_name", "normalized_domain", "uei"]).to_table()
-    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} rows", flush=True)
+    _rule(f"record provenance → {cs.COMPANY_SOURCE_PLATFORMS_URI}")
+    added_ids = cand.column("company_id").to_pylist()
+    res = cs.record_company_sources(added_ids, SOURCE_PLATFORM, SOURCE_REF, so)
+    print(f"    sidecar (company_id, '{SOURCE_PLATFORM}') pairs merged (idempotent): "
+          f"{res['sidecar_candidates']:,}", flush=True)
+
+    _rule("verify — new cohort resolvable via sidecar")
+    src_ds = lance.dataset(cs.COMPANY_SOURCE_PLATFORMS_URI, storage_options=so)
+    got = src_ds.scanner(filter=f"source_platform = '{SOURCE_PLATFORM}'",
+                         columns=["company_id", "source_platform"]).to_table()
+    print(f"    source_platform='{SOURCE_PLATFORM}' now returns {got.num_rows:,} sidecar rows", flush=True)
     return 0
 
 

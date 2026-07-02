@@ -60,7 +60,10 @@ import modal
 # ── Gen-3 targets (active tier) + raw landing (transport) ────────────────────────────────
 _ACTIVE = "s3://data-sink/active"
 _LANDING = "s3://data-sink/landing/exa_websets"
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms
+# sidecar). This ingest only reads companies.normalized_domain for the new/known split; the
+# discovered_websets/webset_membership datasets it WRITES keep their own source_platform column.
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies_canonical/")
 DISCOVERED_URI = os.environ.get("EXA_DISCOVERED_URI", f"{_ACTIVE}/discovered_websets/")
 MEMBERSHIP_URI = os.environ.get("EXA_MEMBERSHIP_URI", f"{_ACTIVE}/webset_membership/")
 

@@ -170,10 +170,11 @@ def search_companies_by_domains(domains: list[str]) -> dict[str, Any]:
     at 1000, and a single ``normalized_domain IN (…)`` predicate is pushed into the BTREE
     on ``companies`` — one index range-scan / one R2 round-trip for the whole batch.
 
-    A domain is NOT unique (multiple source-platform rows may carry the same company), so
-    results group into LISTS. Each company row is projected to the documented company
-    columns (``company_id, company_name, normalized_domain, company_linkedin_url,
-    source_platform``). Returns ``{"requested","match_count","by_domain": {dom: [rows]}}``
+    A domain is NOT unique (several companies may share a domain), so results group into
+    LISTS. Each company row is projected to the documented company columns (``company_id,
+    company_name, normalized_domain, company_linkedin_url``; ``source_platform`` moved to the
+    company_source_platforms sidecar, join on ``company_id``). Returns
+    ``{"requested","match_count","by_domain": {dom: [rows]}}``
     where ``match_count`` is the TOTAL found-row count and a domain with no match is absent
     from ``by_domain``. An empty / whitespace-only batch returns
     ``{"requested":0,"match_count":0,"by_domain":{}}`` and issues NO scan.

@@ -75,7 +75,8 @@ FEED = "blitz_hydration_waterfall"
 # Lance bridge sources (overridable, fleet convention) — used by the resolver's
 # LEFT JOINs to recover company_linkedin_url without a Blitz round-trip.
 _ACTIVE = "s3://data-sink/active"
-COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/")
+# REPOINT → companies_canonical (source_platform extracted to the company_source_platforms sidecar).
+COMPANIES_URI = os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies_canonical/")
 FIRMO_URI = os.environ.get("FIRMOGRAPHICS_BLITZ_URI", f"{_ACTIVE}/firmographics_blitz/")
 
 # R2 transport landing (raw Blitz payloads). Bucket + prefix overridable.
