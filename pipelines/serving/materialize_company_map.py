@@ -45,7 +45,7 @@ XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # Recency sources for latest_award_action_date (max across all three per UEI).
 CAS_URI = f"{ACTIVE}/contractor_award_summary/"
 FRESH_PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
-FRESH_SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+FRESH_SUB_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 DATA_STORAGE_VERSION = "2.1"
 BTREE_INDEXES = ["uei", "addr_hash", "domain_norm", "primary_naics", "latest_award_action_date",
                  # range filter axes (full-scan without these).

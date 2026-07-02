@@ -47,7 +47,7 @@ from pipelines._shared.addr_hash import addr_hash_sql  # noqa: E402
 ACTIVE = "s3://data-sink/active"
 SERVING_URI = os.environ.get("WINNERS_MAP_SERVING_URI", f"{ACTIVE}/usaspending_winners_map_serving/")
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
-SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUB_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 # PHASE 3: award-grain capability profiles, rolled to the prime winner here.
 PROFILES_URI = os.environ.get("GOVCON_CAPABILITY_PROFILES_URI",
@@ -117,7 +117,7 @@ def _assemble(so, window_days: int):
                  "subawardee_city_name", "subawardee_state_code", "subawardee_zip_code",
                  "prime_award_naics_code", "subaward_action_date", "subaward_amount",
                  "subaward_number"],
-        filter=f"subaward_action_date >= '{cutoff}'").to_reader())
+        filter=f"subaward_action_date >= DATE '{cutoff}'").to_reader())  # canonical: typed DATE, not lexical VARCHAR
     con.register("x", x.scanner(columns=["addr_hash", "latitude", "longitude", "match_type"]).to_reader())
     # PHASE 3: award-grain capability profiles → re-scannable TABLE (referenced by several rollup
     # CTEs). Project ONLY structured / controlled-vocab columns — evidence_quote / requirement_detail
