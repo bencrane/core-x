@@ -71,13 +71,18 @@ KEY-LESS at:
      _id == fullReferenceNumber and revision_number.)
 
 Works for SCA + DBA only (5,757 of the 10,055 active WDs). CBA
-(fullReferenceNumber=null) is NOT addressable this way — CBAs resolve via
-/wdol/v1/cba/{numeric _id} which is X-Auth-Token gated; CBAs reference a
-bargaining agreement, not a WHD rate schedule, so they get metadata-only. The
-stage (run_rate_stage) is a resume-safe append crawl off this manifest into a
-sibling ``sam_wd_rate_documents`` dataset and lands the LOSSLESS ``document``
-string verbatim; parsing it to structured (occupation, rate, fringe) rows is a
-further downstream dataset, not this stage (raw-stays-lossless doctrine).
+(fullReferenceNumber=null) is NOT addressable this way — a §4(c) CBA WD has no
+WHD rate register at all. It resolves via /wdol/v1/cba/{numeric _id}, which is
+KEY-LESS (verified 200 from this host, NOT X-Auth-Token gated as earlier notes
+claimed) but returns POINTER metadata — the employer, union, agency, locality and
+effective dates that CITE the governing collective bargaining agreement — not a
+rate table. The wage/fringe schedule lives in that external union contract;
+SAM.gov hosts no copy (every /cba/{id}/{attachments,files,document,download}
+sub-path 404s). The rate stage (run_rate_stage) is a resume-safe append crawl into
+``sam_wd_rate_documents`` landing the LOSSLESS ``document`` string verbatim; the
+CBA pointer stage (run_cba_stage, --cba) is the analogous key-less crawl into
+``sam_wd_cba_pointers`` (+ a ``sam_wd_cba_coverage`` location explode). Parsing
+either to structured rows is a further downstream dataset (raw-stays-lossless).
 
 Runs LOCAL/in-session from a residential IP. STAGE 1 (--run) is ~3 GET calls
 (the whole active catalog at slice-size pages); STAGE 2 (--rates) is one GET per
@@ -88,11 +93,14 @@ Output (Lance v2.1, Gen-3 active/ SoR):
     s3://data-sink/active/sam_wage_determinations/    one row per WD (_id grain)        [--run]
     s3://data-sink/active/sam_wd_county_coverage/     one row per (wd, state, county)   [--run]
     s3://data-sink/active/sam_wd_rate_documents/      one row per SCA/DBA WD rate doc   [--rates]
+    s3://data-sink/active/sam_wd_cba_pointers/        one row per CBA WD (pointer)      [--cba]
+    s3://data-sink/active/sam_wd_cba_coverage/        one row per (cba wd, location)    [--cba]
 
     doppler run --project core-x --config prd -- \\
       uv run --with pylance --with pyarrow --with requests --with 'psycopg[binary]' \\
-      python pipelines/sam_gov/sam_wd_manifest.py --run            # stage 1: metadata catalog
-    ... python pipelines/sam_gov/sam_wd_manifest.py --rates --resume  # stage 2: rate documents
+      python pipelines/sam_gov/sam_wd_manifest.py --run             # stage 1: metadata catalog
+    ... python pipelines/sam_gov/sam_wd_manifest.py --rates --resume  # stage 2: SCA/DBA rate docs
+    ... python pipelines/sam_gov/sam_wd_manifest.py --cba   --resume  # stage 3: CBA pointer records
 
 Smoke (cap rows, throwaway URIs):
     ... --run   --limit 50 --wd-uri .../_smoke_sam_wd/ --county-uri .../_smoke_sam_wd_county/
@@ -538,8 +546,9 @@ def run_harvest(
 #     -> 200 hal+json { document (plaintext rate register — the payload), year,
 #        publishDate, active, standard, constructionType (DBA), location:{mapping} }
 # revision_number is a REQUIRED path segment (both inputs are columns on the manifest;
-# _id == full_reference_number). CBA is NOT reachable (fullReferenceNumber=null;
-# /wdol/v1/cba/{_id} is X-Auth-Token gated) — CBAs get metadata-only, no rate doc.
+# _id == full_reference_number). CBA WDs (fullReferenceNumber=null) have NO rate doc;
+# they are harvested by run_cba_stage (--cba) off the KEY-LESS /wdol/v1/cba/{_id}
+# POINTER endpoint into sam_wd_cba_pointers (see that stage).
 # This stage lands the LOSSLESS `document` string; parsing it to structured
 # (occupation, rate, fringe) rows is a further downstream dataset, not this one.
 RATE_DOC_URI = os.environ.get("SAM_WD_RATE_LANCE_URI", f"s3://{BUCKET}/active/sam_wd_rate_documents/")
@@ -710,6 +719,240 @@ def run_rate_stage(
             "api_calls": calls["n"], "indexes": built}
 
 
+# ─────────────────────────────────────────────────────────────────────────────────
+# PER-CBA POINTER STAGE (pinned + verified key-less; type=CBA WDs only)
+# ─────────────────────────────────────────────────────────────────────────────────
+# A §4(c) CBA WD has NO WHD rate register. GET https://sam.gov/api/prod/wdol/v1/cba/{_id}
+#     -> 200 hal+json { cbaNumber, revisionNumber, contractServices (boilerplate,
+#        no rates), contractorName, contractorUnion, organizationName (agency),
+#        organizationId, status, latest, archived, createdBy/modifiedBy (IP or email),
+#        effectiveStartDate, effectiveEndDate, publishedDate, createdOn, modifiedOn,
+#        cbaLocation[]{ id, state (full NAME), county (name|"Statewide"), city?, zipCode? } }
+# KEY-LESS (verified 200, no X-Auth-Token). This is POINTER metadata that CITES the
+# governing union contract — the wage/fringe schedule is EXTERNAL to SAM.gov (every
+# /cba/{id}/{attachments,files,document,download} sub-path 404s). Descriptive fields
+# are NULL on older records (the model gained contractor/union/org/effective-dates over
+# time; pre-2020s cbaLocation lacks city/zipCode) — schema is null-tolerant throughout.
+# Resume-safe append, mirroring run_rate_stage. The location explode uses full state
+# NAMES (not the USPS codes / SAM county codes of sam_wd_county_coverage) — a downstream
+# xwalk resolves (state_name, county_name) -> FIPS. Raw stays lossless.
+CBA_URI = os.environ.get("SAM_WD_CBA_LANCE_URI", f"s3://{BUCKET}/active/sam_wd_cba_pointers/")
+CBA_COVERAGE_URI = os.environ.get(
+    "SAM_WD_CBA_COVERAGE_LANCE_URI", f"s3://{BUCKET}/active/sam_wd_cba_coverage/")
+CBA_DETAIL_URL = "https://sam.gov/api/prod/wdol/v1/cba/{id}"
+CBA_SOURCE = "sam.gov/api/prod/wdol/v1/cba (frontend, no api_key)"
+
+
+def _cba_schema():
+    import pyarrow as pa
+    return pa.schema([
+        ("wd_id", pa.string()), ("cbawd_id", pa.int32()), ("cba_number", pa.string()),
+        ("revision_number", pa.int32()), ("contract_services", pa.string()),
+        ("contractor_name", pa.string()), ("contractor_union", pa.string()),
+        ("organization_name", pa.string()), ("organization_id", pa.string()),
+        ("status", pa.string()), ("latest", pa.bool_()), ("archived", pa.bool_()),
+        ("created_by", pa.string()), ("modified_by", pa.string()),
+        ("effective_start_date", pa.string()), ("effective_end_date", pa.string()),
+        ("published_date", pa.string()), ("created_on", pa.string()), ("modified_on", pa.string()),
+        ("location_count", pa.int32()),
+        ("fetch_status", pa.string()), ("http_status", pa.int32()),
+        ("fetched_at", pa.timestamp("us", tz="UTC")), ("source", pa.string()),
+    ])
+
+
+def _cba_coverage_schema():
+    import pyarrow as pa
+    return pa.schema([
+        ("wd_id", pa.string()), ("cba_number", pa.string()),
+        ("location_id", pa.int32()), ("state_name", pa.string()), ("county_name", pa.string()),
+        ("city", pa.string()), ("zip_code", pa.string()),
+        ("source", pa.string()), ("crawled_at", pa.timestamp("us", tz="UTC")),
+    ])
+
+
+def run_cba_stage(
+    *,
+    storage_options: dict,
+    dsn: str | None,
+    wd_uri: str = WD_URI,
+    cba_uri: str = CBA_URI,
+    cba_coverage_uri: str = CBA_COVERAGE_URI,
+    limit: int = 0,
+    workers: int = 4,
+    inter_call_sleep: float = 0.05,
+    resume: bool = True,
+    checkpoint_every: int = 400,
+) -> dict:
+    """Fetch the POINTER record for every type=CBA WD on the manifest (key-less).
+
+    A §4(c) CBA WD carries no rate register — the detail endpoint returns
+    employer/union/agency/locality/effective-date metadata that CITES the governing
+    union contract (whose wage/fringe schedule is external to SAM.gov). Resume-safe
+    append into sam_wd_cba_pointers (+ a sam_wd_cba_coverage location explode),
+    mirroring run_rate_stage: skip wd_ids already fetched (non-retry status);
+    per-WD http_4xx is recorded, not fatal; transient exhaustion is left for --resume.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import lance
+    import pyarrow as pa
+    import requests
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    crawled_at = started_at
+    so = storage_options
+    man = lance.dataset(wd_uri, storage_options=so).to_table(
+        columns=["_id", "type_code"]).to_pylist()
+    work = [r["_id"] for r in man if r["type_code"] == "CBA" and r["_id"]]
+
+    done: set = set()
+    if resume and _dataset_exists(cba_uri, so):
+        prior = lance.dataset(cba_uri, storage_options=so).to_table(
+            columns=["wd_id", "fetch_status"]).to_pylist()
+        done = {p["wd_id"] for p in prior
+                if p["fetch_status"] and not p["fetch_status"].startswith("retry")}
+    todo = [w for w in work if w not in done]
+    if limit:
+        todo = todo[:limit]
+    print(f"cba stage: type=CBA={len(work)} already_done={len(done)} todo={len(todo)}", flush=True)
+
+    session = requests.Session()
+    calls = {"n": 0}
+    p_schema, c_schema = _cba_schema(), _cba_coverage_schema()
+
+    def fetch_cba(wd_id: str) -> tuple[dict, list[dict]]:
+        url = CBA_DETAIL_URL.format(id=wd_id)
+        row = {
+            "wd_id": wd_id,
+            "cbawd_id": (int(wd_id) if str(wd_id).lstrip("-").isdigit() else None),
+            "cba_number": None, "revision_number": None, "contract_services": None,
+            "contractor_name": None, "contractor_union": None, "organization_name": None,
+            "organization_id": None, "status": None, "latest": None, "archived": None,
+            "created_by": None, "modified_by": None, "effective_start_date": None,
+            "effective_end_date": None, "published_date": None, "created_on": None,
+            "modified_on": None, "location_count": 0, "fetch_status": "retry_exhausted",
+            "http_status": -1, "fetched_at": dt.datetime.now(dt.timezone.utc), "source": CBA_SOURCE,
+        }
+        for attempt in range(6):
+            calls["n"] += 1
+            try:
+                resp = session.get(url, headers=_headers(), timeout=60)
+            except requests.RequestException:
+                time.sleep(min(30, 2 ** attempt)); continue
+            sc = resp.status_code
+            if sc == 200:
+                j = resp.json() or {}
+                locs = j.get("cbaLocation") or []
+                rev = str(j.get("revisionNumber", "")).strip()
+                row.update({
+                    "cba_number": _s(j.get("cbaNumber")),
+                    "revision_number": int(rev) if rev.lstrip("-").isdigit() else None,
+                    "contract_services": _s(j.get("contractServices")),
+                    "contractor_name": _s(j.get("contractorName")),
+                    "contractor_union": _s(j.get("contractorUnion")),
+                    "organization_name": _s(j.get("organizationName")),
+                    "organization_id": _s(j.get("organizationId")),
+                    "status": _s(j.get("status")), "latest": _bool_or_none(j.get("latest")),
+                    "archived": _bool_or_none(j.get("archived")),
+                    "created_by": _s(j.get("createdBy")), "modified_by": _s(j.get("modifiedBy")),
+                    "effective_start_date": _as_iso(j.get("effectiveStartDate")),
+                    "effective_end_date": _as_iso(j.get("effectiveEndDate")),
+                    "published_date": _as_iso(j.get("publishedDate")),
+                    "created_on": _as_iso(j.get("createdOn")),
+                    "modified_on": _as_iso(j.get("modifiedOn")),
+                    "location_count": len(locs), "fetch_status": "fetched", "http_status": 200,
+                    "fetched_at": dt.datetime.now(dt.timezone.utc)})
+                cov: list[dict] = []
+                for loc in locs:
+                    if not isinstance(loc, dict):
+                        continue
+                    lid = str(loc.get("id", "")).strip()
+                    cov.append({
+                        "wd_id": wd_id, "cba_number": row["cba_number"],
+                        "location_id": int(lid) if lid.lstrip("-").isdigit() else None,
+                        "state_name": _s(loc.get("state")), "county_name": _s(loc.get("county")),
+                        "city": _s(loc.get("city")), "zip_code": _s(loc.get("zipCode")),
+                        "source": CBA_SOURCE, "crawled_at": crawled_at})
+                return row, cov
+            if sc in (403, 429, 503):
+                time.sleep(min(120, 5 * 2 ** attempt)); continue
+            if sc >= 500:
+                time.sleep(min(30, 2 ** attempt)); continue
+            row.update({"fetch_status": f"http_{sc}", "http_status": sc,
+                        "fetched_at": dt.datetime.now(dt.timezone.utc)})
+            return row, []
+        return row, []
+
+    def flush(prows: list, crows: list) -> None:
+        if prows:
+            ptbl = pa.Table.from_pylist(prows, schema=p_schema)
+            lance.write_dataset(
+                ptbl, cba_uri, mode=("append" if _dataset_exists(cba_uri, so) else "create"),
+                data_storage_version=DATA_STORAGE_VERSION,
+                max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+                storage_options=so)
+        if crows:
+            ctbl = pa.Table.from_pylist(crows, schema=c_schema)
+            lance.write_dataset(
+                ctbl, cba_coverage_uri,
+                mode=("append" if _dataset_exists(cba_coverage_uri, so) else "create"),
+                data_storage_version=DATA_STORAGE_VERSION,
+                max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
+                storage_options=so)
+
+    counts = {"fetched": 0, "not_found": 0, "retry_exhausted": 0}
+    pbatch: list = []
+    cbatch: list = []
+    done_n = 0
+    status, error_text, built = "error", None, []
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(fetch_cba, w): w for w in todo}
+            for fut in as_completed(futs):
+                row, cov = fut.result()
+                st = row["fetch_status"]
+                counts["fetched" if st == "fetched" else
+                       "not_found" if st.startswith("http_") else "retry_exhausted"] += 1
+                pbatch.append(row); cbatch.extend(cov)
+                done_n += 1
+                if len(pbatch) >= checkpoint_every:
+                    flush(pbatch, cbatch); pbatch = []; cbatch = []
+                    print(f"  cba {done_n}/{len(todo)}  {counts}", flush=True)
+                if inter_call_sleep:
+                    time.sleep(inter_call_sleep)
+        flush(pbatch, cbatch)
+        built += [f"pointers:{b}" for b in _build_indexes(
+            cba_uri, btree=["wd_id", "cba_number", "organization_id"],
+            bitmap=["status", "latest", "archived"], so=so)]
+        if _dataset_exists(cba_coverage_uri, so):
+            built += [f"coverage:{b}" for b in _build_indexes(
+                cba_coverage_uri, btree=["wd_id", "cba_number"], bitmap=[], so=so)]
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error_text = str(exc); print(f"FATAL: {exc}", flush=True); raise
+    finally:
+        total_cba = (lance.dataset(cba_uri, storage_options=so).count_rows()
+                     if _dataset_exists(cba_uri, so) else 0)
+        total_cov = (lance.dataset(cba_coverage_uri, storage_options=so).count_rows()
+                     if _dataset_exists(cba_coverage_uri, so) else 0)
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        print(f"CBA SUMMARY: todo={len(todo)} {counts} pointers_in_dataset={total_cba} "
+              f"coverage_in_dataset={total_cov} api_calls={calls['n']} indexes={built} "
+              f"status={status} error={error_text}", flush=True)
+        _record_run({"feed": "sam_wd_cba_pointers", "status": status, "active_total": len(work),
+                     "wd_rows": counts["fetched"], "county_rows": total_cov,
+                     "sca": None, "dba": None, "cba": counts["fetched"],
+                     "stateless_wds": counts["retry_exhausted"], "dedup_dropped": len(done),
+                     "api_calls": calls["n"], "wd_uri": wd_uri, "county_uri": cba_uri,
+                     "indexes_built": built, "error": error_text,
+                     "started_at": started_at, "completed_at": completed_at,
+                     "stats": {"counts": counts, "pointers_in_dataset": total_cba,
+                               "coverage_in_dataset": total_cov}}, dsn)
+    return {"status": status, "todo": len(todo), "counts": counts,
+            "pointers_in_dataset": total_cba, "coverage_in_dataset": total_cov,
+            "api_calls": calls["n"], "indexes": built}
+
+
 def _cli() -> None:
     p = argparse.ArgumentParser(
         description="SAM.gov wage-determination metadata manifest (active WDs -> Lance).")
@@ -717,6 +960,10 @@ def _cli() -> None:
                    help="MANIFEST stage: crawl the active-WD metadata catalog (3 GETs).")
     p.add_argument("--rates", action="store_true", default=False,
                    help="RATE stage: fetch the plaintext rate document for every SCA/DBA WD "
+                        "on the manifest (resume-safe append).")
+    p.add_argument("--cba", action="store_true", default=False,
+                   help="CBA POINTER stage: fetch the key-less /wdol/v1/cba/{_id} pointer "
+                        "record (employer/union/agency/locality) for every type=CBA WD "
                         "on the manifest (resume-safe append).")
     p.add_argument("--resume", action="store_true", default=False,
                    help="manifest: no-op re-crawl. rates: skip already-fetched (ref,rev), "
@@ -730,17 +977,25 @@ def _cli() -> None:
     p.add_argument("--wd-uri", default=WD_URI)
     p.add_argument("--county-uri", default=COUNTY_URI)
     p.add_argument("--rate-uri", default=RATE_DOC_URI)
+    p.add_argument("--cba-uri", default=CBA_URI)
+    p.add_argument("--cba-coverage-uri", default=CBA_COVERAGE_URI)
     p.add_argument("--inter-call-sleep", type=float, default=0.5)
     p.add_argument("--keep-temp", action="store_true", default=False,
                    help="accepted for interface parity; this crawl stages no temp files.")
     a = p.parse_args()
-    if a.rates == a.run:
-        p.error("pass exactly one of --run (manifest) or --rates (rate documents).")
+    if sum(bool(m) for m in (a.run, a.rates, a.cba)) != 1:
+        p.error("pass exactly one of --run (manifest) / --rates (rate docs) / --cba (CBA pointers).")
     so, dsn = _storage_options(), os.environ.get("HQX_DB_URL_POOLED")
     if a.rates:
         out = run_rate_stage(
             storage_options=so, dsn=dsn, wd_uri=a.wd_uri, rate_uri=a.rate_uri,
             limit=a.limit, workers=a.workers,
+            inter_call_sleep=(a.inter_call_sleep if a.inter_call_sleep != 0.5 else 0.05),
+            resume=a.resume or True)
+    elif a.cba:
+        out = run_cba_stage(
+            storage_options=so, dsn=dsn, wd_uri=a.wd_uri, cba_uri=a.cba_uri,
+            cba_coverage_uri=a.cba_coverage_uri, limit=a.limit, workers=a.workers,
             inter_call_sleep=(a.inter_call_sleep if a.inter_call_sleep != 0.5 else 0.05),
             resume=a.resume or True)
     else:

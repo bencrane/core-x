@@ -91,9 +91,18 @@ Parse gate: 502 entries, 25 families, 0 orphans, 99.31% char coverage (fail-clos
 | `sam_wage_determinations` | 10,055 | every **active** WD (SCA 1,521 / DBA 4,236 / CBA 4,298), `_id` grain; BTREE `_id`,`full_reference_number`,`short_reference_number`; BITMAP `type_code`,`is_active`,`is_latest`,`revision_number` | `sam.gov/api/prod/sgs/v1/search?index=wd` (key-less frontend) |
 | `sam_wd_county_coverage` | 33,156 | exploded `(wd_id, state_code, county_code, county_name)` — 57 states/territories; BTREE `wd_id`,`state_code`,`county_code` | ↑ same search records |
 | `sam_wd_rate_documents` | 5,757 | the plaintext **rate register** (labor-category → wage/fringe) per SCA/DBA WD; `document` verbatim + sha256; BTREE `wd_id`,`full_reference_number`; BITMAP `wd_type`,`active`,`revision_number` | `sam.gov/api/prod/wdol/v1/wd/{fullReferenceNumber}/{revisionNumber}` |
+| `sam_wd_cba_pointers` | 4,298 | one **pointer** per active CBA WD (§4(c)) — employer × union × agency × locality × effective dates, **NO rate table**; 45% (1,940) carry contractor/union/agency, rest skeletal (vintages 2003–2026); BTREE `wd_id`,`cba_number`,`organization_id`; BITMAP `status`,`latest`,`archived` | `sam.gov/api/prod/wdol/v1/cba/{_id}` (key-less frontend) |
+| `sam_wd_cba_coverage` | 4,270 | exploded `(wd_id, state_name, county_name, city, zip)` — 56 states; full state **NAMES** (not USPS codes / SAM county codes); BTREE `wd_id`,`cba_number` | ↑ same CBA records |
 
-CBA rate docs (4,298) are **X-Auth-Token gated** → metadata only. `document` is raw text; structured
-`(occupation, rate, fringe)` parsing is a **pending** downstream dataset.
+A §4(c) CBA WD has **no WHD rate register** — it is a *pointer* that cites the governing union contract.
+`/wdol/v1/cba/{_id}` is **key-less** (verified 200; the earlier "X-Auth-Token gated" note was wrong) but
+carries only employer × union × agency × locality × effective-dates — **no wage table**. SAM.gov hosts no
+copy of the CBA (every `/cba/{_id}/{attachments,files,document,download}` sub-path 404s). The wage/fringe
+schedule lives in the **external union contract**, resolved from independent corpora — DOL **OLMS CBA
+File** (primary; private+public 1,000+-employee units), **OPM** NAF CBAs (federal-sector; the NAF slice is
+wage-bearing), **Cornell ILR** (historical) — matched on the pointer's `(contractor, union, locality,
+dates)`. Structured `(occupation, rate, fringe)` extraction from those documents is a **pending** downstream
+dataset.
 
 ### 3.4 O*NET 30.3 — the SOC semantic layer (45 datasets, 1,104,314 rows)
 
@@ -129,6 +138,7 @@ prime award (usaspending/FPDS): NAICS + PSC + place-of-performance COUNTY (FIPS)
   ├─ PSC ──► service-vs-product gate (first char) + (via LLM) labor categories
   │
   └─ county FIPS ──► sam_wd_county_coverage ──► sam_wd_rate_documents  (locality SCA/DBA rates)
+                     sam_wd_cba_pointers ──► [external union contract]  (§4(c) CBA-covered labor; wages off-platform)
 ```
 
 - **NAICS**: 6-digit on prime awards; OEWS carries it at 2/3/4/5/6-digit (`i_group`); EP matrix
@@ -175,7 +185,7 @@ prime award (usaspending/FPDS): NAICS + PSC + place-of-performance COUNTY (FIPS)
 | `pipelines/bls/ep_industry_occupation_matrix.py` | `bls_ep_industry_occupation_matrix_2024_2034` | scrapes 423 industries; seeded from landed `occupation.xlsx` Table 1.9; fail-closed on any industry |
 | `pipelines/bls/ep_occupation_workbook.py` | the 5 remaining `bls_ep_*` + EP upgrade | Tables 1.1/1.2/1.10/1.11/1.12 + 1.3–1.6 |
 | `pipelines/dol/ingest.py` | `dol_sca_*` (3 sinks) | pypdfium2 text; coverage-gated structured parse |
-| `pipelines/sam_gov/sam_wd_manifest.py` | `sam_wage_determinations`, `sam_wd_county_coverage`, `sam_wd_rate_documents` | `--run` manifest, `--rates` rate stage; key-less frontend crawl |
+| `pipelines/sam_gov/sam_wd_manifest.py` | `sam_wage_determinations`, `sam_wd_county_coverage`, `sam_wd_rate_documents`, `sam_wd_cba_pointers`, `sam_wd_cba_coverage` | `--run` manifest, `--rates` SCA/DBA rate stage, `--cba` CBA pointer stage; key-less frontend crawl |
 | `pipelines/onet/ingest.py` | all 45 `onet_*` | **registry-free auto-discovery** of the zip; robust to O*NET version |
 
 **ops ledgers (Postgres, `HQX_DB_URL_POOLED`):** `ops.bls_runs`, `ops.dol_runs`, `ops.onet_runs`,
@@ -211,8 +221,11 @@ self-check (reproduces the standalone EP feed). `bls.gov/emp/...` blocks datacen
   union + **dedup on `_id`** (the universal key — `fullReferenceNumber` is NULL for all CBA), **fail-closed
   reconciliation** against live `is_active=true totalElements`. No sort/`search_after` cursor exists.
 - **Rate endpoint:** `sam.gov/api/prod/wdol/v1/wd/{fullReferenceNumber}/{revisionNumber}` → hal+json
-  `document` (the rate register text). `revisionNumber` is a **required** path segment. SCA+DBA only
-  (CBA `fullReferenceNumber` is null; `/wdol/v1/cba/{_id}` is X-Auth-Token gated).
+  `document` (the rate register text). `revisionNumber` is a **required** path segment. SCA+DBA only.
+- **CBA endpoint:** `sam.gov/api/prod/wdol/v1/cba/{_id}` → hal+json **pointer** (employer, union, agency,
+  locality, effective dates) — **key-less** (verified 200; the earlier "X-Auth-Token gated" note was
+  wrong). A §4(c) CBA WD has **no** rate register; SAM.gov hosts no CBA copy (every
+  `/cba/{_id}/{attachments,files,document,download}` sub-path 404s). Harvested by `--cba`.
 - Location has **3 incompatible shapes** in the search record (SCA `states[].counties.{include/exclude}`,
   DBA singular `state`, CBA flat `states[].counties[]`); the county explode branches on `type.code`.
 
