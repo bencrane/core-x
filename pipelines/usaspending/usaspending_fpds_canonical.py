@@ -830,23 +830,41 @@ def _relset(root) -> set[str]:
     return out
 
 
-def _download_r2_to_local(s3, uri, local_dir) -> int:
+def _download_r2_to_local(s3, uri, local_dir, workers: int = 16) -> int:
     """Mirror an R2 dataset prefix → local dir (inverse of _publish_local_to_r2), preserving relative
-    layout so the copy opens as a byte-identical Lance dataset. boto3 managed transfer (multipart on
-    the download side is unconstrained; the R2 uniform-part rule is a WRITE constraint only)."""
+    layout so the copy opens as a byte-identical Lance dataset. Parallel per-file: the ~90 GiB mirror
+    is dominated by per-object latency, so serial download_file stalls the whole index stage ~40 min.
+    A shared boto3 client is thread-safe for download_file; per-file multipart concurrency is capped so
+    workers × chunks stays bounded. R2's uniform-part rule is a WRITE constraint only — reads are free."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from boto3.s3.transfer import TransferConfig
     prefix = uri.replace(f"s3://{BUCKET}/", "")
+    cfg = TransferConfig(max_concurrency=4, multipart_threshold=64 * 1024**2,
+                         multipart_chunksize=64 * 1024**2)
+    keys: list[str] = []
     pag = s3.get_paginator("list_objects_v2")
-    n = 0
     for page in pag.paginate(Bucket=BUCKET, Prefix=prefix):
         for o in page.get("Contents", []):
-            rel = o["Key"][len(prefix):]
-            if not rel:  # prefix placeholder key, if any
-                continue
-            lp = os.path.join(local_dir, rel.replace("/", os.sep))
-            os.makedirs(os.path.dirname(lp), exist_ok=True)
-            s3.download_file(BUCKET, o["Key"], lp)
-            n += 1
-    return n
+            if o["Key"][len(prefix):]:  # skip the prefix placeholder key, if any
+                keys.append(o["Key"])
+    for k in keys:  # pre-create dirs single-threaded to avoid makedirs races in workers
+        os.makedirs(os.path.dirname(os.path.join(local_dir, k[len(prefix):].replace("/", os.sep)))
+                    or local_dir, exist_ok=True)
+
+    def _get(key: str) -> None:
+        s3.download_file(BUCKET, key, os.path.join(local_dir, key[len(prefix):].replace("/", os.sep)),
+                         Config=cfg)
+
+    done = 0
+    log(f"  mirroring {len(keys)} objects ({workers}-way)…")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_get, k) for k in keys]
+        for f in as_completed(futs):
+            f.result()  # re-raise any worker failure (fail-closed: a partial mirror must abort)
+            done += 1
+            if done % 20 == 0 or done == len(keys):
+                log(f"  mirrored {done}/{len(keys)} files")
+    return done
 
 
 def _publish_index_delta(s3, uri, local_ds, before: set[str]) -> int:
