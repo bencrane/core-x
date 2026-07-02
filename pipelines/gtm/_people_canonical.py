@@ -65,14 +65,17 @@ _HOST = re.compile(r"^[a-z0-9.-]*linkedin\.com/")
 _QF = re.compile(r"[?#].*$")
 _TRAIL = re.compile(r"/+$")
 
-# Sidecar Arrow schema (matches the built dataset). timestamp(us, UTC).
+# Sidecar Arrow schema — MUST match the committed dataset exactly. The coordinator built
+# person_source_platforms with first_seen_at in America/New_York; a UTC field type here is
+# rejected on append (Lance schema check is tz-strict). tz is display metadata only — the
+# stored instant is identical — so the schema is aligned to the built dataset, not rebuilt.
 SIDECAR_SCHEMA = pa.schema(
     [
         pa.field("canonical_person_id", pa.string()),
         pa.field("source_platform", pa.string()),
         pa.field("legacy_person_id", pa.string()),
         pa.field("person_linkedin_url_norm", pa.string()),
-        pa.field("first_seen_at", pa.timestamp("us", tz="UTC")),
+        pa.field("first_seen_at", pa.timestamp("us", tz="America/New_York")),
         pa.field("source_ref", pa.string()),
     ]
 )
