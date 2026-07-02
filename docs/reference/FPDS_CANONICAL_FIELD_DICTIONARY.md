@@ -2,7 +2,7 @@
 
 > **AUTO-GENERATED — do not hand-edit.** This file is a projection of `COLUMN_SPEC` in [`pipelines/usaspending/usaspending_fpds_canonical.py`](../../pipelines/usaspending/usaspending_fpds_canonical.py), cross-checked fail-closed against the live R2 dataset. To change it, change the pipeline contract and regenerate (see [§7](#7-regenerating-this-document)). Definitions are joined from the committed sidecar `fpds_field_definitions.json` (USAspending Data Dictionary) and may be length-capped verbatim from source.
 
-**Live anchor:** `s3://data-sink/active/usaspending_fpds_canonical_txn/` — **108,181,354 rows · 131 cols · 17 indices** · manifest v18. Verified live: 2026-07-02.
+**Live anchor:** `s3://data-sink/active/usaspending_fpds_canonical_txn/` — **108,181,354 rows · 131 cols · 18 indices** · manifest v36. Verified live: 2026-07-02.
 
 ---
 
@@ -15,7 +15,7 @@ The typed, PK-grained **system-of-record read model** for U.S. federal contract 
 | URI | `s3://data-sink/active/usaspending_fpds_canonical_txn/` |
 | rows | 108,181,354 |
 | columns | 131 |
-| indices | 17 (10 BTREE + 7 BITMAP) |
+| indices | 18 (11 BTREE + 7 BITMAP) |
 | grain / PK | `contract_transaction_unique_key` (exactly one surviving row per key — structural uniqueness gate at build) |
 | storage | Lance `data_storage_version=2.1`, `max_rows_per_file=1,048,576`, written LOCAL then boto3 uniform-part published to R2 (never a direct-R2 writer — Giants `400 InvalidPart`) |
 | ops ledger | `ops.usaspending_fpds_canonical_runs` (Postgres; one row per build) |
@@ -205,7 +205,7 @@ Grouped by role. `source` shows the native upstream column(s) each canonical col
 | 1 | `canonical_source` | `string` | derived per key (winning source tag) | Pipeline provenance — which upstream feed won this row's volatile core: one of `fresh`, `bulk`, or `monthly`. | — |
 | 2 | `built_at` | `timestamp[us]` | injected UTC literal | Pipeline provenance — a single UTC build-timestamp literal injected into every row of a given build. | — |
 
-## 4. Index topology (17)
+## 4. Index topology (18)
 
 All scalar indices. **BTREE** for high-cardinality / temporal / point-lookup columns; **BITMAP** for low-cardinality categoricals (cheap equality/`IN` bitset filters). Index name convention: `<column>_idx`. Rebuilt in-RAM (`LANCE_BYPASS_SPILLING=true`) — a 108M-row external merge sort OOMs the DataFusion spill pool.
 
@@ -221,13 +221,14 @@ All scalar indices. **BTREE** for high-cardinality / temporal / point-lookup col
 | 8 | `federal_action_obligation` | BTREE | `federal_action_obligation_idx` |
 | 9 | `recipient_hash` | BTREE | `recipient_hash_idx` |
 | 10 | `award_id_piid` | BTREE | `award_id_piid_idx` |
-| 11 | `action_date_fiscal_year` | BITMAP | `action_date_fiscal_year_idx` |
-| 12 | `type_of_set_aside_code` | BITMAP | `type_of_set_aside_code_idx` |
-| 13 | `awarding_agency_code` | BITMAP | `awarding_agency_code_idx` |
-| 14 | `award_type_code` | BITMAP | `award_type_code_idx` |
-| 15 | `idv_type_code` | BITMAP | `idv_type_code_idx` |
-| 16 | `canonical_source` | BITMAP | `canonical_source_idx` |
-| 17 | `subcontracting_plan` | BITMAP | `subcontracting_plan_idx` |
+| 11 | `pop_county_fips` | BTREE | `pop_county_fips_idx` |
+| 12 | `action_date_fiscal_year` | BITMAP | `action_date_fiscal_year_idx` |
+| 13 | `type_of_set_aside_code` | BITMAP | `type_of_set_aside_code_idx` |
+| 14 | `awarding_agency_code` | BITMAP | `awarding_agency_code_idx` |
+| 15 | `award_type_code` | BITMAP | `award_type_code_idx` |
+| 16 | `idv_type_code` | BITMAP | `idv_type_code_idx` |
+| 17 | `canonical_source` | BITMAP | `canonical_source_idx` |
+| 18 | `subcontracting_plan` | BITMAP | `subcontracting_plan_idx` |
 
 ## 5. Reconciliation semantics
 
