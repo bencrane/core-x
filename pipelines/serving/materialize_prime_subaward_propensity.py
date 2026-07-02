@@ -36,7 +36,7 @@ except Exception:  # noqa: BLE001
 # --------------------------------------------------------------------------- #
 ACTIVE = "s3://data-sink/active"
 SERVING_URI = os.environ.get("PRIME_SUBK_PROPENSITY_URI", f"{ACTIVE}/govcon_prime_subaward_propensity/")
-SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUBAWARD_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (fixes FSRS under-report; was usaspending_api_fresh/contract_subaward)
 FEED = "prime_subaward_propensity"
 DATA_STORAGE_VERSION = "2.1"
 

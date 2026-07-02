@@ -31,7 +31,7 @@ import sys
 
 ACTIVE = "s3://data-sink/active"
 GAA_URI = f"{ACTIVE}/govcon_active_awards/"
-SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUBAWARD_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (already deduped to (prime,subaward_number); was usaspending_api_fresh/contract_subaward)
 SUBDES_URI = f"{ACTIVE}/govcon_subawardee_designations/"
 SERVING_URI = os.environ.get("SUBK_OBLIGATIONS_URI", f"{ACTIVE}/govcon_active_subcontracting_obligations/")
 DATA_STORAGE_VERSION = "2.1"
