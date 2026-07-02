@@ -821,6 +821,89 @@ def _publish_local_to_r2(s3, uri, local_ds) -> int:
     return uploaded
 
 
+def _relset(root) -> set[str]:
+    """Every file under `root` as POSIX-relative paths — snapshot primitive for delta publishing."""
+    out: set[str] = set()
+    for r, _dirs, files in os.walk(root):
+        for f in files:
+            out.add(os.path.relpath(os.path.join(r, f), root).replace(os.sep, "/"))
+    return out
+
+
+def _download_r2_to_local(s3, uri, local_dir) -> int:
+    """Mirror an R2 dataset prefix → local dir (inverse of _publish_local_to_r2), preserving relative
+    layout so the copy opens as a byte-identical Lance dataset. boto3 managed transfer (multipart on
+    the download side is unconstrained; the R2 uniform-part rule is a WRITE constraint only)."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "")
+    pag = s3.get_paginator("list_objects_v2")
+    n = 0
+    for page in pag.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            rel = o["Key"][len(prefix):]
+            if not rel:  # prefix placeholder key, if any
+                continue
+            lp = os.path.join(local_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            s3.download_file(BUCKET, o["Key"], lp)
+            n += 1
+    return n
+
+
+def _publish_index_delta(s3, uri, local_ds, before: set[str]) -> int:
+    """Append-only publish of an index build: upload ONLY files created since `before` (new
+    _indices/<uuid>/**) PLUS every manifest/version/transaction file (small, always refreshed so the
+    R2 latest-version pointer advances regardless of Lance's manifest-naming scheme). Data fragments —
+    large, unchanged, present in `before`, non-meta — are NEVER re-uploaded or deleted. boto3
+    upload_file ⇒ uniform multipart parts (R2-compliant); the native Lance R2 writer is bypassed."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "")
+
+    def _is_meta(rel: str) -> bool:
+        return (rel.startswith("_versions/") or rel.startswith("_transactions/")
+                or rel.endswith(".manifest") or "_latest" in rel)
+
+    cur = _relset(local_ds)
+    to_pub = sorted(r for r in cur if r not in before or _is_meta(r))
+    for rel in to_pub:
+        s3.upload_file(os.path.join(local_ds, rel.replace("/", os.sep)), BUCKET, prefix + rel)
+    return len(to_pub)
+
+
+def _gc_orphan_indices(s3, uri, keep_uuids: set[str]) -> int:
+    """Remove _indices/<uuid>/ prefixes not referenced by the live manifest (e.g. the half-written dir
+    a failed native-R2 index attempt leaves behind) and abort dangling multipart uploads under the
+    dataset prefix (a failed native write leaks an open MPU → silent storage charge). Best-effort:
+    self-healing hygiene must never raise into — nor fail — the index publish it follows."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "")
+    idx_prefix = prefix + "_indices/"
+    removed = 0
+    try:
+        pag = s3.get_paginator("list_objects_v2")
+        to_del: list[dict] = []
+        for page in pag.paginate(Bucket=BUCKET, Prefix=idx_prefix):
+            for o in page.get("Contents", []):
+                uuid = o["Key"][len(idx_prefix):].split("/", 1)[0]
+                if uuid and uuid not in keep_uuids:
+                    to_del.append({"Key": o["Key"]})
+                    if len(to_del) >= 1000:
+                        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                        removed += len(to_del)
+                        to_del = []
+        if to_del:
+            s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+            removed += len(to_del)
+    except Exception as exc:  # noqa: BLE001 — hygiene never breaks the publish
+        log(f"WARN: orphan-index GC skipped: {exc}")
+    try:
+        mpus = s3.list_multipart_uploads(Bucket=BUCKET, Prefix=prefix).get("Uploads", [])
+        for u in mpus:
+            s3.abort_multipart_upload(Bucket=BUCKET, Key=u["Key"], UploadId=u["UploadId"])
+        if mpus:
+            log(f"aborted {len(mpus)} dangling multipart upload(s)")
+    except Exception as exc:  # noqa: BLE001
+        log(f"WARN: MPU abort skipped: {exc}")
+    return removed
+
+
 def _dataset_exists(uri, so) -> bool:
     import lance
     try:
@@ -1051,30 +1134,62 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
 
 
 def index(target_uri: str = CANONICAL_URI) -> dict:
-    """Open the published dataset and build the §4 BTREE/BITMAP indices. Separate from build so a
-    failed/half index never corrupts the data write. Columns absent from schema are skipped."""
+    """Build the §4 BTREE/BITMAP indices R2-safely.
+
+    Lance's native object-writer streams adaptive-sized multipart parts; R2 rejects any non-trailing
+    part whose size differs (400 InvalidPart: 'All non-trailing parts must have the same length') — the
+    IDENTICAL wall the table write hit (header §), so create_scalar_index against the R2 URI dies on the
+    first BTREE. The fix mirrors the publish path: (1) mirror the dataset to local ephemeral disk,
+    (2) build every index against the LOCAL Lance path (local-FS writer — no multipart), (3) append-only
+    publish just the new index + manifest files via boto3 uniform parts (data fragments are never
+    rewritten), (4) GC any orphan index dir + dangling MPU from a prior failed native attempt.
+
+    Kept separate from build() for blast-radius isolation (a failed/half index never touches the data
+    fragments). Idempotent: replace=True rebuilds cleanly and the GC prunes superseded index UUIDs.
+    Columns absent from schema are skipped."""
     import lance
-    so = _r2_so()
-    ds = lance.dataset(target_uri, storage_options=so)
-    present = set(ds.schema.names)
+    s3 = _s3()
+    local_ds = os.path.join(SCRATCH, "index_lance")
+    shutil.rmtree(local_ds, ignore_errors=True)
+    os.makedirs(local_ds, exist_ok=True)
     built: list[str] = []
-    log(f"indexing {target_uri} ({ds.count_rows():,} rows)")
-    for col in [c for c in BTREE_COLS if c in present]:
-        try:
-            ds.create_scalar_index(col, index_type="BTREE", replace=True)
-        except TypeError:
-            ds.create_scalar_index(col, index_type="BTREE")
-        built.append(col)
-        log(f"  BTREE ✓ {col}")
-    for col in [c for c in BITMAP_COLS if c in present]:
-        try:
-            ds.create_scalar_index(col, index_type="BITMAP", replace=True)
-        except TypeError:
-            ds.create_scalar_index(col, index_type="BITMAP")
-        built.append(col)
-        log(f"  BITMAP ✓ {col}")
-    log(f"indices built: {built}")
-    return {"target_uri": target_uri, "indices_built": built}
+    try:
+        log(f"materializing {target_uri} → {local_ds} (boto3 mirror)…")
+        got = _download_r2_to_local(s3, target_uri, local_ds)
+        log(f"materialized {got} files")
+        before = _relset(local_ds)                       # data fragments + committed manifest
+        ds = lance.dataset(local_ds)                     # LOCAL — no storage_options, no R2 writer
+        present = set(ds.schema.names)
+        log(f"indexing LOCAL ({ds.count_rows():,} rows)")
+        for col in [c for c in BTREE_COLS if c in present]:
+            try:
+                ds.create_scalar_index(col, index_type="BTREE", replace=True)
+            except TypeError:
+                ds.create_scalar_index(col, index_type="BTREE")
+            built.append(col)
+            log(f"  BTREE ✓ {col}")
+        for col in [c for c in BITMAP_COLS if c in present]:
+            try:
+                ds.create_scalar_index(col, index_type="BITMAP", replace=True)
+            except TypeError:
+                ds.create_scalar_index(col, index_type="BITMAP")
+            built.append(col)
+            log(f"  BITMAP ✓ {col}")
+        after = _relset(local_ds)
+        published = _publish_index_delta(s3, target_uri, local_ds, before)
+        log(f"published {published} index/manifest file(s) → {target_uri} (append-only)")
+        # keep-set = index UUIDs CREATED this run (local _indices/ dirs absent from `before`). The
+        # orphan a failed native attempt leaves is present in `before` → excluded → pruned on R2.
+        # Filesystem-derived on purpose: GC must not depend on list_indices() attribute names, and an
+        # empty keep-set must never be handed to the GC (it would nuke the live indices just published).
+        keep = {rel[len("_indices/"):].split("/", 1)[0]
+                for rel in (after - before) if rel.startswith("_indices/")}
+        pruned = _gc_orphan_indices(s3, target_uri, keep) if keep else 0
+        log(f"indices built: {built} (orphan index objects pruned: {pruned})")
+        return {"target_uri": target_uri, "indices_built": built,
+                "files_published": published, "orphans_pruned": pruned}
+    finally:
+        shutil.rmtree(local_ds, ignore_errors=True)
 
 
 def verify(target_uri: str = CANONICAL_URI) -> dict:
@@ -1205,10 +1320,12 @@ if modal is not None:
     def build_fn(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         return build(since=since, target_uri=target_uri)
 
-    # Index = the RAM-bound external sort (LANCE_BYPASS_SPILLING) — sized ≥96 GiB with headroom.
-    # No ephemeral_disk: its pressure is RAM, not local disk (Modal's floor is 512 GiB — wasteful here).
+    # Index is now BOTH RAM- and disk-bound: RAM for the LANCE_BYPASS_SPILLING external sort (≥96 GiB
+    # with headroom) AND ephemeral disk for the local dataset mirror (~90 GiB) + emitted index files,
+    # since indices must be built locally then boto3-published (R2 rejects Lance's native multipart
+    # index write). ephemeral_disk restored (#858 dropped it under the now-obsolete RAM-only model).
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 6, memory=196_608, cpu=8.0,
-                        retries=0)
+                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
     def index_fn(target_uri: str = CANONICAL_URI) -> dict:
         return index(target_uri=target_uri)
 
