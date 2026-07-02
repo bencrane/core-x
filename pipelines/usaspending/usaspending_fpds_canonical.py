@@ -202,6 +202,13 @@ COLUMN_SPEC: list[dict] = [
      "bulk_expr": "s(contract_award_type)", "feed_expr": "s(award_type_code)"},
     {"canonical": "idv_type_code", "duck_type": "VARCHAR", "group": "core",
      "bulk_expr": "s(idv_type)", "feed_expr": "s(idv_type_code)"},
+    {"canonical": "subcontracting_plan", "duck_type": "VARCHAR", "group": "core",
+     # FPDS subcontracting-plan CODE (A/B/C/D/E/F/G/H). BULK exposes the code as subcontracting_plan;
+     # FRESH + archive expose it as subcontracting_plan_code (their `subcontracting_plan` is the
+     # description, not used). Codes C/D/E/F/G/H ⇒ a plan is in place; A/B ⇒ none; NULL ⇒ not populated
+     # (~35% of txns). has_subcontracting_plan derives downstream: subcontracting_plan IN
+     # ('C','D','E','F','G','H') — the raw code is carried on the spine; the boolean lives in serving.
+     "bulk_expr": "s(subcontracting_plan)", "feed_expr": "s(subcontracting_plan_code)"},
     {"canonical": "construction_wage_rate_requirements_code", "duck_type": "VARCHAR", "group": "core",
      "bulk_expr": "s(construction_wage_rate_req)",  # NON-1:1 rename (truncated pg col name)
      "feed_expr": "s(construction_wage_rate_requirements_code)"},
@@ -324,6 +331,97 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": "highly_compensated_officer_5_amount", "duck_type": "DOUBLE", "group": "enrich",
      "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)"},
 
+    # ---- (c2) FPDS spine expansion — tightened adds (2026-07-02; see FPDS_CANONICAL_FIELD_DICTIONARY.md) ----
+    {"canonical": "women_owned_small_business", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "upper(substr(CAST(women_owned_small_business AS VARCHAR),1,1))",
+     "feed_expr": "upper(substr(CAST(women_owned_small_business AS VARCHAR),1,1))"},
+    {"canonical": "service_disabled_veteran_owned_business", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "upper(substr(CAST(service_disabled_veteran_o AS VARCHAR),1,1))",
+     "feed_expr": "upper(substr(CAST(service_disabled_veteran_owned_business AS VARCHAR),1,1))"},
+    {"canonical": "historically_underutilized_business_zone_hubzone_firm", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "upper(substr(CAST(historically_underutilized AS VARCHAR),1,1))",
+     "feed_expr": "upper(substr(CAST(historically_underutilized_business_zone_hubzone_firm AS VARCHAR),1,1))"},
+    {"canonical": "c8a_program_participant", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "upper(substr(CAST(c8a_program_participant AS VARCHAR),1,1))",
+     "feed_expr": "upper(substr(CAST(c8a_program_participant AS VARCHAR),1,1))"},
+    {"canonical": "solicitation_procedures", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(solicitation_procedures)", "feed_expr": "s(solicitation_procedures)"},
+    {"canonical": "other_than_full_and_open_competition_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(other_than_full_and_open_c)", "feed_expr": "s(other_than_full_and_open_competition_code)"},
+    {"canonical": "fair_opportunity_limited_sources_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(fair_opportunity_limited_s)", "feed_expr": "s(fair_opportunity_limited_sources_code)"},
+    {"canonical": "commercial_item_acquisition_procedures_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(commercial_item_acquisitio)", "feed_expr": "s(commercial_item_acquisition_procedures_code)"},
+    {"canonical": "multiple_or_single_award_idv_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(multiple_or_single_award_i)", "feed_expr": "s(multiple_or_single_award_idv_code)"},
+    {"canonical": "parent_award_agency_id", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(referenced_idv_agency_iden)", "feed_expr": "s(parent_award_agency_id)"},
+    {"canonical": "parent_award_type_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(referenced_idv_type)", "feed_expr": "s(parent_award_type_code)"},
+    {"canonical": "parent_award_modification_number", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(referenced_idv_modificatio)", "feed_expr": "s(parent_award_modification_number)"},
+    {"canonical": "major_program", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(major_program)", "feed_expr": "s(major_program)"},
+    {"canonical": "program_acronym", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(program_acronym)", "feed_expr": "s(program_acronym)"},
+    {"canonical": "contract_bundling", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(contract_bundling)", "feed_expr": "s(contract_bundling)"},
+    {"canonical": "consolidated_contract", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(consolidated_contract)", "feed_expr": "s(consolidated_contract)"},
+    {"canonical": "performance_based_service_acquisition_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(performance_based_service)", "feed_expr": "s(performance_based_service_acquisition_code)"},
+    {"canonical": "undefinitized_action_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(undefinitized_action)", "feed_expr": "s(undefinitized_action_code)"},
+    {"canonical": "multi_year_contract", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(multi_year_contract)", "feed_expr": "s(multi_year_contract)"},
+    {"canonical": "contract_financing", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(contract_financing)", "feed_expr": "s(contract_financing)"},
+    {"canonical": "cost_or_pricing_data", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(cost_or_pricing_data)", "feed_expr": "s(cost_or_pricing_data)"},
+    {"canonical": "dod_claimant_program_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(dod_claimant_program_code)", "feed_expr": "s(dod_claimant_program_code)"},
+    {"canonical": "inherently_governmental_functions", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(inherently_government_func)", "feed_expr": "s(inherently_governmental_functions)"},
+    {"canonical": "purchase_card_as_payment_method_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(purchase_card_as_payment_m)", "feed_expr": "s(purchase_card_as_payment_method_code)"},
+    {"canonical": "clinger_cohen_act_planning_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(clinger_cohen_act_planning)", "feed_expr": "s(clinger_cohen_act_planning_code)"},
+    {"canonical": "national_interest_action_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(national_interest_action)", "feed_expr": "s(national_interest_action_code)"},
+    {"canonical": "domestic_or_foreign_entity_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(domestic_or_foreign_entity)", "feed_expr": "s(domestic_or_foreign_entity_code)"},
+    {"canonical": "price_evaluation_adjustment_preference_percent_difference", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(price_evaluation_adjustmen)", "feed_expr": "s(price_evaluation_adjustment_preference_percent_difference)"},
+    {"canonical": "place_of_performance_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(place_of_performance_code)", "feed_expr": None},
+    {"canonical": "place_of_performance_scope", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(place_of_performance_scope)", "feed_expr": None},
+    {"canonical": "place_of_performance_forei", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(place_of_performance_forei)", "feed_expr": None},
+    {"canonical": "pop_city_name", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(pop_city_name)", "feed_expr": None},
+    {"canonical": "funding_office_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(funding_office_code)", "feed_expr": "s(funding_office_code)"},
+    {"canonical": "funding_office_name", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(funding_office_name)", "feed_expr": "s(funding_office_name)"},
+    {"canonical": "funding_sub_agency_code", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(funding_sub_tier_agency_co)", "feed_expr": "s(funding_sub_agency_code)"},
+    {"canonical": "funding_sub_agency_name", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(funding_subtier_agency_name)", "feed_expr": "s(funding_sub_agency_name)"},
+    {"canonical": "transaction_number", "duck_type": "VARCHAR", "group": "core",
+     "bulk_expr": "s(transaction_number)", "feed_expr": "s(transaction_number)"},
+    {"canonical": "ordering_period_end_date", "duck_type": "DATE", "group": "core",
+     "bulk_expr": "TRY_CAST(s(ordering_period_end_date) AS DATE)", "feed_expr": "TRY_CAST(s(ordering_period_end_date) AS DATE)"},
+    {"canonical": "solicitation_date", "duck_type": "DATE", "group": "core",
+     "bulk_expr": "solicitation_date", "feed_expr": "TRY_CAST(s(solicitation_date) AS DATE)"},
+    {"canonical": "total_dollars_obligated", "duck_type": "DOUBLE", "group": "core",
+     "bulk_expr": "TRY_CAST(s(total_obligated_amount) AS DOUBLE)", "feed_expr": "TRY_CAST(s(total_dollars_obligated) AS DOUBLE)"},
+    {"canonical": "base_and_exercised_options_value", "duck_type": "DOUBLE", "group": "core",
+     "bulk_expr": "TRY_CAST(s(base_exercised_options_val) AS DOUBLE)", "feed_expr": "TRY_CAST(s(base_and_exercised_options_value) AS DOUBLE)"},
+    {"canonical": "number_of_offers_received", "duck_type": "BIGINT", "group": "core",
+     "bulk_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)", "feed_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)"},
+    {"canonical": "number_of_actions", "duck_type": "BIGINT", "group": "core",
+     "bulk_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)", "feed_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)"},
     # ---- (d) provenance ----
     {"canonical": "canonical_source", "duck_type": "VARCHAR", "group": "prov",
      "bulk_expr": None, "feed_expr": None},   # literal per leg
@@ -341,7 +439,7 @@ BTREE_COLS = ["contract_transaction_unique_key", "contract_award_unique_key", "r
               "action_date", "last_modified_date", "naics_code", "product_or_service_code",
               "federal_action_obligation", "recipient_hash", "award_id_piid"]
 BITMAP_COLS = ["action_date_fiscal_year", "type_of_set_aside_code", "awarding_agency_code",
-               "award_type_code", "idv_type_code", "canonical_source"]
+               "award_type_code", "idv_type_code", "canonical_source", "subcontracting_plan"]
 
 
 # ---- COLUMN_SPEC derived helpers (all generated; nothing hand-transcribed) ---- #
@@ -922,6 +1020,38 @@ def _gc_orphan_indices(s3, uri, keep_uuids: set[str]) -> int:
     return removed
 
 
+def _build_indices_local(local_ds: str) -> list[str]:
+    """Build the §4 BTREE/BITMAP scalar indices against a LOCAL Lance path; return the columns actually
+    indexed (schema-presence filtered). Opened with lance.dataset(local_ds) and NO storage_options → the
+    local-FS writer (no multipart), the ONLY R2-safe way to write indices (the native R2 object-writer
+    streams adaptive-sized parts R2 rejects: 400 InvalidPart, 'all non-trailing parts must have the same
+    length'). Shared by build() (indices written into local_ds BEFORE the single _publish_local_to_r2 →
+    published atomically WITH the data) and index() (indices written into the R2→local mirror BEFORE the
+    append-only delta publish). Idempotent: replace=True rebuilds cleanly; the TypeError fallback covers
+    older lance without the kwarg. Raises on the first failing column so callers fail-closed BEFORE any
+    R2 mutation."""
+    import lance
+    ds = lance.dataset(local_ds)                     # LOCAL — no storage_options, no R2 writer
+    present = set(ds.schema.names)
+    built: list[str] = []
+    log(f"indexing LOCAL ({ds.count_rows():,} rows)")
+    for col in [c for c in BTREE_COLS if c in present]:
+        try:
+            ds.create_scalar_index(col, index_type="BTREE", replace=True)
+        except TypeError:
+            ds.create_scalar_index(col, index_type="BTREE")
+        built.append(col)
+        log(f"  BTREE ✓ {col}")
+    for col in [c for c in BITMAP_COLS if c in present]:
+        try:
+            ds.create_scalar_index(col, index_type="BITMAP", replace=True)
+        except TypeError:
+            ds.create_scalar_index(col, index_type="BITMAP")
+        built.append(col)
+        log(f"  BITMAP ✓ {col}")
+    return built
+
+
 def _dataset_exists(uri, so) -> bool:
     import lance
     try:
@@ -1016,6 +1146,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
     monthly_corrections_applied = 0
     max_action_date = None
     metrics: dict = {}
+    built_idx: list[str] = []
     con = None
     local_ds = os.path.join(SCRATCH, "canonical_lance")
     try:
@@ -1116,8 +1247,32 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         con.close()
         con = None
 
+        # ── reclaim DuckDB RSS + spill BEFORE the RAM-heavy index sort (fold-isolation fix) ──
+        # The standalone index_fn ran the ≥96 GiB LANCE_BYPASS_SPILLING BTREE sort in a FRESH container;
+        # folded, that sort runs in the SAME container that just held a DUCK_MEM-limit DuckDB engine. glibc
+        # does not return freed arenas to the OS on its own → malloc_trim forces it, so residual DuckDB RSS
+        # cannot collide with the sort and trigger an OOM-SIGKILL — an out-of-band kill the except/finally
+        # below CANNOT catch (it would leave no ledger row). Dropping DUCK_TMP frees reconcile spill so the
+        # local index write cannot ENOSPC the shared ephemeral disk.
+        import ctypes
+        import gc as _gc
+        del reader
+        _gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except OSError:
+            pass  # non-glibc (e.g. local macOS dev); Modal's debian_slim image is glibc
+        shutil.rmtree(DUCK_TMP, ignore_errors=True)
+
+        # ── build §4 indices on the LOCAL dataset BEFORE publish (atomic fold) ──
+        # local-FS writer (no multipart, R2-safe); _publish_local_to_r2's os.walk uploads the resulting
+        # _indices/ together with the data fragments in ONE publish. A failed index raises HERE, before
+        # _s3() and the wipe-then-upload below ever run ⇒ the R2 SoR is never touched (all-or-nothing).
+        built_idx = _build_indices_local(local_ds)
+        log(f"indices built LOCALLY: {built_idx}")
+
         s3 = _s3()
-        log(f"publishing local Lance → {target_uri} (boto3 uniform-part)…")
+        log(f"publishing local Lance (data + indices) → {target_uri} (boto3 uniform-part)…")
         published = _publish_local_to_r2(s3, target_uri, local_ds)
         log(f"published {published} files → {target_uri}")
         status = "success"
@@ -1130,6 +1285,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                    "monthly_corrections_applied": int(monthly_corrections_applied),
                    "max_action_date": max_action_date, "pk_unique": True,
                    "columns": len(COLUMN_SPEC), "files_published": int(published),
+                   "indices_built": built_idx,
                    "write_mode": "overwrite", "status": status}
     except BaseException as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__} (no message)"
@@ -1145,7 +1301,7 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
                     monthly_corrections_applied=int(monthly_corrections_applied),
                     max_action_date=max_action_date,
                     columns=len(COLUMN_SPEC), write_mode="overwrite",
-                    indices_built=None, status=status, error=error,
+                    indices_built=built_idx, status=status, error=error,
                     started=started, completed=dt.datetime.now(dt.timezone.utc))
         shutil.rmtree(SCRATCH, ignore_errors=True)
     return metrics
@@ -1165,34 +1321,16 @@ def index(target_uri: str = CANONICAL_URI) -> dict:
     Kept separate from build() for blast-radius isolation (a failed/half index never touches the data
     fragments). Idempotent: replace=True rebuilds cleanly and the GC prunes superseded index UUIDs.
     Columns absent from schema are skipped."""
-    import lance
     s3 = _s3()
     local_ds = os.path.join(SCRATCH, "index_lance")
     shutil.rmtree(local_ds, ignore_errors=True)
     os.makedirs(local_ds, exist_ok=True)
-    built: list[str] = []
     try:
         log(f"materializing {target_uri} → {local_ds} (boto3 mirror)…")
         got = _download_r2_to_local(s3, target_uri, local_ds)
         log(f"materialized {got} files")
         before = _relset(local_ds)                       # data fragments + committed manifest
-        ds = lance.dataset(local_ds)                     # LOCAL — no storage_options, no R2 writer
-        present = set(ds.schema.names)
-        log(f"indexing LOCAL ({ds.count_rows():,} rows)")
-        for col in [c for c in BTREE_COLS if c in present]:
-            try:
-                ds.create_scalar_index(col, index_type="BTREE", replace=True)
-            except TypeError:
-                ds.create_scalar_index(col, index_type="BTREE")
-            built.append(col)
-            log(f"  BTREE ✓ {col}")
-        for col in [c for c in BITMAP_COLS if c in present]:
-            try:
-                ds.create_scalar_index(col, index_type="BITMAP", replace=True)
-            except TypeError:
-                ds.create_scalar_index(col, index_type="BITMAP")
-            built.append(col)
-            log(f"  BITMAP ✓ {col}")
+        built = _build_indices_local(local_ds)           # LOCAL-FS index build (shared with build())
         after = _relset(local_ds)
         published = _publish_index_delta(s3, target_uri, local_ds, before)
         log(f"published {published} index/manifest file(s) → {target_uri} (append-only)")
@@ -1356,12 +1494,19 @@ if modal is not None:
         s = since or None
         if cmd == "build":
             print(json.dumps(build_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
+        elif cmd == "build_spawn":
+            # Fire-and-forget: submit build_fn + return immediately (client exits in seconds, so a
+            # long-lived streaming client can't be killed mid-run). Pair with `modal run --detach` so
+            # the app + spawned call survive the client exit. Poll R2/logs for the DONE state.
+            call = build_fn.spawn(since=s, target_uri=target_uri)
+            print(json.dumps({"spawned": "build_fn", "call_id": call.object_id,
+                              "target_uri": target_uri, "since": s}, default=str))
         elif cmd == "index":
             print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
         elif cmd == "verify":
             print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
         else:
-            raise SystemExit(f"unknown --cmd: {cmd} (build|index|verify)")
+            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|verify)")
 
 
 # =========================================================================================== #
