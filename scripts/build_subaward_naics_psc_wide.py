@@ -39,6 +39,10 @@ FRESH = f"{A}/usaspending_api_fresh/contract_subaward/"
 FPDS = f"{A}/usaspending/transaction_search_fpds/"
 OUT = os.environ.get("SUBAWARD_NAICS_PSC_WIDE_URI", f"{A}/subaward_naics_psc_wide").rstrip("/") + "/"
 FLOOR = os.environ.get("SUBAWARD_NAICS_PSC_WIDE_FLOOR", "2021-01-01")
+# FSRS subaward_amount is notoriously dirty — a single mis-keyed line ($39.16T, verified
+# 2026-07-01) dominated every dollar sum. Amounts with |value| above this are NULLed at build
+# time (a mis-key is an UNKNOWN, not a capped value); counts/medians are unaffected.
+AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "1e9"))
 FPDS_PSC_FLOOR = os.environ.get("SNPW_FPDS_FLOOR", "2018-01-01")  # bound the FPDS scan; active 2021+ awards land after this
 BATCH = 4000
 INDEX_COLS = ["subawardee_uei", "prime_awardee_uei", "prime_award_unique_key",
@@ -84,14 +88,15 @@ def main() -> int:
         "awardee_or_recipient_legal", "unique_award_key", "subaward_number", "subaward_amount",
         "sub_action_date", "naics", "naics_description", "subaward_description"],
         filter=f"sub_action_date >= DATE '{floor}' AND sub_action_date <= DATE '2026-12-31'").to_reader())
-    con.execute("""CREATE TABLE ss AS SELECT
+    con.execute(f"""CREATE TABLE ss AS SELECT
         nullif(trim(sub_awardee_or_recipient_uei),'')  AS subawardee_uei,
         nullif(trim(sub_awardee_or_recipient_legal),'') AS subawardee_name,
         nullif(trim(awardee_or_recipient_uei),'')      AS prime_awardee_uei,
         nullif(trim(awardee_or_recipient_legal),'')    AS prime_awardee_name,
         trim(unique_award_key)                         AS prime_award_unique_key,
         nullif(trim(subaward_number),'')               AS subaward_number,
-        try_cast(subaward_amount AS DOUBLE)            AS subaward_amount,
+        CASE WHEN abs(try_cast(subaward_amount AS DOUBLE)) > {AMT_MAX:.0f}
+             THEN NULL ELSE try_cast(subaward_amount AS DOUBLE) END AS subaward_amount,
         cast(try_cast(sub_action_date AS DATE) AS VARCHAR) AS subaward_action_date,
         nullif(trim(naics),'')                         AS prime_naics_code,
         nullif(trim(naics_description),'')             AS prime_naics_description,
@@ -114,7 +119,8 @@ def main() -> int:
         nullif(trim(prime_awardee_name),'')            AS prime_awardee_name,
         trim(prime_award_unique_key)                   AS prime_award_unique_key,
         nullif(trim(subaward_number),'')               AS subaward_number,
-        try_cast(subaward_amount AS DOUBLE)            AS subaward_amount,
+        CASE WHEN abs(try_cast(subaward_amount AS DOUBLE)) > {AMT_MAX:.0f}
+             THEN NULL ELSE try_cast(subaward_amount AS DOUBLE) END AS subaward_amount,
         cast(try_cast(subaward_action_date AS DATE) AS VARCHAR) AS subaward_action_date,
         nullif(trim(prime_award_naics_code),'')        AS prime_naics_code,
         nullif(trim(prime_award_naics_description),'') AS prime_naics_description,

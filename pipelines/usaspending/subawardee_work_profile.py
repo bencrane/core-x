@@ -58,6 +58,11 @@ PROFILE_WIDE_URI = os.environ.get(
     "s3://data-sink/active/subawardee_work_profile_wide",
 ).rstrip("/") + "/"
 WIDE_FLOOR = os.environ.get("SUBAWARDEE_WORK_PROFILE_WIDE_FLOOR", "2021-01-01")
+# FSRS subaward_amount is notoriously dirty (a $39.16T mis-keyed line verified 2026-07-01).
+# Sub-rail amounts with |value| above this are NULLed at ingest — a mis-key is an UNKNOWN,
+# not a capped value. Counts, dates, and medians are unaffected. FPDS prime obligations are
+# a different (clean) feed and are not guarded.
+AMT_MAX = float(os.environ.get("SUBAWARD_AMOUNT_MAX", "1e9"))
 
 SUB_FRESH_URI = os.environ.get(
     "USASPENDING_API_SUBAWARD_FRESH_URI",
@@ -135,7 +140,7 @@ def build(years=DEFAULT_YEARS, wide=False):
             "subaward_description", "prime_award_base_transaction_description",
             "prime_award_naics_code", "prime_award_naics_description",
             "prime_award_unique_key", "subaward_number"]).to_reader())
-        con.execute("""CREATE TABLE fresh AS
+        con.execute(f"""CREATE TABLE fresh AS
           SELECT nullif(trim(subawardee_uei),'')               AS uei,
                  nullif(trim(subawardee_name),'')              AS name,
                  nullif(trim(subawardee_parent_uei),'')        AS parent_uei,
@@ -143,7 +148,8 @@ def build(years=DEFAULT_YEARS, wide=False):
                  nullif(trim(subawardee_country_code),'')      AS country_code,
                  nullif(trim(prime_awardee_uei),'')            AS prime_uei,
                  nullif(trim(prime_awardee_name),'')           AS prime_name,
-                 TRY_CAST(subaward_amount AS DOUBLE)           AS amt,
+                 CASE WHEN abs(TRY_CAST(subaward_amount AS DOUBLE)) > {AMT_MAX:.0f}
+                      THEN NULL ELSE TRY_CAST(subaward_amount AS DOUBLE) END AS amt,
                  TRY_CAST(subaward_action_date AS DATE)        AS adt,
                  nullif(trim(subaward_description),'')          AS sub_scope,
                  nullif(trim(prime_award_base_transaction_description),'') AS proj_desc,
@@ -279,9 +285,11 @@ def build(years=DEFAULT_YEARS, wide=False):
                     "subaward_amount", "sub_action_date", "awardee_or_recipient_legal",
                     "awardee_or_recipient_uei", "naics", "naics_description"], filter=flt).to_table()
                 con.register("t", tbl)
-                con.execute("""INSERT INTO sb_search SELECT trim(sub_awardee_or_recipient_uei),
+                con.execute(f"""INSERT INTO sb_search SELECT trim(sub_awardee_or_recipient_uei),
                     trim(unique_award_key), nullif(trim(subaward_number),''),
-                    TRY_CAST(subaward_amount AS DOUBLE), TRY_CAST(sub_action_date AS DATE),
+                    CASE WHEN abs(TRY_CAST(subaward_amount AS DOUBLE)) > {AMT_MAX:.0f}
+                         THEN NULL ELSE TRY_CAST(subaward_amount AS DOUBLE) END,
+                    TRY_CAST(sub_action_date AS DATE),
                     nullif(trim(awardee_or_recipient_legal),''), nullif(trim(awardee_or_recipient_uei),''),
                     nullif(trim(naics),''), nullif(trim(naics_description),'') FROM t;""")
                 con.unregister("t")
