@@ -187,10 +187,11 @@ def search_people_by_domains(domains: list[str]) -> dict[str, Any]:
     Same shape as ``search_companies_by_domains`` over the ``people`` dataset (BTREE on
     ``people.normalized_domain``, denormalized from the person's company): normalize +
     de-dup + cap the domains, push ONE ``normalized_domain IN (…)`` predicate, project
-    each row to the documented people columns (``person_id, contact_id, company_id,
-    normalized_domain, full_name, first_name, last_name, title, person_linkedin_url,
-    source_platform``; ``person_id`` mirrors ``contact_id``, retained for backward
-    compatibility), and group into LISTS.
+    each row to the documented people columns (``canonical_person_id, person_id, contact_id,
+    company_id, normalized_domain, full_name, first_name, last_name, title,
+    person_linkedin_url``; ``contact_id`` mirrors ``person_id``, retained for backward
+    compatibility; ``source_platform`` moved to the person_source_platforms sidecar), and
+    group into LISTS.
 
     Returns ``{"requested","match_count","by_domain": {dom: [rows]}}`` where
     ``match_count`` is the TOTAL found-row count. An empty / whitespace-only batch returns

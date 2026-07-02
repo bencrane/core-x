@@ -61,9 +61,9 @@ def test_match_variants_cover_canonical_form_first():
 # ── Response composition ──────────────────────────────────────────────────────
 def _row(**kw):
     base = {
-        "person_id": None, "company_id": None, "normalized_domain": None,
-        "full_name": None, "first_name": None, "last_name": None,
-        "title": None, "person_linkedin_url": None, "source_platform": None,
+        "canonical_person_id": None, "person_id": None, "company_id": None,
+        "normalized_domain": None, "full_name": None, "first_name": None, "last_name": None,
+        "title": None, "person_linkedin_url": None, "source_platforms": [],
     }
     base.update(kw)
     return base
@@ -71,8 +71,11 @@ def _row(**kw):
 
 def test_from_rows_picks_first_nonnull_title_and_surfaces_all_matches():
     rows = [
-        _row(title=None, full_name="Alex Kigel", company_id="c1", person_id="p1"),
-        _row(title="Managing Director", full_name="Alex Kigel", company_id="c1", person_id="p1"),
+        _row(title=None, full_name="Alex Kigel", company_id="c1",
+             canonical_person_id="cp1", person_id="p1", source_platforms=["dsbs_poc"]),
+        _row(title="Managing Director", full_name="Alex Kigel", company_id="c1",
+             canonical_person_id="cp1", person_id="p1",
+             source_platforms=["dsbs_poc", "clay_find_people"]),
     ]
     d = PersonByLinkedInResponse.from_rows("https://www.linkedin.com/in/alexkigel/", rows).model_dump(by_alias=True)
     assert d["found"] is True
@@ -81,9 +84,11 @@ def test_from_rows_picks_first_nonnull_title_and_surfaces_all_matches():
     assert d["matchCount"] == 2                        # duplicate observations are NOT collapsed
     assert len(d["matches"]) == 2
     assert d["linkedinUrl"] == "https://www.linkedin.com/in/alexkigel/"
-    # EXPAND/CONTRACT: both the legacy contact_id and the new person_id ride the wire (mirrored value).
-    assert d["matches"][0]["contactId"] == "p1"
-    assert d["matches"][0]["personId"] == "p1"
+    # canonical_person_id is returned AS person_id; contact_id mirrors it (back-compat).
+    assert d["matches"][0]["contactId"] == "cp1"
+    assert d["matches"][0]["personId"] == "cp1"
+    # source_platform is now a LIST, populated from the sidecar join by canonical_person_id.
+    assert d["matches"][1]["sourcePlatforms"] == ["dsbs_poc", "clay_find_people"]
 
 
 def test_from_rows_empty_is_not_found():
