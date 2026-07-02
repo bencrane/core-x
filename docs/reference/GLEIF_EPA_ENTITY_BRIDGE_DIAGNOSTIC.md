@@ -1,5 +1,7 @@
 # GLEIF × EPA Entity Bridge — Read-Only Reconnaissance
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** Two of this recon's premises are now stale. (1) The EPA legal-owner names it calls "not materialized" ARE built: **`epa_permits`** = **1,686,705 rows** (`PERMIT_NAME`, `normalized_legal_name`) and the defendant names as **`epa_case_defendants`** = **200,159 rows** (`DEFENDANT_NAME`). (2) `epa_to_sos_bridge` is now **406,191 rows** (was 356,903). GLEIF drifted: `gleif_l1_entities` = **3,360,382 rows**, `gleif_l2_relationships` = **478,018 rows**. **STILL TRUE and load-bearing:** NO GLEIF×EPA bridge dataset exists in R2 — there is no built `lei ↔ REGISTRY_ID` crosswalk of any kind. The only live EPA→external entity link is `epa_to_sos_bridge` (EPA `REGISTRY_ID` → Secretary-of-State `sos_company_id` + `normalized_legal_name`); no EPA entity dataset carries UEI/DUNS/LEI/CAGE (column-scanned live), so any EPA→GLEIF/LEI or EPA→SAM link remains an unbuilt, transitive, name-matched proposition. Read `EPA_DATA_PLANE_STATE.md` first.
+
 Schema diagnostic mapping the vectors to crosswalk global GLEIF Level-1/Level-2 corporate
 data to the EPA regulatory network (link domestic EPA liabilities → global corporate parents
 via the LEI). **Strictly read-only: no Lance write, no DDL, no data-plane mutation.**
@@ -19,7 +21,7 @@ via the LEI). **Strictly read-only: no Lance write, no DDL, no data-plane mutati
 | Verdict | Detail |
 |---|---|
 | **GLEIF active projection is lossy** | `gleif_l1_entities` materializes **8 of ~40** source fields. It **drops ZIP (`postalCode`), the entire `headquartersAddress`, and `otherNames[]`** — three of the highest-value binding vectors. A geo/alias-aware bridge **cannot** be built from the active dataset as it stands; it must read the **original golden copy** or the active L1 must be re-ingested wider. |
-| **EPA legal-owner names are not materialized** | The true owner names **`PERMIT_NAME`** (NPDES permittee) and **`DEFENDANT_NAME`** (enforcement defendant) exist only inside landing ZIPs, read transiently in `build_bridge` and dropped. Planned `epa_permits`/`epa_defendants` **do not exist in R2** (live `KeyCount=0`). Materialized EPA name columns (`PRIMARY_NAME`, `FAC_NAME`, `normalized_facility_name`) are **site labels, not legal entities** (asserted verbatim in the EPA code). |
+| **EPA legal-owner names are not materialized** | The true owner names **`PERMIT_NAME`** (NPDES permittee) and **`DEFENDANT_NAME`** (enforcement defendant) exist only inside landing ZIPs, read transiently in `build_bridge` and dropped. Planned `epa_permits`/`epa_defendants` **do not exist in R2** (live `KeyCount=0`). Materialized EPA name columns (`PRIMARY_NAME`, `FAC_NAME`, `normalized_facility_name`) are **site labels, not legal entities** (asserted verbatim in the EPA code). <br>**[SUPERSEDED 2026-07-02: `PERMIT_NAME` is now a standing, `REGISTRY_ID`-keyed column in `epa_permits` (1,686,705 rows); `DEFENDANT_NAME` is now standing in `epa_case_defendants` (200,159 rows). Both carry `normalized_legal_name` (permits) / are name-resolvable. The precision tier this recon said was blocked is now available.]** |
 | **No shared hard identifier** | GLEIF carries **no EIN, no DUNS, no domestic CORPID**. EPA carries no LEI. The only structured cross-ref is GLEIF's `(registeredAt, registeredAs)` registry coordinate → routable to EPA **only** indirectly through the SoS spine. The realizable bridge is **Name + Geo**, exactly as the existing `epa_to_sos_bridge` already does. |
 | **Bridge template already exists** | `epa_to_sos_bridge` (356,903 rows) resolves EPA names → `sos_normalized_master` via the canonical `core.name_norm` key + a 3-tier cascade. A GLEIF bridge is the **same Pattern-B build** with GLEIF L1 swapped for the SoS spine. |
 
@@ -164,6 +166,9 @@ blocker, and prefer GLEIF **`headquartersAddress`** over `legalAddress` for any 
    in the active dataset, geo-confirmation tiers (A+/B) cannot run off `gleif_l1_entities`.
 2. **Materialize `epa_permits` / `epa_defendants`** so `PERMIT_NAME`/`DEFENDANT_NAME` become standing,
    random-access, `REGISTRY_ID`-keyed owner nodes (the precision tier). Today they are transient-only.
+   > **[SUPERSEDED 2026-07-02: DONE. `epa_permits` (1,686,705) and `epa_case_defendants` (200,159) are built. This blocker is cleared — the precision-tier name nodes exist.]**
 3. Until (2), a GLEIF bridge can run **only** against `epa_program_links.PRIMARY_NAME` (site label,
    lower precision) or the already-resolved `epa_to_sos_bridge.normalized_legal_name` (commercial
    subset, recall-capped).
+
+> **[NET STATE 2026-07-02: blocker (2) is cleared; blocker (1) — re-ingest GLEIF L1 wider for ZIP/HQ/otherNames — remains unverified. Regardless, NO GLEIF×EPA bridge has been built yet; this remains a design, not a live dataset.]**

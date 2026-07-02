@@ -1,5 +1,7 @@
 # EPA NPDES DMR Historical Backfill — Structural Diagnostic & Incremental Materialization Plan
 
+> **⚠️ CANONICAL STATE — verified live against R2 on 2026-07-02.** This plan WAS EXECUTED. `epa_npdes_dmrs` is now **422,447,436 rows** live in `active/` (FY1982→FY2026), exactly the plan's projected unified total. The "gated on review / not yet appended" framing below is HISTORICAL. See the companion `EPA_NPDES_DMR_HISTORICAL_BACKFILL_EXECUTION.md` for the run record (all 16 archives appended, per-archive deltas matched to the row, indices rebuilt via the R2-safe local round-trip). Read `EPA_DATA_PLANE_STATE.md` first.
+
 A 16-archive historical Discharge Monitoring Report (DMR) payload — `npdes_dmrs_prefy2009.zip`
 plus `npdes_dmrs_fy2009.zip … fy2023.zip` — was staged under `s3://data-sink/landing/epa/`.
 This document is the read-only diagnostic of that payload and the append-only build plan to
