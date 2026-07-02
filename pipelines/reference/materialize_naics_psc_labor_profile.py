@@ -78,7 +78,21 @@ os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
 BUCKET = "data-sink"
 A = f"s3://{BUCKET}/active/"
-MANIFEST_URI = os.environ.get("NPLP_MANIFEST_URI", A + "_naics_psc_labor_profile_manifest/")
+
+
+def _lane() -> str:
+    """Active classification lane. 'product' = the goods make-vs-resell head; anything else
+    (unset/'service') = the default govcon service head. Single knob: NPLP_LANE also drives the
+    worklist filter in build_manifest and the manifest-URI + source-vintage defaults below."""
+    return os.environ.get("NPLP_LANE", "").strip().lower()
+
+
+# The goods lane writes a SEPARATE manifest so `manifest` never overwrites the service manifest —
+# build_manifest calls _write WITHOUT upsert_vintage => mode="overwrite" (the manifest is a shared,
+# overwrite-mode resource, NOT vintage-scoped). Explicit NPLP_MANIFEST_URI still wins.
+MANIFEST_URI = os.environ.get("NPLP_MANIFEST_URI") or (
+    A + ("_naics_psc_labor_profile_manifest_goods/" if _lane() == "product"
+         else "_naics_psc_labor_profile_manifest/"))
 PROFILE_URI = os.environ.get("NPLP_PROFILE_URI", A + "naics_psc_labor_profile/")
 CATEGORIES_URI = os.environ.get("NPLP_CATEGORIES_URI", A + "naics_psc_labor_profile_categories/")
 
@@ -89,7 +103,15 @@ MODEL = "claude-sonnet-4-6"
 # subagents (the naics_psc_deliverable house precedent; session-covered, zero API billing).
 AGENT_MODEL_ID = "claude-opus-4-8:in-session"
 PROMPT_VERSION = "labor_profile_v2"
-SOURCE_VINTAGE = os.environ.get("NPLP_SOURCE_VINTAGE", "govcon_active_awards_2026-07-01")
+# Goods lane (NPLP_LANE=product): the make-vs-resell head carries its own prompt version + default
+# vintage. Both are bound to the lane (see _prompt_head + the SOURCE_VINTAGE default) so head,
+# version, and vintage cannot silently desync.
+PROMPT_VERSION_GOODS = "goods_profile_v1"
+DEFAULT_VINTAGE_GOODS = "subaward_gap_goods_2361"
+# Default binds to the lane so the vintage can't silently stay govcon under lane=product. Explicit
+# NPLP_SOURCE_VINTAGE still wins.
+SOURCE_VINTAGE = os.environ.get("NPLP_SOURCE_VINTAGE") or (
+    DEFAULT_VINTAGE_GOODS if _lane() == "product" else "govcon_active_awards_2026-07-01")
 DATA_STORAGE_VERSION = "2.1"
 PSC_PER_CALL = 20
 TOP_N_CANDIDATES = 40
@@ -151,6 +173,99 @@ Rules — follow exactly:
 5. work_summary: <=20 words, concrete, what the winner actually does for this PSC in this industry.
 6. confidence: high = obvious mapping; medium = reasonable inference; low = thin signal.
 Select ONLY codes from the vocabularies. Output must satisfy the JSON schema exactly."""
+
+
+SYSTEM_RULES_GOODS = """You classify the labor demand implied by U.S. federal contract awards for PHYSICAL GOODS (product
+PSCs). Each task gives you ONE NAICS industry (with its real BLS-OEWS occupational staffing pattern as
+CANDIDATES) and a list of PRODUCT PSC codes awarded under that NAICS. For EACH PSC, FIRST decide whether
+winning that combo puts dedicated labor on payroll to PRODUCE / TRANSFORM / INTEGRATE the good (a
+"make"), or whether the good is bought finished and passed through (resale / lease / license -- negligible
+dedicated labor); THEN, for a make, select the labor categories the winner must staff.
+
+THE CENTRAL DECISION -- make vs. pass-through (decide FIRST, per PSC). The SAME product PSC is
+labor-bearing or not depending on the NAICS context and the scope text. Use these buckets:
+
+  MAKE (is_labor_play=true -- dedicated labor on payroll):
+    - Manufacturing NAICS (sectors 31-33) x a product PSC: the winner fabricates / assembles / machines /
+      welds / finishes the good. Staff the production floor.
+    - Engineering / R&D / technical-services NAICS (sector 54, e.g. 541330 Engineering Services,
+      541712/541715 R&D) x a hardware / end-item PSC: this is BUILD-TO-PRINT / prototype / systems
+      integration -- the firm designs AND builds (or builds to a furnished design). Labor-bearing: the
+      correct engineering discipline PLUS the production trades that integrate the article. NOT resale.
+    - Overhaul / remanufacture / rebuild / retrofit / depot-reset of an existing article (any NAICS,
+      including repair NAICS 81): physically transforming an article is labor (maintenance 49-xxxx +
+      production 51-xxxx + inspection/QC).
+    - ANY OTHER NAICS sector (telecom 51, facilities 56, construction 23, transport 48-49, national
+      security 92, utilities 22, education 61) x a product PSC where the deliverable is genuinely produced,
+      integrated, or operated: DEFAULT is_labor_play=true; classify by the PSC DELIVERABLE via off_pattern
+      (rule 6), not by the orthogonal NAICS candidates. (E.g. 927110 Space Research x 1677 SPACE VEHICLE
+      REMOTE CONTROL SYSTEMS is space-C2 integration labor, not government administration.)
+
+  PASS-THROUGH (is_labor_play=false -- categories MUST be []):
+    - Wholesale-trade NAICS (sector 42) x a product PSC, DEFAULT: a distributor sourcing a finished good
+      and reselling it (COTS). false -- UNLESS the scope text shows install / kit / assembly / maintenance
+      value-add, then is_labor_play=true with thin labor.
+    - Retail-trade NAICS (sectors 44-45) x a product PSC, DEFAULT: bought finished and resold. false --
+      same value-add exception.
+    - Lease / rental / license / subscription of a good, or a hardware-as-a-service delivery (any NAICS),
+      where the scope names no operations / maintenance labor: false. If the scope names a managed or
+      operated service around the good, treat it as a make (labor-bearing).
+    - A firm coded to a MANUFACTURING NAICS can still be pass-through when the PSC + scope make clear the
+      good is bought finished and drop-shipped (a mfg-coded distributor). The DELIVERABLE governs, not the
+      NAICS.
+
+Rules -- follow exactly:
+1. is_labor_play -- apply the make-vs-pass-through decision above, reading the scope text when NAICS/PSC
+   alone are ambiguous. true = the winner makes / fabricates / assembles / integrates / remanufactures /
+   operates the good; false = resale / drop-ship / COTS / lease / license / pure distribution (categories
+   MUST be []). When genuinely ambiguous AND the scope shows no value-add, let the NAICS sector break the
+   tie: 31-33 / 54 -> make; 42 / 44-45 -> pass-through. Bias to is_labor_play=true when value-add signal
+   is present -- a false permanently erases the combo.
+2. soc_code MUST come from the DETAILED SOC VOCABULARY below. For a make, the core_deliverable labor is
+   the PRODUCTION occupations (SOC 51-xxxx -- assemblers, machinists, welders, fabricators, machine
+   operators, tool & die, foundry, plating/finishing) and inspectors/testers (51-9061). Prefer the
+   industry CANDIDATES (they ARE the real OEWS staffing pattern for a manufacturing NAICS); set
+   off_pattern only per rule 6.
+3. For a make, also staff -- where the article and contract scale require it -- the SUPPORT labor the line
+   cannot run without: design/manufacturing engineers of the CORRECT discipline (SOC 17-xxxx -- mechanical
+   17-2141, electrical 17-2071, industrial 17-2112, aerospace 17-2011) when the good is engineered /
+   build-to-print; production/logistics support (17-3026 industrial-eng techs, 53-xxxx material movers);
+   and the OVERHEAD the contract forces (PM, contracts/procurement, quality-system admin). List overhead
+   only when contract scale plainly requires it.
+4. sca_code MUST come from the SCA VOCABULARY below, or null when none fits. Production and maintenance
+   trades map WELL to SCA (blue-collar / technician heavy) -- prefer a real SCA code for 51-xxxx / 49-xxxx
+   roles; professional engineers / scientists (17-xxxx / 19-xxxx) usually have no SCA equivalent (null is
+   correct there).
+5. Rank categories by centrality to PRODUCING / DELIVERING the good (array order = rank 1..N, max 10).
+   role_class: core_deliverable = the labor that physically makes / transforms the good; support =
+   enabling engineering / test / material-handling labor; overhead = PM / contracts / QA-system labor the
+   contract forces on payroll.
+6. off_pattern -- product PSCs frequently sit on an orthogonal or wrong-domain NAICS. TWO cases, both set
+   off_pattern=true: (a) FPDS MIS-CODE -- the NAICS and PSC are from unrelated domains (e.g. an
+   armored-vehicle NAICS awarded a DRUGS PSC, or an aircraft-parts NAICS awarded a BOOKS PSC): classify by
+   the PSC DELIVERABLE (what the government actually obtained), reaching the correct occupations in the
+   full SOC vocabulary rather than forcing an irrelevant candidate. (b) CANDIDATE-DOMAIN MISMATCH -- the
+   NAICS resolves to a staffing pattern dominated by a DIFFERENT technical domain than the deliverable
+   (e.g. 541712 R&D resolves to medical-scientist candidates but the PSC is GUIDED MISSILES): set
+   off_pattern=true to reach BOTH the correct engineering discipline (17-2011 aerospace, 17-2141
+   mechanical, ...) AND the 51-xxxx production the build-to-print article needs, even though they sit
+   outside the candidate list. A services / R&D NAICS awarded a hardware PSC is legitimate build-to-print,
+   not garbage -- never zero it out as resale.
+7. work_summary: <=20 words, concrete -- for a make, what the winner physically produces / integrates /
+   overhauls; for a pass-through, note the good is sourced-finished and resold / leased.
+8. confidence: high = obvious make (mfg NAICS x matching product PSC) or obvious resale (wholesale/retail
+   NAICS x COTS PSC); medium = build-to-print, mfg-coded distributor, or value-add wholesale; low = thin
+   signal or heavy reliance on a mis-code interpretation.
+Select ONLY codes from the vocabularies. Output must satisfy the JSON schema exactly."""
+
+
+def _prompt_head() -> tuple[str, str]:
+    """(system_rules, prompt_version) selected by NPLP_LANE. 'product' -> the goods make-vs-resell
+    head; anything else -> the byte-identical default service head. EVERY site that renders the
+    system prompt or stamps prompt_version routes through here so head/version can never desync."""
+    if _lane() == "product":
+        return SYSTEM_RULES_GOODS, PROMPT_VERSION_GOODS
+    return SYSTEM_RULES, PROMPT_VERSION
 
 
 # ── shared plumbing ─────────────────────────────────────────────────────────────────
@@ -455,7 +570,7 @@ def build_manifest() -> dict:
     print(f"manifest: {len(rows):,} combos, {len(by_naics)} naics, {n_calls} calls -> {MANIFEST_URI}")
     print(f"resolution levels: {lvl}")
     _record_run({"stage": "manifest", "status": "success", "combos": len(rows), "calls": n_calls,
-                 "categories": None, "model_id": MODEL, "prompt_version": PROMPT_VERSION,
+                 "categories": None, "model_id": MODEL, "prompt_version": _prompt_head()[1],
                  "stats": {"levels": lvl, "indexes": built}, "error": None,
                  "started_at": started, "completed_at": dt.datetime.now(dt.timezone.utc)})
     return {"combos": len(rows), "calls": n_calls}
@@ -524,7 +639,7 @@ def _build_requests() -> tuple[list[dict], dict]:
     `output_config` fields are retained as a schema/shape record; nothing here calls any API."""
     sca_codes, sca_block, soc_codes, soc_block, _, _ = _vocabularies()
     system = [{"type": "text",
-               "text": (SYSTEM_RULES
+               "text": (_prompt_head()[0]
                         + "\n\n=== SCA VOCABULARY (code | title | definition excerpt) ===\n" + sca_block
                         + "\n\n=== DETAILED SOC VOCABULARY (code | title) ===\n" + soc_block),
                "cache_control": {"type": "ephemeral"}}]
@@ -592,6 +707,16 @@ def retrieve(agent_results: str) -> None:
     import pyarrow as pa
 
     started = dt.datetime.now(dt.timezone.utc)
+    # Hard desync guard: NPLP_LANE drives the head + prompt_version; NPLP_SOURCE_VINTAGE is a
+    # separate knob read at import. If they disagree, provenance would silently corrupt (e.g. goods
+    # rows stamped labor_profile_v2) and the fail-closed combo gate would NOT catch it. Refuse.
+    _goods_vintage = SOURCE_VINTAGE.startswith("subaward_gap_goods")
+    if _lane() == "product" and not _goods_vintage:
+        raise RuntimeError(f"lane=product but SOURCE_VINTAGE={SOURCE_VINTAGE!r} is not a goods "
+                           "vintage -- refusing to write (head/version/vintage would desync).")
+    if _lane() != "product" and _goods_vintage:
+        raise RuntimeError(f"goods vintage {SOURCE_VINTAGE!r} but lane!=product (head/version would "
+                           "stamp service) -- refusing to write.")
     sca_codes, _, soc_codes, _, sca_titles, soc_titles = _vocabularies()
     sca_set, soc_set = set(sca_codes), set(soc_codes)
 
@@ -630,7 +755,7 @@ def retrieve(agent_results: str) -> None:
         return {"resolution_level": m["resolution_level"],
                 "oews_industry_code": m["oews_industry_code"],
                 "candidates_sha256": m["candidates_sha256"],
-                "prompt_version": PROMPT_VERSION, "model_id": engine,
+                "prompt_version": _prompt_head()[1], "model_id": engine,
                 "generated_at": gen_at, "source_vintage": SOURCE_VINTAGE}
 
     # ── collect one results-list per call from the in-session agent-results file ──
@@ -732,7 +857,7 @@ def retrieve(agent_results: str) -> None:
               "re-assemble the agent-results file, then retrieve again.")
         _record_run({"stage": "retrieve", "status": "gap", "combos": len(seen_combos),
                      "calls": len(by_call), "categories": len(cat_rows), "model_id": AGENT_MODEL_ID,
-                     "prompt_version": PROMPT_VERSION,
+                     "prompt_version": _prompt_head()[1],
                      "stats": {"failures": failures[:200], "expected": expected_combos},
                      "error": f"{expected_combos - len(seen_combos)} combos missing",
                      "started_at": started, "completed_at": dt.datetime.now(dt.timezone.utc)})
@@ -752,7 +877,7 @@ def retrieve(agent_results: str) -> None:
     print(f"wrote {len(cat_rows):,} -> {CATEGORIES_URI} ({built_c})")
     _record_run({"stage": "retrieve", "status": status, "combos": len(seen_combos),
                  "calls": len(by_call), "categories": len(cat_rows), "model_id": AGENT_MODEL_ID,
-                 "prompt_version": PROMPT_VERSION,
+                 "prompt_version": _prompt_head()[1],
                  "stats": {"failures": failures[:200], "profile_indexes": built_p,
                            "category_indexes": built_c},
                  "error": None, "started_at": started,
