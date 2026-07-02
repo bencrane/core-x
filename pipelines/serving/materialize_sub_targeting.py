@@ -51,7 +51,7 @@ from pipelines.sam_gov.sam_attachment_extract import _r2_storage_options  # noqa
 ACTIVE = "s3://data-sink/active"
 PROFILES_URI = f"{ACTIVE}/govcon_award_solicitation_profiles/"
 REQUIREMENTS_URI = f"{ACTIVE}/govcon_award_requirements/"
-SUBAWARD_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUBAWARD_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 TEAMING_URI = f"{ACTIVE}/govcon_teaming_edges/"
 SAM_POCS_URI = f"{ACTIVE}/sam_pocs/"
 
