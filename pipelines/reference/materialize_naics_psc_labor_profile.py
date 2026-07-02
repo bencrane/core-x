@@ -81,7 +81,7 @@ MODEL = "claude-sonnet-4-6"
 # model_id stamped on rows classified by IN-SESSION workflow subagents (--agent-results lane —
 # the naics_psc_deliverable house precedent; session-covered, zero API billing).
 AGENT_MODEL_ID = "claude-opus-4-8:in-session"
-PROMPT_VERSION = "labor_profile_v1"
+PROMPT_VERSION = "labor_profile_v2"
 SOURCE_VINTAGE = "govcon_active_awards_2026-07-01"
 DATA_STORAGE_VERSION = "2.1"
 PSC_PER_CALL = 20
@@ -262,13 +262,16 @@ def build_manifest() -> dict:
     con.register("pref", pref_t)
     pcols = [f.name for f in pref_t.schema]
     ptitle = next(c for c in ("psc_name", "title", "psc_title", "description") if c in pcols)
+    pextra = [c for c in ("full_description", "includes", "excludes", "notes") if c in pcols]
     order = []
     if "is_active" in pcols:
         order.append("is_active DESC")
     if "end_date" in pcols:
         order.append("end_date DESC NULLS LAST")
-    psc_ref = {r[0]: r[1] for r in con.execute(
-        f"SELECT psc_code, {ptitle} FROM (SELECT *, row_number() OVER (PARTITION BY psc_code"
+    sel = ", ".join([ptitle] + pextra)
+    psc_ref = {r[0]: {"title": r[1], **{pextra[i]: r[2 + i] for i in range(len(pextra))}}
+               for r in con.execute(
+        f"SELECT psc_code, {sel} FROM (SELECT *, row_number() OVER (PARTITION BY psc_code"
         f" ORDER BY {', '.join(order) or '1'}) rn FROM pref) WHERE rn=1").fetchall()}
 
     # prior art: naics_psc_deliverable
@@ -344,10 +347,15 @@ def build_manifest() -> dict:
             n_calls += 1
             for psc, pdesc_a, _nd, n_aw, dollars in chunk:
                 wwd = prior.get((naics, psc))
+                pr = psc_ref.get(psc) or {}
                 rows.append({
                     "call_id": call_id, "naics_code": naics, "psc_code": psc,
-                    "naics_title": title, "naics_description": (desc or "")[:300] or None,
-                    "psc_title": psc_ref.get(psc) or pdesc_a,
+                    "naics_title": title, "naics_description": desc or None,
+                    "psc_title": pr.get("title") or pdesc_a,
+                    "psc_full_description": pr.get("full_description"),
+                    "psc_includes": pr.get("includes"),
+                    "psc_excludes": pr.get("excludes"),
+                    "psc_notes": pr.get("notes"),
                     "n_awards": int(n_aw), "total_dollars_obligated": float(dollars or 0),
                     "resolution_level": ig, "oews_industry_code": key,
                     "oews_industry_title": ind_title.get((ig, key)),
@@ -453,9 +461,24 @@ def _build_requests() -> tuple[list[dict], dict]:
                               f"median ${med_s}" + (f", {g:+.1f}% 2024-34" if g is not None else ""))
         psc_lines = []
         for r in rows:
-            extra = f" [prior: {r['prior_what_was_done']} ({r['prior_work_type']})]" \
-                if r["prior_what_was_done"] else ""
-            psc_lines.append(f"  {r['psc_code']} — {r['psc_title']}{extra}")
+            title = (r.get("psc_title") or "").strip()
+            line = f"  {r['psc_code']} — {title}"
+            fd = (r.get("psc_full_description") or "").strip()
+            # include full_description only when it adds signal beyond the title (keeps prompts lean)
+            if fd and fd.lower() != title.lower() and len(fd) > len(title) + 8:
+                line += f": {fd}"
+            inc = (r.get("psc_includes") or "").strip()
+            exc = (r.get("psc_excludes") or "").strip()
+            note = (r.get("psc_notes") or "").strip()
+            if inc:
+                line += f" [includes: {inc}]"
+            if exc:
+                line += f" [excludes: {exc}]"
+            if note and not fd:
+                line += f" [note: {note}]"
+            if r["prior_what_was_done"]:
+                line += f" [prior: {r['prior_what_was_done']} ({r['prior_work_type']})]"
+            psc_lines.append(line)
         user = (f"NAICS {h['naics_code']} — {h['naics_title']}\n"
                 + (f"{h['naics_description']}\n" if h["naics_description"] else "")
                 + f"(staffing pattern resolved at OEWS {h['resolution_level']} "
@@ -607,6 +630,8 @@ def retrieve(batch_ids: list[str], poll_s: int = 60, agent_results: str | None =
             prof_rows.append({
                 "naics_code": m["naics_code"], "psc_code": psc,
                 "naics_title": m["naics_title"], "psc_title": m["psc_title"],
+                "naics_description": m.get("naics_description"),
+                "psc_full_description": m.get("psc_full_description"),
                 "is_labor_play": is_play,
                 "work_summary": (r.get("work_summary") or "").strip()[:200] or None,
                 "n_categories": len(cats) if is_play else 0,
