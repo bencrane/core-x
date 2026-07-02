@@ -104,7 +104,9 @@ SUBAWARDEE_CAPABILITY_PROFILES_URI = os.environ.get(
     "s3://data-sink/active/govcon_subawardee_profiles/"
 )
 CONTRACT_SUBAWARD_URI = os.environ.get(
-    "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"
+    # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward).
+    # NOTE: if CONTRACT_SUBAWARD_LANCE_URI is set in Doppler/Railway, update it there too or the override wins.
+    "CONTRACT_SUBAWARD_LANCE_URI", "s3://data-sink/active/usaspending_subaward_canonical/"
 )
 # GTM people SoR (active/people_canonical, 1 row per canonical person, BTREE canonical_person_id +
 # person_linkedin_url + company_id + normalized_domain). Carries the person's title (job title) +

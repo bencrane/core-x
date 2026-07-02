@@ -41,7 +41,7 @@ DATASET = "govcon_sub_capability_vectors"
 # Identity (name + subaward count/$ + distinct primes) — UNIVERSAL: the vectors cover all ~25,449 subs
 # in contract_subaward, far more than the 6,586 bridge subs in the profiles, so identity must come from
 # the fact table or most results would be bare UEIs.
-SUBAWARD_FACT_DATASET = "usaspending_api_fresh/contract_subaward"
+SUBAWARD_FACT_DATASET = "usaspending_subaward_canonical"  # repointed: reconciled BULK∪FRESH contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 # Capability axis (tags/clearance/POC) — BONUS: only the ~6,586 bridge subs carry it (the profiles are
 # scoped to subs that teamed under tracked solicitations). Absent → fields null, `profiled` = false.
 PROFILES_DATASET = "govcon_subawardee_profiles"

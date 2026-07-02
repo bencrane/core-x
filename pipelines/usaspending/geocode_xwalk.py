@@ -42,18 +42,18 @@ from pipelines._shared.addr_hash import addr_hash_sql, _zip5_sql  # noqa: E402
 ACTIVE = "s3://data-sink/active"
 XWALK_URI = os.environ.get("GEOCODE_XWALK_URI", f"{ACTIVE}/geocode_xwalk/")
 PRIME_URI = f"{ACTIVE}/usaspending_api_fresh/contract_prime_txn/"
-SUB_URI = f"{ACTIVE}/usaspending_api_fresh/contract_subaward/"
+SUB_URI = f"{ACTIVE}/usaspending_subaward_canonical/"  # repointed: reconciled contract-subaward canonical (was usaspending_api_fresh/contract_subaward)
 # blitz_sam source: firmographics domain ↦ SAM domain crosswalk ↦ UEIs ↦ SAM addresses.
 FIRMO_URI = f"{ACTIVE}/firmographics_blitz/"
 SAM_DOMAINS_URI = f"{ACTIVE}/sam_master_domains/"
 EPG_URI = f"{ACTIVE}/entity_profile_gold/"
 WINDOW_DAYS = int(os.environ.get("GEOCODE_WINDOW_DAYS", "90"))
 # ── bedrock lanes (deep, all-time ≥ FLOOR — the migration off the rolling fresh feeds) ──
-# Prime recipients read the FPDS canonical (reconciled 2021+); subawardees read subaward_search (FSRS
-# bulk mirror — addresses live under sub_legal_entity_*, verified live); DSBS is the award-independent
+# Prime recipients read the FPDS canonical (reconciled 2021+); subawardees read the subaward canonical
+# (reconciled BULK∪FRESH, contract-only — addresses under subawardee_*); DSBS is the award-independent
 # registry universe. All feed the SAME accretive crosswalk.
 CANONICAL_URI = os.environ.get("GEOCODE_CANONICAL_URI", f"{ACTIVE}/usaspending_fpds_canonical_txn/")
-SUBAWARD_SEARCH_URI = os.environ.get("GEOCODE_SUBAWARD_SEARCH_URI", f"{ACTIVE}/usaspending/subaward_search/")
+SUBAWARD_SEARCH_URI = os.environ.get("GEOCODE_SUBAWARD_SEARCH_URI", f"{ACTIVE}/usaspending_subaward_canonical/")
 DSBS_XWALK_URI = os.environ.get("GEOCODE_DSBS_XWALK_URI", f"{ACTIVE}/crosswalk_dsbs_sam/")
 FLOOR = os.environ.get("GEOCODE_FLOOR", "2021-01-01")  # all-time floor for the date-scoped bedrock lanes
 DATA_STORAGE_VERSION = "2.1"
@@ -110,7 +110,7 @@ def _worklist(so) -> list[tuple]:
     con.register("s", s.scanner(
         columns=["subawardee_address_line_1", "subawardee_city_name", "subawardee_state_code",
                  "subawardee_zip_code", "subaward_action_date"],
-        filter=f"subaward_action_date >= '{cutoff}'").to_reader())
+        filter=f"subaward_action_date >= DATE '{cutoff}'").to_reader())  # canonical: typed DATE
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH a AS (
@@ -245,21 +245,22 @@ def _worklist_prime_bedrock(so) -> list[tuple]:
 def _worklist_subaward_bedrock(so) -> list[tuple]:
     """Distinct (addr_hash, street, city, state, zip5) over SUBAWARDEE legal-entity addresses on the
     subaward_search bedrock (FSRS bulk mirror, ~9.8M rows) since FLOOR — the deep replacement for the
-    rolling-90d fresh-feed sub lane. Addresses live under sub_legal_entity_* (verified live; NOT
-    subawardee_*). sub_action_date is TRY_CAST in DuckDB (type-agnostic — no Lance-pushdown gamble on
-    the bulk mirror's date typing). One row per addr_hash."""
+    rolling-90d fresh-feed sub lane. Addresses under subawardee_* on the reconciled subaward canonical;
+    subaward_action_date is a typed DATE, pushed down directly. zip5 derives from the full
+    subawardee_zip_code via _zip5_sql (the canonical carries the full ZIP, not a pre-truncated zip5).
+    One row per addr_hash."""
     import lance
     s = lance.dataset(SUBAWARD_SEARCH_URI, storage_options=so)
     con = _duck()
     con.register("s", s.scanner(
-        columns=["sub_legal_entity_address_line1", "sub_legal_entity_city_name",
-                 "sub_legal_entity_state_code", "sub_legal_entity_zip5", "sub_action_date"]).to_reader())
+        columns=["subawardee_address_line_1", "subawardee_city_name",
+                 "subawardee_state_code", "subawardee_zip_code", "subaward_action_date"]).to_reader())
     hexpr = addr_hash_sql("street", "city", "state", "zip")
     sql = f"""
     WITH a AS (
-        SELECT sub_legal_entity_address_line1 AS street, sub_legal_entity_city_name AS city,
-               sub_legal_entity_state_code AS state, sub_legal_entity_zip5 AS zip
-        FROM s WHERE TRY_CAST(sub_action_date AS DATE) >= DATE '{FLOOR}'),
+        SELECT subawardee_address_line_1 AS street, subawardee_city_name AS city,
+               subawardee_state_code AS state, subawardee_zip_code AS zip
+        FROM s WHERE subaward_action_date >= DATE '{FLOOR}'),
     h AS (
         SELECT {hexpr} AS addr_hash, trim(street) AS street, trim(city) AS city,
                upper(trim(state)) AS state, {_zip5_sql('zip')} AS zip5
