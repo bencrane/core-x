@@ -1494,12 +1494,19 @@ if modal is not None:
         s = since or None
         if cmd == "build":
             print(json.dumps(build_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
+        elif cmd == "build_spawn":
+            # Fire-and-forget: submit build_fn + return immediately (client exits in seconds, so a
+            # long-lived streaming client can't be killed mid-run). Pair with `modal run --detach` so
+            # the app + spawned call survive the client exit. Poll R2/logs for the DONE state.
+            call = build_fn.spawn(since=s, target_uri=target_uri)
+            print(json.dumps({"spawned": "build_fn", "call_id": call.object_id,
+                              "target_uri": target_uri, "since": s}, default=str))
         elif cmd == "index":
             print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
         elif cmd == "verify":
             print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
         else:
-            raise SystemExit(f"unknown --cmd: {cmd} (build|index|verify)")
+            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|verify)")
 
 
 # =========================================================================================== #
