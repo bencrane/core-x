@@ -100,7 +100,7 @@ carries only employer × union × agency × locality × effective-dates — **no
 copy of the CBA (every `/cba/{_id}/{attachments,files,document,download}` sub-path 404s). The wage/fringe
 schedule lives in the **external union contract**, resolved from independent corpora — DOL **OLMS CBA
 File** (primary; private+public 1,000+-employee units), **OPM** NAF CBAs (federal-sector; the NAF slice is
-wage-bearing), **Cornell ILR** (historical) — matched on the pointer's `(contractor, union, locality,
+wage-bearing), **Cornell ILR** (historical; DigitalCommons@ILR was retired in the 2020 migration to Cornell **eCommons** — the bepress `/do/oai/` endpoint is permanently dead (404 nginx), harvest instead via DSpace OAI-PMH at `ecommons.cornell.edu/server/oai/request` `set`-scoped to the Catherwood CBA collections + `perbcontracts`) — matched on the pointer's `(contractor, union, locality,
 dates)`. Structured `(occupation, rate, fringe)` extraction from those documents is a **pending** downstream
 dataset.
 
