@@ -181,6 +181,12 @@ def _attach(con, dsn: str) -> None:
     con.execute("INSTALL postgres; LOAD postgres;")
     con.execute("INSTALL json; LOAD json;")
     con.execute("PRAGMA threads=4;")
+    # HARD-CAP libpq connections to ONE. The Supavisor SESSION pooler (:5432) caps at
+    # pool_size=15 shared across the whole fleet; the postgres scanner otherwise opens one
+    # connection per scan thread — both tripping EMAXCONNSESSION and leaking idle server
+    # sessions that stay pinned to the pool. This is independent of PRAGMA threads (DuckDB
+    # compute parallelism is unaffected). Mirrors scripts/materialize_clay_find_people_lance.py.
+    con.execute("SET pg_connection_limit=1;")
     con.execute(f"ATTACH '{dsn.replace(chr(39), chr(39) * 2)}' AS hqx (TYPE postgres, READ_ONLY);")
 
 
