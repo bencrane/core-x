@@ -633,6 +633,16 @@ def cmd_smoke(_args) -> None:
                       "top3": env["organic"][:3]}, indent=2, default=str))
 
 
+def _covered_firms() -> set[str]:
+    """UEIs that already have a resolved person — a firm with a decision-maker is 'covered', so
+    (with --one-per-firm) we don't spend a second credit getting another person there."""
+    import psycopg
+
+    with psycopg.connect(_dsn()) as c, c.cursor() as cur:
+        cur.execute("SELECT DISTINCT uei FROM ops.dsbs_poc_linkedin_spend WHERE resolved=true")
+        return {r[0] for r in cur.fetchall()}
+
+
 def cmd_resolve(args) -> None:
     import psycopg
 
@@ -647,6 +657,13 @@ def cmd_resolve(args) -> None:
     this_run = min(args.cap, remaining) if args.cap else remaining
 
     work = build_worklist()
+    if args.contacts_only:
+        work = [w for w in work if w["poc_type"] == "contact_person"]
+        log(f"contacts-only: {len(work):,} contact_person subjects")
+    if args.one_per_firm:
+        covered = _covered_firms()
+        work = [w for w in work if w["uei"] not in covered]
+        log(f"one-per-firm: excluded {len(covered):,} already-covered firms → {len(work):,} subjects at uncovered firms")
     if args.pass_name == "primary":
         todo = [w for w in work if w["subject_id"] not in seen][:this_run]
     else:
@@ -798,6 +815,10 @@ def main() -> None:
     rs.add_argument("--reserve", type=int, default=DEFAULT_RESERVE)
     rs.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     rs.add_argument("--dry-run", action="store_true")
+    rs.add_argument("--one-per-firm", action="store_true",
+                    help="skip firms that already have a resolved person (maximize firm coverage)")
+    rs.add_argument("--contacts-only", action="store_true",
+                    help="restrict to poc_type=contact_person (the prime owner-contacts)")
     sub.add_parser("materialize")
     sub.add_parser("status")
     sub.add_parser("revalidate")
