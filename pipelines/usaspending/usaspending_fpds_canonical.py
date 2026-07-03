@@ -1543,7 +1543,11 @@ if modal is not None:
     # NO auto-retries anywhere (pipeline discipline): a failed build is diagnosed, never re-fired
     # blind. ephemeral_disk expands /tmp → DuckDB spill + the local Lance stage both land on it.
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 12, memory=196_608, cpu=16.0,
-                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
+                        ephemeral_disk=1_572_864, retries=0)  # 1.5 TiB — the 512 GiB floor was exhausted
+    # by the 392-col stage-2 merge spill (run id=9, "No space left on device" at _stage2_sql). At 392
+    # cols ~3 wide 107M-row tables (bulk_latest + core_union + core_winner) co-reside → ~700 GiB peak;
+    # 1.5 TiB is 3x the failed ceiling. The compressed-Lance-ratio projection (1.48x → 337 GiB) badly
+    # underestimated DuckDB's UNCOMPRESSED intermediate spill — size the disk to the merge, not the artifact.
     def build_fn(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         return build(since=since, target_uri=target_uri)
 
@@ -1552,7 +1556,7 @@ if modal is not None:
     # since indices must be built locally then boto3-published (R2 rejects Lance's native multipart
     # index write). ephemeral_disk restored (#858 dropped it under the now-obsolete RAM-only model).
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 6, memory=196_608, cpu=8.0,
-                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
+                        ephemeral_disk=1_572_864, retries=0)  # 1.5 TiB — match build_fn (repair-path standalone index)
     def index_fn(target_uri: str = CANONICAL_URI) -> dict:
         return index(target_uri=target_uri)
 
