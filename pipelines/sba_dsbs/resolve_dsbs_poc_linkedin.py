@@ -818,7 +818,7 @@ def main() -> None:
     rs.add_argument("--one-per-firm", action="store_true",
                     help="skip firms that already have a resolved person (maximize firm coverage)")
     rs.add_argument("--contacts-only", action="store_true",
-                    help="restrict to poc_type=contact_person (the prime owner-contacts)")
+                    help="restrict to poc_type=contact_person (the lead owner-contacts / Cohort A)")
     sub.add_parser("materialize")
     sub.add_parser("status")
     sub.add_parser("revalidate")
