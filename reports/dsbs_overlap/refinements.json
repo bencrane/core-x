@@ -1,0 +1,36 @@
+{
+  "sub_dollar_sizing": {
+    "fsrs_total_subawards": 627582,
+    "fsrs_total_usd": 437813366359.9822,
+    "under_active_primes": {
+      "primes_with_reported_subs": 1939,
+      "n_subawards": 96733,
+      "sub_usd": 94207988973.56009,
+      "sub_usd_dsbs_captured": 14252494562.300005,
+      "dsbs_distinct_subs": 1750,
+      "dsbs_capture_pct": 0.1512875364137115
+    },
+    "addressable_combos_alltime": {
+      "sub_usd": 329074078985.56866,
+      "sub_usd_dsbs_held": 39251689406.70998,
+      "dsbs_held_pct": 0.11927918943877477
+    }
+  },
+  "subproof_overlap": {
+    "demand_obl": 1053219035695.2742,
+    "combos_subproof": 859,
+    "obl_subproof": 679618681740.0898,
+    "obl_subproof_pct": 0.6452776285907565,
+    "awards_subproof": 19564,
+    "combos_primeproof": 1909,
+    "obl_primeproof": 686222363971.2015,
+    "obl_primeproof_pct": 0.6515476275247886
+  },
+  "symmetric_window_2021plus": {
+    "addr_combos": 1833,
+    "demand_combos": 2587,
+    "addr_obl": 707537614351.661,
+    "addr_obl_pct": 0.6717858207761938,
+    "addr_awards": 25038
+  }
+}
