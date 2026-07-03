@@ -90,6 +90,31 @@ export NPLP_CATEGORIES_URI=s3://data-sink/active/naics_psc_labor_profile_categor
 > SoR), set `NPLP_PROFILE_URI` / `NPLP_CATEGORIES_URI` / `NPLP_MANIFEST_URI` to fresh URIs before
 > `manifest` and keep them set through `retrieve`.
 
+### Goods lane — the single `NPLP_LANE=product` knob
+
+Setting `NPLP_LANE=product` drives the **entire** goods (make-vs-resell) cycle from one switch — do
+NOT set `NPLP_SOURCE_VINTAGE` or `NPLP_MANIFEST_URI` by hand (they default off the lane, and a manual
+value risks desync). It selects, all together:
+
+| Driven by `NPLP_LANE=product` | Value |
+|---|---|
+| worklist filter (`build_manifest`) | `lower(psc_is_service)='false'` |
+| system prompt head (`_prompt_head`) | `SYSTEM_RULES_GOODS` (make-vs-pass-through) |
+| `prompt_version` (row + ledger) | `goods_profile_v1` |
+| default `source_vintage` | `subaward_gap_goods_2361` |
+| default manifest URI | `_naics_psc_labor_profile_manifest_goods/` (SEPARATE — the manifest is overwrite-mode, so goods must not share the service manifest) |
+
+`NPLP_LANE` **must stay exported across `manifest` → `prep` → `retrieve`**. `retrieve` carries a hard
+desync guard: it refuses to write if the lane and the source vintage disagree (a goods vintage under a
+service lane, or vice-versa), so a dropped `NPLP_LANE` fails loud instead of silently stamping
+`labor_profile_v2` on goods rows. Unset/`service` → the govcon service path is byte-identical.
+
+**Resume after a mid-run crash:** results write incrementally to `<scratch>/results/<cid>.json` and are
+checkpointed to R2 by `checkpoint_r2` after each batch. To restore: download
+`s3://data-sink/<NPLP_CHECKPOINT_PREFIX>/opus_results_latest.jsonl` and re-explode each line (keyed by
+its `custom_id`) back into `<scratch>/results/<cid>.json`, then re-run `gen_workflow.py` for the
+remaining slice range — completed calls are skipped (repoint `slices.json` to the not-yet-done cids).
+
 Run scripts as modules from the repo root so the package-relative import works:
 `python3 -m pipelines.reference.labor_profile_insession.<script>`.
 
