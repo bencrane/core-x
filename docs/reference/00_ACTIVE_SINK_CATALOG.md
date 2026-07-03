@@ -646,6 +646,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | Dataset (`active/…`) | Rows | Cols | Indices |
 |---|--:|--:|---|
 | `fpds_action_type_ref` | 20 | 5 | BTree(action_type_code) |
+| `fpds_atom_feed_spec` | 12 | 8 | BTree(row_ord) |
 | `industries_served` | 4,358 | 13 | BTree(record_id); BTree(domain_norm); Bitmap(confidence) |
 | `naics_index` | 20,398 | 5 | BTree(naics_code) |
 | `naics_psc_vertical_map` | 279 | 10 | BTree(naics_code); BTree(psc_code) |
@@ -656,7 +657,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `schema_catalog` | 10,284 | 15 | BTree(dataset_name); BTree(source_group); BTree(column_name); BTree(catalog_run_id); BTree(schema_fingerprint); BTree(captured_at) |
 | `shovels_tags` | 22 | 9 | BTree(id) |
 | `usaspending_data_dictionary` | 457 | 21 | BTree(row_ord); BTree(element); BTree(dl_award_element); BTree(fpds_data_dictionary_element); Bitmap(grouping); Bitmap(dl_award_file); Bitmap(dl_subaward_file) |
-| `usaspending_search_schema_dictionary` | 354 | 14 | BTree(row_ord); BTree(column_name); BTree(dec_element); Bitmap(dataset); Bitmap(gold); Bitmap(definition_source) |
+| `usaspending_search_schema_dictionary` | 354 | 16 | BTree(row_ord); BTree(column_name); BTree(dec_element); Bitmap(dataset); Bitmap(gold); Bitmap(definition_source); Bitmap(derivation_source) |
 
 ### SAM.gov
 
@@ -674,6 +675,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_entity_extract_dictionary` | 368 | 19 | BTree(row_ord); BTree(data_element); Bitmap(datatype); Bitmap(mandatory) |
 | `sam_fal_data_dictionary` | 84 | 9 | BTree(row_ord); BTree(field_name); Bitmap(field_type); Bitmap(file_structure) |
 | `sam_master_contacts` | 4,373,319 | 13 | BTree(uei) |
+| `sam_reps_certs_provisions` | 193 | 12 | BTree(row_ord); BTree(provision); Bitmap(provision_family); Bitmap(mandatory_optional) |
 | `sam_facilities_labor_no_pdl` | 10,960 | 12 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward) |
 | `sam_facilities_labor_universe` | 9,886 | 14 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |
 | `sam_labor_universe` | 160,048 | 15 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |

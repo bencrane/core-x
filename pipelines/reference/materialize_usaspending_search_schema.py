@@ -30,6 +30,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 
@@ -104,6 +105,77 @@ def _dec_maps(so):
     return award, sub
 
 
+def _award_derivations(src):
+    """award_search columns are built in the PySpark AwardSearch DataFrame — each output column is an
+    expression `.alias("col")`. Extract col -> the source of the aliased expression (real provenance)."""
+    tree = ast.parse(src); out = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "alias"
+                and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+            col = node.args[0].value
+            expr = ast.get_source_segment(src, node.func.value)
+            if expr:
+                out.setdefault(col, " ".join(expr.split())[:400])
+    return out
+
+
+def _const_str(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):  # f-string: keep literal parts, mark interpolations
+        return "".join(v.value if isinstance(v, ast.Constant) else " {…} " for v in node.values)
+    return None
+
+
+def _split_top_commas(s):
+    items, depth, buf, q = [], 0, [], None
+    for ch in s:
+        if q:
+            buf.append(ch); q = None if ch == q else q; continue
+        if ch in "'\"":
+            q = ch; buf.append(ch); continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append("".join(buf)); buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        items.append("".join(buf))
+    return items
+
+
+def _subaward_derivations(src):
+    """subaward_search is loaded by `subaward_search_load_sql_string` — a SQL SELECT of `<expr> AS
+    <col>`. Split top-level commas and keep every item that ends in `AS <col>`."""
+    tree = ast.parse(src); sql = None
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "subaward_search_load_sql_string" for t in n.targets):
+            sql = _const_str(n.value)
+    if not sql:
+        return {}
+    out = {}
+    for item in _split_top_commas(sql):
+        m = re.search(r'\bAS\s+"?([a-z_][a-z0-9_]*)"?\s*$', item.strip(), re.I)
+        if m:
+            expr = " ".join(item.strip()[:m.start()].strip().strip(",").split())
+            if expr:
+                out.setdefault(m.group(1), expr[:400])
+    return out
+
+
+def _derivations(read, dataset):
+    try:
+        if dataset == "award_search":
+            return _award_derivations(read("delta_models/dataframes/award_search.py"))
+        return _subaward_derivations(read("delta_models/subaward_search.py"))
+    except Exception as e:  # noqa: BLE001
+        log(f"  derivation extract failed for {dataset}: {e}")
+        return {}
+
+
 def build():
     import requests, pyarrow as pa, lance
     so = _r2_so()
@@ -120,7 +192,8 @@ def build():
         cols = _extract_columns(read(dm), var)
         ht = _help_texts(read(mm))
         decmap = award_dec if dataset == "award_search" else sub_dec
-        filled = 0
+        derivmap = _derivations(read, dataset)
+        filled = deriv_n = 0
         for col, meta in cols.items():
             dec = decmap.get(_norm(col))
             help_text = ht.get(col)
@@ -132,6 +205,9 @@ def build():
                 definition, dsrc = None, "none"
             if dsrc != "none":
                 filled += 1
+            deriv = derivmap.get(col)
+            if deriv:
+                deriv_n += 1
             rows.append({
                 "dataset": dataset, "column_name": col,
                 "postgres_type": meta.get("postgres"), "delta_type": meta.get("delta"),
@@ -139,13 +215,17 @@ def build():
                 "help_text": help_text,
                 "dec_element": dec[0] if dec else None, "dec_grouping": dec[2] if dec else None,
                 "definition": definition, "definition_source": dsrc,
+                "derivation_expr": deriv,
+                "derivation_source": ("dataframes_alias" if dataset == "award_search" else "load_sql_as") if deriv else None,
                 "source": REPO_TARBALL, "source_vintage": "usaspending_api_master",
                 "ingested_at": ingested,
             })
-        log(f"  {dataset}: {len(cols)} columns, {filled} with a definition ({len(cols)-filled} residual gap)")
+        undoc = sum(1 for c in cols if not decmap.get(_norm(c)) and not ht.get(c) and not derivmap.get(c))
+        log(f"  {dataset}: {len(cols)} cols · {filled} defined · {deriv_n} with derivation_expr · {undoc} fully undocumented")
 
     fields = ["dataset", "column_name", "postgres_type", "delta_type", "gold", "help_text",
               "dec_element", "dec_grouping", "definition", "definition_source",
+              "derivation_expr", "derivation_source",
               "source", "source_vintage", "ingested_at"]
     schema = pa.schema([("row_ord", pa.int32())] + [(c, pa.string()) for c in fields])
     data = {"row_ord": list(range(len(rows)))}
@@ -155,7 +235,7 @@ def build():
     ds = lance.dataset(URI, storage_options=so)
     for c in ["row_ord", "column_name", "dec_element"]:
         ds.create_scalar_index(c, index_type="BTREE", replace=True); log(f"  BTREE ✓ {c}")
-    for c in ["dataset", "gold", "definition_source"]:
+    for c in ["dataset", "gold", "definition_source", "derivation_source"]:
         ds.create_scalar_index(c, index_type="BITMAP", replace=True); log(f"  BITMAP ✓ {c}")
     log(f"DONE → {URI} rows={tbl.num_rows}")
     return {"uri": URI, "rows": tbl.num_rows}
