@@ -655,6 +655,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `reference/psc_equipment_mapping` | 19 | 4 | BTree(psc_code) |
 | `schema_catalog` | 10,284 | 15 | BTree(dataset_name); BTree(source_group); BTree(column_name); BTree(catalog_run_id); BTree(schema_fingerprint); BTree(captured_at) |
 | `shovels_tags` | 22 | 9 | BTree(id) |
+| `usaspending_data_dictionary` | 457 | 21 | BTree(row_ord); BTree(element); BTree(dl_award_element); BTree(fpds_data_dictionary_element); Bitmap(grouping); Bitmap(dl_award_file); Bitmap(dl_subaward_file) |
 
 ### SAM.gov
 
@@ -669,6 +670,8 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `sam_attachment_worklist_T1` | 18,336 | 20 | — |
 | `sam_attachment_worklist_T3` | 6,089 | 20 | — |
 | `sam_business_type_code_dict` | 12 | 11 | BTree(code); BTree(namespace); BTree(designation_key) |
+| `sam_entity_extract_dictionary` | 368 | 19 | BTree(row_ord); BTree(data_element); Bitmap(datatype); Bitmap(mandatory) |
+| `sam_fal_data_dictionary` | 84 | 9 | BTree(row_ord); BTree(field_name); Bitmap(field_type); Bitmap(file_structure) |
 | `sam_master_contacts` | 4,373,319 | 13 | BTree(uei) |
 | `sam_facilities_labor_no_pdl` | 10,960 | 12 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward) |
 | `sam_facilities_labor_universe` | 9,886 | 14 | BTree(uei); BTree(normalized_domain); Bitmap(naics_family); Bitmap(in_our_staffing); Bitmap(award_active); Bitmap(has_prime); Bitmap(has_subaward); Bitmap(pdl_employee_size_range) |
