@@ -20,7 +20,9 @@ which the parser does not coerce to NULL (`keep_default_na=False`).
 | `usaspending_data_dictionary` | 457 | 21 | USAspending DATA Element Crosswalk (DEC) — fetched **live** from `files.usaspending.gov/docs/Data_Dictionary_Crosswalk.xlsx`, `Public` sheet |
 | `sam_entity_extract_dictionary` | 368 | 19 | SAM.gov Entity Management master extract layout (`SAM_MASTER_EXTRACT_MAPPING_Feb2025.xlsx`) |
 | `sam_fal_data_dictionary` | 84 | 9 | SAM.gov Federal Assistance Listings (`FAL_Data_Dictionary.xlsx`) |
-| `usaspending_search_schema_dictionary` | 354 | 14 | usaspending-api repo matview models (`delta_models`) + DEC join |
+| `usaspending_search_schema_dictionary` | 354 | 16 | usaspending-api repo matview models (`delta_models`) + DEC join + derivation extraction |
+| `sam_reps_certs_provisions` | 193 | 12 | SAM.gov Reps & Certs mapping (`SAM_REPS_AND_CERTS_MAPPING.xlsx`) |
+| `fpds_atom_feed_spec` | 12 | 8 | FPDS-NG Atom Feed Specification V1.5.3 (page text) |
 
 ---
 
@@ -97,12 +99,47 @@ Postgres and Delta/Spark type, joined to a prose definition where one exists.
   Prose `definition` is filled by joining each column to the DEC (§1) on the download/db element name.
 - **`definition_source`** ∈ `dec` | `help_text` | `none`. Fill: `award_search` **37/151** defined
   (114 `none`); `subaward_search` **81/203** defined (122 `none`).
-- **The residual gap (236 `none` rows):** denormalized, rpt-derived columns USAspending publishes no
-  prose definition for anywhere. Their **column + type are now cataloged** (the enumeration+type gap
-  is closed); definition-fill is extensible later by parsing the `delta_models` derivation SQL. The
-  gap is now **explicit** (`definition_source='none'`), not silent.
+- **`derivation_expr` / `derivation_source`** — for columns with no prose definition, the
+  authoritative **derivation** is extracted from the repo: `award_search` from the PySpark
+  `AwardSearch` DataFrame `.alias("col")` expressions (`derivation_source='dataframes_alias'`, 74
+  cols), `subaward_search` from the `subaward_search_load_sql_string` `<expr> AS <col>` items
+  (`derivation_source='load_sql_as'`, 81 cols). E.g. `awarding_toptier_agency_name_raw =
+  sf.coalesce(fabs.awarding_agency_name, fpds.awarding_agency_name)`. This is provenance code, not
+  prose — but it authoritatively answers *how the column is computed*.
+- **The residual gap:** with definitions + derivations combined, **fully-undocumented columns drop
+  from 236 → 116** (`award_search` 49, `subaward_search` 67) — direct source-column passthroughs with
+  no alias/AS and no DEC entry, whose meaning is their (self-evident) name. Filter the true residual
+  with `definition IS NULL AND derivation_expr IS NULL`.
 - **Builder:** `pipelines/reference/materialize_usaspending_search_schema.py <build|verify>`.
   Verified FAITHFUL row-for-row (column counts + pg/delta types) vs the repo source, both datasets.
+
+## 5. `sam_reps_certs_provisions` — SAM Reps & Certifications
+
+The SAM.gov Representations & Certifications provision→question mapping (193 rows) — which FAR/DFARS
+provision each entity rep/cert answers, its question text, sample value, mandatory/optional status,
+and enumerated answers. Materialized from the authoritative SAM.gov File Extract
+(`SAM_REPS_AND_CERTS_MAPPING.xlsx`, staged in the R2 landing tier).
+
+- **Rows:** 193 across 5 provision families (`provision_family`): FAR (136), DFARS (24), SF330 (7),
+  FINANCIAL_ASSISTANCE (2), READ_ONLY (24). The same provision recurs across families → `provision`
+  is a non-unique BTREE lookup; grain is `row_ord`.
+- **Columns:** `row_ord`, `provision_family`, `provision`, `answer_id`, `question_or_cert`,
+  `sample_value`, `mandatory_optional`, `required_condition`, `enumeration`, + provenance.
+- **Indices:** BTree(`row_ord`, `provision`) · Bitmap(`provision_family`, `mandatory_optional`).
+- **Builder:** `pipelines/reference/materialize_sam_reps_certs.py <build|verify>`.
+- **Deferred:** the workbook's `SF330 ARCHITECT-ENG REFERENCES` (discipline/experience/revenue code
+  lists) and `DOWNLOAD URLs` sheets — structurally different, not provision rows.
+
+## 6. `fpds_atom_feed_spec` — FPDS Atom Feed structural spec
+
+The FPDS-NG **Atom Feed Specification V1.5.3** — the authoritative structural spec for the FPDS Atom
+feed (feed XML, Atom Element Definitions, Award/IDV XML). It is a wiki-exported PDF with **no
+tables**, so it is landed as a **page-level text reference** (RAG/lookup surface), not a field table.
+
+- **Rows:** 12 (one per page); `row_ord` = `page_number`. ~68 K chars total.
+- **Columns:** `row_ord`, `page_number`, `text`, `text_char_len`, `doc_name`, + provenance.
+- **Builder:** `pipelines/reference/materialize_fpds_atom_feed_spec.py <build|verify>`.
+- **Deferred (out of scope):** the `FPDS_NASA_Specific_Data_Dictionary.pdf` (agency-specific).
 
 ---
 
