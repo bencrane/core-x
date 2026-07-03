@@ -113,6 +113,29 @@ export const secAdvMonthly = schedules.task({
 });
 
 /**
+ * Schedule D 7.B.1 (private funds) / 7.B.2 (reliance) / 7.A (financial-industry affiliations).
+ *
+ * Runs the day AFTER the part1/advw refresh so it reads a fresh sec_adv_part1 for current-state
+ * adviser context. Deliberately a SEPARATE schedule (not chained into the part1 run) for
+ * blast-radius containment: this is the heavy job — it fetches BOTH part ZIPs (~1.1 GB; part2 for
+ * the child tables, part1 for the complete FilingID→CRD history map) and builds four Lance datasets
+ * incl. the 1.65M-row full history — and a failure here must never touch the part1/advw system-of-
+ * record writes. One durable waitpoint (zero compute while the Modal worker runs).
+ */
+export const secAdvPrivateFundsMonthly = schedules.task({
+  id: "sec-adv-private-funds-monthly",
+  // 11:00 America/New_York on the 2nd (part1 refreshes at 09:00 ET on the 1st).
+  cron: { pattern: "0 11 2 * *", timezone: "America/New_York" },
+  maxDuration: 10800,
+  run: async () => {
+    logger.info("sec-adv private funds monthly ingest starting");
+    const out = await dispatch<IngestCallback>("ingest_private_funds", {}, APP_NAME, "3h");
+    logger.info("sec-adv private funds monthly complete", { out });
+    return out;
+  },
+});
+
+/**
  * Mint a durable waitpoint, fire the Universal Dispatcher (202), and suspend until the Modal
  * worker POSTs its flat-JSON terminal callback. Returns that callback body.
  */
@@ -120,9 +143,10 @@ async function dispatch<T extends { status: "success" | "error" }>(
   functionName: string,
   kwargs: Record<string, unknown>,
   appName: string = APP_NAME,
+  tokenTimeout: string = "1h",
 ): Promise<T> {
   const tag = String(kwargs.dataset ?? functionName);
-  const token = await wait.createToken({ timeout: "1h", tags: ["sec-adv", tag] });
+  const token = await wait.createToken({ timeout: tokenTimeout, tags: ["sec-adv", tag] });
 
   const res = await fetch(requireEnv("MODAL_DISPATCHER_URL"), {
     method: "POST",

@@ -46,6 +46,10 @@ psycopg and (2) POSTs a FLAT JSON body to that url. No ``{"data": ...}`` envelop
     modal run    pipelines/sec_adv/ingest.py::backfill                # part1 + advw (historical)
     modal run    pipelines/sec_adv/ingest.py::ingest --dataset part1
     modal run    pipelines/sec_adv/ingest.py::reindex_one --dataset advw
+    modal run    pipelines/sec_adv/ingest.py::private_funds            # Schedule D 7.B.1/7.B.2/7.A
+
+Sibling: private_funds_transform.py holds the (Modal-free) 7.B.1/7.B.2/7.A projection + robust CSV
+parser, imported by ``ingest_private_funds`` here and reused by local build scripts.
 """
 
 from __future__ import annotations
@@ -53,6 +57,11 @@ from __future__ import annotations
 import os
 
 import modal
+
+try:  # same-dir when `modal deploy pipelines/sec_adv/ingest.py`; package path from repo root
+    from pipelines.sec_adv import private_funds_transform as PFT
+except ImportError:  # pragma: no cover
+    import private_funds_transform as PFT
 
 SEC_BASE = "https://www.sec.gov"
 # Live canonical FOIA page (the directive's /foia/docs/foia-investadviser now 404s — the SEC
@@ -647,6 +656,218 @@ def apply_migration() -> dict:
     return {"table": "ops.sec_adv_runs", "present": present}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Schedule D 7.B.1 (private funds) / 7.B.2 (reliance) / 7.A (financial-industry affiliations)
+#
+# These child tables live in the part2 filing-data ZIP that the base ingest (above) skips.
+# ONE worker self-fetches BOTH ZIPs — part2 for the 7.B.1 / 7.B.2 / 7.A families, part1 for the
+# ADV base file (the complete FilingID→CRD map the full-history dataset needs) — robust-parses
+# each member (private_funds_transform.csv_to_arrow; DuckDB's C CSV parser silently corrupts the
+# unescaped-quote CLO / credit / VC rows) and projects FOUR Lance datasets:
+#     sec_adv_private_funds           7.B.1 current-state (latest filing per adviser)
+#     sec_adv_private_funds_history   7.B.1 full history  (every fund-filing, crd from the map)
+#     sec_adv_private_fund_reliance   7.B.2
+#     sec_adv_related_persons         7.A current-state
+# Transform logic lives in private_funds_transform.py; this worker is fetch + orchestration only.
+# ══════════════════════════════════════════════════════════════════════════════
+
+PF_DATASETS = {
+    "sec_adv_private_funds":         os.environ.get("SEC_ADV_PF_LANCE_URI", "s3://data-sink/active/sec_adv_private_funds/"),
+    "sec_adv_private_funds_history": os.environ.get("SEC_ADV_PF_HIST_LANCE_URI", "s3://data-sink/active/sec_adv_private_funds_history/"),
+    "sec_adv_private_fund_reliance": os.environ.get("SEC_ADV_PF_REL_LANCE_URI", "s3://data-sink/active/sec_adv_private_fund_reliance/"),
+    "sec_adv_related_persons":       os.environ.get("SEC_ADV_RP_LANCE_URI", "s3://data-sink/active/sec_adv_related_persons/"),
+}
+HISTORY_BUCKETS = 12            # FilingID-hash partitions — bounds the 17 child aggregations' RAM
+HISTORY_ROWS_PER_FILE = 130_000  # R2-multipart-safe Lance file size for the nested history dataset
+
+
+def _resolve_part_zip_url(links: list[str], part: int) -> str:
+    """Latest adv-filing-data-*-part{part}.zip from the scraped FOIA links."""
+    import re
+
+    pat = re.compile(rf"adv-filing-data-.*-part{part}\.zip$", re.IGNORECASE)
+    cands = [u for u in links if pat.search(u.rsplit("/", 1)[-1])]
+    if not cands:
+        raise RuntimeError(f"no part{part} ZIP on the FOIA page ({len(links)} zip links scanned)")
+    return max(cands, key=lambda u: _date_tokens(u.rsplit("/", 1)[-1]))
+
+
+def _filing_crd_map_arrow(part1_zip: str, work: str):
+    """Complete FilingID→CRD map (all history) from the ADV base members of part1.zip. Only two
+    columns parsed (FilingID + item 1E1 = CRD); one row per filing — the key the full-history fund
+    dataset needs to attribute historical fund-filings to advisers."""
+    import csv
+    import os.path
+    import re
+    import zipfile
+
+    import pyarrow as pa
+
+    csv.field_size_limit(50_000_000)
+    fids: list[str] = []
+    crds: list[str | None] = []
+    with zipfile.ZipFile(part1_zip) as zf:
+        members = [m for m in zf.namelist()
+                   if re.search(r"(IA_ADV_Base_A|ERA_ADV_Base).*\.csv$", m.rsplit("/", 1)[-1], re.I)]
+        for m in members:
+            tmp = os.path.join(work, "map_" + m.rsplit("/", 1)[-1])
+            with zf.open(m) as src, open(tmp, "wb") as o:
+                while True:
+                    c = src.read(1 << 20)
+                    if not c:
+                        break
+                    o.write(c.decode("cp1252", errors="replace").encode("utf-8"))
+            with open(tmp, newline="", encoding="utf-8") as fh:
+                r = csv.reader(fh)
+                hdr = next(r)
+                fi = hdr.index("FilingID") if "FilingID" in hdr else 0
+                ci = hdr.index("1E1") if "1E1" in hdr else None
+                for row in r:
+                    if ci is None or len(row) <= max(fi, ci):
+                        continue
+                    fid = row[fi].strip()
+                    if fid:
+                        fids.append(fid)
+                        crds.append(row[ci].strip() or None)
+            os.remove(tmp)
+    return pa.table({"filing_id": pa.array(fids, pa.string()), "crd_number": pa.array(crds, pa.string())})
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 90,      # 2 downloads (~1.1 GB) + robust parse + 4 datasets incl. bucketed history
+    memory=32768,         # holds the 1.65M-row history table for the single R2-safe write
+    cpu=8.0,
+)
+def ingest_private_funds(foia_url: str | None = None, part2_url: str | None = None,
+                         part1_url: str | None = None, trigger_callback_url: str | None = None) -> dict:
+    """Self-fetch part2 (+ part1 base for the history map) → robust csv parse → DuckDB projections
+    → four Lance datasets → BTREE/BITMAP indexes → ops.sec_adv_runs + Trigger callback. Reads the
+    freshly-built sec_adv_part1 for current-state adviser context, so run it AFTER the part1 dataset
+    is current for the period."""
+    import datetime as dt
+    import os.path
+    import shutil
+
+    import duckdb
+    import lance
+    import pyarrow.parquet as pq
+
+    ua = _sec_user_agent()
+    started_at = dt.datetime.now(dt.timezone.utc)
+    snapshot = started_at.date().isoformat()
+    status, error = "error", None
+    counts: dict[str, int] = {}
+    work = os.path.join(SCRATCH_DIR, "sec_adv_pf")
+    pqdir = os.path.join(work, "pq")
+    histpq = os.path.join(work, "hist_pq")
+
+    try:
+        so = _r2_storage_options()
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(pqdir, exist_ok=True)
+        os.makedirs(histpq, exist_ok=True)
+
+        # 1) Resolve + download the two ZIPs (part2 = child tables, part1 = base for the crd map).
+        if not (part2_url and part1_url):
+            links = _scrape_foia_links(foia_url or os.environ.get("SEC_ADV_FOIA_URL", DEFAULT_FOIA_URL), ua)
+            part2_url = part2_url or _resolve_part_zip_url(links, 2)
+            part1_url = part1_url or _resolve_part_zip_url(links, 1)
+        p2 = os.path.join(work, "part2.zip")
+        p1 = os.path.join(work, "part1.zip")
+        print(f"[pf] part2 → {part2_url}")
+        _download(part2_url, ua, p2)
+        print(f"[pf] part1 → {part1_url}")
+        _download(part1_url, ua, p1)
+
+        # 2) Extract + cp1252→utf8 transcode the 7.B.1 + 7.A families, robust-parse each → parquet
+        #    on disk (keeps the DuckDB projections streaming from disk, not holding 22 tables in RAM).
+        specs = [(rx, k) for k, rx in {**PFT.PF_MEMBERS, **PFT.RP_MEMBERS}.items()]
+        members = _extract_members(p2, specs, work)  # [(utf8_path, short_key, base)]
+        for path, short, _ in members:
+            pq.write_table(PFT.csv_to_arrow(path), os.path.join(pqdir, f"{short}.parquet"), compression="zstd")
+            os.remove(path)
+        os.remove(p2)
+        src = lambda k: f"read_parquet('{os.path.join(pqdir, k + '.parquet')}')"  # noqa: E731
+
+        con = duckdb.connect(":memory:")
+        con.execute("PRAGMA threads=6;")
+        con.execute("SET memory_limit='16GB';")
+        con.execute("SET preserve_insertion_order=false;")
+        con.execute(f"SET temp_directory='{os.path.join(work, 'spill')}';")
+
+        # 3) Current-filing adviser context from the freshly-built sec_adv_part1 Lance; the complete
+        #    FilingID→CRD map (all history) from the part1 base file.
+        part1_uri = DATASETS["part1"]["lance_uri"].rstrip("/")
+        con.register("part1", lance.dataset(part1_uri, storage_options=so).to_table(
+            columns=["crd_number", "filing_id", "filer_type", "legal_name", "regulatory_aum", "lei"]))
+        con.register("filing_crd_map", _filing_crd_map_arrow(p1, work))
+        os.remove(p1)
+
+        def _write(name: str, table, rows_per_file: int = MAX_ROWS_PER_FILE) -> None:
+            # Always a single complete-table write: 12x append corrupts the sparse marketer_websites
+            # LIST<STRUCT>, and a streamed write trips R2's uniform-multipart-part rule — one
+            # in-memory table write with an R2-safe max_rows_per_file avoids both.
+            lance.write_dataset(table, PF_DATASETS[name], mode="overwrite",
+                                data_storage_version=DATA_STORAGE_VERSION, max_rows_per_file=rows_per_file,
+                                max_bytes_per_file=MAX_BYTES_PER_FILE, storage_options=so)
+
+        def _index(name: str) -> int:
+            ds = lance.dataset(PF_DATASETS[name], storage_options=so)
+            plan = PFT.INDEX_PLAN[name]
+            for col in plan["btree"]:
+                try:
+                    ds.create_scalar_index(col, index_type="BTREE", replace=True)
+                except Exception as exc:  # noqa: BLE001 — index miss is never fatal
+                    print(f"  WARN BTREE {name}.{col}: {exc}")
+            for col in plan["bitmap"]:
+                try:
+                    ds.create_scalar_index(col, index_type="BITMAP", replace=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  WARN BITMAP {name}.{col}: {exc}")
+            return lance.dataset(PF_DATASETS[name], storage_options=so).count_rows()
+
+        # 4) Current-state funds + reliance + related persons (single complete-table writes).
+        _write("sec_adv_private_funds", con.sql(PFT.build_funds_sql(src, snapshot)).to_arrow_table())
+        counts["sec_adv_private_funds"] = _index("sec_adv_private_funds")
+        _write("sec_adv_private_fund_reliance", con.sql(PFT.build_reliance_sql(src, snapshot)).to_arrow_table())
+        counts["sec_adv_private_fund_reliance"] = _index("sec_adv_private_fund_reliance")
+        _write("sec_adv_related_persons", con.sql(PFT.build_related_persons_sql(src, snapshot)).to_arrow_table())
+        counts["sec_adv_related_persons"] = _index("sec_adv_related_persons")
+
+        # 5) Full-history funds — project each FilingID-hash bucket to disk (bounds the 17 child
+        #    aggregations' memory), then read them back as ONE table for a single R2-safe write.
+        for b in range(HISTORY_BUCKETS):
+            cf = (f"SELECT filing_id, crd_number, NULL::VARCHAR AS filer_type, "
+                  f"NULL::VARCHAR AS adviser_legal_name, NULL::BIGINT AS adviser_regulatory_aum, "
+                  f"NULL::VARCHAR AS adviser_lei FROM filing_crd_map WHERE (hash(filing_id) % {HISTORY_BUCKETS}) = {b}")
+            pq.write_table(con.sql(PFT.build_funds_sql(src, snapshot, cf_sql=cf)).to_arrow_table(),
+                           os.path.join(histpq, f"b{b:02d}.parquet"))
+        con.close()
+        _write("sec_adv_private_funds_history", pq.read_table(histpq), rows_per_file=HISTORY_ROWS_PER_FILE)
+        counts["sec_adv_private_funds_history"] = _index("sec_adv_private_funds_history")
+        status = "success"
+    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
+        error = str(exc)
+        status = "error"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        for name, uri in PF_DATASETS.items():
+            _record_run(name.replace("sec_adv_", ""), name, part2_url, uri, snapshot,
+                        [str(part2_url), str(part1_url)], counts.get(name, 0), counts.get(name, 0),
+                        0, status, error, started_at, completed_at)
+        _post_callback(trigger_callback_url, {
+            "status": status, "rows": sum(counts.values()), "feed": "sec_adv_private_funds",
+            "dataset": "private_funds", "dataset_uri": PF_DATASETS["sec_adv_private_funds"],
+            "as_of": snapshot, "source_url": part2_url,
+        })
+
+    if status != "success":
+        raise RuntimeError(f"sec_adv private funds ingest failed: {error}")
+    return {"status": status, "counts": counts, "as_of": snapshot, "source_url": part2_url}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Manual ops entrypoints (local — no callback). ops.* write still fires.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -684,3 +905,10 @@ def backfill() -> None:
 def reindex_one(dataset: str = "part1") -> None:
     import json
     print(json.dumps(reindex.remote(dataset), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def private_funds() -> None:
+    """Schedule D 7.B.1 / 7.B.2 / 7.A → sec_adv_private_funds(_history) + reliance + related_persons."""
+    import json
+    print(json.dumps(ingest_private_funds.remote(trigger_callback_url=None), indent=2, default=str))
