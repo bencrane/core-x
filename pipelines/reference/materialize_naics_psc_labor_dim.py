@@ -4,17 +4,17 @@ The broadcast dimension keyed on (naics_code, psc_code) that collapses the multi
 resolution into exactly one row per combo — so the FPDS spine can join it 1:1 and inherit the
 priced labor answer without a query-time fan-out. It fuses four live Lance datasets:
 
-  base (spine)   naics_psc_labor_profile              the FULL combo universe — 14,112 rows, 1:1 on
-                                                       (naics_code, psc_code). 11,751 service
-                                                       ('labor_profile_v2') + 2,361 goods
-                                                       ('goods_profile_v1'); 12,301 labor plays /
-                                                       1,811 non-plays. Every combo survives (LEFT).
-  categories     naics_psc_labor_profile_categories   45,333 rows, 1:N per combo (avg 3.2, max 10),
+  base (spine)   naics_psc_labor_profile              the FULL combo universe — 14,634 rows, 1:1 on
+                                                       (naics_code, psc_code). 11,877 service
+                                                       ('labor_profile_v2') + 2,757 goods
+                                                       ('goods_profile_v1'); 12,767 labor plays /
+                                                       1,867 non-plays. Every combo survives (LEFT).
+  categories     naics_psc_labor_profile_categories   47,972 rows, 1:N per combo (avg 3.3, max 10),
                                                        strictly ordered by `rank` (UNIQUE per combo).
                                                        COLLAPSED here to combo grain BEFORE the join:
                                                        the rank=1 row supplies rank1_* scalars, and
                                                        array_agg(... ORDER BY rank) supplies the
-                                                       ranked SOC/SCA lists. The 1,811 non-play
+                                                       ranked SOC/SCA lists. The 1,867 non-play
                                                        combos carry a placeholder row (rank NULL,
                                                        soc_code NULL) — they collapse to NULL/empty.
   soc wage       soc_priced_skilled                   the clean, typed national wage dim (1 row per
@@ -33,8 +33,8 @@ SAME-ROW INVARIANT (load-bearing)
           rank1_soc_code, rank1_soc_title, rank1_sca_code, rank1_sca_title, rank1_role_class ALL
           come from the SAME rank=1 category row (one SELECT WHERE rank=1) — never two independent
           picks — so a role never pairs with the wrong SCA wage family. Live truth (probed
-          2026-07-02): at rank=1 soc_code is non-null on exactly the 12,301 play combos and NULL on
-          the 1,811 non-plays; sca_code is independently nullable (non-null on 6,179 of the play
+          2026-07-02): at rank=1 soc_code is non-null on exactly the 12,767 play combos and NULL on
+          the 1,867 non-plays; sca_code is independently nullable (non-null on 6,301 of the play
           rank=1 rows). The gate therefore asserts rank1_soc_code non-null <=> is_labor_play, NOT a
           soc/sca co-nullity — a co-nullity assertion would be false against the data.
 
@@ -101,11 +101,12 @@ BTREE = ["naics_code", "psc_code", "rank1_soc_code"]
 BITMAP = ["is_labor_play", "psc_category", "spend_category_l1"]
 
 # Expected grain: exactly the profile combo universe (LEFT joins never add/drop a row).
-EXPECTED_ROWS = 14112
-ROW_BAND = (13500, 14500)
+# 2026-07-02: +522 dual-hatted Pareto backfill (126 service + 396 goods) -> 14,634.
+EXPECTED_ROWS = 14634
+ROW_BAND = (14400, 14800)
 # is_labor_play True count = the play combos (rank1_soc non-null <=> this).
-EXPECTED_PLAY = 12301
-PLAY_BAND = (12000, 12600)
+EXPECTED_PLAY = 12767
+PLAY_BAND = (12500, 13000)
 
 # 'undefined' spend sentinel -> NULL (live: 3 'undefined' rows in the 2,344-row map).
 SPEND_UNDEFINED = "undefined"
