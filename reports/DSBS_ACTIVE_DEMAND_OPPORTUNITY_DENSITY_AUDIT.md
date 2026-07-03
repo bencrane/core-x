@@ -204,3 +204,45 @@ The concrete call-list: active primes carrying the most subcontracting obligatio
 
 **Artifacts** (`reports/dsbs_overlap/`): `summary.json`, `refinements.json`, `overlap_combos.parquet`, `demand_combos.parquet`, `entity_saturation.parquet`, `dsbs_proven_footprint.parquet`, `top_combos.parquet`, `top_primes.parquet`.
 **Reproduce:** `doppler run -p core-x -c prd -- .venv/bin/python scripts/dsbs_active_demand_overlap.py` (then `…_refinements.py`). Read-only; no Lance writes.
+
+---
+
+# Part II — Generalized supply universe (DSBS as a filter, not the population)
+
+Part I hard-filtered the supply side to the 67,234-firm DSBS roster *at scan time* (`WHERE uei IN dsbs`). Part II lifts that: the supply side becomes the **full proven-execution universe** and `is_dsbs` becomes a **queryable predicate**. One flagged artifact answers every population slice — "all subawardees", "DSBS-qualified", "SDVOSB-but-not-DSBS" — as a `WHERE` clause, no rebuild.
+
+**Architecture.** `supply_footprint_flagged.parquet` = one row per proven `(uei, combo)` with columns `proven_prime, proven_sub, is_subawardee, is_dsbs, is_8a, is_hubzone, is_wosb, is_edwosb, is_sdvosb, is_vosb`.
+- **Universe** = distinct UEIs from `subaward_naics_psc_wide` (proven subawardees) **∪** `sba_dsbs_certified_firms` = **123,739 firms** (subs 61,686 ∪ DSBS 67,234; only **5,120 overlap**).
+- **Footprint** = **1,713,464** proven `(uei,combo)` pairs · **75,069** firms with real execution · 197,206 combos. DSBS slice = 336,323 pairs — **exact match to the Part-I verified artifact** (internal reconciliation).
+- A population is a predicate over the flag columns; `POPULATIONS` in the runner adds a slice in one line.
+
+### Addressability of the same $1,053B / 26,573-award demand pool, by supply population
+
+| Supply population (filter) | Combos | Awards | Obligated $ | Cov% | Firms w/ ≥1 target | Median targets | 1 / 2–5 / 6+ |
+|---|---:|---:|---:|---:|---:|---:|---|
+| **all_proven** (`TRUE`) | 2,545 | 26,503 | $1,027.0B | **97.5%** | 66,302 | 51 | 3,086 / 7,515 / 55,701 |
+| **subawardee** (`is_subawardee`) | 2,540 | 26,492 | $1,027.0B | 97.5% | 56,350 | 51 | 2,370 / 5,839 / 48,141 |
+| **dsbs** (`is_dsbs`) — *Part I* | 2,009 | 25,524 | $780.5B | 74.1% | 14,895 | 76 | 824 / 1,925 / 12,146 |
+| **dsbs_subawardee** (`is_dsbs ∧ is_subawardee`) | 1,831 | 24,504 | $749.5B | 71.2% | 4,943 | **215** | 108 / 249 / 4,586 |
+| **nondsbs_sub** (`is_subawardee ∧ ¬is_dsbs`) | 2,536 | 26,488 | $1,026.9B | 97.5% | 51,407 | 48 | 2,262 / 5,590 / 43,555 |
+| 8(a) | 1,220 | 21,796 | $583.5B | 55.4% | 2,842 | 103 | 73 / 215 / 2,554 |
+| HUBZone | 1,490 | 23,628 | $707.2B | 67.1% | 2,570 | 67 | 120 / 357 / 2,093 |
+| WOSB | 1,733 | 24,340 | $766.3B | 72.8% | 4,818 | 82 | 240 / 577 / 4,001 |
+| EDWOSB | 1,169 | 21,353 | $600.6B | 57.0% | 1,552 | 87 | 67 / 176 / 1,309 |
+| SDVOSB | 1,716 | 24,607 | $741.8B | 70.4% | 6,223 | 78 | 400 / 872 / 4,951 |
+| VOSB | 1,755 | 24,851 | $744.2B | 70.7% | 6,987 | 76 | 474 / 978 / 5,535 |
+
+*Coverage% = obligated $ in combos reachable by that population ÷ $1,053.2B. Independently cross-checked via a second query path (max deviation 0.0%); the `dsbs` row reproduces all six Part-I verified figures exactly.*
+
+### What the generalization reveals
+
+1. **The DSBS filter costs 23.4pp of coverage.** Full proven-subcontractor supply reaches **97.5%** ($1,027B) of the pool; restricting to DSBS drops it to 74.1% ($780.5B). The **$246.5B gap** is combos with proven subcontractors but **zero DSBS-certified** ones.
+2. **Certification ≠ demonstrated capability.** Only **5,120 of 67,234 DSBS firms (7.6%) have ever subcontracted**; only 8.3% of the 61,686 real subawardees are DSBS. DSBS is largely a *declared* roster; the *proven* subcontractor base sits mostly outside it.
+3. **`nondsbs_sub` alone = 97.5%.** Non-DSBS proven subs cover essentially the entire pool — the ceiling is set by demonstrated subcontracting, not by certification status. Only ~$26B (2.5%) is closed to all proven subs (deep classified / GOCO).
+4. **`dsbs_subawardee` is the golden cohort:** 4,943 firms that are *both* DSBS-qualified *and* proven-as-sub, at **median 215 live targets** — the highest-signal, ready-to-mobilize GTM population (small, potent, both-boxes-checked).
+5. **Cohort reach ranking:** WOSB 72.8% > VOSB 70.7% > SDVOSB 70.4% > HUBZone 67.1% > EDWOSB 57.0% > 8(a) 55.4%.
+
+**Decision framing.** Use `dsbs` when the motion *requires* certification (set-aside pass-through, prime SB-subcontracting-goal credit). Use `subawardee`/`all_proven` when the motion is capability-first and certification is a nice-to-have — that's where the incremental $246B lives. Rank within any slice by `dsbs_subawardee`-style both-proven signal.
+
+**Part II artifacts** (`reports/dsbs_overlap/`): `supply_footprint_flagged.parquet` (the queryable universe), `overlap_combos_flagged.parquet` (per-combo counts by population), `generalized_summary.json`.
+**Reproduce / re-slice:** `doppler run -p core-x -c prd -- .venv/bin/python scripts/dsbs_supply_generalized.py` — add a population by inserting one predicate into `POPULATIONS`.
