@@ -86,22 +86,46 @@ EXTENDED_TITLES = QUERY_VARIANTS + [
 # Core titles to geo-shard. Google-for-Jobs caps results PER QUERY; sharding the highest-volume
 # titles across govcon hubs pierces that cap and surfaces postings the national query dropped.
 GEO_TITLES = [
-    "capture manager", "capture director", "capture lead", "business development capture",
-    "proposal manager", "director of business development federal",
+    "capture manager", "capture director", "capture lead", "capture management",
+    "business development capture manager", "proposal manager", "proposal director",
+    "director of business development federal", "senior capture manager", "vice president capture",
 ]
 
 # Govcon employment hubs (metro + state) — weighted to where federal contractors concentrate
-# capture/BD staff. Not exhaustive of US metros; extend to widen the sweep.
+# capture/BD staff. Comprehensive but not exhaustive; extend to widen the sweep further.
 HUB_CITIES = [
+    # DC / Northern Virginia / Maryland (densest govcon corridor)
     "Arlington VA", "Washington DC", "Reston VA", "Chantilly VA", "McLean VA", "Fairfax VA",
-    "Alexandria VA", "Herndon VA", "Springfield VA", "Rockville MD", "Bethesda MD", "Columbia MD",
-    "Aberdeen MD", "Annapolis Junction MD", "Huntsville AL", "San Diego CA", "Colorado Springs CO",
-    "Denver CO", "Aurora CO", "Dayton OH", "Tampa FL", "Melbourne FL", "Orlando FL",
-    "San Antonio TX", "Fort Worth TX", "Austin TX", "Norfolk VA", "Hampton VA", "Charleston SC",
-    "Boston MA", "Atlanta GA", "Los Angeles CA", "El Segundo CA", "Albuquerque NM",
-    "Oklahoma City OK", "Ogden UT", "Warner Robins GA", "Fayetteville NC", "Oak Ridge TN",
-    "Kansas City MO", "Saint Louis MO", "Philadelphia PA", "Seattle WA", "Sierra Vista AZ",
-    "Lexington Park MD", "King of Prussia PA", "Cincinnati OH", "Fort Belvoir VA",
+    "Alexandria VA", "Herndon VA", "Springfield VA", "Falls Church VA", "Vienna VA", "Dulles VA",
+    "Manassas VA", "Quantico VA", "Dahlgren VA", "Fort Belvoir VA", "Newport News VA",
+    "Virginia Beach VA", "Norfolk VA", "Hampton VA", "Suffolk VA", "Charlottesville VA",
+    "Rockville MD", "Bethesda MD", "Columbia MD", "Aberdeen MD", "Annapolis Junction MD",
+    "Lexington Park MD", "Fort Meade MD", "Patuxent River MD", "Frederick MD", "Gaithersburg MD",
+    "Silver Spring MD", "Linthicum MD", "Baltimore MD", "California MD",
+    # Southeast
+    "Charleston SC", "Columbia SC", "Beaufort SC", "Fort Bragg NC", "Fayetteville NC", "Raleigh NC",
+    "Charlotte NC", "Wilmington NC", "Durham NC", "Atlanta GA", "Augusta GA", "Columbus GA",
+    "Savannah GA", "Warner Robins GA", "Marietta GA", "Huntsville AL", "Montgomery AL",
+    "Birmingham AL", "Tampa FL", "Melbourne FL", "Orlando FL", "Jacksonville FL", "Pensacola FL",
+    "Fort Walton Beach FL", "Panama City FL", "Cape Canaveral FL", "Miami FL", "Oak Ridge TN",
+    "Nashville TN", "Knoxville TN",
+    # Texas / south-central
+    "San Antonio TX", "Fort Worth TX", "Austin TX", "Dallas TX", "Houston TX", "El Paso TX",
+    "Killeen TX", "Corpus Christi TX", "Oklahoma City OK", "Lawton OK", "Tulsa OK", "Wichita KS",
+    "Leavenworth KS", "Kansas City MO", "Saint Louis MO", "New Orleans LA",
+    # Mountain / southwest
+    "Colorado Springs CO", "Denver CO", "Aurora CO", "Boulder CO", "Albuquerque NM", "Las Cruces NM",
+    "Phoenix AZ", "Tucson AZ", "Sierra Vista AZ", "Ogden UT", "Salt Lake City UT", "Layton UT",
+    "Las Vegas NV", "Omaha NE",
+    # Pacific
+    "San Diego CA", "Los Angeles CA", "El Segundo CA", "San Jose CA", "Sacramento CA", "Sunnyvale CA",
+    "Ridgecrest CA", "San Francisco CA", "Seattle WA", "Tacoma WA", "Bremerton WA", "Portland OR",
+    "Honolulu HI", "Anchorage AK",
+    # Northeast / Midwest
+    "Boston MA", "Lexington MA", "Bedford MA", "Portsmouth NH", "New York NY", "Rome NY",
+    "Syracuse NY", "Philadelphia PA", "King of Prussia PA", "Pittsburgh PA", "Trenton NJ",
+    "Picatinny NJ", "Dayton OH", "Cincinnati OH", "Columbus OH", "Cleveland OH", "Detroit MI",
+    "Warren MI", "Chicago IL", "Rock Island IL", "Indianapolis IN", "Crane IN", "Minneapolis MN",
 ]
 
 
@@ -283,9 +307,23 @@ _LANCE_COLS = [
 ]
 
 
+def _strip_nul(obj):
+    """Recursively strip NUL (\\u0000) bytes from every string in a JSearch payload. Postgres text
+    and jsonb CANNOT store \\u0000 (``UntranslatableCharacter``); a job description carrying one
+    (legal boilerplate, truncation artifacts) would otherwise abort the whole query's upsert."""
+    if isinstance(obj, str):
+        return obj.replace("\x00", "") if "\x00" in obj else obj
+    if isinstance(obj, dict):
+        return {k: _strip_nul(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    return obj
+
+
 def _project_job(job: dict, query_variant: str, run_root: str) -> dict:
     """Raw JSearch job object → the landed posting row. Derived columns are a projection over the
-    verbatim ``raw_json`` (the SoR truth)."""
+    verbatim ``raw_json`` (the SoR truth). NUL bytes are stripped first so the PG upsert can't abort."""
+    job = _strip_nul(job)
     employer = job.get("employer_name")
     apply_options = job.get("apply_options") or []
     apply_pubs = [o.get("publisher") for o in apply_options
