@@ -1,0 +1,919 @@
+[
+ {
+  "canonical": "contract_transaction_unique_key",
+  "duck_type": "VARCHAR",
+  "group": "key",
+  "bulk_expr": "kbulk(detached_award_proc_unique, transaction_unique_id)",
+  "feed_expr": "s(contract_transaction_unique_key)"
+ },
+ {
+  "canonical": "contract_award_unique_key",
+  "duck_type": "VARCHAR",
+  "group": "key",
+  "bulk_expr": "s(generated_unique_award_id)",
+  "feed_expr": "s(contract_award_unique_key)"
+ },
+ {
+  "canonical": "action_date",
+  "duck_type": "DATE",
+  "group": "core",
+  "bulk_expr": "action_date",
+  "feed_expr": "TRY_CAST(s(action_date) AS DATE)"
+ },
+ {
+  "canonical": "last_modified_date",
+  "duck_type": "TIMESTAMP",
+  "group": "core",
+  "bulk_expr": "last_modified_date",
+  "feed_expr": "TRY_CAST(replace(s(last_modified_date),'+00','') AS TIMESTAMP)"
+ },
+ {
+  "canonical": "period_of_performance_start_date",
+  "duck_type": "DATE",
+  "group": "core",
+  "bulk_expr": "period_of_performance_start_date",
+  "feed_expr": "TRY_CAST(s(period_of_performance_start_date) AS DATE)"
+ },
+ {
+  "canonical": "period_of_performance_current_end_date",
+  "duck_type": "DATE",
+  "group": "core",
+  "bulk_expr": "period_of_performance_current_end_date",
+  "feed_expr": "TRY_CAST(s(period_of_performance_current_end_date) AS DATE)"
+ },
+ {
+  "canonical": "federal_action_obligation",
+  "duck_type": "DOUBLE",
+  "group": "core",
+  "bulk_expr": "federal_action_obligation",
+  "feed_expr": "TRY_CAST(s(federal_action_obligation) AS DOUBLE)"
+ },
+ {
+  "canonical": "base_and_all_options_value",
+  "duck_type": "DOUBLE",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(base_and_all_options_value) AS DOUBLE)",
+  "feed_expr": "TRY_CAST(s(base_and_all_options_value) AS DOUBLE)"
+ },
+ {
+  "canonical": "current_total_value_of_award",
+  "duck_type": "DOUBLE",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(current_total_value_award) AS DOUBLE)",
+  "feed_expr": "TRY_CAST(s(current_total_value_of_award) AS DOUBLE)"
+ },
+ {
+  "canonical": "modification_number",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(modification_number)",
+  "feed_expr": "s(modification_number)"
+ },
+ {
+  "canonical": "award_id_piid",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(piid)",
+  "feed_expr": "s(award_id_piid)"
+ },
+ {
+  "canonical": "parent_award_id_piid",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(parent_award_id)",
+  "feed_expr": "s(parent_award_id_piid)"
+ },
+ {
+  "canonical": "recipient_uei",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_uei)",
+  "feed_expr": "s(recipient_uei)"
+ },
+ {
+  "canonical": "recipient_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_name)",
+  "feed_expr": "s(recipient_name)"
+ },
+ {
+  "canonical": "cage_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(cage_code)",
+  "feed_expr": "s(cage_code)"
+ },
+ {
+  "canonical": "recipient_address_line_1",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(legal_entity_address_line1)",
+  "feed_expr": "s(recipient_address_line_1)"
+ },
+ {
+  "canonical": "recipient_city_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_location_city_name)",
+  "feed_expr": "s(recipient_city_name)"
+ },
+ {
+  "canonical": "recipient_county_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_location_county_name)",
+  "feed_expr": "s(recipient_county_name)"
+ },
+ {
+  "canonical": "recipient_state_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_location_state_code)",
+  "feed_expr": "s(recipient_state_code)"
+ },
+ {
+  "canonical": "recipient_zip_4_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": null,
+  "feed_expr": "s(recipient_zip_4_code)"
+ },
+ {
+  "canonical": "recipient_country_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(recipient_location_country_code)",
+  "feed_expr": "s(recipient_country_code)"
+ },
+ {
+  "canonical": "naics_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(naics_code)",
+  "feed_expr": "s(naics_code)"
+ },
+ {
+  "canonical": "naics_description",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(naics_description)",
+  "feed_expr": "s(naics_description)"
+ },
+ {
+  "canonical": "product_or_service_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(product_or_service_code)",
+  "feed_expr": "s(product_or_service_code)"
+ },
+ {
+  "canonical": "product_or_service_code_description",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(product_or_service_description)",
+  "feed_expr": "s(product_or_service_code_description)"
+ },
+ {
+  "canonical": "type_of_set_aside_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(type_set_aside)",
+  "feed_expr": "s(type_of_set_aside_code)"
+ },
+ {
+  "canonical": "extent_competed",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(extent_competed)",
+  "feed_expr": "s(extent_competed)"
+ },
+ {
+  "canonical": "type_of_contract_pricing_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(type_of_contract_pricing)",
+  "feed_expr": "s(type_of_contract_pricing_code)"
+ },
+ {
+  "canonical": "award_type_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(contract_award_type)",
+  "feed_expr": "s(award_type_code)"
+ },
+ {
+  "canonical": "idv_type_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(idv_type)",
+  "feed_expr": "s(idv_type_code)"
+ },
+ {
+  "canonical": "subcontracting_plan",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(subcontracting_plan)",
+  "feed_expr": "s(subcontracting_plan_code)"
+ },
+ {
+  "canonical": "construction_wage_rate_requirements_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(construction_wage_rate_req)",
+  "feed_expr": "s(construction_wage_rate_requirements_code)"
+ },
+ {
+  "canonical": "labor_standards_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(labor_standards)",
+  "feed_expr": "s(labor_standards_code)"
+ },
+ {
+  "canonical": "awarding_agency_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(awarding_agency_code)",
+  "feed_expr": "s(awarding_agency_code)"
+ },
+ {
+  "canonical": "awarding_agency_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(awarding_toptier_agency_name)",
+  "feed_expr": "s(awarding_agency_name)"
+ },
+ {
+  "canonical": "awarding_sub_agency_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(awarding_sub_tier_agency_c)",
+  "feed_expr": "s(awarding_sub_agency_code)"
+ },
+ {
+  "canonical": "awarding_sub_agency_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(awarding_subtier_agency_name)",
+  "feed_expr": "s(awarding_sub_agency_name)"
+ },
+ {
+  "canonical": "funding_agency_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_agency_code)",
+  "feed_expr": "s(funding_agency_code)"
+ },
+ {
+  "canonical": "funding_agency_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_toptier_agency_name)",
+  "feed_expr": "s(funding_agency_name)"
+ },
+ {
+  "canonical": "primary_place_of_performance_state_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(pop_state_code)",
+  "feed_expr": "s(primary_place_of_performance_state_code)"
+ },
+ {
+  "canonical": "primary_place_of_performance_country_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(pop_country_code)",
+  "feed_expr": "s(primary_place_of_performance_country_code)"
+ },
+ {
+  "canonical": "primary_place_of_performance_zip_4",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(pop_zip5)",
+  "feed_expr": "s(primary_place_of_performance_zip_4)"
+ },
+ {
+  "canonical": "contracting_officers_determination_of_business_size",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(contracting_officers_deter)",
+  "feed_expr": "s(contracting_officers_determination_of_business_size)"
+ },
+ {
+  "canonical": "action_type_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(action_type)",
+  "feed_expr": "s(action_type_code)"
+ },
+ {
+  "canonical": "transaction_description",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(transaction_description)",
+  "feed_expr": "s(transaction_description)"
+ },
+ {
+  "canonical": "solicitation_identifier",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(solicitation_identifier)",
+  "feed_expr": "s(solicitation_identifier)"
+ },
+ {
+  "canonical": "action_date_fiscal_year",
+  "duck_type": "BIGINT",
+  "group": "core",
+  "bulk_expr": "fiscal_year",
+  "feed_expr": "TRY_CAST(s(action_date_fiscal_year) AS BIGINT)"
+ },
+ {
+  "canonical": "recipient_hash",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(recipient_hash)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "recipient_levels",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(recipient_levels)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "parent_uei",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(parent_uei)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "parent_recipient_hash",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(parent_recipient_hash)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "parent_recipient_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(parent_recipient_name)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "business_categories",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(business_categories)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "business_types",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(business_types)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "federal_accounts",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(federal_accounts)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "treasury_account_identifiers",
+  "duck_type": "BIGINT",
+  "group": "enrich",
+  "bulk_expr": "treasury_account_identifiers",
+  "feed_expr": null
+ },
+ {
+  "canonical": "tas_paths",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(tas_paths)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "disaster_emergency_fund_codes",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(disaster_emergency_fund_codes)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "program_activities",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(program_activities)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "cfda_number",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(cfda_number)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "awarding_toptier_agency_abbreviation",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(awarding_toptier_agency_abbreviation)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "awarding_subtier_agency_abbreviation",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(awarding_subtier_agency_abbreviation)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "awarding_agency_id",
+  "duck_type": "BIGINT",
+  "group": "enrich",
+  "bulk_expr": "awarding_agency_id",
+  "feed_expr": null
+ },
+ {
+  "canonical": "funding_agency_id",
+  "duck_type": "BIGINT",
+  "group": "enrich",
+  "bulk_expr": "funding_agency_id",
+  "feed_expr": null
+ },
+ {
+  "canonical": "award_id",
+  "duck_type": "BIGINT",
+  "group": "enrich",
+  "bulk_expr": "award_id",
+  "feed_expr": null
+ },
+ {
+  "canonical": "transaction_id",
+  "duck_type": "BIGINT",
+  "group": "enrich",
+  "bulk_expr": "transaction_id",
+  "feed_expr": null
+ },
+ {
+  "canonical": "recipient_location_zip5",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(recipient_location_zip5)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "recipient_location_county_fips",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(recipient_location_county_fips)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "recipient_location_congressional_code",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(recipient_location_congressional_code)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "pop_county_fips",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(pop_county_fips)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "pop_congressional_code",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(pop_congressional_code)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "award_category",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": "s(award_category)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "award_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": "award_amount",
+  "feed_expr": null
+ },
+ {
+  "canonical": "total_funding_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": "total_funding_amount",
+  "feed_expr": null
+ },
+ {
+  "canonical": "treasury_accounts_funding_this_award",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(treasury_accounts_funding_this_award)"
+ },
+ {
+  "canonical": "federal_accounts_funding_this_award",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(federal_accounts_funding_this_award)"
+ },
+ {
+  "canonical": "highly_compensated_officer_1_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(highly_compensated_officer_1_name)"
+ },
+ {
+  "canonical": "highly_compensated_officer_2_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(highly_compensated_officer_2_name)"
+ },
+ {
+  "canonical": "highly_compensated_officer_3_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(highly_compensated_officer_3_name)"
+ },
+ {
+  "canonical": "highly_compensated_officer_4_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(highly_compensated_officer_4_name)"
+ },
+ {
+  "canonical": "highly_compensated_officer_5_name",
+  "duck_type": "VARCHAR",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "s(highly_compensated_officer_5_name)"
+ },
+ {
+  "canonical": "highly_compensated_officer_1_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "TRY_CAST(s(highly_compensated_officer_1_amount) AS DOUBLE)"
+ },
+ {
+  "canonical": "highly_compensated_officer_2_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "TRY_CAST(s(highly_compensated_officer_2_amount) AS DOUBLE)"
+ },
+ {
+  "canonical": "highly_compensated_officer_3_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "TRY_CAST(s(highly_compensated_officer_3_amount) AS DOUBLE)"
+ },
+ {
+  "canonical": "highly_compensated_officer_4_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "TRY_CAST(s(highly_compensated_officer_4_amount) AS DOUBLE)"
+ },
+ {
+  "canonical": "highly_compensated_officer_5_amount",
+  "duck_type": "DOUBLE",
+  "group": "enrich",
+  "bulk_expr": null,
+  "feed_expr": "TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)"
+ },
+ {
+  "canonical": "women_owned_small_business",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "upper(substr(CAST(women_owned_small_business AS VARCHAR),1,1))",
+  "feed_expr": "upper(substr(CAST(women_owned_small_business AS VARCHAR),1,1))"
+ },
+ {
+  "canonical": "service_disabled_veteran_owned_business",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "upper(substr(CAST(service_disabled_veteran_o AS VARCHAR),1,1))",
+  "feed_expr": "upper(substr(CAST(service_disabled_veteran_owned_business AS VARCHAR),1,1))"
+ },
+ {
+  "canonical": "historically_underutilized_business_zone_hubzone_firm",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "upper(substr(CAST(historically_underutilized AS VARCHAR),1,1))",
+  "feed_expr": "upper(substr(CAST(historically_underutilized_business_zone_hubzone_firm AS VARCHAR),1,1))"
+ },
+ {
+  "canonical": "c8a_program_participant",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "upper(substr(CAST(c8a_program_participant AS VARCHAR),1,1))",
+  "feed_expr": "upper(substr(CAST(c8a_program_participant AS VARCHAR),1,1))"
+ },
+ {
+  "canonical": "solicitation_procedures",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(solicitation_procedures)",
+  "feed_expr": "s(solicitation_procedures)"
+ },
+ {
+  "canonical": "other_than_full_and_open_competition_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(other_than_full_and_open_c)",
+  "feed_expr": "s(other_than_full_and_open_competition_code)"
+ },
+ {
+  "canonical": "fair_opportunity_limited_sources_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(fair_opportunity_limited_s)",
+  "feed_expr": "s(fair_opportunity_limited_sources_code)"
+ },
+ {
+  "canonical": "commercial_item_acquisition_procedures_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(commercial_item_acquisitio)",
+  "feed_expr": "s(commercial_item_acquisition_procedures_code)"
+ },
+ {
+  "canonical": "multiple_or_single_award_idv_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(multiple_or_single_award_i)",
+  "feed_expr": "s(multiple_or_single_award_idv_code)"
+ },
+ {
+  "canonical": "parent_award_agency_id",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(referenced_idv_agency_iden)",
+  "feed_expr": "s(parent_award_agency_id)"
+ },
+ {
+  "canonical": "parent_award_type_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(referenced_idv_type)",
+  "feed_expr": "s(parent_award_type_code)"
+ },
+ {
+  "canonical": "parent_award_modification_number",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(referenced_idv_modificatio)",
+  "feed_expr": "s(parent_award_modification_number)"
+ },
+ {
+  "canonical": "major_program",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(major_program)",
+  "feed_expr": "s(major_program)"
+ },
+ {
+  "canonical": "program_acronym",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(program_acronym)",
+  "feed_expr": "s(program_acronym)"
+ },
+ {
+  "canonical": "contract_bundling",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(contract_bundling)",
+  "feed_expr": "s(contract_bundling)"
+ },
+ {
+  "canonical": "consolidated_contract",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(consolidated_contract)",
+  "feed_expr": "s(consolidated_contract)"
+ },
+ {
+  "canonical": "performance_based_service_acquisition_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(performance_based_service)",
+  "feed_expr": "s(performance_based_service_acquisition_code)"
+ },
+ {
+  "canonical": "undefinitized_action_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(undefinitized_action)",
+  "feed_expr": "s(undefinitized_action_code)"
+ },
+ {
+  "canonical": "multi_year_contract",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(multi_year_contract)",
+  "feed_expr": "s(multi_year_contract)"
+ },
+ {
+  "canonical": "contract_financing",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(contract_financing)",
+  "feed_expr": "s(contract_financing)"
+ },
+ {
+  "canonical": "cost_or_pricing_data",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(cost_or_pricing_data)",
+  "feed_expr": "s(cost_or_pricing_data)"
+ },
+ {
+  "canonical": "dod_claimant_program_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(dod_claimant_program_code)",
+  "feed_expr": "s(dod_claimant_program_code)"
+ },
+ {
+  "canonical": "inherently_governmental_functions",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(inherently_government_func)",
+  "feed_expr": "s(inherently_governmental_functions)"
+ },
+ {
+  "canonical": "purchase_card_as_payment_method_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(purchase_card_as_payment_m)",
+  "feed_expr": "s(purchase_card_as_payment_method_code)"
+ },
+ {
+  "canonical": "clinger_cohen_act_planning_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(clinger_cohen_act_planning)",
+  "feed_expr": "s(clinger_cohen_act_planning_code)"
+ },
+ {
+  "canonical": "national_interest_action_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(national_interest_action)",
+  "feed_expr": "s(national_interest_action_code)"
+ },
+ {
+  "canonical": "domestic_or_foreign_entity_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(domestic_or_foreign_entity)",
+  "feed_expr": "s(domestic_or_foreign_entity_code)"
+ },
+ {
+  "canonical": "price_evaluation_adjustment_preference_percent_difference",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(price_evaluation_adjustmen)",
+  "feed_expr": "s(price_evaluation_adjustment_preference_percent_difference)"
+ },
+ {
+  "canonical": "place_of_performance_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(place_of_performance_code)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "place_of_performance_scope",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(place_of_performance_scope)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "place_of_performance_forei",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(place_of_performance_forei)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "pop_city_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(pop_city_name)",
+  "feed_expr": null
+ },
+ {
+  "canonical": "funding_office_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_office_code)",
+  "feed_expr": "s(funding_office_code)"
+ },
+ {
+  "canonical": "funding_office_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_office_name)",
+  "feed_expr": "s(funding_office_name)"
+ },
+ {
+  "canonical": "funding_sub_agency_code",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_sub_tier_agency_co)",
+  "feed_expr": "s(funding_sub_agency_code)"
+ },
+ {
+  "canonical": "funding_sub_agency_name",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(funding_subtier_agency_name)",
+  "feed_expr": "s(funding_sub_agency_name)"
+ },
+ {
+  "canonical": "transaction_number",
+  "duck_type": "VARCHAR",
+  "group": "core",
+  "bulk_expr": "s(transaction_number)",
+  "feed_expr": "s(transaction_number)"
+ },
+ {
+  "canonical": "ordering_period_end_date",
+  "duck_type": "DATE",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(ordering_period_end_date) AS DATE)",
+  "feed_expr": "TRY_CAST(s(ordering_period_end_date) AS DATE)"
+ },
+ {
+  "canonical": "solicitation_date",
+  "duck_type": "DATE",
+  "group": "core",
+  "bulk_expr": "solicitation_date",
+  "feed_expr": "TRY_CAST(s(solicitation_date) AS DATE)"
+ },
+ {
+  "canonical": "total_dollars_obligated",
+  "duck_type": "DOUBLE",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(total_obligated_amount) AS DOUBLE)",
+  "feed_expr": "TRY_CAST(s(total_dollars_obligated) AS DOUBLE)"
+ },
+ {
+  "canonical": "base_and_exercised_options_value",
+  "duck_type": "DOUBLE",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(base_exercised_options_val) AS DOUBLE)",
+  "feed_expr": "TRY_CAST(s(base_and_exercised_options_value) AS DOUBLE)"
+ },
+ {
+  "canonical": "number_of_offers_received",
+  "duck_type": "BIGINT",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)",
+  "feed_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)"
+ },
+ {
+  "canonical": "number_of_actions",
+  "duck_type": "BIGINT",
+  "group": "core",
+  "bulk_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)",
+  "feed_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)"
+ },
+ {
+  "canonical": "canonical_source",
+  "duck_type": "VARCHAR",
+  "group": "prov",
+  "bulk_expr": null,
+  "feed_expr": null
+ },
+ {
+  "canonical": "built_at",
+  "duck_type": "TIMESTAMP",
+  "group": "prov",
+  "bulk_expr": null,
+  "feed_expr": null
+ }
+]
