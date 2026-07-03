@@ -645,6 +645,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 
 | Dataset (`active/…`) | Rows | Cols | Indices |
 |---|--:|--:|---|
+| `fpds_action_type_ref` | 20 | 5 | BTree(action_type_code) |
 | `industries_served` | 4,358 | 13 | BTree(record_id); BTree(domain_norm); Bitmap(confidence) |
 | `naics_index` | 20,398 | 5 | BTree(naics_code) |
 | `naics_psc_vertical_map` | 279 | 10 | BTree(naics_code); BTree(psc_code) |

@@ -381,6 +381,13 @@ def build_manifest() -> dict:
     con = duckdb.connect()
     con.execute("PRAGMA threads=8")
 
+    # Guard the numeric-leading PSC test used by the external-worklist lane fallback (below).
+    # DuckDB's ~ operator is NOT a Postgres regex match, so this must use regexp_matches;
+    # fail closed if the semantics ever regress rather than silently mis-route a goods worklist.
+    assert con.execute(
+        "SELECT regexp_matches('1510','^[0-9]') AND NOT regexp_matches('R425','^[0-9]')"
+    ).fetchone()[0], "PSC numeric-leading lane test regressed (regexp_matches semantics)"
+
     # worklist: distinct service combos + award stats.
     # Default source = govcon_active_awards. Set NPLP_WORKLIST_CSV to an external, self-contained
     # worklist CSV instead (columns: naics_code,psc_code[,naics_description][,psc_description]) —
@@ -419,7 +426,11 @@ def build_manifest() -> dict:
                 val = "'true'" if lane == "service" else "'false'"
                 where.append(f'lower(CAST("{wcols["psc_is_service"]}" AS VARCHAR)) = {val}')
             else:
-                where.append(f"""CAST("{pc}" AS VARCHAR) {'!~' if lane == 'service' else '~'} '^[0-9]'""")
+                # DuckDB's ~ operator is NOT a Postgres-style regex match (1.5.4:
+                # `'1510' ~ '^[0-9]'` → False), so use regexp_matches. Numeric-leading
+                # PSC = product; alpha-leading = service.
+                numeric = f"""regexp_matches(CAST("{pc}" AS VARCHAR), '^[0-9]')"""
+                where.append(f"NOT {numeric}" if lane == "service" else numeric)
         con.register("wl", w)
         combos = con.execute(f"""
             SELECT CAST("{nc}" AS VARCHAR) AS naics_code, CAST("{pc}" AS VARCHAR) AS psc_code,
