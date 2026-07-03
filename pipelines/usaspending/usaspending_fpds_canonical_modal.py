@@ -205,7 +205,7 @@ def smoke_fn() -> dict:
     """Validate that the image packaging, the secrets, and the in-container import are all
     correct — for pennies, before committing to the multi-hour giant. Asserts:
       (a) the shipped module imports in-container;
-      (b) len(COLUMN_SPEC) == 75 (the locked column contract);
+      (b) len(COLUMN_SPEC) == 392 (the locked column contract — 392-col OBT);
       (c) the co-located ops .sql ships beside the .py and is readable in-container;
       (d) _r2_so() resolves to a dict with a non-empty endpoint + access key (creds present).
     """
@@ -214,9 +214,9 @@ def smoke_fn() -> dict:
     # (a) import the shipped module IN-BODY.
     from pipelines.usaspending import usaspending_fpds_canonical as fpds
 
-    # (b) column contract is exactly 75.
+    # (b) column contract is exactly 392 (the 392-col OBT).
     n_cols = len(fpds.COLUMN_SPEC)
-    assert n_cols == 75, f"COLUMN_SPEC has {n_cols} entries, expected 75"
+    assert n_cols == 392, f"COLUMN_SPEC has {n_cols} entries, expected 392"
 
     # (c) the co-located ops .sql shipped in the image and is readable beside fpds.__file__.
     sql_path = _P(fpds.__file__).parent / OPS_SQL_FILE
@@ -234,7 +234,7 @@ def smoke_fn() -> dict:
     return {
         "module_import_ok": True,
         "column_spec_len": n_cols,
-        "column_spec_ok": n_cols == 75,
+        "column_spec_ok": n_cols == 392,
         "ops_sql_path": str(sql_path),
         "ops_sql_readable": sql_present,
         "r2_endpoint_present": endpoint_ok,
