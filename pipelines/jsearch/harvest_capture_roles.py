@@ -33,6 +33,7 @@ them to the Universal Dispatcher (production path, spawned by ``src/trigger/jsea
       python3 pipelines/jsearch/harvest_capture_roles.py <init_ops|smoke|backfill|harvest|materialize|status|verify>
 
     harvest/backfill flags: --date-posted all|month|week|3days|today  --max-pages N  --run-root LABEL
+                            --geo  --titles core|extended  --workers N   (backfill saturation matrix)
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ import os
 import re
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import modal
@@ -68,9 +70,56 @@ QUERY_VARIANTS = [
     "capture management",
 ]
 
+# ── expanded backfill coverage — saturation via geo × title sharding ─────────────────────────────
+# Adjacent govcon capture/BD/proposal titles that surface additional distinct buyers a bare
+# "capture manager" query never ranks. Used by the backfill only; the daily incremental stays on the
+# lean QUERY_VARIANTS set (geo-sharding every day would just re-fetch the same live postings).
+EXTENDED_TITLES = QUERY_VARIANTS + [
+    "senior capture manager", "capture executive", "capture specialist", "capture analyst",
+    "vp business development capture", "federal capture manager", "government capture manager",
+    "defense capture manager", "proposal manager", "proposal director", "senior proposal manager",
+    "capture and proposal manager", "director of proposals",
+    "director of business development federal", "business development director government",
+    "growth director defense", "senior director capture", "principal capture manager",
+]
+
+# Core titles to geo-shard. Google-for-Jobs caps results PER QUERY; sharding the highest-volume
+# titles across govcon hubs pierces that cap and surfaces postings the national query dropped.
+GEO_TITLES = [
+    "capture manager", "capture director", "capture lead", "business development capture",
+    "proposal manager", "director of business development federal",
+]
+
+# Govcon employment hubs (metro + state) — weighted to where federal contractors concentrate
+# capture/BD staff. Not exhaustive of US metros; extend to widen the sweep.
+HUB_CITIES = [
+    "Arlington VA", "Washington DC", "Reston VA", "Chantilly VA", "McLean VA", "Fairfax VA",
+    "Alexandria VA", "Herndon VA", "Springfield VA", "Rockville MD", "Bethesda MD", "Columbia MD",
+    "Aberdeen MD", "Annapolis Junction MD", "Huntsville AL", "San Diego CA", "Colorado Springs CO",
+    "Denver CO", "Aurora CO", "Dayton OH", "Tampa FL", "Melbourne FL", "Orlando FL",
+    "San Antonio TX", "Fort Worth TX", "Austin TX", "Norfolk VA", "Hampton VA", "Charleston SC",
+    "Boston MA", "Atlanta GA", "Los Angeles CA", "El Segundo CA", "Albuquerque NM",
+    "Oklahoma City OK", "Ogden UT", "Warner Robins GA", "Fayetteville NC", "Oak Ridge TN",
+    "Kansas City MO", "Saint Louis MO", "Philadelphia PA", "Seattle WA", "Sierra Vista AZ",
+    "Lexington Park MD", "King of Prussia PA", "Cincinnati OH", "Fort Belvoir VA",
+]
+
+
+def build_backfill_queries(geo: bool = True, extended: bool = True) -> list[str]:
+    """Compose the backfill query matrix: national title queries (order-preserving dedup) plus, when
+    geo, the core titles crossed with the govcon hubs. Each geo query pierces Google's per-query
+    result cap; all results dedup by job_id at upsert."""
+    titles = EXTENDED_TITLES if extended else list(QUERY_VARIANTS)
+    queries = list(dict.fromkeys(titles))
+    if geo:
+        queries += [f"{t} in {city}" for t in GEO_TITLES for city in HUB_CITIES]
+    return list(dict.fromkeys(queries))
+
+
 DEFAULT_COUNTRY = "us"
 DEFAULT_DATE_POSTED = "all"          # backfill default; incremental cron passes "3days"
 MAX_PAGES_PER_QUERY = int(os.environ.get("JSEARCH_MAX_PAGES", "30"))  # backstop; ≤300 jobs/variant
+DEFAULT_WORKERS = int(os.environ.get("JSEARCH_WORKERS", "10"))        # concurrent per-query workers
 
 BTREE_INDEXES = ["job_id", "employer_domain", "employer_name"]
 BITMAP_INDEXES = ["publisher", "job_state", "query_variant", "employment_type",
@@ -369,11 +418,53 @@ def _post_callback(url: str | None, payload: dict, attempts: int = 3) -> None:
     print(f"WARN: callback delivery failed after {attempts} attempts → {url}")
 
 
+def _harvest_one_query(query: str, date_posted: str, country: str, max_pages: int,
+                       run_root: str) -> dict:
+    """Paginate ONE query to exhaustion (or max_pages) on its OWN connection and upsert each posting.
+    Returns per-query counters + the set of employer keys observed. Runs in a ThreadPoolExecutor
+    worker, so it must not share state with siblings — its own connection is the isolation."""
+    local = {"pages": 0, "credits": 0, "seen": 0, "new": 0, "updated": 0}
+    employers: set[str] = set()
+    conn = _open_conn()
+    try:
+        cur = conn.cursor()
+        cursor: str | None = None
+        for _page in range(max_pages):
+            env = jsearch_search(query, country=country, date_posted=date_posted, cursor=cursor)
+            local["credits"] += env["credits"]
+            if not env["ok"]:
+                if env["http_status"] not in (0, 200):
+                    log(f"query={query!r} page={_page} NOT ok: http={env['http_status']} "
+                        f"err={env['error']!r}")
+                break
+            local["pages"] += 1
+            for job in env["jobs"]:
+                if not job.get("job_id"):
+                    continue
+                row = _project_job(job, query, run_root)
+                local["seen"] += 1
+                inserted = _upsert_posting(cur, row)
+                local["new" if inserted else "updated"] += 1
+                key = row.get("employer_domain") or (row.get("employer_name") or "").lower().strip()
+                if key:
+                    employers.add(key)
+            cursor = env["cursor"]
+            if not cursor or not env["jobs"]:
+                break
+    finally:
+        conn.close()
+    return {"query": query, **local, "employers": employers}
+
+
 def _harvest(mode: str, date_posted: str, country: str, max_pages: int, run_root: str,
-             trigger_callback_url: str | None = None) -> dict:
-    """Fan out across QUERY_VARIANTS, paginate each to exhaustion (or max_pages), and upsert every
-    observed posting into ops.jsearch_capture_postings. Credits = pages fetched (1/page)."""
+             trigger_callback_url: str | None = None, queries: list[str] | None = None,
+             workers: int = DEFAULT_WORKERS) -> dict:
+    """Fan out across ``queries`` (default QUERY_VARIANTS) CONCURRENTLY — one worker per query, each
+    paginating to exhaustion on its own connection — and upsert every observed posting into
+    ops.jsearch_capture_postings. Credits = pages fetched (1/page). Every job_id deduped at upsert,
+    so overlapping geo/title queries collapse cleanly."""
     started = dt.datetime.now(dt.timezone.utc)
+    queries = list(queries or QUERY_VARIANTS)
     counts = {"queries_run": 0, "pages_fetched": 0, "credits_spent": 0, "jobs_seen": 0,
               "jobs_new": 0, "jobs_updated": 0, "employers_distinct": 0}
     status, error = "error", None
@@ -382,51 +473,51 @@ def _harvest(mode: str, date_posted: str, country: str, max_pages: int, run_root
     if not key_present():
         raise RuntimeError("OPENWEBNINJA_API_KEY absent — aborting before harvest")
 
-    conn = _open_conn()
+    # Ensure the table exists once, up front — the concurrent workers assume it is there.
+    ddl_conn = _open_conn()
     try:
-        cur = conn.cursor()
-        cur.execute(OPS_DDL)
-        for query in QUERY_VARIANTS:
-            counts["queries_run"] += 1
-            cursor: str | None = None
-            for _page in range(max_pages):
-                env = jsearch_search(query, country=country, date_posted=date_posted, cursor=cursor)
-                counts["credits_spent"] += env["credits"]
-                if not env["ok"]:
-                    log(f"query={query!r} page={_page} NOT ok: http={env['http_status']} "
-                        f"err={env['error']!r} — stopping this variant")
-                    break
-                counts["pages_fetched"] += 1
-                for job in env["jobs"]:
-                    if not job.get("job_id"):
-                        continue
-                    row = _project_job(job, query, run_root)
-                    counts["jobs_seen"] += 1
-                    inserted = _upsert_posting(cur, row)
-                    counts["jobs_new" if inserted else "jobs_updated"] += 1
-                    dom = row.get("employer_domain") or (row.get("employer_name") or "").lower().strip()
-                    if dom:
-                        employers.add(dom)
-                cursor = env["cursor"]
-                if not cursor or not env["jobs"]:
-                    break
-            log(f"query={query!r} done: pages≈{counts['pages_fetched']} "
-                f"seen={counts['jobs_seen']} new={counts['jobs_new']}")
+        ddl_conn.cursor().execute(OPS_DDL)
+    finally:
+        ddl_conn.close()
+
+    log(f"harvest start: mode={mode} date_posted={date_posted} queries={len(queries)} workers={workers}")
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            futs = {ex.submit(_harvest_one_query, q, date_posted, country, max_pages, run_root): q
+                    for q in queries}
+            for fut in as_completed(futs):
+                q = futs[fut]
+                counts["queries_run"] += 1
+                try:
+                    r = fut.result()
+                except Exception as exc:  # noqa: BLE001 — one query must not sink the sweep
+                    log(f"query={q!r} FAILED: {type(exc).__name__}: {exc}")
+                    continue
+                counts["pages_fetched"] += r["pages"]
+                counts["credits_spent"] += r["credits"]
+                counts["jobs_seen"] += r["seen"]
+                counts["jobs_new"] += r["new"]
+                counts["jobs_updated"] += r["updated"]
+                employers |= r["employers"]
+                if counts["queries_run"] % 25 == 0 or counts["queries_run"] == len(queries):
+                    log(f"progress {counts['queries_run']}/{len(queries)}: new={counts['jobs_new']} "
+                        f"seen={counts['jobs_seen']} credits={counts['credits_spent']} "
+                        f"employers≈{len(employers)}")
         counts["employers_distinct"] = len(employers)
         status = "success"
-        _record_run(cur, mode, run_root, date_posted, counts, status, None, started,
-                    dt.datetime.now(dt.timezone.utc))
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
         status = "error"
-        try:
-            _record_run(conn.cursor(), mode, run_root, date_posted, counts, status, error, started,
-                        dt.datetime.now(dt.timezone.utc))
-        except Exception as exc2:  # noqa: BLE001
-            log(f"WARN: run-ledger write failed: {exc2}")
         raise
     finally:
-        conn.close()
+        rec_conn = _open_conn()
+        try:
+            _record_run(rec_conn.cursor(), mode, run_root, date_posted, counts, status, error,
+                        started, dt.datetime.now(dt.timezone.utc))
+        except Exception as exc2:  # noqa: BLE001
+            log(f"WARN: run-ledger write failed: {exc2}")
+        finally:
+            rec_conn.close()
         _post_callback(trigger_callback_url,
                        {"status": status, "feed": FEED, "mode": mode, "error": error, **counts})
     return {"feed": FEED, "mode": mode, "status": status, **counts}
@@ -519,12 +610,14 @@ SECRETS = [
 @app.function(secrets=SECRETS, timeout=60 * 55, memory=4096, cpu=2.0)
 def harvest_capture_roles(trigger_callback_url: str | None = None, mode: str = "incremental",
                           date_posted: str = "3days", country: str = DEFAULT_COUNTRY,
-                          max_pages: int = MAX_PAGES_PER_QUERY, run_root: str | None = None) -> dict:
+                          max_pages: int = MAX_PAGES_PER_QUERY, run_root: str | None = None,
+                          queries: list[str] | None = None, workers: int = DEFAULT_WORKERS) -> dict:
     """Harvest capture-role postings → ops.jsearch_capture_postings. mode ∈ {incremental, backfill};
-    incremental cron passes date_posted='3days', backfill passes 'all'."""
+    incremental cron passes date_posted='3days', backfill passes 'all'. ``queries`` overrides the
+    default title set (e.g. a geo-sharded backfill matrix from ``build_backfill_queries``)."""
     return _harvest(mode if mode in ("backfill", "incremental") else "incremental",
                     date_posted, country, max_pages, run_root or uuid.uuid4().hex,
-                    trigger_callback_url)
+                    trigger_callback_url, queries=queries, workers=workers)
 
 
 @app.function(secrets=SECRETS, timeout=60 * 30, memory=4096, cpu=2.0)
@@ -615,8 +708,14 @@ def cmd_harvest(args) -> None:
     import json
 
     mode = "backfill" if args.date_posted == "all" else "incremental"
+    queries = None
+    if getattr(args, "geo", False) or getattr(args, "titles", "core") == "extended":
+        queries = build_backfill_queries(geo=getattr(args, "geo", False),
+                                         extended=(getattr(args, "titles", "core") == "extended"))
+        log(f"query matrix: {len(queries)} queries "
+            f"(geo={getattr(args, 'geo', False)}, titles={getattr(args, 'titles', 'core')})")
     out = _harvest(mode, args.date_posted, DEFAULT_COUNTRY, args.max_pages,
-                   args.run_root or uuid.uuid4().hex, None)
+                   args.run_root or uuid.uuid4().hex, None, queries=queries, workers=args.workers)
     print(json.dumps(out, indent=2, default=str))
 
 
@@ -654,6 +753,12 @@ def main() -> None:
                        choices=["all", "month", "week", "3days", "today"])
         p.add_argument("--max-pages", dest="max_pages", type=int, default=MAX_PAGES_PER_QUERY)
         p.add_argument("--run-root", dest="run_root", default=None)
+        p.add_argument("--geo", action="store_true",
+                       help="geo-shard the core titles across govcon hubs (saturation backfill)")
+        p.add_argument("--titles", choices=["core", "extended"], default="core",
+                       help="core = 7 canonical titles; extended = + adjacent capture/BD/proposal titles")
+        p.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                       help="concurrent per-query workers")
     sub.add_parser("materialize")
     sub.add_parser("status")
     sub.add_parser("verify")
