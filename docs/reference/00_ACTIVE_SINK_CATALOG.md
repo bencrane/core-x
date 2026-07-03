@@ -656,6 +656,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `schema_catalog` | 10,284 | 15 | BTree(dataset_name); BTree(source_group); BTree(column_name); BTree(catalog_run_id); BTree(schema_fingerprint); BTree(captured_at) |
 | `shovels_tags` | 22 | 9 | BTree(id) |
 | `usaspending_data_dictionary` | 457 | 21 | BTree(row_ord); BTree(element); BTree(dl_award_element); BTree(fpds_data_dictionary_element); Bitmap(grouping); Bitmap(dl_award_file); Bitmap(dl_subaward_file) |
+| `usaspending_search_schema_dictionary` | 354 | 14 | BTree(row_ord); BTree(column_name); BTree(dec_element); Bitmap(dataset); Bitmap(gold); Bitmap(definition_source) |
 
 ### SAM.gov
 
