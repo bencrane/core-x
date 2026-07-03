@@ -20,6 +20,7 @@ which the parser does not coerce to NULL (`keep_default_na=False`).
 | `usaspending_data_dictionary` | 457 | 21 | USAspending DATA Element Crosswalk (DEC) — fetched **live** from `files.usaspending.gov/docs/Data_Dictionary_Crosswalk.xlsx`, `Public` sheet |
 | `sam_entity_extract_dictionary` | 368 | 19 | SAM.gov Entity Management master extract layout (`SAM_MASTER_EXTRACT_MAPPING_Feb2025.xlsx`) |
 | `sam_fal_data_dictionary` | 84 | 9 | SAM.gov Federal Assistance Listings (`FAL_Data_Dictionary.xlsx`) |
+| `usaspending_search_schema_dictionary` | 354 | 14 | usaspending-api repo matview models (`delta_models`) + DEC join |
 
 ---
 
@@ -77,6 +78,31 @@ sheet stacks **three file-structures** — GRANTS (6 fields), DATA GOV current (
 - **Columns:** `row_ord`, `file_structure`, `field_name`, `field_type`, `field_length`,
   `definition`, + provenance.
 - **Indices:** BTree(`row_ord`, `field_name`) · Bitmap(`field_type`, `file_structure`).
+
+## 4. `usaspending_search_schema_dictionary` — the `*_search` matview column gap
+
+The per-**column** schema dictionary for the two USAspending `*_search` reporting matviews
+(`award_search`, `subaward_search`) — the denormalized `rpt.*` columns the DEC (§1) does **not**
+document. It closes the *enumeration + type* gap: every column of both matviews is cataloged with its
+Postgres and Delta/Spark type, joined to a prose definition where one exists.
+
+- **Rows:** 354 — `award_search` (151) + `subaward_search` (203).
+- **Columns:** `row_ord`, `dataset`, `column_name`, `postgres_type`, `delta_type`, `gold`,
+  `help_text`, `dec_element`, `dec_grouping`, `definition`, `definition_source`, + provenance.
+- **Indices:** BTree(`row_ord`, `column_name`, `dec_element`) · Bitmap(`dataset`, `gold`,
+  `definition_source`).
+- **Authoritative source:** the **usaspending-api** repo (cloned live), the contracts these matviews
+  are built from — `search/delta_models/*.py` (`AWARD_SEARCH_COLUMNS` / `SUBAWARD_SEARCH_COLUMNS` →
+  column list + Postgres/Delta types) and `search/models/*.py` (sparse Django `help_text`).
+  Prose `definition` is filled by joining each column to the DEC (§1) on the download/db element name.
+- **`definition_source`** ∈ `dec` | `help_text` | `none`. Fill: `award_search` **37/151** defined
+  (114 `none`); `subaward_search` **81/203** defined (122 `none`).
+- **The residual gap (236 `none` rows):** denormalized, rpt-derived columns USAspending publishes no
+  prose definition for anywhere. Their **column + type are now cataloged** (the enumeration+type gap
+  is closed); definition-fill is extensible later by parsing the `delta_models` derivation SQL. The
+  gap is now **explicit** (`definition_source='none'`), not silent.
+- **Builder:** `pipelines/reference/materialize_usaspending_search_schema.py <build|verify>`.
+  Verified FAITHFUL row-for-row (column counts + pg/delta types) vs the repo source, both datasets.
 
 ---
 
