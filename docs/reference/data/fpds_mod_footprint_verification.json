@@ -1,0 +1,1640 @@
+{
+  "verified": [
+    {
+      "cell": "KIND=AWARD ACTION=G (option-exercise)",
+      "transitions": 146953,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "generated_pragmatic_obligation",
+          "matrix_frac": 0.8658,
+          "recomputed_frac": 0.87
+        },
+        {
+          "col": "federal_action_obligation",
+          "matrix_frac": 0.8658,
+          "recomputed_frac": 0.87
+        },
+        {
+          "col": "period_of_performance_current_end_date",
+          "matrix_frac": 0.7958,
+          "recomputed_frac": 0.8
+        },
+        {
+          "col": "base_exercised_options_val",
+          "matrix_frac": 0.7682,
+          "recomputed_frac": 0.77
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.6539,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.6444,
+          "recomputed_frac": 0.64
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.5072,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.4925,
+          "recomputed_frac": 0.49
+        },
+        {
+          "col": "total_obligated_amount",
+          "matrix_frac": 0.3591,
+          "recomputed_frac": 0.36
+        },
+        {
+          "col": "current_total_value_award",
+          "matrix_frac": 0.3501,
+          "recomputed_frac": 0.35
+        },
+        {
+          "col": "potential_total_value_awar",
+          "matrix_frac": 0.2205,
+          "recomputed_frac": 0.22
+        },
+        {
+          "col": "period_of_perf_potential_e",
+          "matrix_frac": 0.2007,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "funding_office_code",
+          "matrix_frac": 0.1508,
+          "recomputed_frac": 0.15
+        }
+      ],
+      "discrepancies": [],
+      "socioeconomic_finding": "No socioeconomic/joint-venture/ownership flag mutates materially in AWARD/G. Recomputed change fractions over 146,953 option-exercise transitions: organizational_type 0.0617 (highest), business_categories 0.0446, small_disadvantaged_busine 0.0088, women_owned_small_business 0.0061, minority_owned_business 0.0015, veteran_owned_business 0.0015, woman_owned_business 0.0014, joint_venture_economically 0.0001, joint_venture_women_owned 0.0001; business_types, business_types_desc, tribally_owned_business, native_hawaiian_owned_busi, other_minority_owned_busin all 0.0000. Not a single ownership/JV/socioeconomic attribute reaches the 0.15 claim threshold or the 0.3 material-mutation bar. Architecturally, socioeconomic attributes are award-invariant across option exercises and can be carried on the award spine rather than re-materialized per modification for this action type.",
+      "verdict": "CONFIRMED"
+    },
+    {
+      "cell": "KIND=IDV ACTION=G (option-exercise IDV)",
+      "transitions": 26337,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.775,
+          "recomputed_frac": 0.78
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.649,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.597,
+          "recomputed_frac": 0.6
+        },
+        {
+          "col": "ordering_period_end_date",
+          "matrix_frac": 0.389,
+          "recomputed_frac": 0.39
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.276,
+          "recomputed_frac": 0.28
+        }
+      ],
+      "discrepancies": [
+        {
+          "col": "action_type_description",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.68,
+          "note": "Matrix-missed substantive column: mutates 0.68 under the independent rownum+self-join method but is absent from every IDV/G cell. It is a description-twin of the action_type filter key and sits on the matrix's own deliberate exclusion list (unprojected in col_class.json, alongside all *_desc fields), so this is an exclusion-policy blind spot, not a LAG-vs-independent computational error. Flagged per rubric because it mutates >=0.3 and the matrix omitted it."
+        },
+        {
+          "col": "fiscal_action_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.99,
+          "note": "Matrix-missed derived date column (0.986). Deliberately unprojected. Non-substantive: it is fiscal_year-bucketed action_date, so it churns with action_date; not a value-of-record field."
+        },
+        {
+          "col": "last_modified_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.77,
+          "note": "Matrix-missed record-management timestamp (0.766). Marked projected=True in col_class.json yet emitted in zero cells, indicating an internal emit gap in the matrix build. Non-substantive metadata churn, not a business field."
+        },
+        {
+          "col": "initial_report_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.64,
+          "note": "Matrix-missed record timestamp (0.641), on the unprojected exclusion list. Non-substantive metadata."
+        },
+        {
+          "col": "transaction_unique_id / detached_award_procurement_id",
+          "matrix_frac": 0,
+          "recomputed_frac": 1,
+          "note": "Two per-row identity keys mutate at 1.0 (trivially, like transaction_id) but are absent from all cells. transaction_unique_id is marked projected=True yet never emitted (internal gap); detached_award_procurement_id is unprojected. Both non-informative row IDs, not substantive mutations."
+        }
+      ],
+      "socioeconomic_finding": "NO socioeconomic / joint-venture / ownership flag mutates materially in the IDV/G cell. Independent recompute over all 20 socio-class columns present in the parquet (business_categories, organizational_type, small_disadvantaged_busine, women_owned_small_business, woman_owned_business, veteran_owned_business, minority_owned_business, black/hispanic/native_american/alaskan_native/native_hawaiian/tribally/other_minority_owned_*, foreign_owned_and_located, joint_venture_economically, joint_venture_women_owned, business_types, business_types_desc) yields a MAX frac of 0.0487 (business_categories), with organizational_type 0.0466, small_disadvantaged_busine 0.0089, women_owned_small_business 0.0044; every explicit ownership/JV flag (woman_owned_business, veteran_owned_business, minority_owned_business, joint_venture_*, *_owned_business) is <=0.0006. None reaches the 0.05 threshold. Socio flags are effectively immutable across IDV option-exercise mods \u2014 they stay pinned to the base award. Matrix agrees exactly (business_categories 0.049, organizational_type 0.047). Architecture implication: socioeconomic/ownership attributes can be carried on the award spine, not re-snapshotted per modification, for this cell.",
+      "verdict": "DISCREPANCY"
+    },
+    {
+      "cell": "KIND=AWARD ACTION=R",
+      "transitions": 88,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "generated_pragmatic_obligation",
+          "matrix_frac": 0.74,
+          "recomputed_frac": 0.74
+        },
+        {
+          "col": "federal_action_obligation",
+          "matrix_frac": 0.74,
+          "recomputed_frac": 0.74
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.67,
+          "recomputed_frac": 0.67
+        },
+        {
+          "col": "business_categories",
+          "matrix_frac": 0.62,
+          "recomputed_frac": 0.62
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.6,
+          "recomputed_frac": 0.6
+        },
+        {
+          "col": "base_exercised_options_val",
+          "matrix_frac": 0.49,
+          "recomputed_frac": 0.49
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "contracting_officers_desc",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "contracting_officers_deter",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.36,
+          "recomputed_frac": 0.36
+        },
+        {
+          "col": "recipient_name_raw",
+          "matrix_frac": 0.3,
+          "recomputed_frac": 0.3
+        },
+        {
+          "col": "total_obligated_amount",
+          "matrix_frac": 0.3,
+          "recomputed_frac": 0.3
+        },
+        {
+          "col": "period_of_performance_current_end_date",
+          "matrix_frac": 0.27,
+          "recomputed_frac": 0.27
+        },
+        {
+          "col": "current_total_value_award",
+          "matrix_frac": 0.25,
+          "recomputed_frac": 0.25
+        },
+        {
+          "col": "period_of_perf_potential_e",
+          "matrix_frac": 0.25,
+          "recomputed_frac": 0.25
+        },
+        {
+          "col": "potential_total_value_awar",
+          "matrix_frac": 0.24,
+          "recomputed_frac": 0.24
+        },
+        {
+          "col": "contracts",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "corporate_entity_not_tax_e",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "organizational_type",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "commercial_item_acqui_desc",
+          "matrix_frac": 0.17,
+          "recomputed_frac": 0.17
+        },
+        {
+          "col": "for_profit_organization",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        }
+      ],
+      "discrepancies": [],
+      "socioeconomic_finding": "Of the 20 socioeconomic/JV/ownership-flag columns in this parquet, only TWO mutate materially in the AWARD/R (re-representation) cell: business_categories at frac 0.62 and organizational_type at frac 0.18 (both already in the matrix claim list). Every discrete ownership/JV boolean flag is effectively STABLE across AWARD/R transitions: small_disadvantaged_busine 0.07, minority_owned_business 0.06, women_owned_small_business 0.05, alaskan_native_owned_corpo 0.03, woman_owned_business 0.02, veteran_owned_business 0.01, black/hispanic/other_minority/tribally_owned 0.01, and american_indian_owned_busi, business_types, business_types_desc, foreign_owned_and_located, joint_venture_economically, joint_venture_women_owned, native_american_owned_busi, native_hawaiian_owned_busi all at 0.00. No ownership/JV flag beyond the two composite descriptor columns reaches even 0.10, so the discrete socioeconomic status booleans do NOT re-represent in this cell.",
+      "verdict": "CONFIRMED"
+    },
+    {
+      "cell": "KIND=AWARD ACTION=P",
+      "transitions": 59,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "generated_pragmatic_obligation",
+          "matrix_frac": 0.75,
+          "recomputed_frac": 0.75
+        },
+        {
+          "col": "federal_action_obligation",
+          "matrix_frac": 0.75,
+          "recomputed_frac": 0.75
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.68,
+          "recomputed_frac": 0.68
+        },
+        {
+          "col": "business_categories",
+          "matrix_frac": 0.68,
+          "recomputed_frac": 0.68
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.58,
+          "recomputed_frac": 0.58
+        },
+        {
+          "col": "base_exercised_options_val",
+          "matrix_frac": 0.51,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.42,
+          "recomputed_frac": 0.42
+        },
+        {
+          "col": "contracting_officers_desc",
+          "matrix_frac": 0.42,
+          "recomputed_frac": 0.42
+        },
+        {
+          "col": "contracting_officers_deter",
+          "matrix_frac": 0.42,
+          "recomputed_frac": 0.42
+        },
+        {
+          "col": "recipient_name_raw",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "period_of_performance_current_end_date",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "period_of_perf_potential_e",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "total_obligated_amount",
+          "matrix_frac": 0.32,
+          "recomputed_frac": 0.32
+        },
+        {
+          "col": "current_total_value_award",
+          "matrix_frac": 0.25,
+          "recomputed_frac": 0.25
+        },
+        {
+          "col": "potential_total_value_awar",
+          "matrix_frac": 0.24,
+          "recomputed_frac": 0.24
+        },
+        {
+          "col": "parent_recipient_hash",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "parent_uei",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "parent_recipient_name",
+          "matrix_frac": 0.19,
+          "recomputed_frac": 0.19
+        },
+        {
+          "col": "parent_recipient_unique_id",
+          "matrix_frac": 0.17,
+          "recomputed_frac": 0.17
+        },
+        {
+          "col": "contracts",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "corporate_entity_not_tax_e",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "organizational_type",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "parent_recipient_name_raw",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        }
+      ],
+      "discrepancies": [],
+      "socioeconomic_finding": "Only two socioeconomic/ownership fields mutate materially in this cell, and both are already claimed by the matrix: business_categories at frac 0.68 (recomputed 0.68) and organizational_type at frac 0.15 (recomputed 0.15). business_categories is a composite rollup categorization field, not a statutory ownership flag. Every GRANULAR ownership/joint-venture/disadvantaged flag is near-zero and does NOT mutate meaningfully: woman_owned_business 0.10, foreign_owned_and_located 0.03, small_disadvantaged_busine 0.02, women_owned_small_business 0.02, and veteran_owned_business, minority_owned_business, all joint_venture_* (economically, women_owned), business_types, business_types_desc, and every race/ethnicity *_owned_* flag (alaskan_native, american_indian, black_american, hispanic_american, native_american, native_hawaiian, other_minority, tribally) all at 0.00. No granular ownership/JV/SDB flag reaches 0.15, and none approaches the 0.3 architecture-decision threshold. Architecture implication: in re-rep non-novated M&A (AWARD/P) transitions, the statutory socioeconomic set-aside flags are effectively STABLE across the mutation boundary; the churn is confined to the business_categories rollup and organizational_type. Any design that treats granular ownership flags as mutable at this boundary is over-engineering against noise (<=1-2 rows out of 59 transitions).",
+      "verdict": "CONFIRMED"
+    },
+    {
+      "cell": "AWARD/J (novation)",
+      "transitions": 1073,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "recipient_name_raw",
+          "matrix_frac": 0.82,
+          "recomputed_frac": 0.82
+        },
+        {
+          "col": "generated_pragmatic_obligation",
+          "matrix_frac": 0.73,
+          "recomputed_frac": 0.73
+        },
+        {
+          "col": "federal_action_obligation",
+          "matrix_frac": 0.73,
+          "recomputed_frac": 0.73
+        },
+        {
+          "col": "legal_entity_address_line1",
+          "matrix_frac": 0.67,
+          "recomputed_frac": 0.67
+        },
+        {
+          "col": "legal_entity_zip4",
+          "matrix_frac": 0.65,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "recipient_hash",
+          "matrix_frac": 0.65,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "recipient_uei",
+          "matrix_frac": 0.65,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "business_categories",
+          "matrix_frac": 0.64,
+          "recomputed_frac": 0.64
+        },
+        {
+          "col": "recipient_name",
+          "matrix_frac": 0.61,
+          "recomputed_frac": 0.61
+        },
+        {
+          "col": "vendor_phone_number",
+          "matrix_frac": 0.59,
+          "recomputed_frac": 0.59
+        },
+        {
+          "col": "parent_recipient_name_raw",
+          "matrix_frac": 0.58,
+          "recomputed_frac": 0.58
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.58,
+          "recomputed_frac": 0.58
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.56,
+          "recomputed_frac": 0.56
+        },
+        {
+          "col": "base_exercised_options_val",
+          "matrix_frac": 0.55,
+          "recomputed_frac": 0.55
+        },
+        {
+          "col": "parent_recipient_hash",
+          "matrix_frac": 0.51,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "parent_uei",
+          "matrix_frac": 0.51,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "recipient_location_city_name",
+          "matrix_frac": 0.51,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "parent_recipient_name",
+          "matrix_frac": 0.51,
+          "recomputed_frac": 0.51
+        },
+        {
+          "col": "vendor_fax_number",
+          "matrix_frac": 0.49,
+          "recomputed_frac": 0.49
+        },
+        {
+          "col": "recipient_unique_id",
+          "matrix_frac": 0.48,
+          "recomputed_frac": 0.48
+        },
+        {
+          "col": "recipient_location_congressional_population",
+          "matrix_frac": 0.47,
+          "recomputed_frac": 0.47
+        },
+        {
+          "col": "recipient_location_congressional_code",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "recipient_location_congressional_code_current",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "recipient_location_zip5",
+          "matrix_frac": 0.45,
+          "recomputed_frac": 0.45
+        },
+        {
+          "col": "legal_entity_zip_last4",
+          "matrix_frac": 0.43,
+          "recomputed_frac": 0.43
+        },
+        {
+          "col": "recipient_location_county_code",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "recipient_location_county_name",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "recipient_location_county_population",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "recipient_location_county_fips",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.41,
+          "recomputed_frac": 0.41
+        },
+        {
+          "col": "recipient_location_state_name",
+          "matrix_frac": 0.39,
+          "recomputed_frac": 0.39
+        },
+        {
+          "col": "parent_recipient_unique_id",
+          "matrix_frac": 0.38,
+          "recomputed_frac": 0.38
+        },
+        {
+          "col": "recipient_location_state_code",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "recipient_location_state_fips",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "recipient_location_state_population",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "cage_code",
+          "matrix_frac": 0.32,
+          "recomputed_frac": 0.32
+        },
+        {
+          "col": "total_obligated_amount",
+          "matrix_frac": 0.32,
+          "recomputed_frac": 0.32
+        },
+        {
+          "col": "current_total_value_award",
+          "matrix_frac": 0.3,
+          "recomputed_frac": 0.3
+        },
+        {
+          "col": "recipient_levels",
+          "matrix_frac": 0.3,
+          "recomputed_frac": 0.3
+        },
+        {
+          "col": "corporate_entity_not_tax_e",
+          "matrix_frac": 0.25,
+          "recomputed_frac": 0.25
+        },
+        {
+          "col": "potential_total_value_awar",
+          "matrix_frac": 0.25,
+          "recomputed_frac": 0.25
+        },
+        {
+          "col": "organizational_type",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "contracts",
+          "matrix_frac": 0.19,
+          "recomputed_frac": 0.19
+        },
+        {
+          "col": "commercial_item_acqui_desc",
+          "matrix_frac": 0.19,
+          "recomputed_frac": 0.19
+        },
+        {
+          "col": "period_of_perf_potential_e",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "period_of_performance_current_end_date",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "limited_liability_corporat",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "foreign_funding",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "place_of_performance_zip4a",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "type_description",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "a_76_fair_act_action",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "a_76_fair_act_action_desc",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "clinger_cohen_act_pla_desc",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "clinger_cohen_act_planning",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "contract_award_type_desc",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "fair_opportunity_limi_desc",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "program_system_or_equipmen",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "research_description",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "sam_exception_description",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "type_of_idc_description",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "type_description_raw",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "recovered_materials_s_desc",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        }
+      ],
+      "discrepancies": [
+        {
+          "col": "transaction_unique_id",
+          "matrix_frac": 0,
+          "recomputed_frac": 1,
+          "note": "Matrix does not track this column at all (tracks only 277 of 378 cols). Independent self-join shows it mutates on 100% of AWARD/J transitions. Per-transaction identity ID (sibling of the txn key detached_award_proc_unique) so a defensible key exclusion, BUT the matrix inconsistently KEPT the analogous transaction_id at 1.00 while dropping this one."
+        },
+        {
+          "col": "detached_award_procurement_id",
+          "matrix_frac": 0,
+          "recomputed_frac": 1,
+          "note": "Not tracked by matrix. Recomputed 1.00 mutation. Per-transaction identity ID; same inconsistency as transaction_unique_id vs the kept transaction_id@1.00."
+        },
+        {
+          "col": "action_type_description",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.95,
+          "note": "MATERIAL MISS: substantive content field (human-readable label of action_type) not tracked by the matrix. Recomputed 0.954, null-checked (cur null 0%, prev null 27%); mutation exactly tracks the underlying action_type code changing between the prior mod and the novation. Genuine mutating content the matrix omitted."
+        },
+        {
+          "col": "fiscal_action_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.95,
+          "note": "Not tracked by matrix. Recomputed 0.95 mutation. Genuine date field excluded from the matrix's 277-col tracking set."
+        },
+        {
+          "col": "last_modified_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.86,
+          "note": "Not tracked by matrix. Recomputed 0.86 mutation. System/lineage timestamp excluded from tracking; mutates on nearly every transition."
+        },
+        {
+          "col": "initial_report_date",
+          "matrix_frac": 0,
+          "recomputed_frac": 0.67,
+          "note": "Not tracked by matrix. Recomputed 0.67 mutation. Date field excluded from the matrix's tracking set."
+        }
+      ],
+      "socioeconomic_finding": "Precise for architecture decision: in AWARD/J (novation), the AGGREGATE/rollup entity fields DO mutate \u2014 business_categories 0.64, corporate_entity_not_tax_e 0.25, organizational_type 0.20, limited_liability_corporat 0.18 (all confirmed identically by independent method and matrix). But EVERY explicit socioeconomic ownership / joint-venture / demographic flag is STABLE and well below the 0.15 threshold: woman_owned_business 0.07, foreign_owned_and_located 0.06, minority_owned_business 0.05, veteran_owned_business 0.05, self_certified_small_disad 0.10, small_disadvantaged_busine 0.03, women_owned_small_business 0.03, service_disabled_veteran_o 0.03, and all *_owned_* demographic flags (hispanic/black/native/asian/american_indian/alaskan/tribal) at 0.00-0.03. All joint_venture_* fields (joint_venture_women_owned, joint_venture_economically) mutate at 0.00. Conclusion: novation rewrites the recipient identity and the coarse business_categories rollup, but does NOT churn the granular ownership/JV/demographic certification flags \u2014 those can be treated as award-stable across novation.",
+      "verdict": "DISCREPANCY"
+    },
+    {
+      "cell": "KIND=IDV ACTION=J (novation IDV)",
+      "transitions": 526,
+      "confirmed": [
+        {
+          "col": "transaction_id",
+          "matrix_frac": 1,
+          "recomputed_frac": 1
+        },
+        {
+          "col": "recipient_name_raw",
+          "matrix_frac": 0.88,
+          "recomputed_frac": 0.88
+        },
+        {
+          "col": "legal_entity_address_line1",
+          "matrix_frac": 0.72,
+          "recomputed_frac": 0.72
+        },
+        {
+          "col": "recipient_hash",
+          "matrix_frac": 0.7,
+          "recomputed_frac": 0.7
+        },
+        {
+          "col": "recipient_uei",
+          "matrix_frac": 0.7,
+          "recomputed_frac": 0.7
+        },
+        {
+          "col": "legal_entity_zip4",
+          "matrix_frac": 0.69,
+          "recomputed_frac": 0.69
+        },
+        {
+          "col": "fiscal_year",
+          "matrix_frac": 0.66,
+          "recomputed_frac": 0.66
+        },
+        {
+          "col": "vendor_phone_number",
+          "matrix_frac": 0.65,
+          "recomputed_frac": 0.65
+        },
+        {
+          "col": "parent_recipient_name_raw",
+          "matrix_frac": 0.64,
+          "recomputed_frac": 0.64
+        },
+        {
+          "col": "business_categories",
+          "matrix_frac": 0.64,
+          "recomputed_frac": 0.64
+        },
+        {
+          "col": "recipient_name",
+          "matrix_frac": 0.62,
+          "recomputed_frac": 0.62
+        },
+        {
+          "col": "period_of_performance_start_date",
+          "matrix_frac": 0.59,
+          "recomputed_frac": 0.59
+        },
+        {
+          "col": "vendor_fax_number",
+          "matrix_frac": 0.58,
+          "recomputed_frac": 0.58
+        },
+        {
+          "col": "transaction_description",
+          "matrix_frac": 0.58,
+          "recomputed_frac": 0.58
+        },
+        {
+          "col": "parent_recipient_hash",
+          "matrix_frac": 0.54,
+          "recomputed_frac": 0.54
+        },
+        {
+          "col": "parent_uei",
+          "matrix_frac": 0.54,
+          "recomputed_frac": 0.54
+        },
+        {
+          "col": "recipient_location_city_name",
+          "matrix_frac": 0.53,
+          "recomputed_frac": 0.53
+        },
+        {
+          "col": "parent_recipient_name",
+          "matrix_frac": 0.52,
+          "recomputed_frac": 0.52
+        },
+        {
+          "col": "recipient_location_zip5",
+          "matrix_frac": 0.48,
+          "recomputed_frac": 0.48
+        },
+        {
+          "col": "legal_entity_zip_last4",
+          "matrix_frac": 0.47,
+          "recomputed_frac": 0.47
+        },
+        {
+          "col": "recipient_location_congressional_population",
+          "matrix_frac": 0.46,
+          "recomputed_frac": 0.46
+        },
+        {
+          "col": "recipient_unique_id",
+          "matrix_frac": 0.44,
+          "recomputed_frac": 0.44
+        },
+        {
+          "col": "recipient_location_state_name",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "recipient_location_county_population",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "recipient_location_congressional_code_current",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "recipient_location_county_fips",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "recipient_location_county_name",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "recipient_location_county_code",
+          "matrix_frac": 0.4,
+          "recomputed_frac": 0.4
+        },
+        {
+          "col": "cage_code",
+          "matrix_frac": 0.38,
+          "recomputed_frac": 0.38
+        },
+        {
+          "col": "recipient_location_congressional_code",
+          "matrix_frac": 0.38,
+          "recomputed_frac": 0.38
+        },
+        {
+          "col": "recipient_location_state_code",
+          "matrix_frac": 0.35,
+          "recomputed_frac": 0.35
+        },
+        {
+          "col": "recipient_location_state_fips",
+          "matrix_frac": 0.35,
+          "recomputed_frac": 0.35
+        },
+        {
+          "col": "recipient_location_state_population",
+          "matrix_frac": 0.35,
+          "recomputed_frac": 0.35
+        },
+        {
+          "col": "parent_recipient_unique_id",
+          "matrix_frac": 0.34,
+          "recomputed_frac": 0.34
+        },
+        {
+          "col": "corporate_entity_not_tax_e",
+          "matrix_frac": 0.3,
+          "recomputed_frac": 0.3
+        },
+        {
+          "col": "recipient_levels",
+          "matrix_frac": 0.29,
+          "recomputed_frac": 0.29
+        },
+        {
+          "col": "organizational_type",
+          "matrix_frac": 0.24,
+          "recomputed_frac": 0.24
+        },
+        {
+          "col": "base_and_all_options_value",
+          "matrix_frac": 0.22,
+          "recomputed_frac": 0.22
+        },
+        {
+          "col": "funding_office_code",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "commercial_item_acqui_desc",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "funding_office_name",
+          "matrix_frac": 0.2,
+          "recomputed_frac": 0.2
+        },
+        {
+          "col": "limited_liability_corporat",
+          "matrix_frac": 0.19,
+          "recomputed_frac": 0.19
+        },
+        {
+          "col": "contracts",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "ordering_period_end_date",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "for_profit_organization",
+          "matrix_frac": 0.18,
+          "recomputed_frac": 0.18
+        },
+        {
+          "col": "domestic_or_foreign_e_desc",
+          "matrix_frac": 0.17,
+          "recomputed_frac": 0.17
+        },
+        {
+          "col": "domestic_or_foreign_entity",
+          "matrix_frac": 0.17,
+          "recomputed_frac": 0.17
+        },
+        {
+          "col": "officer_4_amount",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_5_amount",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_1_amount",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_2_amount",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_5_name",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_3_amount",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_3_name",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_4_name",
+          "matrix_frac": 0.16,
+          "recomputed_frac": 0.16
+        },
+        {
+          "col": "officer_2_name",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        },
+        {
+          "col": "vendor_doing_as_business_n",
+          "matrix_frac": 0.15,
+          "recomputed_frac": 0.15
+        }
+      ],
+      "discrepancies": [],
+      "socioeconomic_finding": "Two socioeconomic/ownership columns mutate materially in the IDV/J (novation IDV) cell and BOTH are already in the matrix claim list: business_categories at frac=0.635 (matrix 0.64) and organizational_type at frac=0.236 (matrix 0.24). Every discrete ownership/joint-venture/small-business flag mutates BELOW the 0.15 threshold and is therefore NOT material: self_certified_small_disad=0.097, minority_owned_business=0.068, woman_owned_business=0.067, foreign_owned_and_located=0.044, small_disadvantaged_busine=0.040, veteran_owned_business=0.040, service_disabled_veteran_o=0.027, native_american_owned_busi=0.023, women_owned_small_business=0.021, joint_venture_economically=0.006, joint_venture_women_owned=0.006, sba_certified_8_a_joint_ve=0.004, tribally_owned_business=0.006; business_types, business_types_desc, local_government_owned, and native_hawaiian_owned_busi mutate at 0.000. Architecture implication: the coarse rollup fields (business_categories, organizational_type) DO churn on novation and must be treated as mutable/versioned, but the granular per-flag socioeconomic/JV/ownership booleans are effectively stable across the IDV novation transition (<0.10) and can be carried as slowly-changing dimensions rather than per-transaction mutable state.",
+      "verdict": "CONFIRMED"
+    }
+  ],
+  "n_classified": 156,
+  "synthesis": {
+    "blueprint": [
+      {
+        "kind": "AWARD",
+        "action_type": "G",
+        "transitions": 146953,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_current_end_date",
+          "base_exercised_options_val",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_and_all_options_value",
+          "fiscal_year",
+          "total_obligated_amount",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "A",
+        "transitions": 26707,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "period_of_performance_current_end_date",
+          "base_and_all_options_value",
+          "base_exercised_options_val",
+          "total_obligated_amount",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "period_of_perf_potential_e",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "B",
+        "transitions": 445118,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "period_of_performance_current_end_date",
+          "fiscal_year"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "period_of_perf_potential_e"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "C",
+        "transitions": 574169,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_exercised_options_val",
+          "base_and_all_options_value"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "D",
+        "transitions": 63195,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "transaction_description",
+          "period_of_performance_current_end_date",
+          "fiscal_year",
+          "total_obligated_amount",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "period_of_perf_potential_e",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "H",
+        "transitions": 2240,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "period_of_performance_current_end_date",
+          "total_obligated_amount",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "potential_total_value_awar",
+          "type_of_contract_pric_desc"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "L",
+        "transitions": 3853,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "period_of_performance_current_end_date",
+          "total_obligated_amount",
+          "current_total_value_award",
+          "fiscal_year"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "R",
+        "transitions": 88,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "transaction_description",
+          "business_categories",
+          "period_of_performance_start_date",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "contracting_officers_deter",
+          "fiscal_year"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "contracting_officers_desc"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "P",
+        "transitions": 59,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "business_categories",
+          "transaction_description",
+          "base_exercised_options_val",
+          "contracting_officers_deter",
+          "base_and_all_options_value",
+          "recipient_name_raw",
+          "period_of_performance_current_end_date",
+          "fiscal_year",
+          "total_obligated_amount"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "contracting_officers_desc",
+          "period_of_perf_potential_e"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "J",
+        "transitions": 1073,
+        "on_spine_mutations": [
+          "recipient_name_raw",
+          "federal_action_obligation",
+          "recipient_uei",
+          "recipient_hash",
+          "business_categories",
+          "recipient_name",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "base_exercised_options_val",
+          "parent_uei",
+          "recipient_location_city_name",
+          "parent_recipient_name",
+          "parent_recipient_hash",
+          "recipient_location_county_name",
+          "base_and_all_options_value",
+          "cage_code",
+          "total_obligated_amount",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "legal_entity_address_line1",
+          "legal_entity_zip4",
+          "vendor_phone_number",
+          "parent_recipient_name_raw",
+          "vendor_fax_number",
+          "recipient_unique_id",
+          "recipient_location_congressional_population",
+          "recipient_location_congressional_code",
+          "recipient_location_zip5",
+          "recipient_location_congressional_code_current",
+          "legal_entity_zip_last4",
+          "recipient_location_county_fips",
+          "recipient_location_county_population",
+          "recipient_location_county_code",
+          "recipient_location_state_name",
+          "parent_recipient_unique_id",
+          "recipient_location_state_population",
+          "recipient_location_state_fips",
+          "recipient_location_state_code"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "N",
+        "transitions": 2942,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "transaction_description",
+          "current_total_value_award",
+          "total_obligated_amount",
+          "clinger_cohen_act_planning",
+          "period_of_performance_current_end_date",
+          "recipient_location_county_name",
+          "price_evaluation_adjustmen",
+          "fiscal_year"
+        ],
+        "truly_blind_mutations": [
+          "potential_total_value_awar",
+          "commercial_item_acqui_desc",
+          "foreign_funding",
+          "contract_award_type_desc",
+          "type_of_idc_description",
+          "a_76_fair_act_action_desc",
+          "type_description",
+          "sam_exception_description",
+          "recipient_location_county_code",
+          "recipient_location_county_population",
+          "recipient_location_county_fips",
+          "recipient_location_zip5",
+          "recipient_location_state_name",
+          "program_system_or_equ_desc",
+          "type_of_contract_pric_desc",
+          "legal_entity_zip_last4"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "F",
+        "transitions": 12739,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "transaction_description",
+          "total_obligated_amount",
+          "current_total_value_award",
+          "fiscal_year",
+          "period_of_performance_current_end_date",
+          "clinger_cohen_act_planning",
+          "recipient_location_county_name"
+        ],
+        "truly_blind_mutations": [
+          "potential_total_value_awar",
+          "commercial_item_acqui_desc",
+          "contract_award_type_desc",
+          "type_description",
+          "sam_exception_description",
+          "foreign_funding",
+          "type_of_idc_description",
+          "a_76_fair_act_action_desc",
+          "recipient_location_county_fips",
+          "recipient_location_state_name",
+          "recipient_location_county_code",
+          "program_system_or_equ_desc",
+          "recipient_location_county_population",
+          "recipient_location_zip5",
+          "period_of_perf_potential_e"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "E",
+        "transitions": 624,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "total_obligated_amount",
+          "current_total_value_award",
+          "period_of_performance_current_end_date",
+          "clinger_cohen_act_planning",
+          "recipient_location_county_name",
+          "price_evaluation_adjustmen"
+        ],
+        "truly_blind_mutations": [
+          "potential_total_value_awar",
+          "commercial_item_acqui_desc",
+          "contract_award_type_desc",
+          "type_of_idc_description",
+          "a_76_fair_act_action_desc",
+          "sam_exception_description",
+          "foreign_funding",
+          "type_description",
+          "recipient_location_state_name",
+          "recipient_location_county_fips",
+          "recipient_location_county_population",
+          "recipient_location_county_code",
+          "recipient_location_zip5",
+          "type_of_contract_pric_desc",
+          "program_system_or_equ_desc",
+          "period_of_perf_potential_e"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "X",
+        "transitions": 486,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "transaction_description",
+          "period_of_performance_start_date",
+          "fiscal_year",
+          "total_obligated_amount",
+          "period_of_performance_current_end_date",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "period_of_perf_potential_e",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "T",
+        "transitions": 97,
+        "on_spine_mutations": [
+          "price_evaluation_adjustmen",
+          "federal_action_obligation",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "funding_office_name",
+          "funding_office_code",
+          "current_total_value_award",
+          "total_obligated_amount"
+        ],
+        "truly_blind_mutations": [
+          "awarding_office_name",
+          "awarding_office_code",
+          "generated_pragmatic_obligation",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "V",
+        "transitions": 922,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "base_exercised_options_val",
+          "transaction_description",
+          "base_and_all_options_value",
+          "recipient_name_raw",
+          "fiscal_year",
+          "recipient_hash",
+          "period_of_performance_start_date",
+          "recipient_uei",
+          "cage_code",
+          "total_obligated_amount",
+          "recipient_location_city_name",
+          "recipient_name",
+          "recipient_location_county_name",
+          "current_total_value_award"
+        ],
+        "truly_blind_mutations": [
+          "legal_entity_address_line1",
+          "legal_entity_zip4",
+          "legal_entity_zip_last4",
+          "vendor_phone_number",
+          "recipient_location_zip5",
+          "recipient_unique_id",
+          "parent_recipient_name_raw",
+          "recipient_location_state_name",
+          "recipient_location_county_code",
+          "recipient_location_county_population",
+          "recipient_location_county_fips",
+          "recipient_location_congressional_population",
+          "recipient_location_congressional_code",
+          "vendor_fax_number",
+          "recipient_location_congressional_code_current",
+          "potential_total_value_awar"
+        ]
+      },
+      {
+        "kind": "AWARD",
+        "action_type": "W",
+        "transitions": 1251,
+        "on_spine_mutations": [
+          "federal_action_obligation",
+          "base_exercised_options_val",
+          "base_and_all_options_value",
+          "transaction_description",
+          "fiscal_year"
+        ],
+        "truly_blind_mutations": [
+          "generated_pragmatic_obligation",
+          "legal_entity_address_line1",
+          "legal_entity_zip4",
+          "legal_entity_zip_last4",
+          "recipient_location_zip5"
+        ]
+      },
+      {
+        "kind": "IDV",
+        "action_type": "G",
+        "transitions": 26337,
+        "on_spine_mutations": [
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "ordering_period_end_date"
+        ],
+        "truly_blind_mutations": []
+      },
+      {
+        "kind": "IDV",
+        "action_type": "B",
+        "transitions": 37171,
+        "on_spine_mutations": [
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "base_and_all_options_value"
+        ],
+        "truly_blind_mutations": []
+      },
+      {
+        "kind": "IDV",
+        "action_type": "M",
+        "transitions": 46647,
+        "on_spine_mutations": [
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "base_and_all_options_value"
+        ],
+        "truly_blind_mutations": []
+      },
+      {
+        "kind": "IDV",
+        "action_type": "D",
+        "transitions": 4917,
+        "on_spine_mutations": [
+          "period_of_performance_start_date",
+          "transaction_description",
+          "fiscal_year",
+          "base_and_all_options_value"
+        ],
+        "truly_blind_mutations": []
+      },
+      {
+        "kind": "IDV",
+        "action_type": "J",
+        "transitions": 526,
+        "on_spine_mutations": [
+          "recipient_name_raw",
+          "recipient_hash",
+          "recipient_uei",
+          "fiscal_year",
+          "business_categories",
+          "recipient_name",
+          "period_of_performance_start_date",
+          "transaction_description",
+          "parent_uei",
+          "parent_recipient_hash",
+          "recipient_location_city_name",
+          "parent_recipient_name",
+          "recipient_location_county_name",
+          "cage_code"
+        ],
+        "truly_blind_mutations": [
+          "legal_entity_address_line1",
+          "legal_entity_zip4",
+          "vendor_phone_number",
+          "parent_recipient_name_raw",
+          "vendor_fax_number",
+          "recipient_location_zip5",
+          "legal_entity_zip_last4",
+          "recipient_location_congressional_population",
+          "recipient_unique_id",
+          "recipient_location_state_name",
+          "recipient_location_county_population",
+          "recipient_location_congressional_code_current",
+          "recipient_location_county_fips",
+          "recipient_location_county_code",
+          "recipient_location_congressional_code",
+          "recipient_location_state_population",
+          "recipient_location_state_fips",
+          "recipient_location_state_code",
+          "parent_recipient_unique_id"
+        ]
+      },
+      {
+        "kind": "IDV",
+        "action_type": "R",
+        "transitions": 157,
+        "on_spine_mutations": [
+          "business_categories",
+          "transaction_description",
+          "period_of_performance_start_date",
+          "contracting_officers_deter",
+          "fiscal_year",
+          "ordering_period_end_date"
+        ],
+        "truly_blind_mutations": [
+          "contracting_officers_desc"
+        ]
+      },
+      {
+        "kind": "IDV",
+        "action_type": "P",
+        "transitions": 35,
+        "on_spine_mutations": [
+          "period_of_performance_start_date",
+          "business_categories",
+          "fiscal_year",
+          "transaction_description",
+          "contracting_officers_deter",
+          "ordering_period_end_date"
+        ],
+        "truly_blind_mutations": [
+          "contracting_officers_desc"
+        ]
+      }
+    ],
+    "blind_spot_summary": "Across all 24 modeled (kind,action_type) cells the truly-blind >=0.3 mutations partition cleanly into four disjoint classes, none of which is a socioeconomic status flag. (1) Derived twins of on-spine fields \u2014 generated_pragmatic_obligation (blind, but the derived double-twin of on-spine federal_action_obligation at an identical frac in every cell) and the *_desc description twins of codes the spine already carries (contracting_officers_desc twins contracting_officers_deter; type_of_contract_pric_desc, contract_award_type_desc, commercial_item_acqui_desc, type_of_idc_description, sam_exception_description, a_76_fair_act_action_desc, program_system_or_equ_desc all twin on-spine code columns). These carry no information the spine lacks. (2) Per-award economics \u2014 period_of_perf_potential_e and potential_total_value_awar mutate >=0.30 under A,D,H,L,N,F,E,X,T,V and the option-adjacent supplemental actions; the spine carries only current end-date/current total value, so the potential (ceiling) figures are a genuine information loss on scope-increasing mods. (3) Entity-identity churn \u2014 under J (novation), V (vendor UEI change), W (address change), and T (transfer), a dense block of blind fields fires 0.32-0.72: legal_entity_address_line1, legal_entity_zip4/zip_last4, vendor_phone_number, vendor_fax_number, the full recipient_location_* geography ladder (state/county/congressional code+name+fips+population+zip5), parent_recipient_name_raw, parent_recipient_unique_id, recipient_unique_id, and (T only) awarding_office_code/name. (4) New-award enrichment metadata under N/F/E \u2014 foreign_funding plus the description twins above. Critically, in the entity-churn cells the on-spine recipient identity keys (recipient_uei, recipient_hash, recipient_name, parent_uei, parent_recipient_hash, cage_code, business_categories) ALSO mutate in lockstep, so the spine is NOT blind to the fact of an identity change \u2014 only to the granular blind address/geography/contact attributes hanging off it.",
+    "socioeconomic_verdict": "Definitive: NO. During option-year exercise (AWARD/G, IDV/G) and re-representation (AWARD/R, AWARD/P, IDV/R, IDV/P), socioeconomic / joint-venture / structural-ownership data does NOT mutate in the 261 dropped columns in any way the spine is blind to. Independent self-join recompute over the full 20-column socio class in the parquet: in AWARD/G the maximum socio mutation is organizational_type at 0.0617 and business_categories at 0.0446 \u2014 every discrete ownership/JV boolean (woman_owned_business, veteran_owned_business, minority_owned_business, small_disadvantaged_busine, women_owned_small_business, all joint_venture_*, all race/ethnicity *_owned_*) is <=0.009, three-plus orders of magnitude below the 0.30 material-mutation bar. IDV/G max socio frac 0.0487. The two fields that DO churn under re-representation \u2014 business_categories (0.62 in AWARD/R, 0.68 in AWARD/P, 0.83 in IDV/R) and organizational_type (0.15-0.24) \u2014 must be distinguished sharply: business_categories is a composite rollup and is ON the spine (\u00a73 line 161, direct), so it is fully observed; the spine is not blind to it. organizational_type and corporate_entity_not_tax_e ARE blind (\u00a76, not carried), but they mutate only 0.15-0.25 (conditional band) and are IRS/SAM structural-classification descriptors, NOT statutory set-aside eligibility. The individual statutory socioeconomic booleans are award-invariant across G/R/P: they stay pinned to the base award and never approach the mutation threshold. Re-representation rewrites the coarse business_categories rollup (observed on spine) and, secondarily, the blind organizational_type/corporate_entity structural class \u2014 it does NOT flip the granular set-aside/ownership/JV certification flags. Any design that re-materializes granular socioeconomic flags per-modification for G/R/P is over-engineering against 1-2-row noise.",
+    "recommendation": "Hybrid: targeted spine expansion for per-award economics + a separate Lance Entity Dimension for identity attributes. Do NOT status-quo (two genuine blind spots persist) and do NOT bulk-expand the spine to absorb all 261 dropped columns. Specifically: (A) EXPAND THE 131-COL SPINE by exactly two columns \u2014 period_of_performance_potential_end_date (blind twin period_of_perf_potential_e) and potential_total_value_of_award (blind twin potential_total_value_awar). These are per-award economic ceilings that mutate >=0.30 under the high-volume scope-change actions (A 26.7k, D 63.2k, plus H/L/N/F/E/X/V), are award-scoped (not entity-scoped), and have no on-spine surrogate \u2014 the spine already carries the current-end/current-value pair but silently drops the potential/ceiling pair, so a scope-increase modification is invisible in ceiling terms. Adding them closes the only substantive award-level blind spot and each gets a value column, no new index needed. (B) BUILD A SEPARATE LANCE ENTITY DIMENSION keyed on recipient_uei/recipient_hash (BTREE) for the entity-identity churn surfaced by J (novation, 1073), V (UEI change, 922), W (address change, 1251), T (transfer, 97), and IDV/J (526): legal_entity_address_line1, legal_entity_zip4, legal_entity_zip_last4, vendor_phone_number, vendor_fax_number, the recipient_location_* geography ladder (state/county/congressional code+name+fips+population+zip5), parent_recipient_name_raw, parent_recipient_unique_id, recipient_unique_id, plus organizational_type and corporate_entity_not_tax_e. These are slowly-changing entity attributes that churn only on identity-boundary actions, not per-transaction; they belong in an entity dimension resolved by UEI, versioned as an SCD, NOT re-snapshotted onto every one of 3.2M transaction rows. The spine already carries the entity resolution keys (recipient_uei/hash, parent_uei/hash, cage_code) that mutate in lockstep on these actions, so the spine records THAT the entity changed and the dimension carries WHAT changed \u2014 clean separation. (C) DO NOT carry the granular socioeconomic/JV booleans anywhere mutable: they are award-stable across every action type (max 0.06) and stay on the base-award spine snapshot. (D) The remaining blind >=0.3 fields are non-substantive twins (generated_pragmatic_obligation duplicates federal_action_obligation; every *_desc twins an on-spine code) \u2014 carry neither; reconstruct on read from the on-spine code/value.",
+    "caveats": [
+      "Single-agency sample: entire matrix is Air Force (agency 5700), ~3.2M rows. Mutation fractions \u2014 especially the entity-churn geography block and the potential-value cells \u2014 may not generalize to civilian agencies with different novation/address-change base rates. Validate against a second agency before hard-committing the schema.",
+      "Thin cells: AWARD/R (88 transitions) and AWARD/P (59) are statistically fragile \u2014 a single row moves frac by ~0.011-0.017, so any 0.15-0.30 conditional-band column in R/P is within noise of the threshold. IDV/P (35) and IDV/T/E (26 each) and AWARD/T (97) are similarly thin; treat their exact fracs as directional, not precise.",
+      "Non-standard action_type 'Y' (AWARD 24 / IDV 24 transitions) is outside the FPDS standard code set and was excluded from the modeled blueprint per the coverage spec; it is low-volume but undiagnosed \u2014 its footprint is unverified.",
+      "generated_pragmatic_obligation is reported as a blind >=0.3 mutation in most AWARD cells but is the derived double-twin of on-spine federal_action_obligation (identical frac in every cell); it and the *_desc description-twins are information-free relative to the spine and should not drive any add-column decision.",
+      "IDV/M and IDV/B were modeled from the full matrix (not in the verified self-join set); their footprints are matrix-only, not independently recomputed \u2014 though the AWARD/IDV cells that WERE cross-checked showed matrix-vs-recompute agreement to within 0.01, so confidence in the matrix fracs is high.",
+      "The matrix's own 'projected' flag is the build's projection intent, not 131-col spine membership; on_spine/blind classification here was resolved against docs/reference/FPDS_CANONICAL_FIELD_DICTIONARY.md (\u00a73 spine, \u00a76 BULK-native-not-carried), not the matrix flag. A handful of matrix-tracked columns marked projected=True are emitted in zero cells (internal emit gap, e.g. last_modified_date, transaction_unique_id) \u2014 a matrix-build defect noted in the IDV/G and AWARD/J discrepancies, orthogonal to the architecture decision."
+    ]
+  },
+  "agent_count": 11,
+  "total_tokens": 765987
+}
