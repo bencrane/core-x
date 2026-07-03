@@ -51,8 +51,8 @@ function chunk(a, n) { const o = []; for (let i = 0; i < a.length; i += n) o.pus
 function slicePrompt(cids) {
   const lines = cids.map(c => '  ' + CALLS_DIR + '/' + c + '.txt  (expected ' + NPSC[c] + ' PSCs)').join('\n')
   return (
-'You classify the labor demand implied by U.S. federal contract awards.\n\n' +
-'Shared task rules and the TWO controlled vocabularies (SCA labor categories; detailed SOC occupations) are in ' + SYSTEM_TXT + '. READ THAT FILE ONCE, IN FULL, FIRST — it is authoritative.\n\n' +
+'You classify what U.S. federal contract awards imply for the winning contractor.\n\n' +
+'The authoritative task framing (including, for the goods lane, the make-vs-pass-through decision) and the TWO controlled vocabularies (SCA labor categories; detailed SOC occupations) are in ' + SYSTEM_TXT + '. READ THAT FILE ONCE, IN FULL, FIRST — it governs; the notes below are only the output contract.\n\n' +
 'Then process EACH of these ' + cids.length + ' calls IN TURN (skip none):\n' + lines + '\n\n' +
 'For each call:\n' +
 '1. Read its file (ONE NAICS industry + its OEWS staffing-pattern candidates + the PSC codes to classify).\n' +
@@ -64,7 +64,7 @@ function slicePrompt(cids) {
 '- role_class AND confidence are REQUIRED on EVERY category object — never leave either out.\n' +
 '- soc_code MUST literally appear in the DETAILED SOC VOCABULARY in system.txt; prefer the call candidates; off_pattern=true only when the deliverable needs an occupation outside them.\n' +
 '- sca_code MUST literally appear in the SCA VOCABULARY, or be null when none fits.\n' +
-'- work_summary <= 20 words. is_labor_play=false => categories []. Otherwise list ALL labor categories genuinely required, ranked by centrality (array order = rank, max 10): the core_deliverable labor that IS the service, PLUS the support and overhead roles the contract forces on payroll — do not collapse to only the top role.\n' +
+'- work_summary <= 20 words. is_labor_play=false => categories []. Otherwise list ALL labor categories genuinely required, ranked by centrality (array order = rank, max 10): the core_deliverable labor that IS the primary work, PLUS the support and overhead roles the contract forces on payroll — do not collapse to only the top role.\n' +
 '- Do NOT emit placeholder/test/tag-only output; every field must be a real classification.\n\n' +
 'When ALL ' + cids.length + ' files are written, return {"completed":[cids you wrote],"failed":[cids you could not]} via structured output.'
   )
