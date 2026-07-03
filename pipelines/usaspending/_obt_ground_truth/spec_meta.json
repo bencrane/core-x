@@ -1,0 +1,28 @@
+{
+ "BTREE_COLS": [
+  "contract_transaction_unique_key",
+  "contract_award_unique_key",
+  "recipient_uei",
+  "action_date",
+  "last_modified_date",
+  "naics_code",
+  "product_or_service_code",
+  "federal_action_obligation",
+  "recipient_hash",
+  "award_id_piid",
+  "pop_county_fips"
+ ],
+ "BITMAP_COLS": [
+  "action_date_fiscal_year",
+  "type_of_set_aside_code",
+  "awarding_agency_code",
+  "award_type_code",
+  "idv_type_code",
+  "canonical_source",
+  "subcontracting_plan"
+ ],
+ "BULK_URI": "s3://data-sink/active/usaspending/transaction_search_fpds/",
+ "FRESH_URI": "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/",
+ "CANONICAL_URI": "s3://data-sink/active/usaspending_fpds_canonical_txn/",
+ "n_spec": 131
+}

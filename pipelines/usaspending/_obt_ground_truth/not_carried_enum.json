@@ -1,0 +1,2351 @@
+[
+ {
+  "bulk_col": "a_76_fair_act_action",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "a_76_fair_act_action_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "action_type_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "afa_generated_unique",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "agency_id",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "airport_authority",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "alaskan_native_owned_corpo",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "alaskan_native_servicing_i",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "american_indian_owned_busi",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "asian_pacific_american_own",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "award_certified_date",
+  "sidecar_type": "date32[day]",
+  "duck_type": "DATE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "award_date_signed",
+  "sidecar_type": "date32[day]",
+  "duck_type": "DATE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "award_fiscal_year",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "award_update_date",
+  "sidecar_type": "timestamp[us]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "awarding_office_code",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "awarding_office_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "awarding_subtier_agency_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "awarding_toptier_agency_id",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "awarding_toptier_agency_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "black_american_owned_busin",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "business_funds_ind_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "business_funds_indicator",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "business_types_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "c1862_land_grant_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "c1890_land_grant_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "c1994_land_grant_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "cfda_id",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "cfda_title",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "city_local_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "clinger_cohen_act_pla_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "commercial_item_acqui_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "commercial_item_test_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "commercial_item_test_progr",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "community_developed_corpor",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "community_development_corp",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "consolidated_contract_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "construction_wage_rat_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contingency_humanitar_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contingency_humanitarian_o",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contract_award_type_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contract_bundling_descrip",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contract_financing_descrip",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contracting_officers_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "contracts",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "corporate_entity_not_tax_e",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "corporate_entity_tax_exemp",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "correction_delete_ind_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "correction_delete_indicatr",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "cost_accounting_stand_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "cost_accounting_standards",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "cost_or_pricing_data_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "council_of_governments",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "country_of_product_or_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "country_of_product_or_serv",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "county_local_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "create_date",
+  "sidecar_type": "timestamp[us]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "detached_award_procurement_id",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "dod_claimant_prog_cod_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "domestic_or_foreign_e_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "domestic_shelter",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "dot_certified_disadvantage",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "economically_disadvantaged",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "educational_institution",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "emerging_small_business",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "epa_designated_produc_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "epa_designated_product",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "etl_update_date",
+  "sidecar_type": "timestamp[us]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "evaluated_preference",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "evaluated_preference_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "extent_compete_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "face_value_loan_guarantee",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "fain",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "fair_opportunity_limi_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "fed_biz_opps",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "fed_biz_opps_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "federal_agency",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "federally_funded_research",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "fiscal_action_date",
+  "sidecar_type": "date32[day]",
+  "duck_type": "DATE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "for_profit_organization",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "foreign_funding",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "foreign_funding_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "foreign_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "foreign_owned_and_located",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "foundation",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_opportunity_goals",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_opportunity_number",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_subtier_agency_abbreviation",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_subtier_agency_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_toptier_agency_abbreviation",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_toptier_agency_id",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "funding_toptier_agency_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "generated_pragmatic_obligation",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "government_furnished_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "government_furnished_prope",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "grants",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "hispanic_american_owned_bu",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "hispanic_servicing_institu",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "historically_black_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "hospital_flag",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "housing_authorities_public",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "idv_type_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "indian_tribe_federally_rec",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "indirect_federal_sharing",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "information_technolog_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "information_technology_com",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "ingested_at",
+  "sidecar_type": "timestamp[us, tz=Etc/UTC]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "inherently_government_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "initial_report_date",
+  "sidecar_type": "timestamp[us]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "inter_municipal_local_gove",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "interagency_contract_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "interagency_contracting_au",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "international_organization",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "interstate_entity",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "is_fpds",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "joint_venture_economically",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "joint_venture_women_owned",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "labor_standards_descrip",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "labor_surplus_area_firm",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_address_line2",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_address_line3",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_city_code",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_foreign_city",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_foreign_descr",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_foreign_posta",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_foreign_provi",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_zip4",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "legal_entity_zip_last4",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "limited_liability_corporat",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "local_area_set_aside",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "local_area_set_aside_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "local_government_owned",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "manufacturer_of_goods",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "materials_supplies_article",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "materials_supplies_descrip",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "minority_institution",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "minority_owned_business",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "multi_year_contract_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "multiple_or_single_aw_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "municipality_local_governm",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "national_interest_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "native_american_owned_busi",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "native_hawaiian_owned_busi",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "native_hawaiian_servicing",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "non_federal_funding_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "nonprofit_organization",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_1_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_1_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_2_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_2_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_3_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_3_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_4_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_4_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_5_amount",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "officer_5_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "organizational_type",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "original_loan_subsidy_cost",
+  "sidecar_type": "double",
+  "duck_type": "DOUBLE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "other_minority_owned_busin",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "other_not_for_profit_organ",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "other_statutory_authority",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "other_than_full_and_o_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "parent_recipient_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "parent_recipient_unique_id",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "partnership_or_limited_lia",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "performance_based_se_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "period_of_perf_potential_e",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "place_of_manufacture",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "place_of_manufacture_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "place_of_perform_zip_last4",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "place_of_performance_zip4a",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "planning_commission",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_congressional_code_current",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_congressional_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_country_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_county_code",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_county_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_county_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_state_fips",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_state_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pop_state_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "port_authority",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "potential_total_value_awar",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "private_university_or_coll",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "program_system_or_equ_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "program_system_or_equipmen",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "published_fabs_id",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "pulled_from",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "purchase_card_as_paym_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "receives_contracts_and_gra",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_congressional_code_current",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_congressional_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_country_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_county_code",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_county_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_state_fips",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_state_name",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_location_state_population",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_name_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recipient_unique_id",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "record_type",
+  "sidecar_type": "int64",
+  "duck_type": "BIGINT",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "record_type_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recovered_materials_s_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "recovered_materials_sustai",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "referenced_idv_agency_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "referenced_idv_type_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "referenced_mult_or_si_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "referenced_mult_or_single",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "research",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "research_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sai_number",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sam_exception",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sam_exception_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sba_certified_8_a_joint_ve",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "school_district_local_gove",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "school_of_forestry",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sea_transportation",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sea_transportation_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "self_certified_small_disad",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "small_agricultural_coopera",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "small_business_competitive",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "small_disadvantaged_busine",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "sole_proprietorship",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "solicitation_procedur_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "source_schema",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "source_table",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "state_controlled_instituti",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "subchapter_s_corporation",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "subcontinent_asian_asian_i",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "subcontracting_plan_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "tas_components",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "the_ability_one_program",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "township_local_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "transit_authority",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "tribal_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "tribally_owned_business",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_description_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_of_contract_pric_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_of_idc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_of_idc_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_raw",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "type_set_aside_description",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "undefinitized_action_desc",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "update_date",
+  "sidecar_type": "timestamp[us]",
+  "duck_type": "TIMESTAMP",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "uri",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "us_federal_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "us_government_entity",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "us_local_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "us_state_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "us_tribal_government",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "usaspending_snapshot_date",
+  "sidecar_type": "date32[day]",
+  "duck_type": "DATE",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "usaspending_unique_transaction_id",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "vendor_doing_as_business_n",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "vendor_fax_number",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "vendor_phone_number",
+  "sidecar_type": "string",
+  "duck_type": "VARCHAR",
+  "in_live_bulk": true,
+  "in_live_fresh": false,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "veteran_owned_business",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "veterinary_college",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "veterinary_hospital",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ },
+ {
+  "bulk_col": "woman_owned_business",
+  "sidecar_type": "bool",
+  "duck_type": "BOOLEAN",
+  "in_live_bulk": true,
+  "in_live_fresh": true,
+  "group_default": "enrich",
+  "feed_expr": null
+ }
+]
