@@ -246,3 +246,69 @@ Part I hard-filtered the supply side to the 67,234-firm DSBS roster *at scan tim
 
 **Part II artifacts** (`reports/dsbs_overlap/`): `supply_footprint_flagged.parquet` (the queryable universe), `overlap_combos_flagged.parquet` (per-combo counts by population), `generalized_summary.json`.
 **Reproduce / re-slice:** `doppler run -p core-x -c prd -- .venv/bin/python scripts/dsbs_supply_generalized.py` — add a population by inserting one predicate into `POPULATIONS`.
+
+---
+
+# Part III — Prime-only DSBS: the "you've primed it, go sub it" conversion cohort
+
+The generalized footprint (Part II) exposes a partition Part I could not: DSBS firms with **proven prime execution but zero subaward history**. They have demonstrated they can *do* the work as a prime, but have never entered the subcontracting motion — the single most convertible supply segment.
+
+### DSBS roster (67,234) partitioned by federal execution history
+
+| Execution history | Firms | % of roster |
+|---|---:|---:|
+| **Prime-only** (primed, **never won a subaward**) | **13,447** | 20.0% |
+| Both prime and sub | 4,121 | 6.1% |
+| Sub-only (subbed, never primed) | 996 | 1.5% |
+| Neither (rostered, no FPDS/FSRS execution) | 48,670 | 72.4% |
+| *— any proven execution* | *18,564* | *27.6%* |
+
+Reconciles: 13,447 + 4,121 + 996 = 18,564 proven firms (Part I/II footprint). **Prime-only is 72.4% of every DSBS firm with a federal track record** — the dominant execution profile in the roster.
+
+### Conversion readiness (dollar-weighted)
+
+**9,952 of the 13,447 prime-only firms (74.0%) have already primed a `(NAICS,PSC)` combo that now carries active sub-obligated demand.** Distribution of each firm's reachable active-demand pool (combined obligated $ of active sub-demand in the combos it has primed):
+
+| Reachable active-demand pool | Prime-only firms |
+|---|---:|
+| ≥ $10B | 1,265 |
+| $1B – $10B | 2,847 |
+| $100M – $1B | 2,219 |
+| < $100M (but > 0) | 3,598 |
+| $0 (no primed combo carries active demand) | 3,518 |
+
+**4,112 firms sit in proven combos carrying ≥$1B of active subcontracting demand.** Cert composition of the 13,447 (overlapping): VOSB 6,724 · SDVOSB 5,941 · WOSB 4,130 · 8(a) 2,332 · HUBZone 2,060 · EDWOSB 1,387 (every firm carries ≥1 active cert — DSBS is cert-defined).
+
+### Two ranking lenses (the artifact carries every column — rank by any blend)
+
+**Dollar lens — top by reachable active-demand pool.** Surfaces firms proven in the richest combos; *inflated upward* by the $140B `561210|M1JZ` facilities mega-combo (primed it → inherit the whole pool). `reach_obl` is **combo-pool-scale, not firm-winnable**; read `own_prime` (all-time prime $) as the execution-scale reality check.
+
+| Firm | ST | Certs | Combos primed | Reach obl $ | Reach unspent $ | Own prime $ |
+|---|---|---|---:|---:|---:|---:|
+| ADDON SERVICES LLC | MI | WOSB | 53 | $286.6B | $145.7B | — |
+| RITZ CONSTRUCTION INC | MD | WOSB | 30 | $166.6B | $88.5B | — |
+| B3 ENTERPRISES LLC | AL | HZ/SDVOSB/VOSB | 23 | $159.6B | $80.9B | — |
+| TEYA SUPPORT SERVICES LLC | AK | 8(a) | 25 | $158.1B | $98.5B | — |
+| PROVEN MANAGEMENT LLC | DC | WOSB | 15 | $146.9B | $89.9B | — |
+| **ASRC FEDERAL FACILITIES LOGISTICS** | NJ | 8(a) | 154 | $88.2B | $20.0B | **$9.79B** |
+| QUASARS INCORPORATED | DC | WOSB | 24 | $80.3B | $98.3B | — |
+| ASRC FEDERAL TECHNOLOGY SOLUTIONS | VA | 8(a) | 43 | $57.3B | $65.1B | — |
+| ESSNOVA SOLUTIONS, INC. | AL | HZ | 63 | $52.6B | $64.9B | — |
+
+**Breadth lens — top by distinct active-demand combos already primed.** Robust to any single combo's dollar size; surfaces the most *versatile* proven capability. Skews to commodity-supply distributors — high combo count, micro own-prime scale — so breadth ≠ substance.
+
+| Firm | ST | Certs | Demand combos primed | Total prime combos | Own prime $ | Reach obl $ |
+|---|---|---|---:|---:|---:|---:|
+| LARKOS PACKING & DISTRIBUTION | PA | WOSB | 185 | 1,698 | $0.13B | $10.0B |
+| MARTIN MILITARY INC | NY | WOSB | 184 | 1,679 | $0.43B | $12.1B |
+| NEW ERA CONTRACT SALES | WA | WOSB | 155 | 1,414 | $0.14B | $8.6B |
+| **ASRC FEDERAL FACILITIES LOGISTICS** | NJ | 8(a) | 154 | 1,259 | **$9.79B** | $88.2B |
+| B & H INTERNATIONAL LLC | CA | WOSB | 146 | 1,583 | $0.17B | $10.0B |
+| R & M GOVERNMENT SERVICES | NM | HZ/WOSB/SDVOSB/VOSB | 133 | 668 | $0.21B | $7.4B |
+
+**How to work this cohort.** Highest-conviction targets clear all three filters: (a) primed ≥5 combos carrying live sub-demand, (b) own-prime scale that says they can actually execute (`own_prime` ≳ $1B or dense combo history), (c) an active cert matching the demand's set-aside. **ASRC Federal Facilities Logistics** is the archetype (154 live-demand combos · $9.79B own-prime · 8(a)). For the substance-weighted shortlist, filter the 13,447-row artifact to `own_prime_alltime ≥ $1B ∧ demand_combos_primed ≥ 10`, or rank by `reachable_obligated_usd × own_prime_alltime`.
+
+**Caveat (verified):** `reachable_*` sums the *combo-pool* active demand (all active awards in a primed combo), not what a firm could realistically win — combo-pool-scale, consistent with Layers 1–2. The dollar top is inflated by `561210|M1JZ` and the breadth top by low-$ `2xxx`/supply catch-all PSCs; `own_prime_alltime` is the firm-scale corrective carried in the artifact for exactly this reason.
+
+**Part III artifacts** (`reports/dsbs_overlap/`): `dsbs_prime_only_conversion.parquet` (all 13,447 firms — per-firm conversion metrics + cert flags + own-prime scale), `prime_only_conversion_summary.json`.
+**Reproduce:** `doppler run -p core-x -c prd -- .venv/bin/python scripts/dsbs_prime_only_conversion.py`. Read-only; no Lance writes.

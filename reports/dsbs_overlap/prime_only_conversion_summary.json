@@ -1,0 +1,18 @@
+{
+  "partition": {
+    "roster": 67234,
+    "has_prime": 17568,
+    "has_sub": 5117,
+    "prime_only": 13447,
+    "sub_only": 996,
+    "both_ps": 4121,
+    "neither": 48670
+  },
+  "prime_only_firms": 13447,
+  "conversion_ready_firms": 9952,
+  "conversion_ready_pct": 0.7400907265561092,
+  "reachable_obligated_usd_total": 37650506171393.66,
+  "reachable_unspent_usd_total": 30374163193629.715,
+  "firms_reachable_pool_ge_1b": 4112,
+  "note": "reachable_* is combo-pool-scale active demand in the firm's primed combos (not firm-winnable); rank by $ not combo count to defeat catch-all inflation."
+}
