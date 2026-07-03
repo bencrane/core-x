@@ -107,6 +107,12 @@ _ORG_TOKENS = _CORP | {"group", "services", "service", "solutions", "enterprise"
 _NAME_STOP = _SUFFIX | _CORP
 # company core-token stoplist for validation (a token must be distinctive to confirm the firm)
 _COMPANY_STOP = _ORG_TOKENS | {"the", "and", "of", "for", "a", "on", "us", "usa"}
+# Tokens that, in a RAW person full_name, mark it as an ENTITY not a human — parent holding-cos /
+# tribal corps / JV partners listed in current_principals ("Chugach Alaska Corporation", "Choctaw
+# Nation", "HunaTek Holding"). Checked on the raw name BEFORE honorific recovery, because recovery
+# would otherwise strip "Corporation" and mint a fake person "Chugach Alaska".
+_ENTITY_DROP = {"corporation", "incorporated", "corp", "inc", "llc", "holdings", "holding",
+                "ventures", "nation", "tribe", "tribes", "subsidiary", "enterprises"}
 
 # employee_size_band → lower-bound ordinal (SMB = smaller first; unknown sorts last)
 _BAND_ORD = {"1-10": 1, "11-50": 11, "51-200": 51, "201-500": 201, "501-1000": 501,
@@ -377,6 +383,10 @@ def build_worklist() -> list[dict]:
 
     work: list[dict] = []
     for r in rows:
+        # entity-in-principal guard (BEFORE name recovery): a full_name carrying a corp/entity
+        # token is an org, not a human — drop it so recovery can't mint a fake person from it.
+        if set(_ascii_tokens(r.get("full_name"))) & _ENTITY_DROP:
+            continue
         dn = _derive_names(r.get("first_name"), r.get("last_name"), r.get("full_name"))
         if not dn:
             continue
@@ -411,11 +421,13 @@ def build_worklist() -> list[dict]:
             "poc_type": r["poc_type"], "company_term": company_term, "company_source": company_source,
             "domain": domain, "name_consistent": bool(r["name_consistent"]),
             "obligated_usd": obl, "priority_tier": tier, "award_count": int(r["award_count"] or 0),
-            # tier → match-confidence → decision-maker → VALUE BAND (sweet spot first) →
-            # SMB employee band (small first) → obligated-$ ASCENDING (smaller/more-reachable firm
-            # first; raw-$ never leads) → more awards → stable id
-            "_sort": (tier, 0 if r["name_consistent"] else 1, poc_rank, _dollar_band(obl),
-                      band_ord, obl, -int(r["award_count"] or 0), subject_id),
+            # tier → match-confidence → VALUE BAND (sweet spot first) → SMB employee band (small
+            # first) → obligated-$ ASCENDING (smaller/more-reachable firm first) → poc_type (declared
+            # principal is only a MINOR tiebreak: a firm's sole contact_person is usually its owner —
+            # 57% of contacts are the firm's ONLY named human — so contacts are NOT deprioritized
+            # below other firms' principals) → more awards → stable id
+            "_sort": (tier, 0 if r["name_consistent"] else 1, _dollar_band(obl), band_ord, obl,
+                      poc_rank, -int(r["award_count"] or 0), subject_id),
         })
 
     work.sort(key=lambda w: w["_sort"])
