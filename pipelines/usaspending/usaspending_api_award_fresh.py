@@ -1,35 +1,72 @@
-"""USAspending API FRESH — standalone, accumulating, append-only contract AWARD-summary table.
+"""USAspending API FRESH — standalone, accumulating, append-only contract+IDV AWARD-SUMMARY table.
 
-Pulls prime contract + IDV AWARD SUMMARIES from ``download/awards`` on a ``last_modified_date``
-window and lands them VERBATIM — the exact API download column names, all-VARCHAR, no projection,
-no renaming — into ONE standalone Lance table:
+Pulls prime CONTRACT (A–D) + IDV AWARD SUMMARIES from ``download/awards`` on a
+``last_modified_date`` window and lands them VERBATIM — the exact API download column names,
+all-VARCHAR, no projection, no renaming — into ONE standalone Lance table:
 
     s3://data-sink/active/usaspending_api_fresh/contract_prime_award/
 
-This is the AWARD-grain sibling of usaspending_api_fresh.py (which lands transaction grain from
-``bulk_download/awards`` → the PrimeTransactions member). Verified 2026-07-04: ``download/awards``
-accepts ``date_type:"last_modified_date"`` (HTTP 200) and materializes a ZIP with four members —
-``Contracts_PrimeAwardSummaries`` (286 cols, AWARD grain, key ``contract_award_unique_key``),
-``Assistance_PrimeAwardSummaries``, ``Contracts_Subawards``, ``Assistance_Subawards``. We extract
-ONLY ``Contracts_PrimeAwardSummaries`` (assistance is out of scope; subawards are already covered by
-usaspending_api_subaward_fresh.py).
+This is the AWARD-grain sibling of ``usaspending_api_fresh.py`` (which lands TRANSACTION grain
+from ``bulk_download/awards`` → the Contracts_PrimeTransactions member). AWARD grain here is keyed
+by ``contract_award_unique_key`` — one row per award summary, the API's rollup of an award's
+transactions (obligations, current/potential value, base/latest action dates, PoP, exec-comp).
 
 APPEND-ONLY. ACCUMULATING. THE TABLE ONLY GROWS.
-  • backfill — wide window (default 40d) → CREATE the table (first write, overwrite).
-  • daily    — trailing window (default 7d) → mode="append". NEVER overwrites prior data.
+  • backfill — wide window → CREATE the table (first write, mode="overwrite", guarded by force=).
+  • daily    — trailing window → mode="append". NEVER overwrites prior data.
 
-WHY download/awards (NOT bulk_download/awards): ``bulk_download/awards`` emits ONLY the
-PrimeTransactions member — the award-summary member lives on ``download/awards`` (verified live,
-docs/reference/USASPENDING_AWARDS_API_ENDPOINTS_AND_GRAIN.md §8.2–8.3).
+Overlapping windows re-pull rows already present → duplicate rows. INTENTIONAL and harmless:
+USAspending publishes on a lag, so each daily run deliberately reaches back a few extra days and
+re-pulls awards we already hold. A SEPARATE downstream mirror reconciles duplicates on
+argmax(last_modified_date) if/when built — NOT here. Append-only is the canonical-safe Lance op
+(new fragments, no R2 multipart-rewrite hazard). This table is NEVER merged into the bulk award
+SoR (active/usaspending/award_search); it stands alone as the uncapped fresh overlay.
 
-THE 500k CAP (the key difference from the txn feed): ``download/awards`` caps each job at
-``download_request.limit`` = 500,000 rows. ``bulk_download/awards`` is uncapped, so the txn feed
-pulls a whole window in one job; here we CHUNK the window into sub-windows small enough to stay under
-the cap, extract each chunk's PrimeAwardSummaries member into a shared workdir, and write once.
+────────────────────────────────────────────────────────────────────────────────────────────────
+WHY download/awards (NOT bulk_download/awards) — the endpoint that failed 3× before:
+  ``bulk_download/awards`` emits ONLY the *PrimeTransactions* member (txn grain). The award-summary
+  member (``Contracts_PrimeAwardSummaries``) lives on ``download/awards``. Switching the award
+  fresh leg is a change of ENDPOINT, not a member swap.
 
+THE PAYLOAD — the exact bug that killed the 3 prior clones. ``download/awards`` speaks the
+search-family AdvancedFilterObject, which differs from the ``bulk_download/awards`` schema:
+  • award types → FLAT top-level ``filters.award_type_codes`` (array[string]).
+      NOT ``prime_and_sub_award_types.prime_awards`` — that is the *bulk_download* schema; sent to
+      download/awards the server SILENTLY DROPS the restriction and downloads the FULL award
+      universe (contracts + assistance + loans).
+  • date window → ``filters.time_period`` = ARRAY of {start_date, end_date, date_type} objects.
+      NOT a top-level flat ``date_type`` + ``date_range`` (bulk_download schema) — sent to
+      download/awards those keys are UNRECOGNIZED and DROPPED, so NO date bound is applied and the
+      job enumerates the entire unbounded universe → hangs at status:"running" forever.
+  Both failure modes verified live 2026-07-04 by inspecting the server's ``download_request.filters``
+  echo: the wrong payload echoed back the full award_type_codes list and NO time_period; the correct
+  payload echoed back exactly the 12 codes we sent and the time_period with last_modified_date.
+
+WHY last_modified_date: contract-valid — it is an explicit member of the "Award Search Time Period
+Object" date_type enum (usaspending_api/api_contracts/search_filters.md), AND empirically honored
+(echoed + bounded the job). It captures late-landing / re-modified awards when they actually appear
+in the warehouse; action_date would miss DoD/FPDS-lag records. Watermark sanity via GET
+/api/v2/awards/last_updated.
+
+THE REAL OPERATIONAL LIMIT is NOT the 500k row cap (contract-CIV density is ~10k award summaries per
+last_modified day, ~2 orders of magnitude under the cap). It is the server-side Elasticsearch
+ID-enumeration timeout: ``download/awards`` first scrolls ES to collect award IDs with a hard 90s
+read timeout. A window wide enough to enumerate too many IDs at once trips
+``opensearchpy ConnectionTimeout`` and the job terminates status:"failed" (verified: a 5-day
+A–D+IDV window failed on the ES timeout; a 1-day window finished cleanly, ~7½ min, 9,787 award
+rows). So we CHUNK SMALL (default 1 day) and RETRY the transient failed/timeout per chunk. The 500k
+cap is kept only as a defensive truncation tripwire.
+────────────────────────────────────────────────────────────────────────────────────────────────
+
+Measured 2026-07-04 (live download/awards, 1-day last_modified window 2026-06-23):
+  Contracts_PrimeAwardSummaries member = 286 columns, 9,787 award rows; ZIP also carries a
+  Contracts_Subawards member (dropped). All 11 index keys present. Full chain (fetch→extract→
+  duckdb all_varchar→lance write→BTREE→point-lookup) validated locally.
+
+    modal deploy pipelines/usaspending/usaspending_api_award_fresh.py
     modal run pipelines/usaspending/usaspending_api_award_fresh.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::backfill            # past 40d → create
-    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::daily 7             # past 7d  → APPEND
+    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::backfill            # create
+    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::daily 10            # APPEND
     modal run pipelines/usaspending/usaspending_api_award_fresh.py::verify
 """
 
@@ -49,26 +86,37 @@ FRESH_URI = os.environ.get(
 ).rstrip("/") + "/"
 
 DOWNLOAD_URL = "https://api.usaspending.gov/api/v2/download/awards/"
-# Prime contracts (A–D) + IDV vehicles → the Contracts_PrimeAwardSummaries member.
-PRIME_AWARD_TYPES = ["A", "B", "C", "D",
-                     "IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"]
-DATE_TYPE = "last_modified_date"          # verified accepted by download/awards (HTTP 200)
+LAST_UPDATED_URL = "https://api.usaspending.gov/api/v2/awards/last_updated/"
+
+# Prime CONTRACT (A–D) + IDV vehicles → the Contracts_PrimeAwardSummaries member. Restricting to
+# these codes is what keeps Assistance_* members out of the ZIP entirely.
+AWARD_TYPE_CODES = ["A", "B", "C", "D",
+                    "IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"]
+# Documented member of the Award Search Time Period Object date_type enum; verified honored live.
+DATE_TYPE = "last_modified_date"
 PAS_MEMBER = "Contracts_PrimeAwardSummaries"   # the ONE member we keep (286 cols, award grain)
 
-# download/awards caps each job at 500,000 rows. Chunk the window to stay well under it; guard on
-# the job's reported total_rows (across all members) as a conservative truncation tripwire.
+# ── chunking: driven by the ES 90s ID-enumeration timeout, NOT the 500k row cap ──
+# 1-day chunks finish (~7½ min / 9,787 rows); a 5-day chunk tripped the ES timeout. Keep it small.
+CHUNK_DAYS = int(os.environ.get("USASPENDING_AWARD_FRESH_CHUNK_DAYS", "1"))
+# Each finished chunk over the cap would silently truncate — defensive tripwire only (we are ~50×
+# under the cap at observed density).
 ROW_CAP = 500_000
 CAP_GUARD = 490_000
-CHUNK_DAYS = int(os.environ.get("USASPENDING_AWARD_FRESH_CHUNK_DAYS", "7"))
+# A chunk that ends status:"failed" (ES ConnectionTimeout) or exceeds its own poll ceiling is
+# retried this many times with a fresh submission before the whole run fails.
+CHUNK_MAX_ATTEMPTS = int(os.environ.get("USASPENDING_AWARD_FRESH_CHUNK_ATTEMPTS", "4"))
 
-BULK_POLL_SECONDS = 15
-BULK_POLL_CEILING_SECONDS = int(os.environ.get("USASPENDING_AWARD_FRESH_POLL_CEILING", str(150 * 60)))
+BULK_POLL_SECONDS = 10
+# Per-CHUNK ceiling (not whole-run). 1-day chunk finished in ~7½ min; 20 min gives generous slack.
+CHUNK_POLL_CEILING_SECONDS = int(os.environ.get("USASPENDING_AWARD_FRESH_POLL_CEILING", str(20 * 60)))
 
 DATA_STORAGE_VERSION = "2.1"
 MAX_ROWS_PER_FILE = 250_000              # uniform R2 multipart parts → R2-safe append size
 SCRATCH_DIR = "/tmp"
 
-# Verbatim PAS columns to BTREE (presence-filtered at index() time; all-VARCHAR). Award-grain keys.
+# Verbatim PAS columns to BTREE (presence-filtered at index time; all-VARCHAR). Award-grain
+# resolution + GTM filter keys. All 11 verified present in the live 286-col member.
 INDEX_COLS = [
     "contract_award_unique_key", "award_id_piid", "recipient_uei", "recipient_name",
     "naics_code", "product_or_service_code", "cage_code",
@@ -119,24 +167,39 @@ class _ThrottledError(RuntimeError):
     """Persistent 429 → fail fast so modal.Retries recycles the container (fresh IP)."""
 
 
-def _fetch_chunk(window_start, window_end, work) -> tuple[int, int]:
+class _ChunkTransientError(RuntimeError):
+    """A chunk terminated status:'failed' (ES ConnectionTimeout) or blew its poll ceiling — the job
+    handle is per-chunk disposable, so we resubmit the SAME window rather than fail the run."""
+
+
+def _build_payload(window_start, window_end) -> dict:
+    """The correct download/awards AdvancedFilterObject body. FLAT award_type_codes + time_period[]
+    array — the exact shape the server echoes back verbatim (proven). Do NOT substitute the
+    bulk_download prime_and_sub_award_types / flat date_range shape; the server drops it silently."""
+    return {
+        "filters": {
+            "award_type_codes": AWARD_TYPE_CODES,
+            "time_period": [
+                {"start_date": window_start.isoformat(),
+                 "end_date": window_end.isoformat(),
+                 "date_type": DATE_TYPE},
+            ],
+        },
+        "file_format": "csv",
+    }
+
+
+def _fetch_chunk_once(window_start, window_end, work) -> tuple[int, int]:
     """One download/awards job over [start, end] (inclusive). Extracts ONLY the
     Contracts_PrimeAwardSummaries member into `work` (unique per-job filename). Returns
-    (polls, total_rows). Raises on failure, poll ceiling, or a truncation-cap trip."""
+    (polls, total_rows). Raises _ChunkTransientError on failed/ceiling (caller retries),
+    RuntimeError on hard errors, _ThrottledError on persistent 429."""
     import time
     import zipfile
 
     import requests
 
-    payload = {
-        "filters": {
-            "prime_and_sub_award_types": {"prime_awards": PRIME_AWARD_TYPES, "sub_awards": []},
-            "date_type": DATE_TYPE,
-            "date_range": {"start_date": window_start.isoformat(),
-                           "end_date": window_end.isoformat()},
-        },
-        "file_format": "csv",
-    }
+    payload = _build_payload(window_start, window_end)
     resp = requests.post(DOWNLOAD_URL, json=payload, timeout=(30, 120))
     if resp.status_code == 429:
         raise _ThrottledError("download/awards 429 → recycle container")
@@ -145,10 +208,19 @@ def _fetch_chunk(window_start, window_end, work) -> tuple[int, int]:
     job = resp.json()
     status_url = job["status_url"]
     file_url = job["file_url"]
-    print(f"download/awards job [{window_start}…{window_end}]: {job.get('file_name')}", flush=True)
+
+    # Trust-but-verify the server actually parsed our filter (guards against a silent schema drop).
+    echoed = (job.get("download_request") or {}).get("filters") or {}
+    if "time_period" not in echoed:
+        raise RuntimeError(
+            f"download/awards did NOT echo a time_period — filter was dropped (unbounded job). "
+            f"echoed filters keys={list(echoed)}. Payload schema is wrong; refusing to poll.")
+    print(f"download/awards job [{window_start}…{window_end}]: {job.get('file_name')} "
+          f"(echoed {len(echoed.get('award_type_codes', []))} award_type_codes, "
+          f"time_period ok)", flush=True)
 
     polls, total_rows = 0, 0
-    deadline = time.time() + BULK_POLL_CEILING_SECONDS
+    deadline = time.time() + CHUNK_POLL_CEILING_SECONDS
     while time.time() < deadline:
         time.sleep(BULK_POLL_SECONDS)
         polls += 1
@@ -163,15 +235,18 @@ def _fetch_chunk(window_start, window_end, work) -> tuple[int, int]:
         if status == "finished":
             break
         if status == "failed":
-            raise RuntimeError(f"download/awards job failed: {st.get('message', '')[:300]}")
+            # ES ID-enumeration ConnectionTimeout is the dominant cause and is transient.
+            raise _ChunkTransientError(
+                f"chunk [{window_start}…{window_end}] failed: {str(st.get('message', ''))[:200]}")
     else:
-        raise RuntimeError(f"download/awards job did not finish within "
-                           f"{BULK_POLL_CEILING_SECONDS}s ({polls} polls)")
+        raise _ChunkTransientError(
+            f"chunk [{window_start}…{window_end}] did not finish within "
+            f"{CHUNK_POLL_CEILING_SECONDS}s ({polls} polls)")
 
-    # Truncation tripwire: a chunk at/over the cap means the 500k limit clipped rows → shrink CHUNK_DAYS.
+    # Truncation tripwire: a chunk at/over the cap means the 500k limit clipped rows → shrink chunk.
     if total_rows >= CAP_GUARD:
         raise RuntimeError(
-            f"chunk [{window_start}…{window_end}] returned total_rows={total_rows:,} ≥ {CAP_GUARD:,} "
+            f"chunk [{window_start}…{window_end}] total_rows={total_rows:,} ≥ {CAP_GUARD:,} "
             f"(cap {ROW_CAP:,}) — window too wide, download would truncate. Reduce "
             f"USASPENDING_AWARD_FRESH_CHUNK_DAYS below {CHUNK_DAYS} and re-run.")
 
@@ -185,20 +260,50 @@ def _fetch_chunk(window_start, window_end, work) -> tuple[int, int]:
         members = [m for m in zf.namelist()
                    if PAS_MEMBER in m and m.lower().endswith(".csv")]
         if not members:
-            raise RuntimeError(f"no {PAS_MEMBER} member in ZIP: {zf.namelist()}")
-        zf.extractall(work, members=members)
+            # A truly empty last_modified day yields a header-only or absent PAS member — tolerate 0.
+            print(f"  no {PAS_MEMBER} member in ZIP (empty window?): {zf.namelist()}", flush=True)
+        else:
+            zf.extractall(work, members=members)
+            print(f"  extracted {PAS_MEMBER}: {members}", flush=True)
     os.remove(zip_path)
-    print(f"  extracted {PAS_MEMBER} member(s): {members}", flush=True)
     return polls, total_rows
+
+
+def _fetch_chunk(window_start, window_end, work) -> tuple[int, int]:
+    """Retry wrapper: resubmits a transient (ES-timeout / ceiling) chunk up to CHUNK_MAX_ATTEMPTS."""
+    import time
+
+    last_exc = None
+    total_polls = 0
+    for attempt in range(1, CHUNK_MAX_ATTEMPTS + 1):
+        try:
+            polls, total_rows = _fetch_chunk_once(window_start, window_end, work)
+            return total_polls + polls, total_rows
+        except _ChunkTransientError as exc:
+            last_exc = exc
+            total_polls += CHUNK_POLL_CEILING_SECONDS // BULK_POLL_SECONDS  # conservative poll tally
+            backoff = min(30 * attempt, 120)
+            print(f"  chunk transient (attempt {attempt}/{CHUNK_MAX_ATTEMPTS}): {exc}; "
+                  f"resubmitting in {backoff}s", flush=True)
+            time.sleep(backoff)
+    raise RuntimeError(f"chunk [{window_start}…{window_end}] exhausted "
+                       f"{CHUNK_MAX_ATTEMPTS} attempts: {last_exc}")
 
 
 # ─────────────────────────── write (verbatim → Lance) ───────────────────────────
 
 def _write(csv_glob, mode, so) -> tuple[int, int]:
     """Read the extracted PrimeAwardSummaries CSV(s) all-VARCHAR and write VERBATIM (exact API
-    column names) to the fresh table. mode='overwrite' on first create, 'append' thereafter."""
+    column names) to the fresh table. mode='overwrite' on first create, 'append' thereafter.
+    union_by_name tolerates member-to-member column-order/width drift across chunks."""
+    import glob
+
     import duckdb
     import lance
+
+    if not glob.glob(csv_glob):
+        raise RuntimeError(f"no PAS CSV to write (glob {csv_glob} matched nothing) — every chunk "
+                           f"was empty. Refusing to write 0 rows.")
 
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA threads=4;")
@@ -287,7 +392,8 @@ def _record_run(*, run_mode, window_start, window_end, rows_written, columns,
 
 def _run_window(days: int, chunk_days: int, write_mode: str, so) -> tuple[int, int, int, int]:
     """Chunk [now-days … now] into ≤chunk_days sub-windows, fetch each Contracts_PrimeAwardSummaries
-    member into a shared workdir, write ONCE. Returns (rows, cols, table_rows_after, api_calls)."""
+    member into a shared workdir (with per-chunk retry), write ONCE. Returns
+    (rows, cols, table_rows_after, api_calls)."""
     import datetime as dt
     import shutil
 
@@ -296,7 +402,7 @@ def _run_window(days: int, chunk_days: int, write_mode: str, so) -> tuple[int, i
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
     print(f"last_modified_date ∈ [{ws} … {we}] ({days}d, {chunk_days}d chunks, "
-          f"prime_award_types={PRIME_AWARD_TYPES})", flush=True)
+          f"award_type_codes={AWARD_TYPE_CODES})", flush=True)
 
     api_calls = 0
     cur = ws
@@ -315,15 +421,15 @@ def _run_window(days: int, chunk_days: int, write_mode: str, so) -> tuple[int, i
 
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    timeout=60 * 200,        # > the 150-min poll ceiling × a few chunks
+    timeout=60 * 60 * 6,     # whole-run ceiling: many 1-day chunks × ~8 min each + retries
     memory=32768,
     cpu=4.0,
-    retries=modal.Retries(max_retries=5, backoff_coefficient=2.0, initial_delay=30.0),
+    retries=modal.Retries(max_retries=3, backoff_coefficient=2.0, initial_delay=30.0),
 )
-def run_backfill(days: int = 40, chunk_days: int = CHUNK_DAYS, force: bool = False) -> dict:
-    """Pull the past `days` (last_modified_date) of contract+IDV AWARD SUMMARIES, chunked to stay
-    under the download/awards 500k cap, and CREATE the fresh table (refuses to overwrite unless
-    force=True). Verbatim columns, all-VARCHAR. Builds indices."""
+def run_backfill(days: int = 30, chunk_days: int = CHUNK_DAYS, force: bool = False) -> dict:
+    """Pull the past `days` (last_modified_date) of contract+IDV AWARD SUMMARIES, chunked small to
+    beat the ES ID-enumeration timeout, and CREATE the fresh table (refuses to overwrite unless
+    force=True). Verbatim columns, all-VARCHAR. Builds BTREE indices."""
     import datetime as dt
 
     started_at = dt.datetime.now(dt.timezone.utc)
@@ -361,10 +467,10 @@ def run_backfill(days: int = 40, chunk_days: int = CHUNK_DAYS, force: bool = Fal
 
 @app.function(
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
-    timeout=60 * 200, memory=32768, cpu=4.0,
-    retries=modal.Retries(max_retries=5, backoff_coefficient=2.0, initial_delay=30.0),
+    timeout=60 * 60 * 3, memory=32768, cpu=4.0,
+    retries=modal.Retries(max_retries=3, backoff_coefficient=2.0, initial_delay=30.0),
 )
-def run_daily(days: int = 7, chunk_days: int = CHUNK_DAYS) -> dict:
+def run_daily(days: int = 10, chunk_days: int = CHUNK_DAYS) -> dict:
     """Trailing-window APPEND top-up (mode='append', NEVER overwrites). Requires the table to exist."""
     import datetime as dt
 
@@ -410,9 +516,11 @@ def apply_ops_ddl(sql: str) -> dict:
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=300)
 def verify() -> dict:
-    """Independent read-back: rows, columns, committed indices, last_modified frontier."""
+    """Independent read-back: rows, columns, committed indices, last_modified frontier, and the
+    warehouse high-water date (awards/last_updated) for watermark sanity."""
     import duckdb
     import lance
+    import requests
 
     so = _r2_storage_options()
     ds = lance.dataset(FRESH_URI, storage_options=so)
@@ -425,9 +533,15 @@ def verify() -> dict:
     con.execute("CREATE TABLE t AS SELECT * FROM src")
     fr = con.execute("SELECT min(last_modified_date), max(last_modified_date) FROM t").fetchone()
     con.close()
+    try:
+        warehouse_hw = requests.get(LAST_UPDATED_URL, timeout=30).json().get("last_updated")
+    except Exception:  # noqa: BLE001
+        warehouse_hw = None
     return {"uri": FRESH_URI, "rows": ds.count_rows(), "columns": len(ds.schema.names),
-            "indices": [getattr(i, "name", str(i)) for i in idx],
-            "min_last_modified": str(fr[0]), "max_last_modified": str(fr[1])}
+            "indices": [getattr(i, "name", i.get("name") if isinstance(i, dict) else str(i))
+                        for i in idx],
+            "min_last_modified": str(fr[0]), "max_last_modified": str(fr[1]),
+            "warehouse_last_updated": warehouse_hw}
 
 
 # ─────────────────────────── local entrypoints ───────────────────────────
@@ -440,14 +554,14 @@ def init_ops() -> None:
 
 
 @app.local_entrypoint()
-def backfill(days: int = 40, chunk_days: int = CHUNK_DAYS, force: bool = False) -> None:
-    """Past `days` (default 40) of contract award summaries → create the table (chunked)."""
+def backfill(days: int = 30, chunk_days: int = CHUNK_DAYS, force: bool = False) -> None:
+    """Past `days` (default 30) of contract award summaries → create the table (chunked small)."""
     import json
     print(json.dumps(run_backfill.remote(days=days, chunk_days=chunk_days, force=force), indent=2, default=str))
 
 
 @app.local_entrypoint()
-def daily(days: int = 7, chunk_days: int = CHUNK_DAYS) -> None:
+def daily(days: int = 10, chunk_days: int = CHUNK_DAYS) -> None:
     """Trailing-window APPEND top-up (mode=append, never overwrites)."""
     import json
     print(json.dumps(run_daily.remote(days=days, chunk_days=chunk_days), indent=2, default=str))
