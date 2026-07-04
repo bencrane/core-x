@@ -15,8 +15,12 @@ no firmographics, no contact data, no DSBS cert detail (join those Lances on uei
 at query time). SAM public v2 carries no parent hierarchy fields (verified live
 2026-07-04) — hierarchy stays in resolution/entity_hierarchy, joined on demand.
 
-Domain: sam_master_domains.normalized_domain (from entity_url, blocklisted) with
-crosswalk_dsbs_sam.best_domain as the DSBS fallback; source recorded per row.
+Domain precedence (operator decision 2026-07-04): crosswalk_dsbs_sam.best_domain
+is PRIMARY for DSBS entities (it is entity_url-first internally, then DSBS
+website > email-suffix > additional_website, junk-blocklisted) — the crosswalk
+only covers DSBS UEIs, so a plain coalesce(best_domain, sam_domain) implements
+DSBS-first with sam_master_domains.normalized_domain (from entity_url,
+blocklisted) serving all non-DSBS rows. Source recorded per row.
 
 Rebuild: full snapshot, Lance overwrite (new version), prior versions retained.
 Every input's URI + Lance version + row count at read time goes to the ledger
@@ -266,9 +270,9 @@ def _materialize(con, so: dict, build_id: str, built_at: dt.datetime):
         s.physical_address_city                   AS physical_city,
         s.physical_address_province_or_state      AS physical_state,
         s.physical_address_zip_postal_code        AS physical_zip,
-        coalesce(dm.normalized_domain, c.best_domain) AS normalized_domain,
-        CASE WHEN dm.normalized_domain IS NOT NULL THEN 'sam_entity_url'
-             WHEN c.best_domain IS NOT NULL       THEN 'dsbs_best_domain'
+        coalesce(c.best_domain, dm.normalized_domain) AS normalized_domain,
+        CASE WHEN c.best_domain IS NOT NULL      THEN 'dsbs_best_domain'
+             WHEN dm.normalized_domain IS NOT NULL THEN 'sam_entity_url'
         END                                       AS domain_source,
         s.sam_extract_label,
         '{build_id}'                              AS build_id,
