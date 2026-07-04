@@ -42,7 +42,7 @@ Every prime-award dataset keys on the **same value** — USAspending's Broker-ge
 |---|---|---|---|---|--:|---|---|---|
 | **L1 FPDS spine** | `usaspending_fpds_canonical_txn/` | transaction | `contract_transaction_unique_key` | 107,962,341 | 392 / 18 | `contract_award_unique_key` | `recipient_uei` | BULK∪FRESH reconciled, manifest v19 |
 | **L2 prime_award_state** | `usaspending_fpds_prime_award_state/` | prime award | `contract_award_unique_key` | 82,868,654 | 43 / 21 | `contract_award_unique_key` | `recipient_uei` | derived from L1 (build_date 2026-07-04) |
-| **L2 mod_delta** | `usaspending_fpds_mod_delta/` | modifying txn | `contract_transaction_unique_key` | 25,017,209 | 29 / 12 | `contract_award_unique_key` | `recipient_uei` | derived from L1 |
+| **L2 mod_delta** | `usaspending_fpds_mod_delta/` | modifying txn | `contract_transaction_unique_key` | 25,017,209 | 31 / 14 | `contract_award_unique_key` · `awarding_agency_code` (CGAC) · `award_pool` | `recipient_uei` | derived from L1 |
 | **award_search (BULK)** | `usaspending/award_search/` | prime award | `generated_unique_award_id` | 78,636,657 | 154 / 3 | `generated_unique_award_id` | `recipient_uei` | **BULK pg_dump snapshot 2026-05-06 — NOT reconciled with live API** |
 | **subaward_canonical** | `usaspending_subaward_canonical/` | subaward | `(prime_award_unique_key, subaward_number)` | 1,315,680 | 258 / 30 | `prime_award_unique_key` | `subawardee_uei` / `prime_awardee_uei` | BULK∪FRESH reconciled, contract-only |
 | **fpds_action_type_ref** | `fpds_action_type_ref/` | action code | `action_type_code` | 20 | 5 / 1 | — (`action_type_code`) | — | static dim |
