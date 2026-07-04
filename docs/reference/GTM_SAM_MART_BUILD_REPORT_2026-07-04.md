@@ -95,10 +95,33 @@ audience queries filter `phone IS NOT NULL`; (b) MV payload vocabulary is raw
 by design (`mv_resultcode` is numeric) — contactability verdicts remain
 query-time operator criteria, never baked.
 
-## 7. Next
+## 7. Cycle 2b — Tier B (name_key × company-LinkedIn, residue-scoped)
 
-1. Tier B (residue): entity-side PDL company-LinkedIn (residue-scoped) ×
-   `blitz_find_people.company_linkedin_url`; probe of `clay_find_companies`
-   (201,550 rows) confirmed it carries `linkedin_slug`/`linkedin_url` +
-   `description` — both usable for Tier B and the firmo thread.
-2. Award rollup satellite — remains post-spine, operator-gated (decision log #2).
+**Tool:** `pipelines/gtm/match_sam_person_identity_tier_b.py` (dry-run default,
+`--apply` gated). Residue: 1,078,513 domain-bearing unmatched people across
+698,757 entities.
+
+**Entity-side company-LinkedIn resolution worked well:** 428,359 residue
+entities (61%) resolved a company slug via dsbs-crosswalk (uei-direct) >
+PDL sidecar (35.4M, `is_generic_domain` excluded) > `clay_find_companies`
+domain votes, cross-carrier conflicts excluded. This intermediate is
+recomputed per run — full-spine materialization of entity→company-LinkedIn
+remains a separate, unapproved decision.
+
+**Person yield thin, as expected** — Tier A had already harvested the
+name×domain overlap; company-LI only adds source rows whose domain diverges
+from the entity's: **90 accepted (blitz_only, score 0.85)**, 111 ambiguous
+abstained. Applied → `gtm_sam_person_identity` **71,397 rows (v7)**.
+
+**Structural finding — Clay people↔companies FK is dead in the Lance mirrors:**
+`clay_find_people.company_record_id` is a Clay-native row ref (`r_…`) with no
+counterpart in `clay_find_companies` (`record_id` = sha hash → 0-row join;
+`clay_company_id` = int). Clay-side Tier B is blocked on provenance until a
+usable key ships upstream. Recorded, not forced.
+
+## 8. Next
+
+1. Award rollup satellite — remains post-spine, operator-gated (decision log #2).
+2. Optional: full-spine entity→company-LinkedIn materialization (keys the
+   LeadMagic/Blitz firmo + description thread; `clay_find_companies` carries
+   `description`, PDL does not) — its own decision, not started.
