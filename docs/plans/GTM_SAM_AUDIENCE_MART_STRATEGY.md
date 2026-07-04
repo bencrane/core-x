@@ -9,7 +9,10 @@
 
 ## 1. Objective and Acceptance Test
 
-The v1 definition of done is one query, runnable from gtm-mcp / a managed agent:
+The bar is **Lance + DuckDB querying** — the acceptance query runs in a raw
+DuckDB session over Lance URIs. gtm-mcp and any managed agent are downstream
+consumers of that substrate, augmentable/refactorable at any time; they are
+never the definition of done. The v1 acceptance is one query:
 
 ```sql
 -- "People at SAM entities for whom mobile numbers (or work emails) already exist"
@@ -54,7 +57,7 @@ Namespace: `s3://data-sink/active/gtm_sam_*`. Names deliberately SAM-prefixed to
 | Registration | `registration_status`, `registration_date`, `expiration_date`, `purpose_of_registration` |
 | Classification | `primary_naics`, `naics_codes[]`, `psc_codes[]`, `business_types`, `physical_city`, `physical_state`, `physical_zip5` |
 | Domain | `normalized_domain`, `domain_source` (sam_entity_url \| dsbs_best_domain) |
-| Hierarchy (verbatim) | SAM immediate/ultimate parent name + UEI fields, carried as-is, no fusion |
+| Hierarchy | none on-spine — SAM public v2 carries no parent fields (verified live 2026-07-04); hierarchy joins on demand via `resolution/entity_hierarchy` |
 | Meta | `build_id`, `built_at`, per-source `as_of` labels |
 
 **Not in this table:** award rollups (post-spine decision, §7), firmographics/employee range (query-time via examined bridge → `pdl_companies`), contact counts, DSBS cert detail (query-time join to `sba_dsbs_certified_firms` on uei — only the `in_dsbs` presence flag lives here).
