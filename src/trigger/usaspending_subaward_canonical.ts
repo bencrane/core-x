@@ -3,7 +3,15 @@ import { schedules, wait, logger } from "@trigger.dev/sdk";
 /**
  * Control plane — USAspending SUBAWARD CANONICAL refresh (typed v2 SoR reconciliation).
  *
- * Trigger.dev v4 durable callback. Daily at 20:00 UTC this task mints a waitpoint
+ * ⚠️ SCHEDULE DISABLED 2026-07-04 — the declarative `cron` has been REMOVED so that NO
+ * trigger.dev deploy re-activates this task. Its `refresh_fn` worker runs a FULL OVERWRITE
+ * (build → mode="overwrite") of the ~1.3M-row subaward canonical SoR; auto-firing it would
+ * wipe and rebuild the entire dataset from whatever the BULK/FRESH sources currently hold.
+ * The task stays exported and manually/imperatively triggerable, but will never fire on a
+ * cron. RE-ENABLE ONLY by deliberately restoring a cron AND after replacing the overwrite
+ * path with an append/merge worker — never point a schedule at the destructive rebuild again.
+ *
+ * Trigger.dev v4 durable callback. When run, this task mints a waitpoint
  * token, POSTs the Universal Dispatcher to spawn the `refresh_fn` worker (which runs
  * build → index → verify as one terminal unit) with that callback url, suspends on
  * `wait.forToken` (checkpointed, zero compute), and resumes when the worker POSTs its
@@ -34,7 +42,10 @@ interface SubawardCanonicalCallback {
 
 export const usaspendingSubawardCanonical = schedules.task({
   id: "usaspending-subaward-canonical",
-  cron: { pattern: "0 20 * * *", timezone: "UTC" },
+  // ⚠️ DISABLED 2026-07-04 — declarative cron removed so NO deploy re-activates the daily
+  // full-overwrite rebuild of the ~1.3M-row subaward canonical SoR. Do NOT restore a cron
+  // until refresh_fn is switched off mode="overwrite" (append/merge). Was:
+  //   cron: { pattern: "0 20 * * *", timezone: "UTC" },
   maxDuration: 7800,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({
