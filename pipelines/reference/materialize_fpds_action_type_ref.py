@@ -6,8 +6,8 @@ The spine `usaspending_fpds_canonical_txn` carries only `action_type_code` (col 
 `action_type_description` is documented in BULK but NOT projected onto the spine (see
 docs/reference/FPDS_CANONICAL_FIELD_DICTIONARY.md §6). This dim supplies the missing description.
 
-GRAIN  1 row per action_type_code. 20 rows — the FPDS procurement/contract domain.
-       action_type_code is unique (the 1:1 resolution key).
+GRAIN  1 row per action_type_code. 21 rows — the 20-code A–X standard set + the one empirically-
+       present non-standard code 'Y'. action_type_code is unique (the 1:1 resolution key).
 SoR    s3://data-sink/active/fpds_action_type_ref/   (Lance v2.1; derived, mode=overwrite)
 SCOPE  FPDS/procurement only. FABS (financial-assistance) `action_type` is a DIFFERENT domain
        (A=New, B=Continuation, C=Revision, D=Adjustment) whose A/B/C/D collide with these; our
@@ -48,7 +48,9 @@ SOURCE_VINTAGE = "fpds_reason_for_modification_2026_07"
 BTREE_INDEXES = ["action_type_code"]
 
 # (code, description, notes) — the FPDS procurement "Reason for Modification" domain.
-# Verbatim USAspending canonical descriptions. Letters I/O/Q/U/Y/Z are not used by FPDS.
+# Verbatim USAspending canonical descriptions for A–X (the 20-code standard set); 'Y' appended as the one
+# empirically-present non-standard code (live spine: 8,736 mod txns — small-$ admin + minor re-reps,
+# 0 terminations). I/O/Q/U/Z remain unused.
 ACTION_TYPES: list[tuple[str, str, str | None]] = [
     ("A", "Additional Work (new agreement, FAR part 6 applies)", "Out-of-scope additional work; new competition applies."),
     ("B", "Supplemental Agreement for work within scope", None),
@@ -70,6 +72,7 @@ ACTION_TYPES: list[tuple[str, str, str | None]] = [
     ("V", "Vendor DUNS Change", "Legacy DUNS identifier change (DUNS retired in favor of UEI)."),
     ("W", "Vendor Address Change", None),
     ("X", "Terminate for Cause", "Commercial-item termination for cause (FAR 12)."),
+    ("Y", "Non-Standard / Undocumented Reason Code", "Outside the FPDS 20-code Reason-for-Modification set; empirically small-dollar administrative actions plus minor re-representations (0 terminations on the live spine). Classified 'nonstandard' downstream; deltas are computed regardless."),
 ]
 
 
