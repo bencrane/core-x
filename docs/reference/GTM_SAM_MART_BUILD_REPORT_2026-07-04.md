@@ -59,8 +59,46 @@ Person-level email/mobile linkage activates when the identity match phase popula
 - Writer feeds a bounded `RecordBatchReader` (128k-row batches), not a monolithic table.
 - Sub-officer dedup tiebreak made total-order (`action_date DESC, amt DESC, slot_no, nm`) after observing ±36-row drift between identical-input runs; next rebuild is exactly reproducible.
 
-## 6. Next Cycle
+## 6. Cycle 2 — Identity Match (executed same day)
 
-1. **In-session Clay identity match** → populate `gtm_sam_person_identity` via `append_matches()` (validated append, PK-deduped, match lineage mandatory). Target: `clay_find_people` (1,273,516 rows @ v128 at probe time — live-probe at match time).
-2. Post-match: person-level acceptance query (people → identity → phone_resolutions / work_emails → MV payloads).
-3. Award rollup satellite — remains post-spine, operator-gated (decision log #2).
+**Tool:** `pipelines/gtm/match_sam_person_identity.py` — supervised in-session
+matcher; dry-run report first, `--apply` for the validated append. Tier A only:
+exact `name_key` × domain, two co-equal sources adjudicated before append
+(never sequential first-wins).
+
+**Inputs (live at match):** `gtm_sam_entities` v12 · `gtm_sam_people` v11 ·
+`clay_find_people` v128 (1,273,516) · `blitz_find_people` v20 (549,175 —
+whale-pattern coverage; carries `company_linkedin_url`, which Clay lacks).
+
+**Adjudication (1,149,820 domain-bearing people):**
+
+| Verdict | Count | Disposition |
+|---|--:|---|
+| corroborated (both sources, same slug) | 785 | accepted, score 1.0 |
+| clay_only (unique) | 69,770 | accepted, score 0.9 |
+| blitz_only (unique) | 752 | accepted, score 0.9 |
+| conflict (both unique, different) | 88 | EXCLUDED |
+| ambiguous (>1 slug within a source) | 3,501 | EXCLUDED |
+
+**Applied:** 71,307 rows → `gtm_sam_person_identity` (v6), indices built on
+first append, per-row method/score/source-record lineage; ledger row carries
+both sources' URI + version + rows at match time.
+
+**Person-level acceptance (pure DuckDB over Lance):** of 71,307 matched
+people — 13,321 have owned `phone_resolutions` rows, 7,973 owned
+`work_emails`, 16,391 any contact. Proof slice: **2,712 DSBS-subawardee
+POC/principal/officer rows with owned mobiles**, names + titles + phones
+resolving through the full chain.
+
+Notes: (a) `phone_resolutions` includes failed attempts (null phone) —
+audience queries filter `phone IS NOT NULL`; (b) MV payload vocabulary is raw
+by design (`mv_resultcode` is numeric) — contactability verdicts remain
+query-time operator criteria, never baked.
+
+## 7. Next
+
+1. Tier B (residue): entity-side PDL company-LinkedIn (residue-scoped) ×
+   `blitz_find_people.company_linkedin_url`; probe of `clay_find_companies`
+   (201,550 rows) confirmed it carries `linkedin_slug`/`linkedin_url` +
+   `description` — both usable for Tier B and the firmo thread.
+2. Award rollup satellite — remains post-spine, operator-gated (decision log #2).
