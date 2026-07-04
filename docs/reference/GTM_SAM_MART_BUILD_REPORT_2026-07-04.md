@@ -147,7 +147,31 @@ pipeline (`resolve_dsbs_poc_linkedin.py`, credit-metered via
 `core/serper_gateway.py`, ~29.6% resolve rate) is the repeatable paid queue
 for the DSBS identity residue.
 
-## 9. Next
+## 9. Cycle 3b — Homepage Meta Crawl (executed same day)
+
+**Motivation (12-entity live test):** meta tags are not firmographic-payload
+equivalents — when both exist, Blitz `about` is strictly richer 5/6 times
+(meta drops the 8(a)/WOSB/SDVOSB + HQ hooks) — but they fill the
+no-description gap at zero vendor cost and liveness-classify domains.
+
+**Dataset:** `s3://data-sink/active/web_homepage_meta/` — append-only,
+1 row/(normalized_domain, run_id), raw strings never normalized; BTREE
+`normalized_domain`, BITMAP `liveness_class`. Builder:
+`pipelines/gtm/web_homepage_meta.py` (worklist = DSBS award-active window,
+domain-bearing, undescribed; 30-day recrawl skip; ledger
+`ops.web_homepage_meta_runs` with input lineage).
+
+**Run crawl-20260704T214305:** 6,095 domains → **ok 2,957 (48.5%)** ·
+no_meta 2,186 · unreachable 792 (13.0%) · parked/default 160. The 952
+dead/parked domains are personalization-hygiene flags in their own right.
+
+**Description funnel after crawl (loose audience, spine v24):**
+14,425 → 13,402 with domain → 8,463 vendor-described (Blitz `about` carries
+98% of it; Clay unique adds <2%) → **10,677 described by any source (74.0%)**.
+Priority order at query time: Blitz `about` > Clay > `web_homepage_meta`
+(liveness_class='ok') > none.
+
+## 10. Next
 
 1. **Cycle 4 — full-spine entity→company-LinkedIn materialization**
    (`gtm_sam_company_identity`, 1/uei): supersedes fan-out-prone
