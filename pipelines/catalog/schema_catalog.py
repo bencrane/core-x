@@ -144,6 +144,8 @@ TARGETS: list[tuple[str, str]] = [
     # USAspending leaves — live API-fresh override feeds, the api-catalog leaf, rollups.
     ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/"),
     ("usaspending", "s3://data-sink/active/usaspending_fpds_canonical_txn/"),  # 392-col OBT spine
+    ("usaspending", "s3://data-sink/active/usaspending_fpds_prime_award_state/"),  # L2 award-grain capacity/state MV
+    ("usaspending", "s3://data-sink/active/usaspending_fpds_mod_delta/"),  # L2 mod-grain kinetic/delta MV
     ("usaspending", "s3://data-sink/active/usaspending_subaward_canonical/"),  # 258-col OBT spine
     ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"),
     ("usaspending", "s3://data-sink/active/usaspending_api_catalog/"),
