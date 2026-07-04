@@ -103,7 +103,7 @@ STATE_BITMAP = ["award_kind", "idv_type_code", "awarding_agency_code", "type_of_
 DELTA_BTREE = ["contract_transaction_unique_key", "contract_award_unique_key", "action_date",
                "recipient_uei", "delta_potential_ceiling", "delta_federal_action_obligation"]
 DELTA_BITMAP = ["action_type_code", "award_kind", "action_type_klass", "is_scope_increase",
-                "is_termination_event", "identity_changed"]
+                "is_termination_event", "identity_changed", "awarding_agency_code", "award_pool"]
 
 # ── spine source columns the shared pass scans (all VERIFIED present on the 392-col spine) ─
 SPINE_SCAN_COLS = [
@@ -388,6 +388,13 @@ SELECT
     w.cauk                                       AS contract_award_unique_key,
     w.action_date, w.last_modified_date, w.modification_number,
     w.award_kind, w.action_type_code,
+    -- agency-aware calibration keys (Cycle 2): the origination engine scores every $ / rate signal by
+    -- its percentile WITHIN (CGAC × parent/child-pool) — global thresholds misfire (Δceiling P99 spans
+    -- 226x across agencies). awarding_agency_code binds the per-agency distribution; award_pool splits
+    -- the IDV-parent ceiling mods from the order/definitive-child obligation mods BEFORE the percentile
+    -- (pooling is what manufactures DoD's $81M artifact). See FPDS_L2_AGENCY_CALIBRATION.md.
+    w.awarding_agency_code,
+    CASE WHEN w.award_kind = 'idv' THEN 'parent' ELSE 'child' END AS award_pool,
     {_KLASS_CASE}                                AS action_type_klass,
     w.p_ctuk                                     AS prev_contract_transaction_unique_key,
     w.p_action_date                              AS prev_action_date,
