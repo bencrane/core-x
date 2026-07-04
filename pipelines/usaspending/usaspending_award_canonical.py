@@ -1090,11 +1090,28 @@ def init_ops() -> None:
 
 
 def build(since: str | None = None, target_uri: str = CANONICAL_URI,
-          include_fresh: bool = True) -> dict:
+          include_fresh: bool = True, force: bool = False) -> dict:
     import lance
 
     started = dt.datetime.now(dt.timezone.utc)
     so = _r2_so()
+
+    # --force guard (SoR protection): mode="overwrite" replaces the ENTIRE spine. Refuse to clobber an
+    # existing dataset unless explicitly forced. The routine contract_prime_award reconcile must use the
+    # merge/append worker, NOT a blind rebuild; --force is only for a deliberate full rebuild (e.g. a new
+    # BULK pg-dump snapshot). Raised BEFORE the try/finally so a refusal writes no ledger row.
+    if not force:
+        _exists = True
+        try:
+            lance.dataset(target_uri, storage_options=so)
+        except Exception:
+            _exists = False
+        if _exists:
+            raise RuntimeError(
+                f"REFUSING to overwrite existing dataset at {target_uri} — mode=overwrite would replace "
+                f"all rows. Pass --force to deliberately rebuild (e.g. a new BULK snapshot); the routine "
+                f"contract_prime_award reconcile uses the merge/append worker, not this full overwrite."
+            )
     # ONE naive-UTC literal, injected into both projections (NOT now()).
     built_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     built_at_iso = built_at.strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -1483,7 +1500,8 @@ def main():
         init_ops()
     elif cmd == "build":
         print(json.dumps(build(since=_arg_val("--since", argv, None), target_uri=target_uri,
-                               include_fresh=include_fresh), indent=2, default=str))
+                               include_fresh=include_fresh, force=("--force" in argv)),
+                          indent=2, default=str))
     elif cmd == "index":
         print(json.dumps(index(target_uri=target_uri), indent=2, default=str))
     elif cmd == "verify":
