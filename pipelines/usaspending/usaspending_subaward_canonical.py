@@ -405,6 +405,342 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": "usaspending_permalink", "duck_type": "VARCHAR", "group": "enrich",
      "bulk_expr": None,
      "feed_expr": "s(usaspending_permalink)"},
+    # ---- (c2) OBT widening: 167 not-carried subaward cols (129 BULK + 38 FRESH), full BULK∪FRESH union ----
+    {"canonical": "award_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "award_id", "feed_expr": None},
+    {"canonical": "award_piid_fain", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(award_piid_fain)", "feed_expr": None},
+    {"canonical": "awardee_or_recipient_uniqu", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awardee_or_recipient_uniqu)", "feed_expr": None},
+    {"canonical": "awarding_agency_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "awarding_agency_id", "feed_expr": None},
+    {"canonical": "awarding_subtier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awarding_subtier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "awarding_subtier_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awarding_subtier_agency_name)", "feed_expr": None},
+    {"canonical": "awarding_toptier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awarding_toptier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "awarding_toptier_agency_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awarding_toptier_agency_code)", "feed_expr": None},
+    {"canonical": "awarding_toptier_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(awarding_toptier_agency_name)", "feed_expr": None},
+    {"canonical": "broker_created_at", "duck_type": "TIMESTAMP", "group": "enrich",
+     "bulk_expr": "broker_created_at", "feed_expr": None},
+    {"canonical": "business_categories", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(business_categories)", "feed_expr": None},
+    {"canonical": "business_type_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(business_type_code)", "feed_expr": None},
+    {"canonical": "cfda_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "cfda_id", "feed_expr": None},
+    {"canonical": "cfda_number", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(cfda_number)", "feed_expr": None},
+    {"canonical": "cfda_numbers", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(cfda_numbers)", "feed_expr": None},
+    {"canonical": "cfda_title", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(cfda_title)", "feed_expr": None},
+    {"canonical": "cfda_titles", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(cfda_titles)", "feed_expr": None},
+    {"canonical": "compensation_q1", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "compensation_q1", "feed_expr": None},
+    {"canonical": "compensation_q2", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "compensation_q2", "feed_expr": None},
+    {"canonical": "contract_agency_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(contract_agency_code)", "feed_expr": None},
+    {"canonical": "contract_idv_agency_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(contract_idv_agency_code)", "feed_expr": None},
+    {"canonical": "date_submitted", "duck_type": "TIMESTAMP", "group": "enrich",
+     "bulk_expr": "date_submitted", "feed_expr": None},
+    {"canonical": "dba_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(dba_name)", "feed_expr": None},
+    {"canonical": "dunsplus4", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(dunsplus4)", "feed_expr": None},
+    {"canonical": "fain", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(fain)", "feed_expr": None},
+    {"canonical": "federal_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(federal_agency_name)", "feed_expr": None},
+    {"canonical": "funding_agency_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "funding_agency_id", "feed_expr": None},
+    {"canonical": "funding_subtier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(funding_subtier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "funding_subtier_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(funding_subtier_agency_name)", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(funding_toptier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(funding_toptier_agency_code)", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(funding_toptier_agency_name)", "feed_expr": None},
+    {"canonical": "grant_funding_agency_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(grant_funding_agency_id)", "feed_expr": None},
+    {"canonical": "grant_funding_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(grant_funding_agency_name)", "feed_expr": None},
+    {"canonical": "high_comp_officer1_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": "high_comp_officer1_amount", "feed_expr": None},
+    {"canonical": "high_comp_officer1_full_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(high_comp_officer1_full_na)", "feed_expr": None},
+    {"canonical": "high_comp_officer2_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": "high_comp_officer2_amount", "feed_expr": None},
+    {"canonical": "high_comp_officer2_full_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(high_comp_officer2_full_na)", "feed_expr": None},
+    {"canonical": "high_comp_officer3_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": "high_comp_officer3_amount", "feed_expr": None},
+    {"canonical": "high_comp_officer3_full_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(high_comp_officer3_full_na)", "feed_expr": None},
+    {"canonical": "high_comp_officer4_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": "high_comp_officer4_amount", "feed_expr": None},
+    {"canonical": "high_comp_officer4_full_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(high_comp_officer4_full_na)", "feed_expr": None},
+    {"canonical": "high_comp_officer5_amount", "duck_type": "DOUBLE", "group": "enrich",
+     "bulk_expr": "high_comp_officer5_amount", "feed_expr": None},
+    {"canonical": "high_comp_officer5_full_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(high_comp_officer5_full_na)", "feed_expr": None},
+    {"canonical": "ingested_at", "duck_type": "TIMESTAMP", "group": "enrich",
+     "bulk_expr": "CAST(ingested_at AS TIMESTAMP)", "feed_expr": None},
+    {"canonical": "internal_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(internal_id)", "feed_expr": None},
+    {"canonical": "last_modified_date", "duck_type": "TIMESTAMP", "group": "enrich",
+     "bulk_expr": "last_modified_date", "feed_expr": None},
+    {"canonical": "latest_transaction_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "latest_transaction_id", "feed_expr": None},
+    {"canonical": "legal_entity_address_line1", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_address_line1)", "feed_expr": None},
+    {"canonical": "legal_entity_city_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_city_name)", "feed_expr": None},
+    {"canonical": "legal_entity_congressional", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_congressional)", "feed_expr": None},
+    {"canonical": "legal_entity_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_country_name)", "feed_expr": None},
+    {"canonical": "legal_entity_county_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_county_code)", "feed_expr": None},
+    {"canonical": "legal_entity_county_fips", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_county_fips)", "feed_expr": None},
+    {"canonical": "legal_entity_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_county_name)", "feed_expr": None},
+    {"canonical": "legal_entity_foreign_posta", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_foreign_posta)", "feed_expr": None},
+    {"canonical": "legal_entity_state_fips", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_state_fips)", "feed_expr": None},
+    {"canonical": "legal_entity_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_state_name)", "feed_expr": None},
+    {"canonical": "legal_entity_zip", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(legal_entity_zip)", "feed_expr": None},
+    {"canonical": "place_of_perform_congressio", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_congressio)", "feed_expr": None},
+    {"canonical": "place_of_perform_country_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_country_na)", "feed_expr": None},
+    {"canonical": "place_of_perform_county_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_county_code)", "feed_expr": None},
+    {"canonical": "place_of_perform_county_fips", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_county_fips)", "feed_expr": None},
+    {"canonical": "place_of_perform_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_county_name)", "feed_expr": None},
+    {"canonical": "place_of_perform_scope", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_scope)", "feed_expr": None},
+    {"canonical": "place_of_perform_state_fips", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_state_fips)", "feed_expr": None},
+    {"canonical": "place_of_perform_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_state_name)", "feed_expr": None},
+    {"canonical": "place_of_perform_street", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(place_of_perform_street)", "feed_expr": None},
+    {"canonical": "pop_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(pop_county_name)", "feed_expr": None},
+    {"canonical": "prime_award_group", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(prime_award_group)", "feed_expr": None},
+    {"canonical": "prime_award_national_interest_action", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_national_interest_action)"},
+    {"canonical": "prime_award_national_interest_action_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_national_interest_action_code)"},
+    {"canonical": "prime_award_obligated_amount_from_COVID_19_supplementals", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(\"prime_award_obligated_amount_from_COVID-19_supplementals\")"},
+    {"canonical": "prime_award_obligated_amount_from_IIJA_supplemental", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_obligated_amount_from_IIJA_supplemental)"},
+    {"canonical": "prime_award_outlayed_amount_from_COVID_19_supplementals", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(\"prime_award_outlayed_amount_from_COVID-19_supplementals\")"},
+    {"canonical": "prime_award_outlayed_amount_from_IIJA_supplemental", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_outlayed_amount_from_IIJA_supplemental)"},
+    {"canonical": "prime_award_primary_place_of_performance_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_primary_place_of_performance_country_name)"},
+    {"canonical": "prime_award_primary_place_of_performance_county_fips_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_primary_place_of_performance_county_fips_code)"},
+    {"canonical": "prime_award_primary_place_of_performance_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_primary_place_of_performance_county_name)"},
+    {"canonical": "prime_award_primary_place_of_performance_state_fips_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_primary_place_of_performance_state_fips_code)"},
+    {"canonical": "prime_award_primary_place_of_performance_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_primary_place_of_performance_state_name)"},
+    {"canonical": "prime_award_program_activities_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_program_activities_funding_this_award)"},
+    {"canonical": "prime_award_project_title", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_project_title)"},
+    {"canonical": "prime_award_recipient_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(prime_award_recipient_id)", "feed_expr": None},
+    {"canonical": "prime_award_summary_place_of_performance_cd_original", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_summary_place_of_performance_cd_original)"},
+    {"canonical": "prime_award_summary_recipient_cd_original", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_summary_recipient_cd_original)"},
+    {"canonical": "prime_award_total_outlayed_amount", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_total_outlayed_amount)"},
+    {"canonical": "prime_award_treasury_accounts_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_award_treasury_accounts_funding_this_award)"},
+    {"canonical": "prime_awardee_address_line_1", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_address_line_1)"},
+    {"canonical": "prime_awardee_city_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_city_name)"},
+    {"canonical": "prime_awardee_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_country_name)"},
+    {"canonical": "prime_awardee_county_fips_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_county_fips_code)"},
+    {"canonical": "prime_awardee_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_county_name)"},
+    {"canonical": "prime_awardee_dba_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_dba_name)"},
+    {"canonical": "prime_awardee_duns", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_duns)"},
+    {"canonical": "prime_awardee_foreign_postal_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_foreign_postal_code)"},
+    {"canonical": "prime_awardee_parent_duns", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_parent_duns)"},
+    {"canonical": "prime_awardee_state_fips_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_state_fips_code)"},
+    {"canonical": "prime_awardee_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_state_name)"},
+    {"canonical": "prime_awardee_zip_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(prime_awardee_zip_code)"},
+    {"canonical": "prime_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "prime_id", "feed_expr": None},
+    {"canonical": "program_activities", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(program_activities)", "feed_expr": None},
+    {"canonical": "program_title", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(program_title)", "feed_expr": None},
+    {"canonical": "pulled_from", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(pulled_from)", "feed_expr": None},
+    {"canonical": "recovery_model_q1", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "recovery_model_q1", "feed_expr": None},
+    {"canonical": "recovery_model_q2", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "recovery_model_q2", "feed_expr": None},
+    {"canonical": "report_type", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(report_type)", "feed_expr": None},
+    {"canonical": "source_schema", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(source_schema)", "feed_expr": None},
+    {"canonical": "source_table", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(source_table)", "feed_expr": None},
+    {"canonical": "sub_awardee_or_recipient_legal_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_awardee_or_recipient_legal_raw)", "feed_expr": None},
+    {"canonical": "sub_awardee_or_recipient_uniqu", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_awardee_or_recipient_uniqu)", "feed_expr": None},
+    {"canonical": "sub_cfda_numbers", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_cfda_numbers)", "feed_expr": None},
+    {"canonical": "sub_compensation_q1", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "sub_compensation_q1", "feed_expr": None},
+    {"canonical": "sub_compensation_q2", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "sub_compensation_q2", "feed_expr": None},
+    {"canonical": "sub_dunsplus4", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_dunsplus4)", "feed_expr": None},
+    {"canonical": "sub_federal_agency_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_federal_agency_id)", "feed_expr": None},
+    {"canonical": "sub_federal_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_federal_agency_name)", "feed_expr": None},
+    {"canonical": "sub_funding_agency_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_funding_agency_id)", "feed_expr": None},
+    {"canonical": "sub_funding_agency_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_funding_agency_name)", "feed_expr": None},
+    {"canonical": "sub_funding_office_id", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_funding_office_id)", "feed_expr": None},
+    {"canonical": "sub_funding_office_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_funding_office_name)", "feed_expr": None},
+    {"canonical": "sub_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "sub_id", "feed_expr": None},
+    {"canonical": "sub_legal_entity_city_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_city_code)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_congressional", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_congressional)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_congressional_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_congressional_raw)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_country_code_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_country_code_raw)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_country_name)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_country_name_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_country_name_raw)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_county_name)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_foreign_posta", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_foreign_posta)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_state_name)", "feed_expr": None},
+    {"canonical": "sub_legal_entity_zip5", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_legal_entity_zip5)", "feed_expr": None},
+    {"canonical": "sub_naics", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_naics)", "feed_expr": None},
+    {"canonical": "sub_parent_id", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "sub_parent_id", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_city_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_city_code)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_congressio", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_congressio)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_congressio_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_congressio_raw)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_country_co_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_country_co_raw)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_country_na", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_country_na)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_country_name)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_county_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_county_code)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_county_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_county_name)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_state_name)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_street", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_street)", "feed_expr": None},
+    {"canonical": "sub_place_of_perform_zip5", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_place_of_perform_zip5)", "feed_expr": None},
+    {"canonical": "sub_recovery_model_q1", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "sub_recovery_model_q1", "feed_expr": None},
+    {"canonical": "sub_recovery_model_q2", "duck_type": "BOOLEAN", "group": "enrich",
+     "bulk_expr": "sub_recovery_model_q2", "feed_expr": None},
+    {"canonical": "sub_recovery_subcontract_amt", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_recovery_subcontract_amt)", "feed_expr": None},
+    {"canonical": "sub_total_obl_bin", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_total_obl_bin)", "feed_expr": None},
+    {"canonical": "sub_ultimate_parent_legal_enti_raw", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_ultimate_parent_legal_enti_raw)", "feed_expr": None},
+    {"canonical": "sub_ultimate_parent_unique_ide", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(sub_ultimate_parent_unique_ide)", "feed_expr": None},
+    {"canonical": "subaward_place_of_performance_cd_original", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subaward_place_of_performance_cd_original)"},
+    {"canonical": "subaward_primary_place_of_performance_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subaward_primary_place_of_performance_country_name)"},
+    {"canonical": "subaward_primary_place_of_performance_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subaward_primary_place_of_performance_state_name)"},
+    {"canonical": "subaward_recipient_cd_original", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subaward_recipient_cd_original)"},
+    {"canonical": "subaward_recipient_hash", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(subaward_recipient_hash)", "feed_expr": None},
+    {"canonical": "subaward_recipient_level", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(subaward_recipient_level)", "feed_expr": None},
+    {"canonical": "subawardee_country_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subawardee_country_name)"},
+    {"canonical": "subawardee_duns", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subawardee_duns)"},
+    {"canonical": "subawardee_foreign_postal_code", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subawardee_foreign_postal_code)"},
+    {"canonical": "subawardee_parent_duns", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subawardee_parent_duns)"},
+    {"canonical": "subawardee_state_name", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": None, "feed_expr": "s(subawardee_state_name)"},
+    {"canonical": "transaction_type", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(transaction_type)", "feed_expr": None},
+    {"canonical": "treasury_account_identifiers", "duck_type": "BIGINT", "group": "enrich",
+     "bulk_expr": "treasury_account_identifiers", "feed_expr": None},
+    {"canonical": "treasury_symbol", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(treasury_symbol)", "feed_expr": None},
+    {"canonical": "ultimate_parent_unique_ide", "duck_type": "VARCHAR", "group": "enrich",
+     "bulk_expr": "s(ultimate_parent_unique_ide)", "feed_expr": None},
+    {"canonical": "usaspending_snapshot_date", "duck_type": "DATE", "group": "enrich",
+     "bulk_expr": "usaspending_snapshot_date", "feed_expr": None},
+    # ---- end OBT widening ----
     # ---- (d) provenance ----
     {"canonical": "canonical_source", "duck_type": "VARCHAR", "group": "prov",
      "bulk_expr": None,
@@ -455,7 +791,7 @@ def _typed_null(c: dict) -> str:
     return f"CAST(NULL AS {c['duck_type']})"
 
 
-_PARSE_SKIP = {"s", "kbulk", "TRY_CAST", "COALESCE", "CAST", "AS", "DOUBLE", "BIGINT", "DATE",
+_PARSE_SKIP = {"s", "kbulk", "TRY_CAST", "COALESCE", "CAST", "AS", "DOUBLE", "BIGINT", "BOOLEAN", "DATE",
                "TIMESTAMP", "VARCHAR", "INTEGER", "replace", "nullif", "trim", "NULL",
                "upper", "lower", "substr", "concat", "concat_ws",
                "CASE", "WHEN", "THEN", "END", "BETWEEN", "AND", "abs", "CURRENT_DATE"}
@@ -463,7 +799,9 @@ _PARSE_SKIP = {"s", "kbulk", "TRY_CAST", "COALESCE", "CAST", "AS", "DOUBLE", "BI
 
 def _source_cols(kind: str) -> list[str]:
     """Distinct raw source column names referenced by the bulk/feed projection exprs — the scanner
-    column list. Parsed by stripping macro/cast wrappers down to bare identifiers."""
+    column list. Double-quoted identifiers (source cols with non-identifier chars, e.g. the
+    ``COVID-19`` supplemental amounts) are captured EXACTLY; bare identifiers are parsed by stripping
+    macro/cast wrappers. Phantom fragments are dropped by the presence-filter in build()."""
     import re
     key = "bulk_expr" if kind == "bulk" else "feed_expr"
     raw: set[str] = set()
@@ -471,7 +809,10 @@ def _source_cols(kind: str) -> list[str]:
         expr = c[key]
         if not expr:
             continue
-        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        for q in re.findall(r'"([^"]+)"', expr):   # quoted source idents — exact (non-identifier chars)
+            raw.add(q)
+        bare = re.sub(r'"[^"]+"', " ", expr)        # strip quoted parts before the bare-token scan
+        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", bare):
             if tok not in _PARSE_SKIP:
                 raw.add(tok)
     return sorted(raw)
@@ -636,6 +977,49 @@ def _r2_so() -> dict[str, str]:
             "endpoint": ep, "region": "auto"}
 
 
+SUBAWARD_SCRATCH = os.environ.get("SUBAWARD_CANONICAL_SCRATCH", "/tmp/subaward_canonical_stage")
+
+
+def _s3():
+    import boto3
+    from botocore.config import Config
+    so = _r2_so()
+    return boto3.client("s3", endpoint_url=so["endpoint"],
+                        aws_access_key_id=so["aws_access_key_id"],
+                        aws_secret_access_key=so["aws_secret_access_key"], region_name="auto",
+                        config=Config(retries={"max_attempts": 10, "mode": "standard"},
+                                      connect_timeout=30, read_timeout=120,
+                                      request_checksum_calculation="when_required",
+                                      response_checksum_validation="when_required"))
+
+
+def _publish_local_to_r2(s3, uri, local_ds) -> int:
+    """Replace the R2 dataset prefix with a local Lance dataset, uploaded file-by-file (boto3
+    uniform multipart parts, R2-compliant). Prior-prefix wipe via DeleteObjects in batches of
+    <=1000. Bypasses Lance's native R2 multipart writer, which fails once the data files widen
+    (258 cols) with '400 InvalidPart: All non-trailing parts must have the same length' — the same
+    reason the 108M prime spine publishes via boto3, not a direct-R2 writer."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "")
+    pag = s3.get_paginator("list_objects_v2")
+    to_del: list[dict] = []
+    for page in pag.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            to_del.append({"Key": o["Key"]})
+            if len(to_del) >= 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                to_del = []
+    if to_del:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+    uploaded = 0
+    for root, _dirs, files in os.walk(local_ds):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_ds).replace(os.sep, "/")
+            s3.upload_file(lp, BUCKET, prefix + rel)
+            uploaded += 1
+    return uploaded
+
+
 def _duck():
     import duckdb
     con = duckdb.connect(":memory:")
@@ -783,15 +1167,26 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
             f"bulk_only_body={bulk_only_body:,} fresh_corrections={fresh_corrections:,} "
             f"null_key_dropped={null_key_dropped:,} max_action_date={max_action}")
 
-        # ── DIRECT-R2 write (non-giant: ~1.3M rows, proven pattern) — streaming reader, low RAM ──
+        # ── LOCAL Lance write → boto3 uniform-part publish. At 258 cols the data files widen past
+        #    R2's native-multipart tolerance ('400 InvalidPart: All non-trailing parts must have the
+        #    same length') — the exact wall the 108M prime spine hits, so publish the same way. The
+        #    local write has NO storage_options (local FS writer, no multipart); max_rows_per_file is
+        #    valid ONLY on this local→boto3 path. ──
+        import shutil
+        local_ds = os.path.join(SUBAWARD_SCRATCH, "subaward_canonical_lance")
+        shutil.rmtree(local_ds, ignore_errors=True)
+        os.makedirs(SUBAWARD_SCRATCH, exist_ok=True)
         reader = con.sql("SELECT * FROM canonical_out").to_arrow_reader(batch_size=200_000)
-        log(f"writing Lance DIRECT-R2 → {target_uri}")
-        lance.write_dataset(reader, target_uri, mode="overwrite",
+        log(f"writing Lance LOCALLY → {local_ds}")
+        lance.write_dataset(reader, local_ds, mode="overwrite",
                             data_storage_version=DATA_STORAGE_VERSION,
-                            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
-                            storage_options=so)
+                            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE)
         con.close()
         con = None
+        log(f"publishing local Lance → {target_uri} (boto3 uniform-part)…")
+        n_pub = _publish_local_to_r2(_s3(), target_uri, local_ds)
+        shutil.rmtree(local_ds, ignore_errors=True)
+        log(f"published {n_pub} files → {target_uri}")
         committed = lance.dataset(target_uri, storage_options=so).count_rows()
         status = "success"
         log(f"DONE → {target_uri} committed={committed:,}")
