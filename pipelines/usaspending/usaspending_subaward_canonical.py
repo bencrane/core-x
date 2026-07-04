@@ -977,6 +977,49 @@ def _r2_so() -> dict[str, str]:
             "endpoint": ep, "region": "auto"}
 
 
+SUBAWARD_SCRATCH = os.environ.get("SUBAWARD_CANONICAL_SCRATCH", "/tmp/subaward_canonical_stage")
+
+
+def _s3():
+    import boto3
+    from botocore.config import Config
+    so = _r2_so()
+    return boto3.client("s3", endpoint_url=so["endpoint"],
+                        aws_access_key_id=so["aws_access_key_id"],
+                        aws_secret_access_key=so["aws_secret_access_key"], region_name="auto",
+                        config=Config(retries={"max_attempts": 10, "mode": "standard"},
+                                      connect_timeout=30, read_timeout=120,
+                                      request_checksum_calculation="when_required",
+                                      response_checksum_validation="when_required"))
+
+
+def _publish_local_to_r2(s3, uri, local_ds) -> int:
+    """Replace the R2 dataset prefix with a local Lance dataset, uploaded file-by-file (boto3
+    uniform multipart parts, R2-compliant). Prior-prefix wipe via DeleteObjects in batches of
+    <=1000. Bypasses Lance's native R2 multipart writer, which fails once the data files widen
+    (258 cols) with '400 InvalidPart: All non-trailing parts must have the same length' — the same
+    reason the 108M prime spine publishes via boto3, not a direct-R2 writer."""
+    prefix = uri.replace(f"s3://{BUCKET}/", "")
+    pag = s3.get_paginator("list_objects_v2")
+    to_del: list[dict] = []
+    for page in pag.paginate(Bucket=BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            to_del.append({"Key": o["Key"]})
+            if len(to_del) >= 1000:
+                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+                to_del = []
+    if to_del:
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": to_del, "Quiet": True})
+    uploaded = 0
+    for root, _dirs, files in os.walk(local_ds):
+        for f in files:
+            lp = os.path.join(root, f)
+            rel = os.path.relpath(lp, local_ds).replace(os.sep, "/")
+            s3.upload_file(lp, BUCKET, prefix + rel)
+            uploaded += 1
+    return uploaded
+
+
 def _duck():
     import duckdb
     con = duckdb.connect(":memory:")
@@ -1124,15 +1167,26 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
             f"bulk_only_body={bulk_only_body:,} fresh_corrections={fresh_corrections:,} "
             f"null_key_dropped={null_key_dropped:,} max_action_date={max_action}")
 
-        # ── DIRECT-R2 write (non-giant: ~1.3M rows, proven pattern) — streaming reader, low RAM ──
+        # ── LOCAL Lance write → boto3 uniform-part publish. At 258 cols the data files widen past
+        #    R2's native-multipart tolerance ('400 InvalidPart: All non-trailing parts must have the
+        #    same length') — the exact wall the 108M prime spine hits, so publish the same way. The
+        #    local write has NO storage_options (local FS writer, no multipart); max_rows_per_file is
+        #    valid ONLY on this local→boto3 path. ──
+        import shutil
+        local_ds = os.path.join(SUBAWARD_SCRATCH, "subaward_canonical_lance")
+        shutil.rmtree(local_ds, ignore_errors=True)
+        os.makedirs(SUBAWARD_SCRATCH, exist_ok=True)
         reader = con.sql("SELECT * FROM canonical_out").to_arrow_reader(batch_size=200_000)
-        log(f"writing Lance DIRECT-R2 → {target_uri}")
-        lance.write_dataset(reader, target_uri, mode="overwrite",
+        log(f"writing Lance LOCALLY → {local_ds}")
+        lance.write_dataset(reader, local_ds, mode="overwrite",
                             data_storage_version=DATA_STORAGE_VERSION,
-                            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE,
-                            storage_options=so)
+                            max_rows_per_file=MAX_ROWS_PER_FILE, max_bytes_per_file=MAX_BYTES_PER_FILE)
         con.close()
         con = None
+        log(f"publishing local Lance → {target_uri} (boto3 uniform-part)…")
+        n_pub = _publish_local_to_r2(_s3(), target_uri, local_ds)
+        shutil.rmtree(local_ds, ignore_errors=True)
+        log(f"published {n_pub} files → {target_uri}")
         committed = lance.dataset(target_uri, storage_options=so).count_rows()
         status = "success"
         log(f"DONE → {target_uri} committed={committed:,}")
