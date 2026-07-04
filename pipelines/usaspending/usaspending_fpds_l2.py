@@ -20,8 +20,9 @@ ROW_NUMBER()=1 argmax terminal snapshot + a GROUP-BY additive aggregate (→ STA
 already-collapsed ~40-55M award-grain staging (construct-and-validate parent key against the real
 IDV-key set — grammar-self-checking, never a blind parse), NOT a second 108M scan.
 
-TERNARY award_kind (locked): idv (idv_type_code present) | order (has parent IDV) | definitive. The
-origination engine strictly separates a definitive recompete from a parent-IDV ceiling check.
+TERNARY award_topology (locked): vehicle (idv_type_code present) | vehicle_order (has parent IDV) |
+standalone. Structural/topological ONLY — government award-type semantics live in award_type_code; this
+axis never reuses a government domain value. Separates a standalone recompete from a parent-vehicle ceiling check.
 
 DISCIPLINES (mirrors the spine; d.8 / fleet rules):
   • module-top os.environ.setdefault("LANCE_BYPASS_SPILLING","true") BEFORE any import lance.
@@ -96,13 +97,13 @@ RECON_TOLERANCE = 1.0  # $ — |life_to_date − total_dollars_obligated_snapsho
 STATE_BTREE = ["contract_award_unique_key", "recipient_uei", "recipient_hash",
                "parent_award_key_resolved", "solicitation_identifier", "award_id_piid",
                "current_end_date", "days_to_expiry", "consumed_pct", "remaining_ceiling_headroom"]
-STATE_BITMAP = ["award_kind", "idv_type_code", "awarding_agency_code", "type_of_set_aside_code",
+STATE_BITMAP = ["award_topology", "idv_type_code", "awarding_agency_code", "type_of_set_aside_code",
                 "award_type_code", "terminal_action_type_code", "is_terminated",
                 "is_expired_no_followon", "parent_match_flag", "potential_ceiling_is_fallback",
-                "has_child_idv"]
+                "has_nested_vehicle"]
 DELTA_BTREE = ["contract_transaction_unique_key", "contract_award_unique_key", "action_date",
                "recipient_uei", "delta_potential_ceiling", "delta_federal_action_obligation"]
-DELTA_BITMAP = ["action_type_code", "award_kind", "action_type_klass", "is_scope_increase",
+DELTA_BITMAP = ["action_type_code", "award_topology", "action_type_klass", "is_scope_increase",
                 "is_termination_event", "identity_changed", "awarding_agency_code", "award_pool"]
 
 # ── spine source columns the shared pass scans (all VERIFIED present on the 392-col spine) ─
@@ -130,19 +131,18 @@ SPINE_SCAN_COLS = [
     "type_of_set_aside_code", "award_type_code", "solicitation_identifier", "canonical_source",
 ]
 
-# action_type → coarse operational class (grounded in the mod-footprint recon + fpds_action_type_ref;
-# ADVISORY — the actual delta sign, never AF-slice membership, drives is_scope_increase). 'Y' is the one
-# diagnosed non-standard code (outside the FPDS 20-code set; small-$ admin + minor re-representations) →
-# its own 'nonstandard' klass; a truly-unseen future code falls to 'unclassified'. Deltas are computed
-# for ALL codes regardless, so nothing is silently dropped.
+# action_type → coarse operational class (grounded in the mod-footprint recon + dec_code_domain_ref;
+# ADVISORY — the actual delta sign, never AF-slice membership, drives is_scope_increase). 'Y' = "ADD
+# SUBCONTRACT PLAN" per the DEC — a DOCUMENTED FPDS reason-for-modification, corrected from the Cycle-1
+# 'nonstandard' misdiagnosis; folded into 'admin' (with K=Close Out / M=Other Admin / S=Change PIID). A
+# truly-unseen future code falls to 'unclassified'. Deltas are computed for ALL codes, nothing is dropped.
 _KLASS_CASE = """CASE
     WHEN action_type_code = 'G' THEN 'option_exercise'
     WHEN action_type_code IN ('A','B','D','H','L') THEN 'scope_change'
     WHEN action_type_code = 'C' THEN 'funding_only'
     WHEN action_type_code IN ('E','F','X','N') THEN 'termination'
     WHEN action_type_code IN ('J','P','R','T','V','W') THEN 'identity_boundary'
-    WHEN action_type_code IN ('K','M','S') THEN 'admin'
-    WHEN action_type_code = 'Y' THEN 'nonstandard'
+    WHEN action_type_code IN ('K','M','S','Y') THEN 'admin'
     ELSE 'unclassified' END"""
 
 
@@ -168,7 +168,7 @@ def _duck():
 def _projection_sql() -> str:
     """spine_src (registered scanner reader) → spine_proj TEMP TABLE. Single pass drains the R2 reader
     into a re-scannable local table; the two VARCHAR→numeric/date casts happen ONCE here so both the
-    STATE and DELTA consumers see typed values. award_kind (ternary) is derived here — award-invariant,
+    STATE and DELTA consumers see typed values. award_topology (ternary) is derived here — award-invariant,
     so the terminal-row value is authoritative for STATE and the per-row value is used by DELTA."""
     return """
 CREATE TEMP TABLE spine_proj AS
@@ -177,9 +177,9 @@ SELECT
     contract_transaction_unique_key                                       AS ctuk,
     action_date, last_modified_date, modification_number, transaction_number,
     action_type_code, idv_type_code,
-    CASE WHEN idv_type_code IS NOT NULL AND idv_type_code <> '' THEN 'idv'
-         WHEN parent_award_id_piid IS NOT NULL AND parent_award_id_piid <> '' THEN 'order'
-         ELSE 'definitive' END                                            AS award_kind,
+    CASE WHEN idv_type_code IS NOT NULL AND idv_type_code <> '' THEN 'vehicle'
+         WHEN parent_award_id_piid IS NOT NULL AND parent_award_id_piid <> '' THEN 'vehicle_order'
+         ELSE 'standalone' END                                            AS award_topology,
     federal_action_obligation,
     current_total_value_of_award, base_and_exercised_options_value,
     base_and_all_options_value, total_dollars_obligated,
@@ -247,31 +247,31 @@ SELECT cauk,
 FROM spine_proj GROUP BY cauk;
 
 -- STATE staging: terminal (argmax) snapshot ⋈ additive aggregates. Ceiling/time selection branches
--- on award_kind. current_total_value_of_award is obligated-to-date (a reconciliation twin), NOT a
+-- on award_topology. current_total_value_of_award is obligated-to-date (a reconciliation twin), NOT a
 -- ceiling — the current authorization is base_and_exercised_options_value; the max ceiling is the
 -- potential value (TRY_CAST, COALESCE→base_and_all_options on the FRESH-winner typed-NULL case).
 CREATE TEMP TABLE state_stage AS
 SELECT
     w.cauk                                       AS contract_award_unique_key,
-    w.award_kind,
+    w.award_topology,
     w.idv_type_code, w.award_id_piid,
     w.awarding_agency_code, w.awarding_sub_agency_code,
     w.recipient_uei, w.recipient_hash, w.recipient_name,
     w.naics_code, w.product_or_service_code, w.type_of_set_aside_code, w.award_type_code,
     w.solicitation_identifier,
     a.life_to_date_obligated,
-    CASE WHEN w.award_kind = 'idv' THEN NULL
+    CASE WHEN w.award_topology = 'vehicle' THEN NULL
          ELSE w.base_and_exercised_options_value END                     AS current_authorized_ceiling,
-    CASE WHEN w.award_kind = 'idv' THEN NULL
+    CASE WHEN w.award_topology = 'vehicle' THEN NULL
          ELSE w.current_total_value_of_award END                         AS current_total_value_of_award,
-    CASE WHEN w.award_kind = 'idv' THEN w.base_and_all_options_value
+    CASE WHEN w.award_topology = 'vehicle' THEN w.base_and_all_options_value
          ELSE COALESCE(w.pot_val, w.base_and_all_options_value) END       AS potential_ceiling,
-    CASE WHEN w.award_kind = 'idv' THEN NULL   -- N/A: IDV ceiling is base_and_all_options by design
+    CASE WHEN w.award_topology = 'vehicle' THEN NULL   -- N/A: IDV ceiling is base_and_all_options by design
          ELSE (w.pot_val IS NULL AND w.base_and_all_options_value IS NOT NULL) END AS potential_ceiling_is_fallback,
     w.total_dollars_obligated                    AS total_dollars_obligated_snapshot,
     (a.life_to_date_obligated - w.total_dollars_obligated)               AS obligation_reconciliation_delta,
-    CASE WHEN w.award_kind = 'idv' THEN w.ord_end ELSE w.pop_cur_end END  AS current_end_date,
-    CASE WHEN w.award_kind = 'idv' THEN NULL
+    CASE WHEN w.award_topology = 'vehicle' THEN w.ord_end ELSE w.pop_cur_end END  AS current_end_date,
+    CASE WHEN w.award_topology = 'vehicle' THEN NULL
          ELSE COALESCE(w.pot_end, w.pop_cur_end) END                      AS potential_end_date,
     w.pop_start                                  AS pop_start_date,
     a.ladder_txn_count, a.first_action_date, a.last_action_date, a.is_terminated,
@@ -291,7 +291,7 @@ WHERE w.rn_final = 1;
 -- mis-rollup. 'self' = no parent piid (definitive / standalone IDV). NULL agency → synth is NULL
 -- (DuckDB `x||NULL`=NULL) → no match → dangling (can't resolve without the agency component).
 CREATE TEMP TABLE idv_keys AS
-SELECT contract_award_unique_key AS idv_key FROM state_stage WHERE award_kind = 'idv';
+SELECT contract_award_unique_key AS idv_key FROM state_stage WHERE award_topology = 'vehicle';
 
 CREATE TEMP TABLE state_resolved AS
 SELECT s.*,
@@ -318,7 +318,7 @@ LEFT JOIN idv_keys k
 CREATE TEMP TABLE nested_idv AS
 SELECT contract_award_unique_key AS idv_key, parent_award_key_resolved AS grandparent_key
 FROM state_resolved
-WHERE award_kind = 'idv'
+WHERE award_topology = 'vehicle'
   AND parent_award_key_resolved IS NOT NULL
   AND parent_award_key_resolved <> contract_award_unique_key;
 
@@ -334,12 +334,12 @@ WITH RECURSIVE anc(award_key, ancestor_key, amt, depth) AS (
     WHERE a.depth < 12
 )
 SELECT ancestor_key AS idv_key,
-       SUM(amt)                  AS idv_child_obligated,
-       COUNT(DISTINCT award_key) AS idv_child_order_count           -- distinct descendants in the subtree
+       SUM(amt)                  AS rollup_obligated,
+       COUNT(DISTINCT award_key) AS rollup_order_count           -- distinct descendants in the subtree
 FROM anc GROUP BY ancestor_key;
 
 -- IDVs that are themselves the resolved parent of another IDV (multi-tier: GWAC/FSS → BPA → orders).
--- With the recursive rollup the denominator is now EXACT even here; has_child_idv is retained as a
+-- With the recursive rollup the denominator is now EXACT even here; has_nested_vehicle is retained as a
 -- structural flag ("this vehicle has sub-vehicles beneath it"), no longer a lower-bound warning.
 CREATE TEMP TABLE idv_with_child_idv AS
 SELECT DISTINCT grandparent_key AS idv_key FROM nested_idv;
@@ -349,7 +349,7 @@ SELECT DISTINCT grandparent_key AS idv_key FROM nested_idv;
 -- the injected build_date literal (deterministic per build; the durable queue ranges on absolute
 -- current_end_date, days_to_expiry is the same-day convenience axis).
 CREATE TEMP TABLE state_final AS
-SELECT r.contract_award_unique_key, r.award_kind, r.idv_type_code, r.award_id_piid,
+SELECT r.contract_award_unique_key, r.award_topology, r.idv_type_code, r.award_id_piid,
        r.awarding_agency_code, r.awarding_sub_agency_code,
        r.recipient_uei, r.recipient_hash, r.recipient_name,
        r.naics_code, r.product_or_service_code, r.type_of_set_aside_code, r.award_type_code,
@@ -357,12 +357,12 @@ SELECT r.contract_award_unique_key, r.award_kind, r.idv_type_code, r.award_id_pi
        r.life_to_date_obligated, r.current_authorized_ceiling, r.current_total_value_of_award,
        r.potential_ceiling, r.potential_ceiling_is_fallback,
        r.total_dollars_obligated_snapshot, r.obligation_reconciliation_delta,
-       CASE WHEN r.award_kind = 'idv' THEN COALESCE(ro.idv_child_obligated, 0.0) END AS idv_child_obligated,
-       CASE WHEN r.award_kind = 'idv' THEN COALESCE(ro.idv_child_order_count, 0) END AS idv_child_order_count,
-       CASE WHEN r.award_kind = 'idv' THEN (ci.idv_key IS NOT NULL) END              AS has_child_idv,
-       (CASE WHEN r.award_kind = 'idv' THEN COALESCE(ro.idv_child_obligated, 0.0)
+       CASE WHEN r.award_topology = 'vehicle' THEN COALESCE(ro.rollup_obligated, 0.0) END AS rollup_obligated,
+       CASE WHEN r.award_topology = 'vehicle' THEN COALESCE(ro.rollup_order_count, 0) END AS rollup_order_count,
+       CASE WHEN r.award_topology = 'vehicle' THEN (ci.idv_key IS NOT NULL) END              AS has_nested_vehicle,
+       (CASE WHEN r.award_topology = 'vehicle' THEN COALESCE(ro.rollup_obligated, 0.0)
              ELSE r.life_to_date_obligated END) / NULLIF(r.potential_ceiling, 0)     AS consumed_pct,
-       r.potential_ceiling - (CASE WHEN r.award_kind = 'idv' THEN COALESCE(ro.idv_child_obligated, 0.0)
+       r.potential_ceiling - (CASE WHEN r.award_topology = 'vehicle' THEN COALESCE(ro.rollup_obligated, 0.0)
                                    ELSE r.life_to_date_obligated END)                AS remaining_ceiling_headroom,
        date_diff('day', DATE '{build_date_iso}', r.current_end_date)                 AS days_to_expiry,
        r.is_terminated, r.terminal_action_type_code,
@@ -387,14 +387,14 @@ SELECT
     w.ctuk                                       AS contract_transaction_unique_key,
     w.cauk                                       AS contract_award_unique_key,
     w.action_date, w.last_modified_date, w.modification_number,
-    w.award_kind, w.action_type_code,
+    w.award_topology, w.action_type_code,
     -- agency-aware calibration keys (Cycle 2): the origination engine scores every $ / rate signal by
     -- its percentile WITHIN (CGAC × parent/child-pool) — global thresholds misfire (Δceiling P99 spans
     -- 226x across agencies). awarding_agency_code binds the per-agency distribution; award_pool splits
     -- the IDV-parent ceiling mods from the order/definitive-child obligation mods BEFORE the percentile
     -- (pooling is what manufactures DoD's $81M artifact). See FPDS_L2_AGENCY_CALIBRATION.md.
     w.awarding_agency_code,
-    CASE WHEN w.award_kind = 'idv' THEN 'parent' ELSE 'child' END AS award_pool,
+    CASE WHEN w.award_topology = 'vehicle' THEN 'parent' ELSE 'child' END AS award_pool,
     {_KLASS_CASE}                                AS action_type_klass,
     w.p_ctuk                                     AS prev_contract_transaction_unique_key,
     w.p_action_date                              AS prev_action_date,
@@ -620,7 +620,7 @@ def build(since: str | None = None, state_uri: str = STATE_URI, delta_uri: str =
             raise RuntimeError(f"STATE PK gate FAILED: count(*)={s_total:,} != "
                                f"distinct(contract_award_unique_key)={s_distinct:,}. Aborting publish.")
         kind_counts = dict(con.execute(
-            "SELECT award_kind, count(*) FROM state_final GROUP BY 1").fetchall())
+            "SELECT award_topology, count(*) FROM state_final GROUP BY 1").fetchall())
         dangling_count, dangling_oblig = con.execute(
             "SELECT count(*), COALESCE(SUM(life_to_date_obligated),0) FROM state_final "
             "WHERE parent_match_flag='dangling'").fetchone()
@@ -675,8 +675,8 @@ def build(since: str | None = None, state_uri: str = STATE_URI, delta_uri: str =
         state_metrics = {
             "spine_manifest_version": spine_manifest_version, "build_date": build_date_iso,
             "rows_in_spine": int(rows_in_spine), "awards_out": int(s_total),
-            "definitive_count": int(kind_counts.get("definitive", 0)),
-            "idv_count": int(kind_counts.get("idv", 0)), "order_count": int(kind_counts.get("order", 0)),
+            "standalone_count": int(kind_counts.get("standalone", 0)),
+            "vehicle_count": int(kind_counts.get("vehicle", 0)), "vehicle_order_count": int(kind_counts.get("vehicle_order", 0)),
             "dangling_count": int(dangling_count),
             "dangling_child_obligated_total": float(dangling_oblig or 0.0),
             "recon_delta_p99": float(recon_p99 or 0.0), "recon_fail_count": int(recon_fail),
@@ -707,7 +707,7 @@ def build(since: str | None = None, state_uri: str = STATE_URI, delta_uri: str =
         _record_run(STATE_OPS_TABLE, STATE_FEED, {
             **{k: state_metrics.get(k) for k in (
                 "spine_manifest_version", "build_date", "rows_in_spine", "awards_out",
-                "definitive_count", "idv_count", "order_count", "dangling_count",
+                "standalone_count", "vehicle_count", "vehicle_order_count", "dangling_count",
                 "dangling_child_obligated_total", "recon_delta_p99", "recon_fail_count",
                 "max_current_end_date")},
             "write_mode": "overwrite",
@@ -730,7 +730,7 @@ def build(since: str | None = None, state_uri: str = STATE_URI, delta_uri: str =
 # verify — read-back structural assertions per table
 # ════════════════════════════════════════════════════════════════════════════════════════
 def verify(table: str, target_uri: str) -> dict:
-    """Independent scanner → DuckDB. Gates: PK-unique; award_kind ⊆ {definitive,idv,order};
+    """Independent scanner → DuckDB. Gates: PK-unique; award_topology ⊆ {standalone,vehicle,vehicle_order};
     (state) consumed_pct sanity + parent_match_flag domain; (delta) action_type_klass domain +
     built_at distinct==1. Returns a JSON verdict with a `pass` bool + `failures` list."""
     import lance
@@ -746,9 +746,9 @@ def verify(table: str, target_uri: str) -> dict:
     con.execute("CREATE TEMP TABLE c AS SELECT * FROM c_src")
     failures: list[str] = []
     rows = con.execute("SELECT count(*) FROM c").fetchone()[0]
-    kinds = dict(con.execute("SELECT award_kind, count(*) FROM c GROUP BY 1").fetchall())
-    if set(kinds) - {"definitive", "idv", "order"}:
-        failures.append(f"award_kind domain leak: {set(kinds) - {'definitive','idv','order'}}")
+    kinds = dict(con.execute("SELECT award_topology, count(*) FROM c GROUP BY 1").fetchall())
+    if set(kinds) - {"standalone", "vehicle", "vehicle_order"}:
+        failures.append(f"award_topology domain leak: {set(kinds) - {'standalone','vehicle','vehicle_order'}}")
 
     if table == "state":
         pk = "contract_award_unique_key"
@@ -761,9 +761,9 @@ def verify(table: str, target_uri: str) -> dict:
             failures.append(f"parent_match_flag domain leak: {set(flags)}")
         # every 'order' resolves to a real IDV key or is flagged dangling (never silently self-rooted)
         bad_order = con.execute(
-            "SELECT count(*) FROM c WHERE award_kind='order' AND parent_match_flag='self'").fetchone()[0]
+            "SELECT count(*) FROM c WHERE award_topology='vehicle_order' AND parent_match_flag='self'").fetchone()[0]
         if bad_order:
-            failures.append(f"{bad_order:,} 'order' rows mis-flagged 'self'")
+            failures.append(f"{bad_order:,} 'vehicle_order' rows mis-flagged 'self'")
         report = {"rows": rows, "kinds": kinds, "parent_match_flag": flags}
     else:
         pk = "contract_transaction_unique_key"

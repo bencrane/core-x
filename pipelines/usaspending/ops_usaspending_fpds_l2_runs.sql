@@ -12,9 +12,9 @@ CREATE TABLE IF NOT EXISTS ops.usaspending_fpds_prime_award_state_runs (
     build_date                      date,                   -- injected build_date literal (time-axis anchor)
     rows_in_spine                   bigint,                 -- spine transaction rows scanned (post --since)
     awards_out                      bigint,                 -- award-grain rows written (== distinct award keys)
-    definitive_count                bigint,                 -- award_kind='definitive'
-    idv_count                       bigint,                 -- award_kind='idv'
-    order_count                     bigint,                 -- award_kind='order'
+    standalone_count                bigint,                 -- award_topology='standalone'
+    vehicle_count                   bigint,                 -- award_topology='vehicle'
+    vehicle_order_count             bigint,                 -- award_topology='vehicle_order'
     dangling_count                  bigint,                 -- orders whose parent IDV key did NOT resolve
     dangling_child_obligated_total  double precision,       -- Σ life_to_date of dangling orders (quarantine leak)
     recon_delta_p99                 double precision,       -- p99 |life_to_date − total_dollars_obligated_snapshot|
@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS ops.usaspending_fpds_prime_award_state_runs (
 );
 ALTER TABLE ops.usaspending_fpds_prime_award_state_runs
     ADD COLUMN IF NOT EXISTS dangling_child_obligated_total double precision;
+-- award_kind→award_topology retonym (Layer 2): topology values renamed vehicle/vehicle_order/standalone.
+-- Old definitive_count/idv_count/order_count columns retained for historical rows; new rows write these.
+ALTER TABLE ops.usaspending_fpds_prime_award_state_runs
+    ADD COLUMN IF NOT EXISTS standalone_count    bigint;
+ALTER TABLE ops.usaspending_fpds_prime_award_state_runs
+    ADD COLUMN IF NOT EXISTS vehicle_count       bigint;
+ALTER TABLE ops.usaspending_fpds_prime_award_state_runs
+    ADD COLUMN IF NOT EXISTS vehicle_order_count bigint;
 CREATE INDEX IF NOT EXISTS usaspending_fpds_prime_award_state_runs_status_idx
     ON ops.usaspending_fpds_prime_award_state_runs (status);
 CREATE INDEX IF NOT EXISTS usaspending_fpds_prime_award_state_runs_recorded_at_idx
