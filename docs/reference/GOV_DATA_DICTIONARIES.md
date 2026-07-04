@@ -40,22 +40,37 @@ transaction, award, subaward, and account download vocabularies.
 - **Indices:** BTree(`row_ord`, `element`, `dl_award_element`, `fpds_data_dictionary_element`) ·
   Bitmap(`grouping`, `dl_award_file`, `dl_subaward_file`).
 - **The load-bearing join keys:**
-  - **`dl_award_element`** = the physical column name in the award/transaction download files — i.e.
-    the vocabulary of our BULK `transaction_search_fpds` / `award_search` and FRESH feeds. Join a
-    spine column name → its authoritative definition here.
+  - **`db_element`** = the physical `transaction_fpds` DB column name — i.e. the vocabulary our BULK
+    `rpt.transaction_search_fpds` reporting view projects. **This is the key for a spine/BULK column
+    → its authoritative definition + domain_values** (verified 2026-07-03: `db_element` ∩ live BULK
+    = 269/378; `dl_award_element` ∩ live BULK = only 103/378). `db_table` is multi-valued
+    (comma-separated), so filter `transaction_fpds ∈ db_table` (or prefer it on `db_element`
+    collision). Example: `db_element = 'c1862_land_grant_college'` (matches our live BULK column)
+    vs. its `dl_award_element = '1862_land_grant_college'` (the download-CSV name).
+  - **`dl_award_element`** = the physical column name in the award/transaction **download CSV files**
+    — the download-file vocabulary, **not** our reporting-view vocabulary. Use for download-file
+    joins only.
   - **`fpds_data_dictionary_element`** = the FPDS element name (e.g. `ActionType` → `Reason for
     Modification`).
   - **`dl_subaward_element`** = the subaward download column name (subaward vocabulary).
 - **Verified anchors:** `ActionType` → FPDS `Reason for Modification`, download `action_type_code`;
   `FederalActionObligation` → FPDS `Action Obligation`, download `federal_action_obligation`.
 
-**Supersedes** the committed repo sidecar `pipelines/usaspending/fpds_field_definitions.json`. Both
-derive from the same USAspending Data Dictionary origin, but the sidecar is a static, FPDS-only
-`{field: {definition, type}}` snapshot bundled in the repo; this table is fetched live, covers the
-full transaction + award + subaward + account vocabularies (closing the award/subaward dictionary
-gap), carries domain values and every download/legacy/db crosswalk column, and is queryable +
-indexed in-plane. New definition joins should target this table; the JSON sidecar is retained only
-until the FPDS canonical dictionary generator is repointed.
+**Primary definition + domain/codes source** for the committed repo sidecar
+`pipelines/usaspending/fpds_field_definitions.json`. Both derive from the same USAspending Data
+Dictionary origin, but the sidecar is a static, FPDS-only `{field: {definition, type}}` snapshot
+bundled in the repo; this table is fetched live, covers the full transaction + award + subaward +
+account vocabularies, carries domain values and every download/legacy/db crosswalk column, and is
+queryable + indexed in-plane. New definition/domain joins should target this table (on `db_element`).
+
+The FPDS canonical dictionary generator is now **repointed** to this table (#951, vendored code-only
+as `pipelines/usaspending/fpds_dict_extract.json`, joined on `db_element`) — it lifted the FPDS
+canonical doc's domain/codes coverage 93 → 283 of 392 columns. The **sidecar is RETAINED as the
+definition fallback, not a stopgap**: the dict is keyed on physical `transaction_fpds` `db_element`
+names, but ~30 spine columns use `transaction_search_fpds` rpt-view names (`action_date`,
+`recipient_name`, `naics_code`, …) that the dict does not carry under a matching `db_element` — the
+sidecar supplies those, so the generator uses the union (dict ∨ sidecar) and definition coverage
+(313/392) never regresses.
 
 ## 2. `sam_entity_extract_dictionary` — SAM entity extract layout
 
@@ -150,9 +165,11 @@ import lance
 from pipelines.bls.ingest import _storage_options
 so = _storage_options()
 dd = lance.dataset("s3://data-sink/active/usaspending_data_dictionary/", storage_options=so)
-# resolve a spine column name to its authoritative definition:
-dd.scanner(columns=["element","definition","fpds_data_dictionary_element","grouping"],
-           filter="dl_award_element = 'federal_action_obligation'").to_table().to_pylist()
+# resolve a BULK/spine column name → definition + domain (join on db_element, the reporting-view key):
+dd.scanner(columns=["element","definition","fpds_data_dictionary_element","domain_values","grouping"],
+           filter="db_element = 'c1862_land_grant_college' AND db_table LIKE '%transaction_fpds%'"
+           ).to_table().to_pylist()
+# (dl_award_element is the DOWNLOAD-CSV vocabulary — use it only for download-file joins.)
 ```
 
 ## Provenance & regeneration
