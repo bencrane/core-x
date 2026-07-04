@@ -78,6 +78,7 @@ from .src.routers.close_webhooks_v1 import read_router as close_read_router
 from .src.routers.internal_cal_v1 import router as internal_cal_router
 from .src.routers.document_payments_v1 import router as document_payments_router
 from .src.routers.operator_settings_v1 import router as operator_settings_router
+from .src.routers.awards_subk_pricing_v1 import router as awards_subk_pricing_router
 from .src.service_token import require_service_token
 
 # ── Vendored hq-x GTM pipeline subtree (Phase 4) ─────────────────────────────
@@ -252,6 +253,12 @@ app.include_router(equipment_finance_candidates_router)
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
 # + reasoning + stepsTaken). Bridges to firmographics_blitz via domain_norm. Service-token gated.
 app.include_router(epd_lec_status_router)
+
+# awards-subk-pricing: empirical subcontract-pricing foundation (combo lanes, firm-scale, firm-in-lane).
+# Serves canonical Lance datasets (combo_prime_sub_pricing, firm_award_value_profile, firm_combo_prime_profile)
+# materialized from 108M prime txns + 627k FSRS subawards 2021+. Endpoints: /summary, /active-demand,
+# /combo/{naics}/{psc}. Service-token gated.
+app.include_router(awards_subk_pricing_router)
 
 # Pipeline: the post-payment GTM pipeline /run-step surface, vendored from hq-x.
 # Trigger.dev calls it (verify_trigger_secret / TRIGGER_SHARED_SECRET) at
