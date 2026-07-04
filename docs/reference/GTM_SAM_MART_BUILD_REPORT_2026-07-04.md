@@ -119,9 +119,42 @@ counterpart in `clay_find_companies` (`record_id` = sha hash → 0-row join;
 `clay_company_id` = int). Clay-side Tier B is blocked on provenance until a
 usable key ships upstream. Recorded, not forced.
 
-## 8. Next
+## 8. Cycle 3 — Owned-Identity Harvest (executed same day)
 
-1. Award rollup satellite — remains post-spine, operator-gated (decision log #2).
-2. Optional: full-spine entity→company-LinkedIn materialization (keys the
-   LeadMagic/Blitz firmo + description thread; `clay_find_companies` carries
-   `description`, PDL does not) — its own decision, not started.
+**Tool:** `pipelines/gtm/harvest_owned_identity.py` (dry-run default,
+`--apply` gated). Sources — uei-direct, already paid for, zero new spend:
+
+- `dsbs_poc_linkedin` v32 (821 rows) — serper-resolved, name-AND-company
+  validated DSBS POC LinkedIn (spend-ledgered; provenance:
+  docs/reference/DSBS_POC_LINKEDIN_RESOLUTION.md). All 821 joined the spine;
+  all new. Method `dsbs_serper_validated`, score 0.95.
+- `sam_labor_poc_people` v11 (29,464 rows) — staffing-segment derivative;
+  name-agreement filter kept 29,464/29,464 (built name-consistent —
+  provenance exam passed). Method `labor_poc_direct`, score 0.90.
+
+**Applied: +1,037 → `gtm_sam_person_identity` 72,434 rows (v8).**
+2,049 ambiguous abstained. Foreign `name_key` columns were not trusted —
+mart convention recomputed from verbatim names on both sources.
+
+**Precision certificate (unplanned but decisive):** 23,584 existing Tier-A
+rows were independently CONFIRMED by `sam_labor_poc_people`'s own resolution;
+only 56 conflicts (0.24% disagreement, read-only, flagged — recomputable via
+the tool's dry-run). Two independent processes converging at 99.76% validates
+the exact name×domain method.
+
+**Acquisition channel registered (operator-gated, not run):** the serper
+pipeline (`resolve_dsbs_poc_linkedin.py`, credit-metered via
+`core/serper_gateway.py`, ~29.6% resolve rate) is the repeatable paid queue
+for the DSBS identity residue.
+
+## 9. Next
+
+1. **Cycle 4 — full-spine entity→company-LinkedIn materialization**
+   (`gtm_sam_company_identity`, 1/uei): supersedes fan-out-prone
+   `bridge_sam_pdl` for employee-range filtering (spine → company identity →
+   `pdl_normalized_companies.employee_size_range`) and keys the
+   LeadMagic/Blitz firmo + description thread (`clay_find_companies` carries
+   `description`; PDL does not). Tier-B tool already computes this
+   residue-scoped at 61% hit rate.
+2. Award rollup satellite — PARKED pending the parallel award-workstream
+   agents (operator instruction 2026-07-04).
