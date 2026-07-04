@@ -199,7 +199,32 @@ strict won-a-prime) — the only slice worth further matching effort.
 instead of 67% until corrected. lower→strip_accents→strip is the only valid
 order (the mart's `name_key_sql` already does this).
 
-## 11. Next
+## 11. Cycle 4 — Premium-Tranche Mobile Enrollment (FIRED same day)
+
+**Operator-directed spend.** Cohort: the DSBS email→mobile waterfall queue
+constrained to `greatest(sub-$24m, prime-$24m) ≥ $1M` (prime side = SUM-safe
+L1 `federal_action_obligation` windowed sum) ∧ hi-confidence ruling (t1/t2) ∧
+(<500 employees confirmed ∨ size-unknown <$100M).
+
+**Enroller:** `pipelines/enrichment_leadmagic/enroll_sam_premium_mobile.py` —
+rides the existing `leadmagic-phone-finder-resolve` rail (misses free,
+5 cr/hit, idempotent). Payloads email-first (LeadMagic accepts
+work_email/personal_email/profile_url in any combo); LinkedIn attached where
+identity holds it (179/1,159).
+
+**Fired 2026-07-04:** 1,159 contacts (986 <500-emp + 173 unknown<$100M;
+1,146 work + 13 personal emails), batch `sam-premium-mobile-2026-07-04`,
+Trigger.dev run `run_cmr6xysqn0vnt0poex7lkkeo2`. Results async →
+`ops.phone_resolutions` with **contact_id = sam_person_id** (mart vocabulary
+— rows join back to `gtm_sam_people` directly; person_id doctrine holds).
+
+**Supporting calibrations (owned-data, zero spend):** DSBS email vs vendor
+email exact-match 85.6% (n=403); DSBS phone = ruled person's vendor mobile
+33.9% (n=5,734 — retired the planned paid sampling experiment);
+vendor-vs-vendor mobile disagreement 30.6% (n=1,285) → query-time phone
+tiering (corroborated > single-vendor > conflicted).
+
+## 12. Next
 
 1. **Cycle 4 — full-spine entity→company-LinkedIn materialization**
    (`gtm_sam_company_identity`, 1/uei): supersedes fan-out-prone
