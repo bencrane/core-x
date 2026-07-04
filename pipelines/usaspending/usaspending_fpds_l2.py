@@ -131,8 +131,10 @@ SPINE_SCAN_COLS = [
 ]
 
 # action_type → coarse operational class (grounded in the mod-footprint recon + fpds_action_type_ref;
-# ADVISORY — the actual delta sign, never AF-slice membership, drives is_scope_increase). 'Y'/base/unknown
-# fall through to 'unclassified' so no code is silently dropped.
+# ADVISORY — the actual delta sign, never AF-slice membership, drives is_scope_increase). 'Y' is the one
+# diagnosed non-standard code (outside the FPDS 20-code set; small-$ admin + minor re-representations) →
+# its own 'nonstandard' klass; a truly-unseen future code falls to 'unclassified'. Deltas are computed
+# for ALL codes regardless, so nothing is silently dropped.
 _KLASS_CASE = """CASE
     WHEN action_type_code = 'G' THEN 'option_exercise'
     WHEN action_type_code IN ('A','B','D','H','L') THEN 'scope_change'
@@ -140,6 +142,7 @@ _KLASS_CASE = """CASE
     WHEN action_type_code IN ('E','F','X','N') THEN 'termination'
     WHEN action_type_code IN ('J','P','R','T','V','W') THEN 'identity_boundary'
     WHEN action_type_code IN ('K','M','S') THEN 'admin'
+    WHEN action_type_code = 'Y' THEN 'nonstandard'
     ELSE 'unclassified' END"""
 
 
@@ -305,25 +308,41 @@ FROM state_stage s
 LEFT JOIN idv_keys k
        ON k.idv_key = ('CONT_IDV_' || s.parent_award_id_piid || '_' || s.parent_award_agency_id);
 
--- IDV child rollup — the IDV capacity denominator (Σ life-to-date over resolved DIRECT children of any
--- kind, NOT the IDV header's own ~$0 line). Hash aggregate over award-grain staging; no second 108M scan.
--- MULTI-TIER CAVEAT: this is a ONE-LEVEL fold. A nested IDV's own orders roll to the nested IDV, not to
--- its ancestor — so an ancestor with has_child_idv=true carries a LOWER-BOUND idv_child_obligated.
--- has_child_idv marks those rows so a partial denominator is never treated as complete (a recursive
--- fold is a documented follow-up). Honest-partial, never silent-wrong.
-CREATE TEMP TABLE idv_rollup AS
-SELECT parent_award_key_resolved AS idv_key,
-       SUM(life_to_date_obligated) AS idv_child_obligated,
-       COUNT(*)                    AS idv_child_order_count
+-- IDV child rollup — the IDV capacity denominator = Σ life-to-date over the ENTIRE resolved SUBTREE
+-- (all descendant orders, through any depth of nested IDVs), NOT the IDV header's own ~$0 line.
+-- RECURSIVE transitive fold: each award's obligation is attributed to EVERY ancestor IDV in its chain,
+-- so a GWAC/FSS sees the orders placed under BPAs beneath it, not merely its own direct orders. The
+-- recursive step climbs ONLY through nested IDVs (`nested_idv`, ~1e4 rows) → the fan-out is a cheap
+-- hash probe, no second 108M scan. Depth-capped at 12 (FPDS nesting is shallow) as a runaway guard;
+-- parent_award_key_resolved is a single-valued tree edge, so there are no cross-path double-counts.
+CREATE TEMP TABLE nested_idv AS
+SELECT contract_award_unique_key AS idv_key, parent_award_key_resolved AS grandparent_key
 FROM state_resolved
-WHERE parent_match_flag = 'resolved'
-GROUP BY parent_award_key_resolved;
+WHERE award_kind = 'idv'
+  AND parent_award_key_resolved IS NOT NULL
+  AND parent_award_key_resolved <> contract_award_unique_key;
+
+CREATE TEMP TABLE idv_rollup AS
+WITH RECURSIVE anc(award_key, ancestor_key, amt, depth) AS (
+    SELECT contract_award_unique_key, parent_award_key_resolved, life_to_date_obligated, 1
+    FROM state_resolved
+    WHERE parent_award_key_resolved IS NOT NULL
+      AND parent_award_key_resolved <> contract_award_unique_key   -- exclude self-parented roots
+    UNION ALL
+    SELECT a.award_key, n.grandparent_key, a.amt, a.depth + 1
+    FROM anc a JOIN nested_idv n ON n.idv_key = a.ancestor_key      -- climb ONLY through nested IDVs
+    WHERE a.depth < 12
+)
+SELECT ancestor_key AS idv_key,
+       SUM(amt)                  AS idv_child_obligated,
+       COUNT(DISTINCT award_key) AS idv_child_order_count           -- distinct descendants in the subtree
+FROM anc GROUP BY ancestor_key;
 
 -- IDVs that are themselves the resolved parent of another IDV (multi-tier: GWAC/FSS → BPA → orders).
+-- With the recursive rollup the denominator is now EXACT even here; has_child_idv is retained as a
+-- structural flag ("this vehicle has sub-vehicles beneath it"), no longer a lower-bound warning.
 CREATE TEMP TABLE idv_with_child_idv AS
-SELECT DISTINCT parent_award_key_resolved AS idv_key
-FROM state_resolved
-WHERE award_kind = 'idv' AND parent_match_flag = 'resolved';
+SELECT DISTINCT grandparent_key AS idv_key FROM nested_idv;
 
 -- STATE final: capacity ratios. IDV consumption uses the child rollup; AWARD/ORDER use own life-to-date.
 -- Ratios UNCLAMPED (>1 over-ceiling, <0 net de-obligated are legitimate signals). Time axis anchored to
