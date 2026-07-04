@@ -312,7 +312,7 @@ contract_award_unique_key  ≡  generated_unique_award_id  ≡  prime_award_uniq
 ### Two award-grain views, deliberately different
 
 - **`prime_award_state`** — bottom-up, fresh: computed from the FPDS transaction spine (BULK∪FRESH), carries capacity math the government rollup does not (potential-ceiling headroom, IDV→child rollup, expiry horizon, `award_topology`).
-- **`award_search` (BULK)** — top-down, stale: USAspending's own award-level rollup as of the 2026-05-06 pg snapshot, 154 award-level columns (`total_obligation`, recipient rollups, CFDA/program metadata) — **not** reconciled against the live API. Use for award-level metadata and cross-checks, never as the freshness source. `award_search_merged` (the bulk+delta reconcile in `usaspending_award_search_reconcile.py`) is **coded but NOT materialized** — the merged URI 404s.
+- **`award_search` (BULK)** — top-down, stale: USAspending's own award-level rollup as of the 2026-05-06 pg snapshot, 154 award-level columns (`total_obligation`, recipient rollups, CFDA/program metadata) — **not** reconciled against the live API. Use for award-level metadata and cross-checks, never as the freshness source. `award_search_merged` is **DEAD — no lane**: the reconcile trigger was killed as dead in PR #966; the script (`usaspending_award_search_reconcile.py`) is unmaterialized dead code and the merged URI 404s. Do not treat it as pending or owned.
 
 ### Grain hazards (correctness rules)
 
@@ -532,9 +532,9 @@ Data-verified this workstream. These characterize the FPDS IDV/order/definitive 
 Factual list, no prioritization.
 
 1. ~~**`mod_delta.action_type_klass` `Y`-reclassification**~~ — ✅ **RESOLVED (PR #978, rebuild 2026-07-04).** `Y = "ADD SUBCONTRACT PLAN"` (documented, per the DEC) folded into `admin`; `nonstandard` klass retired. Live-verified: 8,736 `Y` rows now `admin`, `nonstandard` = 0. Landed as part of the Layer 0→2 ontology rebuild (`award_kind`→`award_topology`, `_KLASS_CASE` fix, `dec_code_domain_ref` bedrock, rollup rename).
-2. ~~**Cycle 3 — Entity Dimension (SCD2)**~~ — ✅ **BUILT (PR #988, full build 2026-07-04).** `usaspending_fpds_entity_version` live: 769,474 entities / 11,266,415 versions, verify pass, ops-ledgered. See §10. award_search/SAM current-attribute enrichment remains open (additive).
+2. ~~**Cycle 3 — Entity Dimension (SCD2)**~~ — ✅ **BUILT (PR #988, full build 2026-07-04).** `usaspending_fpds_entity_version` live: 769,474 entities / 11,266,415 versions, verify pass, ops-ledgered. See §10. Current-attribute enrichment remains open (additive) — via SAM (`entity_profile_gold`); no award_search lane exists (§12.4).
 3. **Origination-engine per-agency percentile calibration model** — consumer-side, not pipeline. The pipeline-side prerequisite (`awarding_agency_code` + `award_pool` on `mod_delta`) is delivered (Cycle 2.5); the percentile CDF model + scoring is specified in `FPDS_L2_AGENCY_CALIBRATION.md` §4.
-4. **award_search-dependent work** — cross-source reconciliation (bottom-up `life_to_date_obligated` vs. top-down `total_obligation`) and entity-dimension current-attribute enrichment are deferred pending the reconciled `award_search` spine (owned by another agent; see `AWARD_API_PULL_HANDOFF.md`). `award_search_merged` is **coded** (`usaspending_award_search_reconcile.py`) but **not materialized** — the merged URI 404s.
+4. **award_search-dependent work — NO ACTIVE LANE (corrected 2026-07-04).** The reconcile trigger was **killed as dead in PR #966**; `award_search_merged` is unmaterialized dead code (URI 404s) and is NOT owned by any agent. The earlier "owned by another agent / pending" framing was stale. Cross-source obligation reconciliation and any award_search-based enrichment would require a **deliberate decision to resurrect the lane** — until then, entity-dimension current-attribute enrichment routes through **SAM** (`entity_profile_gold` / `sam_master_entities`), which exists and is the more authoritative current-state source anyway (§10 decision doc §6).
 
 ---
 
@@ -557,7 +557,7 @@ Factual list, no prioritization.
 | `pipelines/usaspending/usaspending_fpds_l2_modal.py` | Modal orchestrator — `smoke` / `build` / `index` / `verify` / `init_ops`; sizing knobs; detach-safe |
 | `pipelines/usaspending/ops_usaspending_fpds_l2_runs.sql` | ops-ledger DDL for both tables |
 | `pipelines/reference/materialize_fpds_action_type_ref.py` | DEC-sourced `fpds_action_type_ref` loader (verbatim `Contracts:` domain, fail-closed) |
-| `pipelines/usaspending/usaspending_award_search_reconcile.py` | `award_search_merged` reconcile — coded, not materialized |
+| `pipelines/usaspending/usaspending_award_search_reconcile.py` | DEAD code — reconcile lane killed (PR #966), never materialized; candidate for removal |
 | `pipelines/usaspending/usaspending_fpds_entity_version.py` | Cycle 3 entity-version dimension (SCD2 history core) — builder, gates, verify |
 | `pipelines/usaspending/usaspending_fpds_entity_version_modal.py` | Modal orchestrator for the entity-version build |
 
