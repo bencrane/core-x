@@ -171,7 +171,35 @@ dead/parked domains are personalization-hygiene flags in their own right.
 Priority order at query time: Blitz `about` > Clay > `web_homepage_meta`
 (liveness_class='ok') > none.
 
-## 10. Next
+## 10. Cycle 3c — DSBS Firm-Email → Person Rulings (executed same day)
+
+**Dataset:** `s3://data-sink/active/gtm_sam_person_firm_emails/` (v5) —
+**37,441 rulings**, 1 row per (uei, email) attributed to exactly one
+`sam_person_id`. Builder `pipelines/gtm/gtm_sam_person_firm_emails.py`
+(snapshot overwrite, deterministic; ledger
+`ops.gtm_sam_person_firm_emails_runs`). Email SoR remains
+`sba_dsbs_certified_firms.email` — this table is the match result only
+(identity-table doctrine). BTREE sam_person_id/uei/email_norm; BITMAP
+match_tier. `email_norm` joins directly to `work_emails`/MV Lances.
+
+**Matcher:** alpha-only local-part canon; tiers t1_full_name 0.95 (8,793) ·
+t2_initial 0.90 (10,565) · t3_single_name 0.85 (10,959) · t4_containment
+0.70-0.75 (7,124); nickname dictionary; candidates = all gtm_sam_people at
+the uei; unique-best-only written. Excluded and ledger-counted: 3,913
+generic mailboxes, 2,026 surname-ties, 272 true ambiguities, 15,309
+unmatched. Versus the old existence-only 69% check: person-grade attribution
+for 63.5% of all DSBS emails, 19,358 at ≥0.90.
+
+**Residue prioritization:** of 17,607 un-ruled non-generic emails, only
+**3,344 sit at firms with award activity in the 2-year window** (2,841 under
+strict won-a-prime) — the only slice worth further matching effort.
+
+**Normalization hazard (recorded):** `regexp_replace(x,'[^a-z]')` BEFORE
+`lower()` silently empties ALL-CAPS names — first measurement pass read 26%
+instead of 67% until corrected. lower→strip_accents→strip is the only valid
+order (the mart's `name_key_sql` already does this).
+
+## 11. Next
 
 1. **Cycle 4 — full-spine entity→company-LinkedIn materialization**
    (`gtm_sam_company_identity`, 1/uei): supersedes fan-out-prone
