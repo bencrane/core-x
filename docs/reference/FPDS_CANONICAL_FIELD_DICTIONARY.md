@@ -2,7 +2,7 @@
 
 > **AUTO-GENERATED — do not hand-edit.** This file is a projection of `COLUMN_SPEC` in [`pipelines/usaspending/usaspending_fpds_canonical.py`](../../pipelines/usaspending/usaspending_fpds_canonical.py), cross-checked fail-closed against the live R2 dataset. To change it, change the pipeline contract and regenerate (see [§7](#7-regenerating-this-document)). Definitions are joined from the committed sidecar `fpds_field_definitions.json` (USAspending Data Dictionary) and may be length-capped verbatim from source.
 
-**Live anchor:** `s3://data-sink/active/usaspending_fpds_canonical_txn/` — **108,181,354 rows · 131 cols · 18 indices** · manifest v36. Verified live: 2026-07-02.
+**Live anchor:** `s3://data-sink/active/usaspending_fpds_canonical_txn/` — **107,962,341 rows · 392 cols · 18 indices** · manifest v19. Verified live: 2026-07-04.
 
 ---
 
@@ -13,8 +13,8 @@ The typed, PK-grained **system-of-record read model** for U.S. federal contract 
 | property | value |
 |---|---|
 | URI | `s3://data-sink/active/usaspending_fpds_canonical_txn/` |
-| rows | 108,181,354 |
-| columns | 131 |
+| rows | 107,962,341 |
+| columns | 392 |
 | indices | 18 (11 BTREE + 7 BITMAP) |
 | grain / PK | `contract_transaction_unique_key` (exactly one surviving row per key — structural uniqueness gate at build) |
 | storage | Lance `data_storage_version=2.1`, `max_rows_per_file=1,048,576`, written LOCAL then boto3 uniform-part published to R2 (never a direct-R2 writer — Giants `400 InvalidPart`) |
@@ -45,7 +45,7 @@ ds = lance.dataset("s3://data-sink/active/usaspending_fpds_canonical_txn/", stor
 
 **Indexed columns accelerate pushdown** (see [§4](#4-index-topology-17)). Point-lookups and range scans on the BTREE columns and equality/`IN` filters on the BITMAP columns are the fast paths; everything else is a full column scan of 108M rows.
 
-## 3. Column reference (131)
+## 3. Column reference (392)
 
 Grouped by role. `source` shows the native upstream column(s) each canonical column projects from — `BULK` = pg `rpt.*` vocabulary, `FRESH/MO` = canonical vocabulary carried verbatim by the FRESH + monthly feeds. Enrichment columns are BULK-sourced except the 12 monthly-unique ones. `type` is the live Arrow type.
 
@@ -149,7 +149,7 @@ Grouped by role. `source` shows the native upstream column(s) each canonical col
 | 87 | `number_of_offers_received` | `int64` | `number_of_offers_received` (BULK+FRESH) | The number of actual offers/bids received in response to the solicitation. | — |
 | 88 | `number_of_actions` | `int64` | `number_of_actions` (BULK+FRESH) | The number input by the agency that identifies number of actions that are reported in one modification. | — |
 
-### 3.3 Enrichment — BULK/pg only (overwritten from the reconciled base, key-independent of the core winner)  (27)
+### 3.3 Enrichment — BULK/pg only (overwritten from the reconciled base, key-independent of the core winner)  (300)
 
 | # | canonical column | type | source | definition | domain / codes |
 |---|---|---|---|---|---|
@@ -180,23 +180,279 @@ Grouped by role. `source` shows the native upstream column(s) each canonical col
 | 25 | `award_category` | `string` | BULK-only `award_category` | — | — |
 | 26 | `award_amount` | `double` | BULK-only `award_amount` | The total amount awarded to the prime award recipient. | — |
 | 27 | `total_funding_amount` | `double` | BULK-only `total_funding_amount` | The sum of the FederalActionObligation and the Non-Federal Funding Amount. | — |
-
-### 3.4 Enrichment — monthly-unique (Treasury / federal-account funding + highly-compensated-officer comp; pg lacks all 12)  (12)
-
-| # | canonical column | type | source | definition | domain / codes |
-|---|---|---|---|---|---|
-| 1 | `treasury_accounts_funding_this_award` | `string` | FRESH/MO-only `treasury_accounts_funding_this_award` | — | — |
-| 2 | `federal_accounts_funding_this_award` | `string` | FRESH/MO-only `federal_accounts_funding_this_award` | — | — |
-| 3 | `highly_compensated_officer_1_name` | `string` | FRESH/MO-only `highly_compensated_officer_1_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
-| 4 | `highly_compensated_officer_2_name` | `string` | FRESH/MO-only `highly_compensated_officer_2_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
-| 5 | `highly_compensated_officer_3_name` | `string` | FRESH/MO-only `highly_compensated_officer_3_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
-| 6 | `highly_compensated_officer_4_name` | `string` | FRESH/MO-only `highly_compensated_officer_4_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
-| 7 | `highly_compensated_officer_5_name` | `string` | FRESH/MO-only `highly_compensated_officer_5_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
-| 8 | `highly_compensated_officer_1_amount` | `double` | FRESH/MO-only `highly_compensated_officer_1_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
-| 9 | `highly_compensated_officer_2_amount` | `double` | FRESH/MO-only `highly_compensated_officer_2_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
-| 10 | `highly_compensated_officer_3_amount` | `double` | FRESH/MO-only `highly_compensated_officer_3_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
-| 11 | `highly_compensated_officer_4_amount` | `double` | FRESH/MO-only `highly_compensated_officer_4_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
-| 12 | `highly_compensated_officer_5_amount` | `double` | FRESH/MO-only `highly_compensated_officer_5_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 28 | `treasury_accounts_funding_this_award` | `string` | — | — | — |
+| 29 | `federal_accounts_funding_this_award` | `string` | — | — | — |
+| 30 | `highly_compensated_officer_1_name` | `string` | — | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 31 | `highly_compensated_officer_2_name` | `string` | — | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 32 | `highly_compensated_officer_3_name` | `string` | — | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 33 | `highly_compensated_officer_4_name` | `string` | — | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 34 | `highly_compensated_officer_5_name` | `string` | — | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 35 | `highly_compensated_officer_1_amount` | `double` | — | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 36 | `highly_compensated_officer_2_amount` | `double` | — | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 37 | `highly_compensated_officer_3_amount` | `double` | — | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 38 | `highly_compensated_officer_4_amount` | `double` | — | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 39 | `highly_compensated_officer_5_amount` | `double` | — | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 40 | `a_76_fair_act_action` | `string` | BULK-only `a_76_fair_act_action` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field. | — |
+| 41 | `a_76_fair_act_action_desc` | `string` | BULK-only `a_76_fair_act_action_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field. | — |
+| 42 | `action_type_description` | `string` | BULK-only `action_type_description` | Description tag that explains the meaning of the code provided in the ActionType Field. | — |
+| 43 | `afa_generated_unique` | `string` | BULK-only `afa_generated_unique` | System-generated database key used to uniquely identify each financial assistance transaction record and facilitate record lookup, correction, and deletion. A concatenation of AwardingSubTierAgencyCod | — |
+| 44 | `agency_id` | `string` | BULK-only `agency_id` | The agency code identifies the department or agency that is responsible for the account. | — |
+| 45 | `airport_authority` | `bool` | BULK-only `airport_authority` | https://www.sam.gov | — |
+| 46 | `alaskan_native_owned_corpo` | `bool` | BULK-only `alaskan_native_owned_corpo` | https://www.sam.gov | F = False T = True |
+| 47 | `alaskan_native_servicing_i` | `bool` | BULK-only `alaskan_native_servicing_i` | https://www.sam.gov | F = False T = True |
+| 48 | `american_indian_owned_busi` | `bool` | BULK-only `american_indian_owned_busi` | List characteristic of the contractor such as whether the selected contractor is an American Indian Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 49 | `asian_pacific_american_own` | `bool` | BULK-only `asian_pacific_american_own` | List characteristic of the contractor such as whether the selected contractor is an Asian-Pacific American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 50 | `award_certified_date` | `date32[day]` | BULK-only `award_certified_date` | — | — |
+| 51 | `award_date_signed` | `date32[day]` | BULK-only `award_date_signed` | — | — |
+| 52 | `award_fiscal_year` | `int64` | BULK-only `award_fiscal_year` | — | — |
+| 53 | `award_update_date` | `timestamp[us]` | BULK-only `award_update_date` | — | — |
+| 54 | `awarding_office_code` | `string` | BULK-only `awarding_office_code` | Identifier of the level n organization that awarded, executed or is otherwise responsible for the transaction. | — |
+| 55 | `awarding_office_name` | `string` | BULK-only `awarding_office_name` | Name of the level n organization that awarded, executed or is otherwise responsible for the transaction. | — |
+| 56 | `awarding_subtier_agency_name_raw` | `string` | BULK-only `awarding_subtier_agency_name_raw` | — | — |
+| 57 | `awarding_toptier_agency_id` | `int64` | BULK-only `awarding_toptier_agency_id` | — | — |
+| 58 | `awarding_toptier_agency_name_raw` | `string` | BULK-only `awarding_toptier_agency_name_raw` | — | — |
+| 59 | `black_american_owned_busin` | `bool` | BULK-only `black_american_owned_busin` | List characteristic of the contractor such as whether the selected contractor is a Black American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 60 | `business_funds_ind_desc` | `string` | BULK-only `business_funds_ind_desc` | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessFundsIndicator Field. | — |
+| 61 | `business_funds_indicator` | `string` | BULK-only `business_funds_indicator` | The Business Funds Indicator sometimes abbreviated BFI. Code indicating the award's applicability to the Recovery Act. | — |
+| 62 | `business_types_desc` | `string` | BULK-only `business_types_desc` | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessType Field. | — |
+| 63 | `c1862_land_grant_college` | `bool` | BULK-only `c1862_land_grant_college` | https://www.sam.gov | — |
+| 64 | `c1890_land_grant_college` | `bool` | BULK-only `c1890_land_grant_college` | https://www.sam.gov | — |
+| 65 | `c1994_land_grant_college` | `bool` | BULK-only `c1994_land_grant_college` | https://www.sam.gov | — |
+| 66 | `cfda_id` | `int64` | BULK-only `cfda_id` | — | — |
+| 67 | `cfda_title` | `string` | BULK-only `cfda_title` | The title of the Assistance Listing under which the Federal award was funded in the Catalog of Federal Domestic Assistance (CFDA) and SAM.gov. | — |
+| 68 | `city_local_government` | `bool` | BULK-only `city_local_government` | https://www.sam.gov | — |
+| 69 | `clinger_cohen_act_pla_desc` | `string` | BULK-only `clinger_cohen_act_pla_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Clinger-Cohen Act Planning Compliance Field. | Y = Yes N = No |
+| 70 | `commercial_item_acqui_desc` | `string` | BULK-only `commercial_item_acqui_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Acquisition Procedures Field. | A = COMMERCIAL ITEM B = SUPPLIES OR SERVICES PURSUANT TO FAR 12.102(F) C = SERVI |
+| 71 | `commercial_item_test_desc` | `string` | BULK-only `commercial_item_test_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Test Program Field. | Y = Yes N = No |
+| 72 | `commercial_item_test_progr` | `string` | BULK-only `commercial_item_test_progr` | This field designates whether the acquisition utilized FAR 13.5 Test Program for Certain Commercial Items. The FAR 13.5 Test Program provides for the use of simplified acquisition procedures for the a | Y = YES N = NO |
+| 73 | `community_developed_corpor` | `bool` | BULK-only `community_developed_corpor` | https://www.sam.gov | F = False T = True |
+| 74 | `community_development_corp` | `bool` | BULK-only `community_development_corp` | https://www.sam.gov | F = False T = True |
+| 75 | `consolidated_contract_desc` | `string` | BULK-only `consolidated_contract_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Consolidated Contract Field. | A = CONSOLIDATED REQUIREMENTS B = CONSOLIDATED REQUIREMENTS WITH WRITTEN DETERMI |
+| 76 | `construction_wage_rat_desc` | `string` | BULK-only `construction_wage_rat_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Wage Rate Requirements (Construction) Field. | — |
+| 77 | `contingency_humanitar_desc` | `string` | BULK-only `contingency_humanitar_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Emergency Acquisition Field. | — |
+| 78 | `contingency_humanitarian_o` | `string` | BULK-only `contingency_humanitarian_o` | A designator of contract actions that support a declared contingency operation, a declared humanitarian or peacekeeping operation, or a declared presidential issued emergency declaration or a major di | — |
+| 79 | `contract_award_type_desc` | `string` | BULK-only `contract_award_type_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the ContractAwardType Field. | — |
+| 80 | `contract_bundling_descrip` | `string` | BULK-only `contract_bundling_descrip` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Bundling Field. | A = MISSION CRITICAL B = OMB Circular A-76 C = OTHER D = NOT A BUNDLED REQUIREME |
+| 81 | `contract_financing_descrip` | `string` | BULK-only `contract_financing_descrip` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Financing Field. | A = FAR 52.232-16 PROGRESS PAYMENTS C = PERCENTAGE OF COMPLETION PROGRESS PAYMEN |
+| 82 | `contracting_officers_desc` | `string` | BULK-only `contracting_officers_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracting Officer's Determination of Business Size Field. | — |
+| 83 | `contracts` | `bool` | BULK-only `contracts` | https://www.sam.gov | — |
+| 84 | `corporate_entity_not_tax_e` | `bool` | BULK-only `corporate_entity_not_tax_e` | https://www.sam.gov | F = False T = True |
+| 85 | `corporate_entity_tax_exemp` | `bool` | BULK-only `corporate_entity_tax_exemp` | https://www.sam.gov | F = False T = True |
+| 86 | `correction_delete_ind_desc` | `string` | BULK-only `correction_delete_ind_desc` | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the CorrectionDeleteIndicator Field. | — |
+| 87 | `correction_delete_indicatr` | `string` | BULK-only `correction_delete_indicatr` | A code to indicate how the record should be processed: correction to an existing record; deletion of a record; new record. | — |
+| 88 | `cost_accounting_stand_desc` | `string` | BULK-only `cost_accounting_stand_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost Accounting Standards Clause Field. | — |
+| 89 | `cost_accounting_standards` | `string` | BULK-only `cost_accounting_standards` | Indicates whether the contract includes a Cost Accounting Standards clause. | — |
+| 90 | `cost_or_pricing_data_desc` | `string` | BULK-only `cost_or_pricing_data_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost or Pricing Data Field. | Y = YES N = NO W = NOT OBTAINED - WAIVED |
+| 91 | `council_of_governments` | `bool` | BULK-only `council_of_governments` | https://www.sam.gov | — |
+| 92 | `country_of_product_or_desc` | `string` | BULK-only `country_of_product_or_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Country of Product or Service Origin Field. | — |
+| 93 | `country_of_product_or_serv` | `string` | BULK-only `country_of_product_or_serv` | Identifies the country of product or service origin. | — |
+| 94 | `county_local_government` | `bool` | BULK-only `county_local_government` | https://www.sam.gov | — |
+| 95 | `create_date` | `timestamp[us]` | BULK-only `create_date` | — | — |
+| 96 | `detached_award_procurement_id` | `int64` | BULK-only `detached_award_procurement_id` | — | — |
+| 97 | `dod_claimant_prog_cod_desc` | `string` | BULK-only `dod_claimant_prog_cod_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DoD Claimant Program Code Field. | According to the GSA Federal Procurement Data System (FPDS), these are listed in |
+| 98 | `domestic_or_foreign_e_desc` | `string` | BULK-only `domestic_or_foreign_e_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Domestic or Foreign Entity Field. | A = U.S. OWNED BUSINESS B = OTHER U.S. ENTITY (E.G. GOVERNMENT) C = FOREIGN-OWNE |
+| 99 | `domestic_shelter` | `bool` | BULK-only `domestic_shelter` | https://www.sam.gov | — |
+| 100 | `dot_certified_disadvantage` | `bool` | BULK-only `dot_certified_disadvantage` | https://www.sam.gov | F = False T = True |
+| 101 | `economically_disadvantaged` | `bool` | BULK-only `economically_disadvantaged` | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is an Economically Disadvantaged Woman Owned Small Business or not. It can be derived from the SAM | F = False T = True |
+| 102 | `educational_institution` | `bool` | BULK-only `educational_institution` | List characteristic of the contractor such as whether the selected contractor is an Educational Institution or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 103 | `emerging_small_business` | `bool` | BULK-only `emerging_small_business` | List characteristic of the contractor such as whether the selected contractor is an Emerging Small Business Organization or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 104 | `epa_designated_produc_desc` | `string` | BULK-only `epa_designated_produc_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field. | — |
+| 105 | `epa_designated_product` | `string` | BULK-only `epa_designated_product` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field. | — |
+| 106 | `etl_update_date` | `timestamp[us]` | BULK-only `etl_update_date` | — | — |
+| 107 | `evaluated_preference` | `string` | BULK-only `evaluated_preference` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field. | NONE = NO PREFERENCE USED SDA = SDB PRICE EVALUATION ADJUSTMENT SPS = SDB PREFER |
+| 108 | `evaluated_preference_desc` | `string` | BULK-only `evaluated_preference_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field. | NONE = NO PREFERENCE USED SDA = SDB PRICE EVALUATION ADJUSTMENT SPS = SDB PREFER |
+| 109 | `extent_compete_description` | `string` | BULK-only `extent_compete_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Extent Competed Field. | A = FULL AND OPEN COMPETITION B = NOT AVAILABLE FOR COMPETITION C = NOT COMPETED |
+| 110 | `face_value_loan_guarantee` | `double` | BULK-only `face_value_loan_guarantee` | The face value of the direct loan or loan guarantee. | — |
+| 111 | `fain` | `string` | BULK-only `fain` | The Federal Award Identification Number (FAIN) is the unique ID within the Federal agency for each (non-aggregate) financial assistance award. | — |
+| 112 | `fair_opportunity_limi_desc` | `string` | BULK-only `fair_opportunity_limi_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Fair Opportunity Limited Sources Field. | URG = URGENCY ONE = ONLY ONE SOURCE - OTHER FOO = FOLLOW-ON ACTION FOLLOWING COM |
+| 113 | `fed_biz_opps` | `string` | BULK-only `fed_biz_opps` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field. | — |
+| 114 | `fed_biz_opps_description` | `string` | BULK-only `fed_biz_opps_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field. | — |
+| 115 | `federal_agency` | `bool` | BULK-only `federal_agency` | https://www.sam.gov | — |
+| 116 | `federally_funded_research` | `bool` | BULK-only `federally_funded_research` | https://www.sam.gov | — |
+| 117 | `fiscal_action_date` | `date32[day]` | BULK-only `fiscal_action_date` | — | — |
+| 118 | `for_profit_organization` | `bool` | BULK-only `for_profit_organization` | List characteristic of the contractor such as whether the selected contractor is a Profit Organization or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 119 | `foreign_funding` | `string` | BULK-only `foreign_funding` | Indicates that a foreign government, international organization, or foreign military organization bears some of the cost of the acquisition. | — |
+| 120 | `foreign_funding_desc` | `string` | BULK-only `foreign_funding_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Foreign Funding Field. | — |
+| 121 | `foreign_government` | `bool` | BULK-only `foreign_government` | https://www.sam.gov | — |
+| 122 | `foreign_owned_and_located` | `bool` | BULK-only `foreign_owned_and_located` | https://www.sam.gov | F = False T = True |
+| 123 | `foundation` | `bool` | BULK-only `foundation` | https://www.sam.gov | — |
+| 124 | `funding_amount` | `double` | BULK-only `funding_amount` | — | — |
+| 125 | `funding_opportunity_goals` | `string` | BULK-only `funding_opportunity_goals` | A brief summary of the intended outcomes associated with the notice of funding opportunity. Applicable to Competitive Discretionary Grants and Cooperative Agreements. | — |
+| 126 | `funding_opportunity_number` | `string` | BULK-only `funding_opportunity_number` | An alphanumeric identifier that a Federal agency assigns to its funding opportunity announcement as part of the Notice of Funding Opportunity posted on the OMB-designated government wide web site (cur | — |
+| 127 | `funding_subtier_agency_abbreviation` | `string` | BULK-only `funding_subtier_agency_abbreviation` | — | — |
+| 128 | `funding_subtier_agency_name_raw` | `string` | BULK-only `funding_subtier_agency_name_raw` | — | — |
+| 129 | `funding_toptier_agency_abbreviation` | `string` | BULK-only `funding_toptier_agency_abbreviation` | — | — |
+| 130 | `funding_toptier_agency_id` | `int64` | BULK-only `funding_toptier_agency_id` | — | — |
+| 131 | `funding_toptier_agency_name_raw` | `string` | BULK-only `funding_toptier_agency_name_raw` | — | — |
+| 132 | `generated_pragmatic_obligation` | `double` | BULK-only `generated_pragmatic_obligation` | — | — |
+| 133 | `government_furnished_desc` | `string` | BULK-only `government_furnished_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Government Furnished Property GFP Field. | — |
+| 134 | `government_furnished_prope` | `string` | BULK-only `government_furnished_prope` | The contract uses equipment or property furnished by the government, pursuant to FAR 45. | — |
+| 135 | `grants` | `bool` | BULK-only `grants` | https://www.sam.gov | — |
+| 136 | `hispanic_american_owned_bu` | `bool` | BULK-only `hispanic_american_owned_bu` | List characteristic of the contractor such as whether the selected contractor is a Hispanic American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 137 | `hispanic_servicing_institu` | `bool` | BULK-only `hispanic_servicing_institu` | https://www.sam.gov | — |
+| 138 | `historically_black_college` | `bool` | BULK-only `historically_black_college` | List characteristic of the contractor such as whether the selected contractor is a Historically Black College or University or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 139 | `hospital_flag` | `bool` | BULK-only `hospital_flag` | List characteristic of the contractor such as whether the selected contractor is a Hospital or not. It can be derived from the SAM data element, 'Business Types' | — |
+| 140 | `housing_authorities_public` | `bool` | BULK-only `housing_authorities_public` | https://www.sam.gov | — |
+| 141 | `idv_type_description` | `string` | BULK-only `idv_type_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the IDV_Type Field. | A = GWAC B = IDC C = FSS D = BOA E = BPA |
+| 142 | `indian_tribe_federally_rec` | `bool` | BULK-only `indian_tribe_federally_rec` | https://www.sam.gov | — |
+| 143 | `indirect_federal_sharing` | `double` | BULK-only `indirect_federal_sharing` | The total amount of any single Federal award action that is allocated, per the award recipient’s approved award budget, to indirect costs. | — |
+| 144 | `information_technolog_desc` | `string` | BULK-only `information_technolog_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Information Technology Commercial Item Category Field. | — |
+| 145 | `information_technology_com` | `string` | BULK-only `information_technology_com` | A code that designates the commercial availability of an information technology product or service. | — |
+| 146 | `ingested_at` | `timestamp[us]` | BULK-only `ingested_at` | — | — |
+| 147 | `inherently_government_desc` | `string` | BULK-only `inherently_government_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Inherently Governmental Functions field. | CL = CLOSELY ASSOCIATED CT = CRITICAL FUNCTIONS OT = OTHER FUNCTIONS CL,CT = CLO |
+| 148 | `initial_report_date` | `timestamp[us]` | BULK-only `initial_report_date` | — | — |
+| 149 | `inter_municipal_local_gove` | `bool` | BULK-only `inter_municipal_local_gove` | https://www.sam.gov | — |
+| 150 | `interagency_contract_desc` | `string` | BULK-only `interagency_contract_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Interagency Contracting Authority Field. | — |
+| 151 | `interagency_contracting_au` | `string` | BULK-only `interagency_contracting_au` | Indicates whether the transaction is an Economy Act or Statutory Authority. | — |
+| 152 | `international_organization` | `bool` | BULK-only `international_organization` | https://www.sam.gov | — |
+| 153 | `interstate_entity` | `bool` | BULK-only `interstate_entity` | https://www.sam.gov | — |
+| 154 | `is_fpds` | `bool` | BULK-only `is_fpds` | — | — |
+| 155 | `joint_venture_economically` | `bool` | BULK-only `joint_venture_economically` | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Economically Disadvantaged Woman Owned Small Business or not. It can be derived | F = False T = True |
+| 156 | `joint_venture_women_owned` | `bool` | BULK-only `joint_venture_women_owned` | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Woman Owned Small Business or not. It can be derived from the SAM data element, | F = False T = True |
+| 157 | `labor_standards_descrip` | `string` | BULK-only `labor_standards_descrip` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Service Contract Labor Standards Field. | — |
+| 158 | `labor_surplus_area_firm` | `bool` | BULK-only `labor_surplus_area_firm` | https://www.sam.gov | F = False T = True |
+| 159 | `legal_entity_address_line2` | `string` | BULK-only `legal_entity_address_line2` | Second line of awardee or recipient’s legal business address. | — |
+| 160 | `legal_entity_address_line3` | `string` | BULK-only `legal_entity_address_line3` | — | — |
+| 161 | `legal_entity_city_code` | `string` | BULK-only `legal_entity_city_code` | Five position city code from the validation authoritative list. | — |
+| 162 | `legal_entity_foreign_city` | `string` | BULK-only `legal_entity_foreign_city` | For foreign recipients only: name of the city in which the awardee or recipient’s legal business address is located. | — |
+| 163 | `legal_entity_foreign_descr` | `string` | BULK-only `legal_entity_foreign_descr` | — | — |
+| 164 | `legal_entity_foreign_posta` | `string` | BULK-only `legal_entity_foreign_posta` | For foreign recipients only: foreign postal code in which the awardee or recipient's legal business address is located. | — |
+| 165 | `legal_entity_foreign_provi` | `string` | BULK-only `legal_entity_foreign_provi` | For foreign recipients only: name of the state or province in which the awardee or recipient’s legal business address is located. | — |
+| 166 | `legal_entity_zip4` | `string` | BULK-only `legal_entity_zip4` | USPS zoning code associated with the awardee or recipient’s legal business address. For domestic recipients only. | — |
+| 167 | `legal_entity_zip_last4` | `string` | BULK-only `legal_entity_zip_last4` | USPS four digit extension code associated with the awardee or recipient’s legal business address. This must be blank for non-US addresses | — |
+| 168 | `limited_liability_corporat` | `bool` | BULK-only `limited_liability_corporat` | https://www.sam.gov | — |
+| 169 | `local_area_set_aside` | `string` | BULK-only `local_area_set_aside` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field. | Y = YES N = NO |
+| 170 | `local_area_set_aside_desc` | `string` | BULK-only `local_area_set_aside_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field. | Y = YES N = NO |
+| 171 | `local_government_owned` | `bool` | BULK-only `local_government_owned` | https://www.sam.gov | F = False T = True |
+| 172 | `manufacturer_of_goods` | `bool` | BULK-only `manufacturer_of_goods` | https://www.sam.gov | — |
+| 173 | `materials_supplies_article` | `string` | BULK-only `materials_supplies_article` | Indicates whether the transaction is subject to the Materials, Supplies, Articles, & Equip. The clause is 52.222-20 "Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000" - tha | — |
+| 174 | `materials_supplies_descrip` | `string` | BULK-only `materials_supplies_descrip` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000 Field. | — |
+| 175 | `minority_institution` | `bool` | BULK-only `minority_institution` | List characteristic of the contractor such as whether the selected contractor is a Minority Institution or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 176 | `minority_owned_business` | `bool` | BULK-only `minority_owned_business` | https://www.sam.gov | F = False T = True |
+| 177 | `multi_year_contract_desc` | `string` | BULK-only `multi_year_contract_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multi Year Contract Field. | Y = YES N = NO |
+| 178 | `multiple_or_single_aw_desc` | `string` | BULK-only `multiple_or_single_aw_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multiple or Single Award IDV Field. | M = MULTIPLE AWARD S = SINGLE AWARD |
+| 179 | `municipality_local_governm` | `bool` | BULK-only `municipality_local_governm` | https://www.sam.gov | — |
+| 180 | `national_interest_desc` | `string` | BULK-only `national_interest_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the National Interest Action Field. | NONE = NONE H05K = HURRICANE KATRINA 2005 H05O = HURRICANE OPHELIA 2005 H05R = H |
+| 181 | `native_american_owned_busi` | `bool` | BULK-only `native_american_owned_busi` | List characteristic of the contractor such as whether the selected contractor is a Native American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 182 | `native_hawaiian_owned_busi` | `bool` | BULK-only `native_hawaiian_owned_busi` | https://www.sam.gov | F = False T = True |
+| 183 | `native_hawaiian_servicing` | `bool` | BULK-only `native_hawaiian_servicing` | https://www.sam.gov | F = False T = True |
+| 184 | `non_federal_funding_amount` | `double` | BULK-only `non_federal_funding_amount` | The amount of the award funded by non-Federal source(s), in dollars. Program Income (as defined in 2 CFR § 200.1) is not included until such time that Program Income is generated and credited to the a | — |
+| 185 | `nonprofit_organization` | `bool` | BULK-only `nonprofit_organization` | List characteristic of the contractor such as whether the selected contractor is a Nonprofit Organization or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 186 | `officer_1_amount` | `double` | BULK-only `officer_1_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 187 | `officer_1_name` | `string` | BULK-only `officer_1_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 188 | `officer_2_amount` | `double` | BULK-only `officer_2_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 189 | `officer_2_name` | `string` | BULK-only `officer_2_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 190 | `officer_3_amount` | `double` | BULK-only `officer_3_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 191 | `officer_3_name` | `string` | BULK-only `officer_3_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 192 | `officer_4_amount` | `double` | BULK-only `officer_4_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 193 | `officer_4_name` | `string` | BULK-only `officer_4_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 194 | `officer_5_amount` | `double` | BULK-only `officer_5_amount` | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 | — |
+| 195 | `officer_5_name` | `string` | BULK-only `officer_5_name` | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. | — |
+| 196 | `organizational_type` | `string` | BULK-only `organizational_type` | The structure of the entity as defined by the IRS. | — |
+| 197 | `original_loan_subsidy_cost` | `double` | BULK-only `original_loan_subsidy_cost` | The estimated long-term cost to the Government of a direct loan or loan guarantee, or modification thereof, calculated on a net present value basis, excluding administrative costs. | — |
+| 198 | `other_minority_owned_busin` | `bool` | BULK-only `other_minority_owned_busin` | https://www.sam.gov | F = False T = True |
+| 199 | `other_not_for_profit_organ` | `bool` | BULK-only `other_not_for_profit_organ` | https://www.sam.gov | F = False T = True |
+| 200 | `other_statutory_authority` | `string` | BULK-only `other_statutory_authority` | Indicates whether the transaction is subject to other statutory authority. If "Interagency Contracting Authority" is "Other Statutory Authority" then an entry is required in this data element. | — |
+| 201 | `other_than_full_and_o_desc` | `string` | BULK-only `other_than_full_and_o_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Other than Full and Open Competition Field. | UNQ = UNIQUE SOURCE (FAR 6.302-1(B)(1)) FOC = FOLLOW-ON CONTRACT (FAR 6.302-1(A) |
+| 202 | `parent_recipient_name_raw` | `string` | BULK-only `parent_recipient_name_raw` | — | — |
+| 203 | `parent_recipient_unique_id` | `string` | BULK-only `parent_recipient_unique_id` | — | — |
+| 204 | `partnership_or_limited_lia` | `bool` | BULK-only `partnership_or_limited_lia` | https://www.sam.gov | — |
+| 205 | `performance_based_se_desc` | `string` | BULK-only `performance_based_se_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Performance-Based Service Acquisition Field. | Y = YES - SERVICE WHERE PBA IS USED. N = NO - SERVICE WHERE PBA IS NOT USED. X = |
+| 206 | `period_of_perf_potential_e` | `string` | BULK-only `period_of_perf_potential_e` | For procurement, the date on which, for the award referred to by the action being reported if all potential pre-determined or pre-negotiated options were exercised, awardee effort is completed or the | — |
+| 207 | `place_of_manufacture` | `string` | BULK-only `place_of_manufacture` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field. | — |
+| 208 | `place_of_manufacture_desc` | `string` | BULK-only `place_of_manufacture_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field. | — |
+| 209 | `place_of_perform_zip_last4` | `string` | BULK-only `place_of_perform_zip_last4` | — | — |
+| 210 | `place_of_performance_zip4a` | `string` | BULK-only `place_of_performance_zip4a` | United States ZIP code (five digits) concatenated with the additional +4 digits, identifying where the predominant performance of the award will be accomplished. | Data for validation purposes is sourced from USPS Postal Pro, though agencies ar |
+| 211 | `planning_commission` | `bool` | BULK-only `planning_commission` | https://www.sam.gov | — |
+| 212 | `pop_congressional_code_current` | `string` | BULK-only `pop_congressional_code_current` | — | — |
+| 213 | `pop_congressional_population` | `int64` | BULK-only `pop_congressional_population` | — | — |
+| 214 | `pop_country_name` | `string` | BULK-only `pop_country_name` | — | — |
+| 215 | `pop_county_code` | `string` | BULK-only `pop_county_code` | — | — |
+| 216 | `pop_county_name` | `string` | BULK-only `pop_county_name` | — | — |
+| 217 | `pop_county_population` | `int64` | BULK-only `pop_county_population` | — | — |
+| 218 | `pop_state_fips` | `string` | BULK-only `pop_state_fips` | — | — |
+| 219 | `pop_state_name` | `string` | BULK-only `pop_state_name` | — | — |
+| 220 | `pop_state_population` | `int64` | BULK-only `pop_state_population` | — | — |
+| 221 | `port_authority` | `bool` | BULK-only `port_authority` | https://www.sam.gov | — |
+| 222 | `potential_total_value_awar` | `string` | BULK-only `potential_total_value_awar` | For procurement, the total amount that could be obligated on a contract, if the base and all options are exercised. | — |
+| 223 | `private_university_or_coll` | `bool` | BULK-only `private_university_or_coll` | https://www.sam.gov | — |
+| 224 | `program_system_or_equ_desc` | `string` | BULK-only `program_system_or_equ_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DOD Acquisition Program field. | — |
+| 225 | `program_system_or_equipmen` | `string` | BULK-only `program_system_or_equipmen` | Two codes that together identify the program and weapons system or equipment purchased by a DoD agency. The first character is a number 1-4 that identifies the DoD component. The last 3 characters ide | — |
+| 226 | `published_fabs_id` | `int64` | BULK-only `published_fabs_id` | — | — |
+| 227 | `pulled_from` | `string` | BULK-only `pulled_from` | Flag indicating whether the record was pulled from the award Atom feed or the IDV (Indefinite Delivery Vehicle) Atom Feed provided by FPDS. | — |
+| 228 | `purchase_card_as_paym_desc` | `string` | BULK-only `purchase_card_as_paym_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Purchase Card as Payment Method Field. | Y = YES N = NO |
+| 229 | `receives_contracts_and_gra` | `bool` | BULK-only `receives_contracts_and_gra` | https://www.sam.gov | — |
+| 230 | `recipient_location_congressional_code_current` | `string` | BULK-only `recipient_location_congressional_code_current` | — | — |
+| 231 | `recipient_location_congressional_population` | `int64` | BULK-only `recipient_location_congressional_population` | — | — |
+| 232 | `recipient_location_country_name` | `string` | BULK-only `recipient_location_country_name` | — | — |
+| 233 | `recipient_location_county_code` | `string` | BULK-only `recipient_location_county_code` | — | — |
+| 234 | `recipient_location_county_population` | `int64` | BULK-only `recipient_location_county_population` | — | — |
+| 235 | `recipient_location_state_fips` | `string` | BULK-only `recipient_location_state_fips` | — | — |
+| 236 | `recipient_location_state_name` | `string` | BULK-only `recipient_location_state_name` | — | — |
+| 237 | `recipient_location_state_population` | `int64` | BULK-only `recipient_location_state_population` | — | — |
+| 238 | `recipient_name_raw` | `string` | BULK-only `recipient_name_raw` | The name of the awardee or recipient that relates to the unique identifier. For U.S. based companies, this name is what the business ordinarily files in formation documents with individual states (whe | — |
+| 239 | `recipient_unique_id` | `string` | BULK-only `recipient_unique_id` | — | — |
+| 240 | `record_type` | `int64` | BULK-only `record_type` | Code indicating whether an action is an aggregate record, a non-aggregate record, or a non-aggregate record to an individual recipient (PII-Redacted). | — |
+| 241 | `record_type_description` | `string` | BULK-only `record_type_description` | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the RecordType Field. | — |
+| 242 | `recovered_materials_s_desc` | `string` | BULK-only `recovered_materials_s_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Recovered Materials/Sustainability Field. | — |
+| 243 | `recovered_materials_sustai` | `string` | BULK-only `recovered_materials_sustai` | Designates whether Recovered Material Certification and/or Estimate of Percentage of Recovered Material Content for EPA-Designated Products clauses were included in the contract. | — |
+| 244 | `referenced_idv_agency_desc` | `string` | BULK-only `referenced_idv_agency_desc` | Name of the agency associated with the code in the Referenced IDV Agency Identifier. | Refer to the GSA Federal Procurement Data System (FPDS) |
+| 245 | `referenced_idv_type_desc` | `string` | BULK-only `referenced_idv_type_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced_IDV_Type Field. | A = GWAC B = IDC C = FSS D = BOA E = BPA |
+| 246 | `referenced_mult_or_si_desc` | `string` | BULK-only `referenced_mult_or_si_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced IDV Multiple or Single Field. | — |
+| 247 | `referenced_mult_or_single` | `string` | BULK-only `referenced_mult_or_single` | Indicates whether the contract of the referenced IDV is one of many that resulted from a single solicitation, all of the contracts are for the same or similar items, and contracting officers are requi | — |
+| 248 | `research` | `string` | BULK-only `research` | The designator for type of research determined for the contract action. | — |
+| 249 | `research_description` | `string` | BULK-only `research_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Research Field. | — |
+| 250 | `sai_number` | `string` | BULK-only `sai_number` | A number assigned by state (as opposed to federal) review agencies to the award during the grant application process. | — |
+| 251 | `sam_exception` | `string` | BULK-only `sam_exception` | The reason a vendor/contractor not registered in the mandated SAM system may be used in a purchase. | — |
+| 252 | `sam_exception_description` | `string` | BULK-only `sam_exception_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the SAM Exception Field. | — |
+| 253 | `sba_certified_8_a_joint_ve` | `bool` | BULK-only `sba_certified_8_a_joint_ve` | https://www.sam.gov | F = False T = True |
+| 254 | `school_district_local_gove` | `bool` | BULK-only `school_district_local_gove` | https://www.sam.gov | — |
+| 255 | `school_of_forestry` | `bool` | BULK-only `school_of_forestry` | https://www.sam.gov | — |
+| 256 | `sea_transportation` | `string` | BULK-only `sea_transportation` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field. | — |
+| 257 | `sea_transportation_desc` | `string` | BULK-only `sea_transportation_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field. | — |
+| 258 | `self_certified_small_disad` | `bool` | BULK-only `self_certified_small_disad` | https://www.sam.gov | F = False T = True |
+| 259 | `small_agricultural_coopera` | `bool` | BULK-only `small_agricultural_coopera` | https://www.sam.gov | — |
+| 260 | `small_business_competitive` | `bool` | BULK-only `small_business_competitive` | Indicates whether the contract was awarded to a U.S. business concern as a result of a solicitation issued on or after Jan 1, 1989 for the four designated industry groups or the ten targeted industry | Y = Yes N = No |
+| 261 | `small_disadvantaged_busine` | `bool` | BULK-only `small_disadvantaged_busine` | List characteristic of the contractor such as whether the selected contractor is a Small Disadvantaged Business Organization or not. It can be derived from the SAM data element, 'Business Types'. | Y = Small Disadvantaged Business N = Other than Small Disadvantaged Business |
+| 262 | `sole_proprietorship` | `bool` | BULK-only `sole_proprietorship` | https://www.sam.gov | — |
+| 263 | `solicitation_procedur_desc` | `string` | BULK-only `solicitation_procedur_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Solicitation Procedures Field. | — |
+| 264 | `source_schema` | `string` | BULK-only `source_schema` | — | — |
+| 265 | `source_table` | `string` | BULK-only `source_table` | — | — |
+| 266 | `state_controlled_instituti` | `bool` | BULK-only `state_controlled_instituti` | https://www.sam.gov | — |
+| 267 | `subchapter_s_corporation` | `bool` | BULK-only `subchapter_s_corporation` | https://www.sam.gov | — |
+| 268 | `subcontinent_asian_asian_i` | `bool` | BULK-only `subcontinent_asian_asian_i` | List characteristic of the contractor such as whether the selected contractor is a Subcontinent Asian (Asian- Indian) American Owned Business or not. It can be derived from the SAM data element, 'Busi | — |
+| 269 | `subcontracting_plan_desc` | `string` | BULK-only `subcontracting_plan_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Subcontracting Plan Field. | — |
+| 270 | `tas_components` | `string` | BULK-only `tas_components` | — | — |
+| 271 | `the_ability_one_program` | `bool` | BULK-only `the_ability_one_program` | List characteristic of the contractor such as whether the selected contractor is a Sheltered Workshop (JWOD Provider) Organization or not. It can be derived from the SAM data element, 'Business Types' | — |
+| 272 | `township_local_government` | `bool` | BULK-only `township_local_government` | https://www.sam.gov | — |
+| 273 | `transit_authority` | `bool` | BULK-only `transit_authority` | https://www.sam.gov | — |
+| 274 | `tribal_college` | `bool` | BULK-only `tribal_college` | https://www.sam.gov | F = False T = True |
+| 275 | `tribally_owned_business` | `bool` | BULK-only `tribally_owned_business` | https://www.sam.gov | F = False T = True |
+| 276 | `type` | `string` | BULK-only `type` | — | — |
+| 277 | `type_description` | `string` | BULK-only `type_description` | — | — |
+| 278 | `type_description_raw` | `string` | BULK-only `type_description_raw` | — | — |
+| 279 | `type_of_contract_pric_desc` | `string` | BULK-only `type_of_contract_pric_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the TypeOfContractPricing Field. | A = FIXED PRICE REDETERMINATION B = FIXED PRICE LEVEL OF EFFORT J = FIRM FIXED P |
+| 280 | `type_of_idc` | `string` | BULK-only `type_of_idc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field. | — |
+| 281 | `type_of_idc_description` | `string` | BULK-only `type_of_idc_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field. | — |
+| 282 | `type_raw` | `string` | BULK-only `type_raw` | — | — |
+| 283 | `type_set_aside_description` | `string` | BULK-only `type_set_aside_description` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type Set Aside Field. | NONE = NO SET ASIDE USED SBA = SMALL BUSINESS SET ASIDE - TOTAL 8A = 8A COMPETED |
+| 284 | `undefinitized_action_desc` | `string` | BULK-only `undefinitized_action_desc` | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Undefinitized Action Field. | A = LETTER CONTRACT B = OTHER UNDEFINITIZED ACTION X = NO |
+| 285 | `update_date` | `timestamp[us]` | BULK-only `update_date` | — | — |
+| 286 | `uri` | `string` | BULK-only `uri` | Unique Record Identifier. An agency defined identifier that (when provided) is unique for every financial assistance action reported by that agency. USAspending.gov and the Broker use URI as the Award | — |
+| 287 | `us_federal_government` | `bool` | BULK-only `us_federal_government` | List characteristic of the contractor such as whether the selected contractor is a Federal Government Organization or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 288 | `us_government_entity` | `bool` | BULK-only `us_government_entity` | https://www.sam.gov | — |
+| 289 | `us_local_government` | `bool` | BULK-only `us_local_government` | List characteristic of the contractor such as whether the selected contractor is a Local Government Organization or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 290 | `us_state_government` | `bool` | BULK-only `us_state_government` | List characteristic of the contractor such as whether the selected contractor is a State Government Organization or not. It can be derived from the SAM data element, 'Business Types'. | — |
+| 291 | `us_tribal_government` | `bool` | BULK-only `us_tribal_government` | List characteristic of the contractor such as whether the selected contractor is a Tribal Government Organization or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 292 | `usaspending_snapshot_date` | `date32[day]` | BULK-only `usaspending_snapshot_date` | — | — |
+| 293 | `usaspending_unique_transaction_id` | `string` | BULK-only `usaspending_unique_transaction_id` | — | — |
+| 294 | `vendor_doing_as_business_n` | `string` | BULK-only `vendor_doing_as_business_n` | The doing business as name of the entity address. | — |
+| 295 | `vendor_fax_number` | `string` | BULK-only `vendor_fax_number` | The fax number of the entity. | — |
+| 296 | `vendor_phone_number` | `string` | BULK-only `vendor_phone_number` | The phone number of the entity. | — |
+| 297 | `veteran_owned_business` | `bool` | BULK-only `veteran_owned_business` | List characteristic of the contractor such as whether the selected contractor is a Veteran Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
+| 298 | `veterinary_college` | `bool` | BULK-only `veterinary_college` | https://www.sam.gov | — |
+| 299 | `veterinary_hospital` | `bool` | BULK-only `veterinary_hospital` | https://www.sam.gov | — |
+| 300 | `woman_owned_business` | `bool` | BULK-only `woman_owned_business` | List characteristic of the contractor such as whether the selected contractor is a Woman Owned Business or not. It can be derived from the SAM data element, 'Business Types'. | F = False T = True |
 
 ### 3.5 Provenance  (2)
 
@@ -241,273 +497,12 @@ Two-tier logical merge, one physical artifact. Executed as a single flat 3-way `
 
 `subcontracting_plan` carries the raw FPDS code (`A`–`H`); the `has_subcontracting_plan` boolean (`IN ('C','D','E','F','G','H')`) is derived downstream in serving, not on the spine.
 
-## 6. Documented in BULK but NOT carried on the spine (261)
+## 6. Documented in BULK but NOT carried on the spine (0)
 
 These native columns exist in the USAspending BULK source / FPDS Data Dictionary but are **not projected** onto the canonical spine. To carry one, add an entry to `COLUMN_SPEC` (canonical name, type, group, `bulk_expr`/`feed_expr`) and rebuild — do not hand-edit this doc. Definitions are from the committed sidecar (may be abbreviated).
 
 | native column | type | definition |
 |---|---|---|
-| `a_76_fair_act_action` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field. |
-| `a_76_fair_act_action_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the A-76 FAIR Act Action Field. |
-| `action_type_description` | string | Description tag that explains the meaning of the code provided in the ActionType Field. |
-| `afa_generated_unique` | string | System-generated database key used to uniquely identify each financial assistance transaction record and facilitate record lookup, correction, and deletion. A concatenation of AwardingSubTierAgencyCod |
-| `agency_id` | string | The agency code identifies the department or agency that is responsible for the account. |
-| `airport_authority` | bool | https://www.sam.gov |
-| `alaskan_native_owned_corpo` | bool | https://www.sam.gov |
-| `alaskan_native_servicing_i` | bool | https://www.sam.gov |
-| `american_indian_owned_busi` | bool | List characteristic of the contractor such as whether the selected contractor is an American Indian Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `asian_pacific_american_own` | bool | List characteristic of the contractor such as whether the selected contractor is an Asian-Pacific American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `award_certified_date` | date32[day] | — |
-| `award_date_signed` | date32[day] | — |
-| `award_fiscal_year` | int64 | — |
-| `award_update_date` | timestamp[us] | — |
-| `awarding_office_code` | string | Identifier of the level n organization that awarded, executed or is otherwise responsible for the transaction. |
-| `awarding_office_name` | string | Name of the level n organization that awarded, executed or is otherwise responsible for the transaction. |
-| `awarding_subtier_agency_name_raw` | string | — |
-| `awarding_toptier_agency_id` | int64 | — |
-| `awarding_toptier_agency_name_raw` | string | — |
-| `black_american_owned_busin` | bool | List characteristic of the contractor such as whether the selected contractor is a Black American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `business_funds_ind_desc` | string | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessFundsIndicator Field. |
-| `business_funds_indicator` | string | The Business Funds Indicator sometimes abbreviated BFI. Code indicating the award's applicability to the Recovery Act. |
-| `business_types_desc` | string | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the BusinessType Field. |
-| `c1862_land_grant_college` | bool | https://www.sam.gov |
-| `c1890_land_grant_college` | bool | https://www.sam.gov |
-| `c1994_land_grant_college` | bool | https://www.sam.gov |
-| `cfda_id` | int64 | — |
-| `cfda_title` | string | The title of the Assistance Listing under which the Federal award was funded in the Catalog of Federal Domestic Assistance (CFDA) and SAM.gov. |
-| `city_local_government` | bool | https://www.sam.gov |
-| `clinger_cohen_act_pla_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Clinger-Cohen Act Planning Compliance Field. |
-| `commercial_item_acqui_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Acquisition Procedures Field. |
-| `commercial_item_test_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Commercial Item Test Program Field. |
-| `commercial_item_test_progr` | string | This field designates whether the acquisition utilized FAR 13.5 Test Program for Certain Commercial Items. The FAR 13.5 Test Program provides for the use of simplified acquisition procedures for the a |
-| `community_developed_corpor` | bool | https://www.sam.gov |
-| `community_development_corp` | bool | https://www.sam.gov |
-| `consolidated_contract_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Consolidated Contract Field. |
-| `construction_wage_rat_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Wage Rate Requirements (Construction) Field. |
-| `contingency_humanitar_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Emergency Acquisition Field. |
-| `contingency_humanitarian_o` | string | A designator of contract actions that support a declared contingency operation, a declared humanitarian or peacekeeping operation, or a declared presidential issued emergency declaration or a major di |
-| `contract_award_type_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the ContractAwardType Field. |
-| `contract_bundling_descrip` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Bundling Field. |
-| `contract_financing_descrip` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contract Financing Field. |
-| `contracting_officers_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracting Officer's Determination of Business Size Field. |
-| `contracts` | bool | https://www.sam.gov |
-| `corporate_entity_not_tax_e` | bool | https://www.sam.gov |
-| `corporate_entity_tax_exemp` | bool | https://www.sam.gov |
-| `correction_delete_ind_desc` | string | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the CorrectionDeleteIndicator Field. |
-| `correction_delete_indicatr` | string | A code to indicate how the record should be processed: correction to an existing record; deletion of a record; new record. |
-| `cost_accounting_stand_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost Accounting Standards Clause Field. |
-| `cost_accounting_standards` | string | Indicates whether the contract includes a Cost Accounting Standards clause. |
-| `cost_or_pricing_data_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Cost or Pricing Data Field. |
-| `council_of_governments` | bool | https://www.sam.gov |
-| `country_of_product_or_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Country of Product or Service Origin Field. |
-| `country_of_product_or_serv` | string | Identifies the country of product or service origin. |
-| `county_local_government` | bool | https://www.sam.gov |
-| `create_date` | timestamp[us] | — |
-| `detached_award_procurement_id` | int64 | — |
-| `dod_claimant_prog_cod_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DoD Claimant Program Code Field. |
-| `domestic_or_foreign_e_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Domestic or Foreign Entity Field. |
-| `domestic_shelter` | bool | https://www.sam.gov |
-| `dot_certified_disadvantage` | bool | https://www.sam.gov |
-| `economically_disadvantaged` | bool | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is an Economically Disadvantaged Woman Owned Small Business or not. It can be derived from the SAM |
-| `educational_institution` | bool | List characteristic of the contractor such as whether the selected contractor is an Educational Institution or not. It can be derived from the SAM data element, 'Business Types'. |
-| `emerging_small_business` | bool | List characteristic of the contractor such as whether the selected contractor is an Emerging Small Business Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `epa_designated_produc_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field. |
-| `epa_designated_product` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the EPA-Designated Product Field. |
-| `etl_update_date` | timestamp[us] | — |
-| `evaluated_preference` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field. |
-| `evaluated_preference_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Evaluated Preference Field. |
-| `extent_compete_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Extent Competed Field. |
-| `face_value_loan_guarantee` | double | The face value of the direct loan or loan guarantee. |
-| `fain` | string | The Federal Award Identification Number (FAIN) is the unique ID within the Federal agency for each (non-aggregate) financial assistance award. |
-| `fair_opportunity_limi_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Fair Opportunity Limited Sources Field. |
-| `fed_biz_opps` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field. |
-| `fed_biz_opps_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the FedBizOpps Field. |
-| `federal_agency` | bool | https://www.sam.gov |
-| `federally_funded_research` | bool | https://www.sam.gov |
-| `fiscal_action_date` | date32[day] | — |
-| `for_profit_organization` | bool | List characteristic of the contractor such as whether the selected contractor is a Profit Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `foreign_funding` | string | Indicates that a foreign government, international organization, or foreign military organization bears some of the cost of the acquisition. |
-| `foreign_funding_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Foreign Funding Field. |
-| `foreign_government` | bool | https://www.sam.gov |
-| `foreign_owned_and_located` | bool | https://www.sam.gov |
-| `foundation` | bool | https://www.sam.gov |
-| `funding_amount` | double | — |
-| `funding_opportunity_goals` | string | A brief summary of the intended outcomes associated with the notice of funding opportunity. Applicable to Competitive Discretionary Grants and Cooperative Agreements. |
-| `funding_opportunity_number` | string | An alphanumeric identifier that a Federal agency assigns to its funding opportunity announcement as part of the Notice of Funding Opportunity posted on the OMB-designated government wide web site (cur |
-| `funding_subtier_agency_abbreviation` | string | — |
-| `funding_subtier_agency_name_raw` | string | — |
-| `funding_toptier_agency_abbreviation` | string | — |
-| `funding_toptier_agency_id` | int64 | — |
-| `funding_toptier_agency_name_raw` | string | — |
-| `generated_pragmatic_obligation` | double | — |
-| `government_furnished_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Government Furnished Property GFP Field. |
-| `government_furnished_prope` | string | The contract uses equipment or property furnished by the government, pursuant to FAR 45. |
-| `grants` | bool | https://www.sam.gov |
-| `hispanic_american_owned_bu` | bool | List characteristic of the contractor such as whether the selected contractor is a Hispanic American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `hispanic_servicing_institu` | bool | https://www.sam.gov |
-| `historically_black_college` | bool | List characteristic of the contractor such as whether the selected contractor is a Historically Black College or University or not. It can be derived from the SAM data element, 'Business Types'. |
-| `hospital_flag` | bool | List characteristic of the contractor such as whether the selected contractor is a Hospital or not. It can be derived from the SAM data element, 'Business Types' |
-| `housing_authorities_public` | bool | https://www.sam.gov |
-| `idv_type_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the IDV_Type Field. |
-| `indian_tribe_federally_rec` | bool | https://www.sam.gov |
-| `indirect_federal_sharing` | double | The total amount of any single Federal award action that is allocated, per the award recipient’s approved award budget, to indirect costs. |
-| `information_technolog_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Information Technology Commercial Item Category Field. |
-| `information_technology_com` | string | A code that designates the commercial availability of an information technology product or service. |
-| `ingested_at` | timestamp[us, tz=Etc/UTC] | — |
-| `inherently_government_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Inherently Governmental Functions field. |
-| `initial_report_date` | timestamp[us] | — |
-| `inter_municipal_local_gove` | bool | https://www.sam.gov |
-| `interagency_contract_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Interagency Contracting Authority Field. |
-| `interagency_contracting_au` | string | Indicates whether the transaction is an Economy Act or Statutory Authority. |
-| `international_organization` | bool | https://www.sam.gov |
-| `interstate_entity` | bool | https://www.sam.gov |
-| `is_fpds` | bool | — |
-| `joint_venture_economically` | bool | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Economically Disadvantaged Woman Owned Small Business or not. It can be derived |
-| `joint_venture_women_owned` | bool | https://www.sam.gov OR List characteristic of the contractor such as whether the selected contractor is a Joint Venture Woman Owned Small Business or not. It can be derived from the SAM data element, |
-| `labor_standards_descrip` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Service Contract Labor Standards Field. |
-| `labor_surplus_area_firm` | bool | https://www.sam.gov |
-| `legal_entity_address_line2` | string | Second line of awardee or recipient’s legal business address. |
-| `legal_entity_address_line3` | string | — |
-| `legal_entity_city_code` | string | Five position city code from the validation authoritative list. |
-| `legal_entity_foreign_city` | string | For foreign recipients only: name of the city in which the awardee or recipient’s legal business address is located. |
-| `legal_entity_foreign_descr` | string | — |
-| `legal_entity_foreign_posta` | string | For foreign recipients only: foreign postal code in which the awardee or recipient's legal business address is located. |
-| `legal_entity_foreign_provi` | string | For foreign recipients only: name of the state or province in which the awardee or recipient’s legal business address is located. |
-| `legal_entity_zip4` | string | USPS zoning code associated with the awardee or recipient’s legal business address. For domestic recipients only. |
-| `legal_entity_zip_last4` | string | USPS four digit extension code associated with the awardee or recipient’s legal business address. This must be blank for non-US addresses |
-| `limited_liability_corporat` | bool | https://www.sam.gov |
-| `local_area_set_aside` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field. |
-| `local_area_set_aside_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Local Area Set Aside Field. |
-| `local_government_owned` | bool | https://www.sam.gov |
-| `manufacturer_of_goods` | bool | https://www.sam.gov |
-| `materials_supplies_article` | string | Indicates whether the transaction is subject to the Materials, Supplies, Articles, & Equip. The clause is 52.222-20 "Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000" - tha |
-| `materials_supplies_descrip` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Contracts for Materials, Supplies, Articles, and Equipment Exceeding $15,000 Field. |
-| `minority_institution` | bool | List characteristic of the contractor such as whether the selected contractor is a Minority Institution or not. It can be derived from the SAM data element, 'Business Types'. |
-| `minority_owned_business` | bool | https://www.sam.gov |
-| `multi_year_contract_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multi Year Contract Field. |
-| `multiple_or_single_aw_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Multiple or Single Award IDV Field. |
-| `municipality_local_governm` | bool | https://www.sam.gov |
-| `national_interest_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the National Interest Action Field. |
-| `native_american_owned_busi` | bool | List characteristic of the contractor such as whether the selected contractor is a Native American Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `native_hawaiian_owned_busi` | bool | https://www.sam.gov |
-| `native_hawaiian_servicing` | bool | https://www.sam.gov |
-| `non_federal_funding_amount` | double | The amount of the award funded by non-Federal source(s), in dollars. Program Income (as defined in 2 CFR § 200.1) is not included until such time that Program Income is generated and credited to the a |
-| `nonprofit_organization` | bool | List characteristic of the contractor such as whether the selected contractor is a Nonprofit Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `officer_1_amount` | double | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 |
-| `officer_1_name` | string | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. |
-| `officer_2_amount` | double | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 |
-| `officer_2_name` | string | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. |
-| `officer_3_amount` | double | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 |
-| `officer_3_name` | string | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. |
-| `officer_4_amount` | double | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 |
-| `officer_4_name` | string | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. |
-| `officer_5_amount` | double | The cash and noncash dollar value earned by the one of the five most highly compensated “Executives” during the awardee's preceding fiscal year and includes the following (for more information see 17 |
-| `officer_5_name` | string | The name of an individual identified as one of the five most highly compensated "Executives." "Executive" means officers, managing partners, or any other employees in management positions. |
-| `organizational_type` | string | The structure of the entity as defined by the IRS. |
-| `original_loan_subsidy_cost` | double | The estimated long-term cost to the Government of a direct loan or loan guarantee, or modification thereof, calculated on a net present value basis, excluding administrative costs. |
-| `other_minority_owned_busin` | bool | https://www.sam.gov |
-| `other_not_for_profit_organ` | bool | https://www.sam.gov |
-| `other_statutory_authority` | string | Indicates whether the transaction is subject to other statutory authority. If "Interagency Contracting Authority" is "Other Statutory Authority" then an entry is required in this data element. |
-| `other_than_full_and_o_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Other than Full and Open Competition Field. |
-| `parent_recipient_name_raw` | string | — |
-| `parent_recipient_unique_id` | string | — |
-| `partnership_or_limited_lia` | bool | https://www.sam.gov |
-| `performance_based_se_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Performance-Based Service Acquisition Field. |
-| `period_of_perf_potential_e` | string | For procurement, the date on which, for the award referred to by the action being reported if all potential pre-determined or pre-negotiated options were exercised, awardee effort is completed or the |
-| `place_of_manufacture` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field. |
-| `place_of_manufacture_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Place of Manufacture Field. |
-| `place_of_perform_zip_last4` | string | — |
-| `place_of_performance_zip4a` | string | United States ZIP code (five digits) concatenated with the additional +4 digits, identifying where the predominant performance of the award will be accomplished. |
-| `planning_commission` | bool | https://www.sam.gov |
-| `pop_congressional_code_current` | string | — |
-| `pop_congressional_population` | int64 | — |
-| `pop_country_name` | string | — |
-| `pop_county_code` | string | — |
-| `pop_county_name` | string | — |
-| `pop_county_population` | int64 | — |
-| `pop_state_fips` | string | — |
-| `pop_state_name` | string | — |
-| `pop_state_population` | int64 | — |
-| `port_authority` | bool | https://www.sam.gov |
-| `potential_total_value_awar` | string | For procurement, the total amount that could be obligated on a contract, if the base and all options are exercised. |
-| `private_university_or_coll` | bool | https://www.sam.gov |
-| `program_system_or_equ_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the DOD Acquisition Program field. |
-| `program_system_or_equipmen` | string | Two codes that together identify the program and weapons system or equipment purchased by a DoD agency. The first character is a number 1-4 that identifies the DoD component. The last 3 characters ide |
-| `published_fabs_id` | int64 | — |
-| `pulled_from` | string | Flag indicating whether the record was pulled from the award Atom feed or the IDV (Indefinite Delivery Vehicle) Atom Feed provided by FPDS. |
-| `purchase_card_as_paym_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Purchase Card as Payment Method Field. |
-| `receives_contracts_and_gra` | bool | https://www.sam.gov |
-| `recipient_location_congressional_code_current` | string | — |
-| `recipient_location_congressional_population` | int64 | — |
-| `recipient_location_country_name` | string | — |
-| `recipient_location_county_code` | string | — |
-| `recipient_location_county_population` | int64 | — |
-| `recipient_location_state_fips` | string | — |
-| `recipient_location_state_name` | string | — |
-| `recipient_location_state_population` | int64 | — |
-| `recipient_name_raw` | string | The name of the awardee or recipient that relates to the unique identifier. For U.S. based companies, this name is what the business ordinarily files in formation documents with individual states (whe |
-| `recipient_unique_id` | string | — |
-| `record_type` | int64 | Code indicating whether an action is an aggregate record, a non-aggregate record, or a non-aggregate record to an individual recipient (PII-Redacted). |
-| `record_type_description` | string | Description tag (by way of the DATA Act Broker) that explains the meaning of the code provided in the RecordType Field. |
-| `recovered_materials_s_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Recovered Materials/Sustainability Field. |
-| `recovered_materials_sustai` | string | Designates whether Recovered Material Certification and/or Estimate of Percentage of Recovered Material Content for EPA-Designated Products clauses were included in the contract. |
-| `referenced_idv_agency_desc` | string | Name of the agency associated with the code in the Referenced IDV Agency Identifier. |
-| `referenced_idv_type_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced_IDV_Type Field. |
-| `referenced_mult_or_si_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Referenced IDV Multiple or Single Field. |
-| `referenced_mult_or_single` | string | Indicates whether the contract of the referenced IDV is one of many that resulted from a single solicitation, all of the contracts are for the same or similar items, and contracting officers are requi |
-| `research` | string | The designator for type of research determined for the contract action. |
-| `research_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Research Field. |
-| `sai_number` | string | A number assigned by state (as opposed to federal) review agencies to the award during the grant application process. |
-| `sam_exception` | string | The reason a vendor/contractor not registered in the mandated SAM system may be used in a purchase. |
-| `sam_exception_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the SAM Exception Field. |
-| `sba_certified_8_a_joint_ve` | bool | https://www.sam.gov |
-| `school_district_local_gove` | bool | https://www.sam.gov |
-| `school_of_forestry` | bool | https://www.sam.gov |
-| `sea_transportation` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field. |
-| `sea_transportation_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Sea Transportation Field. |
-| `self_certified_small_disad` | bool | https://www.sam.gov |
-| `small_agricultural_coopera` | bool | https://www.sam.gov |
-| `small_business_competitive` | bool | Indicates whether the contract was awarded to a U.S. business concern as a result of a solicitation issued on or after Jan 1, 1989 for the four designated industry groups or the ten targeted industry |
-| `small_disadvantaged_busine` | bool | List characteristic of the contractor such as whether the selected contractor is a Small Disadvantaged Business Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `sole_proprietorship` | bool | https://www.sam.gov |
-| `solicitation_procedur_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Solicitation Procedures Field. |
-| `source_schema` | string | — |
-| `source_table` | string | — |
-| `state_controlled_instituti` | bool | https://www.sam.gov |
-| `subchapter_s_corporation` | bool | https://www.sam.gov |
-| `subcontinent_asian_asian_i` | bool | List characteristic of the contractor such as whether the selected contractor is a Subcontinent Asian (Asian- Indian) American Owned Business or not. It can be derived from the SAM data element, 'Busi |
-| `subcontracting_plan_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Subcontracting Plan Field. |
-| `tas_components` | string | — |
-| `the_ability_one_program` | bool | List characteristic of the contractor such as whether the selected contractor is a Sheltered Workshop (JWOD Provider) Organization or not. It can be derived from the SAM data element, 'Business Types' |
-| `township_local_government` | bool | https://www.sam.gov |
-| `transit_authority` | bool | https://www.sam.gov |
-| `tribal_college` | bool | https://www.sam.gov |
-| `tribally_owned_business` | bool | https://www.sam.gov |
-| `type` | string | — |
-| `type_description` | string | — |
-| `type_description_raw` | string | — |
-| `type_of_contract_pric_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the TypeOfContractPricing Field. |
-| `type_of_idc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field. |
-| `type_of_idc_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type of IDC Field. |
-| `type_raw` | string | — |
-| `type_set_aside_description` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Type Set Aside Field. |
-| `undefinitized_action_desc` | string | Description tag (by way of the FPDS Atom Feed) that explains the meaning of the code provided in the Undefinitized Action Field. |
-| `update_date` | timestamp[us] | — |
-| `uri` | string | Unique Record Identifier. An agency defined identifier that (when provided) is unique for every financial assistance action reported by that agency. USAspending.gov and the Broker use URI as the Award |
-| `us_federal_government` | bool | List characteristic of the contractor such as whether the selected contractor is a Federal Government Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `us_government_entity` | bool | https://www.sam.gov |
-| `us_local_government` | bool | List characteristic of the contractor such as whether the selected contractor is a Local Government Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `us_state_government` | bool | List characteristic of the contractor such as whether the selected contractor is a State Government Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `us_tribal_government` | bool | List characteristic of the contractor such as whether the selected contractor is a Tribal Government Organization or not. It can be derived from the SAM data element, 'Business Types'. |
-| `usaspending_snapshot_date` | date32[day] | — |
-| `usaspending_unique_transaction_id` | string | — |
-| `vendor_doing_as_business_n` | string | The doing business as name of the entity address. |
-| `vendor_fax_number` | string | The fax number of the entity. |
-| `vendor_phone_number` | string | The phone number of the entity. |
-| `veteran_owned_business` | bool | List characteristic of the contractor such as whether the selected contractor is a Veteran Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
-| `veterinary_college` | bool | https://www.sam.gov |
-| `veterinary_hospital` | bool | https://www.sam.gov |
-| `woman_owned_business` | bool | List characteristic of the contractor such as whether the selected contractor is a Woman Owned Business or not. It can be derived from the SAM data element, 'Business Types'. |
 
 ## 7. Regenerating this document
 
