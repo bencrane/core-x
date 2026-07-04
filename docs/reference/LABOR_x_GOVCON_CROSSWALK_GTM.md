@@ -95,7 +95,7 @@ def reg(name, uri, columns=None, filter=None):     # push projection+predicate i
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","naics_code","product_or_service_code","recipient_uei","life_to_date_obligated"],
-    filter="award_kind='definitive' AND life_to_date_obligated > 5000000")
+    filter="award_topology='standalone' AND life_to_date_obligated > 5000000")
 reg("dim", f"{A}/naics_psc_labor_dim/",
     columns=["naics_code","psc_code","is_labor_play","rank1_soc_code","rank1_soc_title","rank1_sca_code","rank1_sca_title"])
 con.sql("""
@@ -111,7 +111,7 @@ con.sql("""
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","naics_code","product_or_service_code","consumed_pct","days_to_expiry"],
     filter="consumed_pct>0.85 AND consumed_pct<=5 AND days_to_expiry BETWEEN 0 AND 90 "
-           "AND is_terminated=false AND award_kind='definitive'")
+           "AND is_terminated=false AND award_topology='standalone'")
 reg("dim", f"{A}/naics_psc_labor_dim/", columns=["naics_code","psc_code","is_labor_play"])
 con.sql("""
   SELECT count(*) FILTER (WHERE d.is_labor_play) AS starving_labor_plays, count(*) AS starving_total
@@ -144,7 +144,7 @@ con.sql("""
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","naics_code","product_or_service_code"],
-    filter="consumed_pct>0.85 AND days_to_expiry BETWEEN 0 AND 120 AND award_kind='definitive'")
+    filter="consumed_pct>0.85 AND days_to_expiry BETWEEN 0 AND 120 AND award_topology='standalone'")
 keys = [r[0] for r in con.sql("SELECT contract_award_unique_key FROM st").fetchall()]
 inlist = ",".join("'" + k.replace("'","''") + "'" for k in keys[:5000])          # batch large sets
 reg("sp", f"{A}/usaspending_fpds_canonical_txn/",                                 # PoP county is on the spine
@@ -167,7 +167,7 @@ con.sql("""
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","recipient_uei","days_to_expiry","terminal_action_type_code"],
-    filter="consumed_pct>0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_kind='definitive'")
+    filter="consumed_pct>0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_topology='standalone'")
 reg("cba", f"{A}/olms_cba_crosswalk/",
     columns=["uei","union_name","exp_date","tier","score"], filter="is_active=true")
 con.sql("""
@@ -196,7 +196,7 @@ con.sql("""
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","recipient_uei","naics_code","product_or_service_code"],
-    filter="consumed_pct>0.85 AND days_to_expiry BETWEEN 0 AND 90 AND award_kind='definitive'")
+    filter="consumed_pct>0.85 AND days_to_expiry BETWEEN 0 AND 90 AND award_topology='standalone'")
 reg("dim", f"{A}/naics_psc_labor_dim/", columns=["naics_code","psc_code","is_labor_play"])
 reg("poc", f"{A}/sam_labor_poc_people/",
     columns=["uei","legal_business_name","company_linkedin_url","poc_type","in_our_staffing"])
@@ -212,7 +212,7 @@ con.sql("""
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","naics_code","product_or_service_code"],
-    filter="consumed_pct>0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_kind='definitive'")
+    filter="consumed_pct>0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_topology='standalone'")
 reg("dim", f"{A}/naics_psc_labor_dim/", columns=["naics_code","psc_code","is_labor_play"])
 reg("sub", f"{A}/usaspending_subaward_canonical/",
     columns=["prime_award_unique_key","subawardee_uei","subawardee_name","subaward_amount"])
