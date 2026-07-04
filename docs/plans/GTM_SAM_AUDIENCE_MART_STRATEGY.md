@@ -56,7 +56,7 @@ Namespace: `s3://data-sink/active/gtm_sam_*`. Names deliberately SAM-prefixed to
 | Presence | `in_sam`, `sam_is_active`, `in_dsbs`, `is_subawardee`, `is_prime_recipient` |
 | Registration | `registration_status`, `registration_date`, `expiration_date`, `purpose_of_registration` |
 | Classification | `primary_naics`, `naics_codes[]`, `psc_codes[]`, `business_types`, `physical_city`, `physical_state`, `physical_zip5` |
-| Domain | `normalized_domain`, `domain_source` (sam_entity_url \| dsbs_best_domain) |
+| Domain | `normalized_domain`, `domain_source` — DSBS-first precedence (operator decision 2026-07-04): `crosswalk_dsbs_sam.best_domain` primary for DSBS entities (entity_url-first internally, then DSBS website > email-suffix), `sam_master_domains` for all others |
 | Hierarchy | none on-spine — SAM public v2 carries no parent fields (verified live 2026-07-04); hierarchy joins on demand via `resolution/entity_hierarchy` |
 | Meta | `build_id`, `built_at`, per-source `as_of` labels |
 
