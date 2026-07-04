@@ -13,9 +13,9 @@ Two derived, index-served **access-path materialized views** over the L1 spine `
 ### `usaspending_fpds_prime_award_state` — capacity / starvation (award grain)
 - **URI:** `s3://data-sink/active/usaspending_fpds_prime_award_state/`
 - **Grain / PK:** one row per `contract_award_unique_key` — a **prime-award root**. 82,868,654 rows, 43 cols, 21 indices.
-- **Ternary `award_kind`:** `definitive` (17,068,433) · `idv` (990,041) · `order` (64,810,180). Lets the origination engine separate a definitive recompete from a parent-IDV ceiling check.
+- **Ternary `award_topology`:** `standalone` (17,068,433) · `vehicle` (990,041) · `vehicle_order` (64,810,180). Structural/topological — government award-type semantics live in `award_type_code`; this axis never reuses a government domain value. Lets the origination engine separate a standalone recompete from a parent-vehicle ceiling check.
 - **What each row answers:** how much has been obligated life-to-date, what the current-authorization and potential (max) ceiling are, how much headroom remains, what % consumed, when it expires, and — for IDVs — the rolled-up obligation of all child orders.
-- **Load-bearing columns:** `life_to_date_obligated`, `current_authorized_ceiling`, `potential_ceiling`, `remaining_ceiling_headroom`, `consumed_pct`, `current_end_date`, `days_to_expiry`, `is_expired_no_followon`, `is_terminated`, `terminal_action_type_code`, `idv_child_obligated`, `has_child_idv`, `parent_award_key_resolved`, `parent_match_flag`.
+- **Load-bearing columns:** `life_to_date_obligated`, `current_authorized_ceiling`, `potential_ceiling`, `remaining_ceiling_headroom`, `consumed_pct`, `current_end_date`, `days_to_expiry`, `is_expired_no_followon`, `is_terminated`, `terminal_action_type_code`, `rollup_obligated`, `has_nested_vehicle`, `parent_award_key_resolved`, `parent_match_flag`.
 
 ### `usaspending_fpds_mod_delta` — kinetic events (modifying-transaction grain)
 - **URI:** `s3://data-sink/active/usaspending_fpds_mod_delta/`
@@ -55,7 +55,7 @@ Every prime-award dataset keys on the **same value** — USAspending's Broker-ge
 
 ### Two award-grain views, deliberately different
 There are now **two** award-grain rollups keyed on the same award id, and they are complementary, not redundant:
-- **`prime_award_state`** — *bottom-up, fresh:* computed from the FPDS **transaction** spine (BULK∪FRESH), so it reflects the newest corrections, and it carries capacity math the government's rollup does not (potential-ceiling headroom, IDV→child rollup, expiry horizon, `award_kind`).
+- **`prime_award_state`** — *bottom-up, fresh:* computed from the FPDS **transaction** spine (BULK∪FRESH), so it reflects the newest corrections, and it carries capacity math the government's rollup does not (potential-ceiling headroom, IDV→child rollup, expiry horizon, `award_topology`).
 - **`award_search` (BULK)** — *top-down, stale:* USAspending's own award-level rollup as of the **2026-05-06 pg snapshot**, carrying 154 award-level columns (e.g. `total_obligation`, recipient rollups, CFDA/program metadata) — but **not** reconciled against the live API. Use it for award-level metadata and as a **cross-check**, never as the freshness source. (`award_search_merged`, the coded bulk+delta reconcile in `usaspending_award_search_reconcile.py`, is **not yet materialized** — the merged URI 404s.)
 
 ---
@@ -65,7 +65,7 @@ There are now **two** award-grain rollups keyed on the same award id, and they a
 The L1 spine answered *"what did the government record"* at transaction grain — useless for live operational questions without a full-table window every time. The L2 satellites + the constellation make these **index-served** and **joinable**:
 
 1. **Capacity starvation, instantly.** "Which live awards/IDVs are >85% consumed and expire within 90 days, in NAICS 5415, held by a small business?" — a BTREE range-scan on `consumed_pct` × `current_end_date` composed with BITMAP facets on `prime_award_state`. No 108M window.
-2. **Vehicle-level ceiling checks.** For an IDV, `idv_child_obligated / potential_ceiling` gives true vehicle burn (child-order rollup already computed), and `has_child_idv` flags multi-tier vehicles whose denominator is a lower bound.
+2. **Vehicle-level ceiling checks.** For an IDV, `rollup_obligated / potential_ceiling` gives true vehicle burn (child-order rollup already computed), and `has_nested_vehicle` flags multi-tier vehicles whose denominator is a lower bound.
 3. **Kinetic events, instantly.** "Which awards took a >$5M ceiling jump or a novation or a termination in the last N days?" — a range-scan on `mod_delta.action_date` × `delta_potential_ceiling` × flag bitsets.
 4. **Prime → sub reach.** Join `prime_award_state` → `subaward_canonical` on the prime key to see *who a starving/kinetic prime subcontracts to* — the teaming/origination surface (recipe §4.5).
 5. **Entity portfolios.** Group `prime_award_state` (and `mod_delta`) by `recipient_uei` for a company's full capacity book and recent kinetic activity in one scan (recipe §4.6).
@@ -93,17 +93,17 @@ def reg(name, uri, columns=None, filter=None):
     ds = lance.dataset(uri, storage_options=so)
     con.register(name, ds.scanner(columns=columns, filter=filter).to_table())
 ```
-> **Pushdown filters** use the scalar-index columns. On `prime_award_state`: BTREE `consumed_pct`, `current_end_date`, `days_to_expiry`, `remaining_ceiling_headroom`, `contract_award_unique_key`, `recipient_uei`, `parent_award_key_resolved`, `award_id_piid`, `solicitation_identifier`; BITMAP `award_kind`, `awarding_agency_code`, `type_of_set_aside_code`, `award_type_code`, `is_terminated`, `is_expired_no_followon`, `parent_match_flag`, `has_child_idv`. On `mod_delta`: BTREE `action_date`, `delta_potential_ceiling`, `delta_federal_action_obligation`, `contract_award_unique_key`, `recipient_uei`; BITMAP `action_type_code`, `award_kind`, `action_type_klass`, `is_scope_increase`, `is_termination_event`, `identity_changed`. Filter on these; everything else is a full column scan.
+> **Pushdown filters** use the scalar-index columns. On `prime_award_state`: BTREE `consumed_pct`, `current_end_date`, `days_to_expiry`, `remaining_ceiling_headroom`, `contract_award_unique_key`, `recipient_uei`, `parent_award_key_resolved`, `award_id_piid`, `solicitation_identifier`; BITMAP `award_topology`, `awarding_agency_code`, `type_of_set_aside_code`, `award_type_code`, `is_terminated`, `is_expired_no_followon`, `parent_match_flag`, `has_nested_vehicle`. On `mod_delta`: BTREE `action_date`, `delta_potential_ceiling`, `delta_federal_action_obligation`, `contract_award_unique_key`, `recipient_uei`; BITMAP `action_type_code`, `award_topology`, `action_type_klass`, `is_scope_increase`, `is_termination_event`, `identity_changed`. Filter on these; everything else is a full column scan.
 
 ### 4.1 Capacity starvation (single table, index pushdown)
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
-    columns=["contract_award_unique_key","award_kind","recipient_uei","naics_code",
+    columns=["contract_award_unique_key","award_topology","recipient_uei","naics_code",
              "consumed_pct","days_to_expiry","remaining_ceiling_headroom",
              "type_of_set_aside_code","awarding_agency_code"],
     filter="consumed_pct > 0.85 AND consumed_pct <= 5 "     # <=5 drops data-error outliers
            "AND days_to_expiry BETWEEN 0 AND 90 "
-           "AND is_terminated = false AND award_kind = 'definitive'")
+           "AND is_terminated = false AND award_topology = 'standalone'")
 con.sql("""
   SELECT naics_code, count(*) starving, round(sum(remaining_ceiling_headroom)/1e6,1) headroom_M
   FROM st WHERE type_of_set_aside_code IS NOT NULL
@@ -152,11 +152,11 @@ con.sql("""
 ```python
 reg("idv", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","idv_type_code","potential_ceiling",
-             "idv_child_obligated","idv_child_order_count","consumed_pct","has_child_idv","current_end_date"],
-    filter="award_kind = 'idv' AND consumed_pct > 0.7")
+             "rollup_obligated","rollup_order_count","consumed_pct","has_nested_vehicle","current_end_date"],
+    filter="award_topology = 'vehicle' AND consumed_pct > 0.7")
 con.sql("""
   SELECT idv_type_code, count(*) vehicles,
-         count(*) FILTER (WHERE has_child_idv) multitier_lowerbound,   -- denominator is partial here
+         count(*) FILTER (WHERE has_nested_vehicle) multitier_lowerbound,   -- denominator is partial here
          round(avg(consumed_pct),3) avg_burn
   FROM idv GROUP BY 1 ORDER BY 2 DESC
 """).show()
@@ -167,7 +167,7 @@ The join key differs by name — bridge it explicitly: `state.contract_award_uni
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
     columns=["contract_award_unique_key","recipient_uei","naics_code","consumed_pct","days_to_expiry"],
-    filter="consumed_pct > 0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_kind='definitive'")
+    filter="consumed_pct > 0.8 AND days_to_expiry BETWEEN 0 AND 180 AND award_topology='standalone'")
 reg("sub", f"{A}/usaspending_subaward_canonical/",
     columns=["prime_award_unique_key","subawardee_uei","subawardee_name","subaward_amount","subaward_action_date"])
 con.sql("""
@@ -183,11 +183,11 @@ con.sql("""
 ### 4.6 Entity portfolio — a company's whole capacity book (group by UEI)
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
-    columns=["recipient_uei","award_kind","life_to_date_obligated","remaining_ceiling_headroom",
+    columns=["recipient_uei","award_topology","life_to_date_obligated","remaining_ceiling_headroom",
              "consumed_pct","days_to_expiry","is_terminated"],
     filter="recipient_uei = 'ABC123DEF456'")     # BTREE point-lookup
 con.sql("""
-  SELECT award_kind, count(*) awards,
+  SELECT award_topology, count(*) awards,
          round(sum(life_to_date_obligated)/1e6,1) obligated_M,
          round(sum(remaining_ceiling_headroom) FILTER (WHERE NOT is_terminated)/1e6,1) live_headroom_M,
          count(*) FILTER (WHERE consumed_pct>0.85 AND days_to_expiry BETWEEN 0 AND 120) recompete_soon
@@ -198,8 +198,8 @@ con.sql("""
 ### 4.7 Cross-source reconciliation (state ⋈ award_search, bottom-up vs top-down)
 ```python
 reg("st", f"{A}/usaspending_fpds_prime_award_state/",
-    columns=["contract_award_unique_key","life_to_date_obligated","award_kind"],
-    filter="award_kind='definitive' AND life_to_date_obligated > 1000000")
+    columns=["contract_award_unique_key","life_to_date_obligated","award_topology"],
+    filter="award_topology='standalone' AND life_to_date_obligated > 1000000")
 reg("aw", f"{A}/usaspending/award_search/",
     columns=["generated_unique_award_id","total_obligation"])
 con.sql("""
@@ -235,7 +235,7 @@ con.sql("""
 - **`award_search` is stale (2026-05-06) and bulk-only.** Use it for award-level *metadata* and *cross-checks*, not freshness. For current capacity/kinetics, use the L1-derived L2 tables.
 - **`delta_potential_ceiling` is NULL 45.7% of the time** (BULK-only field, NULL on FRESH-winning rows). For "did the ceiling grow" use `is_scope_increase` (already falls back to the core `base_and_all_options` delta), not the raw `delta_potential_ceiling`.
 - **`consumed_pct` is unclamped:** `>1.0` = over-ceiling / data issue, `<0` = net de-obligated — both legitimate signals; filter with an upper bound (`<= 5`) when you want the clean cohort.
-- **IDV denominators can be partial:** when `has_child_idv = true`, `idv_child_obligated` is a lower bound (one-level rollup); exclude or flag those rows in a starvation ranking.
+- **IDV denominators can be partial:** when `has_nested_vehicle = true`, `rollup_obligated` is a lower bound (one-level rollup); exclude or flag those rows in a starvation ranking.
 - **`max_current_end_date = 9999-12-31`** is FPDS's open-ended placeholder; those rows carry a huge `days_to_expiry` and won't false-positive in near-expiry filters.
 
 ---
@@ -257,6 +257,6 @@ L2 rebuild is **detach-safe** (overwrite + `retries=0`): launch `modal run --det
 
 1. **Entity dimension (SCD2 on `recipient_uei`).** The still-un-built normalization play: a UEI-keyed slowly-changing dimension for the family-② entity attributes (address/geo/contact/org-class) the L1 spine denormalizes across 108M rows. `mod_delta.identity_changed` / `prev_recipient_uei` are the ready-made version-cut signals.
 2. **`award_search_merged` reconcile** is coded (`usaspending_award_search_reconcile.py`) but not materialized — running it would give a live-reconciled award-grain view to replace the stale BULK snapshot in the cross-checks above.
-3. **Recursive IDV rollup** — the one-level `idv_child_obligated` under-counts multi-tier vehicles (flagged by `has_child_idv`); a recursive fold over `parent_award_key_resolved` would make ancestor denominators exact.
+3. **Recursive IDV rollup** — the one-level `rollup_obligated` under-counts multi-tier vehicles (flagged by `has_nested_vehicle`); a recursive fold over `parent_award_key_resolved` would make ancestor denominators exact.
 4. **`action_type='Y'`** (8,736 rows → `action_type_klass='unclassified'`) is undiagnosed; deltas are still computed, so it's non-blocking.
 5. **Civilian-agency threshold validation** — the numeric alert cutoffs a consumer sets on these columns (not the `action_type_klass` labels, which are FAR-uniform) were premised on an Air-Force footprint; validate cutoffs against a civilian agency before wiring alerts.

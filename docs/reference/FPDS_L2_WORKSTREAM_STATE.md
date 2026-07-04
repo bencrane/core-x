@@ -72,7 +72,7 @@ Refresh: overwrite rebuild (BULK ∪ FRESH reconcile). Ledger: `ops.usaspending_
 | Lance version | v22 |
 | build_date | 2026-07-04 |
 
-### `award_kind` (ternary, locked)
+### `award_topology` (ternary, locked)
 
 Derived from `idv_type_code` + parent linkage in the projection:
 
@@ -102,9 +102,9 @@ Derived from `idv_type_code` + parent linkage in the projection:
 | `is_expired_no_followon` | past `current_end_date` and not terminally closed (`terminal_action_type_code` NOT IN E/F/X/K) |
 | `is_terminated` | `BOOL_OR(action_type_code IN ('E','F','X'))` over the ladder |
 | `terminal_action_type_code` | the argmax terminal row's action type |
-| `idv_child_obligated` | **RECURSIVE subtree rollup** — Σ life-to-date over the entire resolved descendant subtree (through nested IDVs), not the IDV header's own ~$0 line |
-| `idv_child_order_count` | distinct descendants in the subtree |
-| `has_child_idv` | structural flag — this IDV is itself the resolved parent of another IDV (multi-tier vehicle) |
+| `rollup_obligated` | **RECURSIVE subtree rollup** — Σ life-to-date over the entire resolved descendant subtree (through nested IDVs), not the IDV header's own ~$0 line |
+| `rollup_order_count` | distinct descendants in the subtree |
+| `has_nested_vehicle` | structural flag — this IDV is itself the resolved parent of another IDV (multi-tier vehicle) |
 | `parent_award_key_resolved` | the resolved parent IDV key, or self, or NULL (dangling) |
 | `parent_award_key_synth` | the constructed candidate `CONT_IDV_<piid>_<agency>` |
 | `parent_match_flag` | `{self, resolved, dangling}` |
@@ -125,7 +125,7 @@ The candidate parent key is `'CONT_IDV_' || parent_award_id_piid || '_' || paren
 
 ### Recursive IDV rollup
 
-The IDV capacity denominator is the Σ life-to-date over the **entire resolved subtree** — all descendant orders through any depth of nested IDVs — computed by a `WITH RECURSIVE` transitive fold that attributes each award's obligation to *every* ancestor IDV in its chain. The recursive step climbs only through nested IDVs (`nested_idv`, ~1e4 rows → a cheap hash probe, no second 108M scan), depth-capped at 12. `parent_award_key_resolved` is a single-valued tree edge, so there are no cross-path double-counts. Max descendants observed in a single subtree: **~1,017,447**. With the recursive rollup the IDV denominator is exact even for multi-tier vehicles; `has_child_idv` is retained as a structural flag, no longer a lower-bound warning.
+The IDV capacity denominator is the Σ life-to-date over the **entire resolved subtree** — all descendant orders through any depth of nested IDVs — computed by a `WITH RECURSIVE` transitive fold that attributes each award's obligation to *every* ancestor IDV in its chain. The recursive step climbs only through nested IDVs (`nested_idv`, ~1e4 rows → a cheap hash probe, no second 108M scan), depth-capped at 12. `parent_award_key_resolved` is a single-valued tree edge, so there are no cross-path double-counts. Max descendants observed in a single subtree: **~1,017,447**. With the recursive rollup the IDV denominator is exact even for multi-tier vehicles; `has_nested_vehicle` is retained as a structural flag, no longer a lower-bound warning.
 
 ### Capacity math discipline
 
@@ -151,7 +151,7 @@ Only `federal_action_obligation` is summable. Every `*_value` / `total_*` / ceil
 
 ### `award_pool` (Cycle 2.5)
 
-`CASE WHEN award_kind='idv' THEN 'parent' ELSE 'child' END`, BITMAP-indexed. Live split:
+`CASE WHEN award_topology='vehicle' THEN 'parent' ELSE 'child' END`, BITMAP-indexed. Live split:
 
 | pool | count |
 |---|---|
@@ -178,7 +178,7 @@ Only `federal_action_obligation` is summable. Every `*_value` / `total_*` / ceil
 | `awarding_agency_code` | CGAC, BITMAP (Cycle 2.5) |
 | `award_pool` | `'parent'`/`'child'`, BITMAP (Cycle 2.5) |
 
-Kind split of mods: parent 3,554,249 / child 21,462,960 (= `award_pool` above; the `award_kind` `idv` rows are the parent pool).
+Kind split of mods: parent 3,554,249 / child 21,462,960 (= `award_pool` above; the `award_topology` `idv` rows are the parent pool).
 
 ### `action_type_klass` — the mapping (`_KLASS_CASE`)
 
@@ -191,11 +191,10 @@ FAR-uniform enumeration; the mapping is portable across agencies (only base rate
 | `C` | `funding_only` |
 | `E F X N` | `termination` |
 | `J P R T V W` | `identity_boundary` |
-| `K M S` | `admin` |
-| `Y` | `nonstandard` ⚠ (see below) |
+| `K M S Y` | `admin` (`Y` = ADD SUBCONTRACT PLAN — see below) |
 | (any other) | `unclassified` |
 
-⚠ **Open correction:** Cycle 1 classified `Y` as `nonstandard` from a data profile. That was incorrect — per the DEC (Data Element Catalog), `Y = "ADD SUBCONTRACT PLAN"`, a documented FPDS reason-for-modification. `fpds_action_type_ref` was corrected (PR #963). But the live `mod_delta.action_type_klass` **still labels the 8,736 `Y` rows `'nonstandard'`** (live-verified 2026-07-04). Reclassification is queued for the next `mod_delta` rebuild — not yet applied. See §12.
+✅ **Resolved (2026-07-04, PR #978).** Cycle 1 mis-classified `Y` as `nonstandard` from a data profile. Per the DEC, `Y = "ADD SUBCONTRACT PLAN"` — a documented FPDS reason-for-modification — so `Y` is folded into `admin` (with K/M/S) and the `nonstandard` klass is retired. The `mod_delta` rebuild applied it: the 8,736 `Y` rows are now `admin`, `nonstandard` count = 0 (live-verified). Codes validated against `dec_code_domain_ref` (Layer 0). See §12.
 
 ---
 
@@ -232,7 +231,7 @@ DDL: `pipelines/usaspending/ops_usaspending_fpds_l2_runs.sql` (idempotent, self-
 
 Long builds run **detached** (`modal run --detach`): `retries=0` + overwrite makes detach safe (a re-run is operator-initiated, never a partial-state hazard). `max_containers=1` guards against a double-launch on the same R2 prefixes. Sizing: build 96 GiB / 16 CPU / 6h (`DUCKDB_MEM=72GB`, `THREADS=8`); index 48 GiB / 8 CPU / 3h; verify 32 GiB / 4 CPU / 1h. A cheap `smoke` gate (packaging + secrets + spine source-column contract) runs before the giant.
 
-**Completion = two-source AND sentinel:** Modal app state **and** a fresh `status='success'` ledger row — never a held client process. Read-back validation via `verify --table state|delta` (independent scanner → DuckDB structural assertions: PK-unique, `award_kind` domain, `parent_match_flag` domain, `action_type_klass` domain, single `built_at`).
+**Completion = two-source AND sentinel:** Modal app state **and** a fresh `status='success'` ledger row — never a held client process. Read-back validation via `verify --table state|delta` (independent scanner → DuckDB structural assertions: PK-unique, `award_topology` domain, `parent_match_flag` domain, `action_type_klass` domain, single `built_at`).
 
 ---
 
@@ -258,7 +257,7 @@ Code for both satellites + the shared window pass (pre-build). The first live gi
 
 ### Cycle 1 (PR #958) — recursive IDV rollup + `Y` diagnosis
 
-- **Recursive IDV rollup:** `idv_child_obligated` now folds the entire resolved subtree through nested IDVs (multi-tier vehicles — GWAC/FSS → BPA → orders). `has_child_idv` becomes a structural flag (denominator is now exact). Max descendants observed ~1,017,447.
+- **Recursive IDV rollup:** `rollup_obligated` now folds the entire resolved subtree through nested IDVs (multi-tier vehicles — GWAC/FSS → BPA → orders). `has_nested_vehicle` becomes a structural flag (denominator is now exact). Max descendants observed ~1,017,447.
 - **`action_type='Y'` diagnosis:** classified `Y` as `nonstandard`. **This was incorrect** — see the correction in Cycle #963 below and §4.
 
 ### Cycle 2 (PR #959) — per-agency calibration (doc)
@@ -271,7 +270,7 @@ Added `awarding_agency_code` (CGAC, BITMAP) + `award_pool` (`'parent'`/`'child'`
 
 ### PR #963 — `fpds_action_type_ref` DEC correction
 
-Corrected `fpds_action_type_ref` to source **verbatim from the DEC** (`usaspending_data_dictionary`, element `ActionType`, `Contracts:` domain block). 21 rows. Key corrections: `Y = "ADD SUBCONTRACT PLAN"` (was mis-diagnosed as nonstandard admin), plus authoritative `A`/`V`/`W` wording. Loader (`pipelines/reference/materialize_fpds_action_type_ref.py`) parses the DEC domain fail-closed (≥15 codes or abort). **Consequence still open:** `mod_delta.action_type_klass` is not yet rebuilt, so the `Y` rows are still labeled `nonstandard` in live data (§12).
+Corrected `fpds_action_type_ref` to source **verbatim from the DEC** (`usaspending_data_dictionary`, element `ActionType`, `Contracts:` domain block). 21 rows. Key corrections: `Y = "ADD SUBCONTRACT PLAN"` (was mis-diagnosed as nonstandard admin), plus authoritative `A`/`V`/`W` wording. Loader (`pipelines/reference/materialize_fpds_action_type_ref.py`) parses the DEC domain fail-closed (≥15 codes or abort). **Consequence resolved (PR #978):** the `mod_delta` rebuild reclassified the 8,736 `Y` rows to `admin`; the `nonstandard` klass is retired (§12).
 
 ### Reference docs
 
@@ -312,7 +311,7 @@ contract_award_unique_key  ≡  generated_unique_award_id  ≡  prime_award_uniq
 
 ### Two award-grain views, deliberately different
 
-- **`prime_award_state`** — bottom-up, fresh: computed from the FPDS transaction spine (BULK∪FRESH), carries capacity math the government rollup does not (potential-ceiling headroom, IDV→child rollup, expiry horizon, `award_kind`).
+- **`prime_award_state`** — bottom-up, fresh: computed from the FPDS transaction spine (BULK∪FRESH), carries capacity math the government rollup does not (potential-ceiling headroom, IDV→child rollup, expiry horizon, `award_topology`).
 - **`award_search` (BULK)** — top-down, stale: USAspending's own award-level rollup as of the 2026-05-06 pg snapshot, 154 award-level columns (`total_obligation`, recipient rollups, CFDA/program metadata) — **not** reconciled against the live API. Use for award-level metadata and cross-checks, never as the freshness source. `award_search_merged` (the bulk+delta reconcile in `usaspending_award_search_reconcile.py`) is **coded but NOT materialized** — the merged URI 404s.
 
 ### Grain hazards (correctness rules)
@@ -321,7 +320,7 @@ contract_award_unique_key  ≡  generated_unique_award_id  ≡  prime_award_uniq
 - **Never sum award-repeated fields at sub grain.** `subaward_canonical` repeats `prime_award_*` context across every sub of a prime — dedup to `prime_award_unique_key` before aggregating. The highest-blast-radius trap is `prime_award_amount`.
 - **`delta_potential_ceiling` is NULL 45.7%** (BULK-only). For "did the ceiling grow" use `is_scope_increase`, not the raw column.
 - **`consumed_pct` is unclamped** — filter with an upper bound (`<= 5`) for a clean cohort.
-- **IDV denominators:** now exact via the recursive rollup; `has_child_idv` flags multi-tier vehicles structurally.
+- **IDV denominators:** now exact via the recursive rollup; `has_nested_vehicle` flags multi-tier vehicles structurally.
 - **`max_current_end_date = 9999-12-31`** is FPDS's open-ended placeholder.
 
 Full runnable DuckDB-over-Lance recipes (filter-then-join, projection + predicate pushed into Lance scalar indices) are in `USASPENDING_FPDS_L2_SATELLITES_AND_JOIN_GRAPH.md` §4.
@@ -522,7 +521,7 @@ Data-verified this workstream. These characterize the FPDS IDV/order/definitive 
 - **92.2%** have $0 header obligation — money is obligated per-order, not reserved at the IDV.
 - The stated ceiling is a **soft not-to-exceed:** 15.2% of ceiling-bearing IDVs have child obligations exceeding it. By type: GWAC/FSS ~12.5%; IDC/BPA/BOA ~27–32%.
 - The IDIQ guaranteed-minimum is **not a standard FPDS field.**
-- **Consequence:** real IDV spend is discovered **bottom-up** via the child-order rollup (`idv_child_obligated`), not from the IDV header line.
+- **Consequence:** real IDV spend is discovered **bottom-up** via the child-order rollup (`rollup_obligated`), not from the IDV header line.
 
 ---
 
@@ -530,7 +529,7 @@ Data-verified this workstream. These characterize the FPDS IDV/order/definitive 
 
 Factual list, no prioritization.
 
-1. **`mod_delta.action_type_klass` `Y`-reclassification** — the 8,736 `Y` rows are still labeled `'nonstandard'` in live data (verified 2026-07-04). `Y = "ADD SUBCONTRACT PLAN"` per the DEC (`fpds_action_type_ref` corrected in PR #963). Reclassification to a meaningful klass is queued for the next `mod_delta` rebuild; the `_KLASS_CASE` in `usaspending_fpds_l2.py` still emits `'nonstandard'` for `Y`. **Not applied.**
+1. ~~**`mod_delta.action_type_klass` `Y`-reclassification**~~ — ✅ **RESOLVED (PR #978, rebuild 2026-07-04).** `Y = "ADD SUBCONTRACT PLAN"` (documented, per the DEC) folded into `admin`; `nonstandard` klass retired. Live-verified: 8,736 `Y` rows now `admin`, `nonstandard` = 0. Landed as part of the Layer 0→2 ontology rebuild (`award_kind`→`award_topology`, `_KLASS_CASE` fix, `dec_code_domain_ref` bedrock, rollup rename).
 2. **Cycle 3 — Entity Dimension (SCD2)** — decision documented (§10, PR #962); build not started.
 3. **Origination-engine per-agency percentile calibration model** — consumer-side, not pipeline. The pipeline-side prerequisite (`awarding_agency_code` + `award_pool` on `mod_delta`) is delivered (Cycle 2.5); the percentile CDF model + scoring is specified in `FPDS_L2_AGENCY_CALIBRATION.md` §4.
 4. **award_search-dependent work** — cross-source reconciliation (bottom-up `life_to_date_obligated` vs. top-down `total_obligation`) and entity-dimension current-attribute enrichment are deferred pending the reconciled `award_search` spine (owned by another agent; see `AWARD_API_PULL_HANDOFF.md`). `award_search_merged` is **coded** (`usaspending_award_search_reconcile.py`) but **not materialized** — the merged URI 404s.
@@ -580,7 +579,7 @@ Factual list, no prioritization.
 | `usaspending_fpds_mod_delta` | 25,017,209 | 31 | 14 | v15 |
 | `fpds_action_type_ref` | 21 | 5 | 1 | v6 |
 
-Verified spot-checks: `award_kind` = definitive 17,068,433 / idv 990,041 / order 64,810,180; dangling ~0.61%; recon_delta p99 = $0; `mod_delta.award_pool` = parent 3,554,249 / child 21,462,960; `Y`-row `action_type_klass` = `nonstandard` (8,736 rows, live — the open item); `fpds_action_type_ref` `Y = "ADD SUBCONTRACT PLAN"`, `V = "UNIQUE ENTITY ID (DUNS) OR LEGAL BUSINESS NAME CHANGE - NON-NOVATION"`, `W = "ENTITY ADDRESS CHANGE"`.
+Verified spot-checks (post-rebuild, PR #978): `award_topology` = standalone 17,068,433 / vehicle 990,041 / vehicle_order 64,810,180; dangling ~0.61%; recon_delta p99 = $0; `mod_delta.award_pool` = parent 3,554,249 / child 21,462,960; `Y`-row `action_type_klass` = `admin` (8,736 rows — resolved; `nonstandard` = 0 live); `fpds_action_type_ref` `Y = "ADD SUBCONTRACT PLAN"`, `V = "UNIQUE ENTITY ID (DUNS) OR LEGAL BUSINESS NAME CHANGE - NON-NOVATION"`, `W = "ENTITY ADDRESS CHANGE"`.
 
 ### Operational note
 
