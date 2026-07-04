@@ -17,7 +17,7 @@
 7. [The dataset constellation / join graph](#7-the-dataset-constellation--join-graph)
 8. [Per-agency calibration (Cycle 2) verdict](#8-per-agency-calibration-cycle-2-verdict)
 9. [Labor / wage substrate + crosswalk](#9-labor--wage-substrate--crosswalk)
-10. [Entity Dimension (SCD2) — decision, not built](#10-entity-dimension-scd2--decision-not-built)
+10. [Entity Dimension (SCD2) — BUILT (Cycle 3)](#10-entity-dimension-scd2--decision-not-built)
 11. [FPDS domain facts established](#11-fpds-domain-facts-established)
 12. [Open items / next steps](#12-open-items--next-steps)
 13. [Source map](#13-source-map)
@@ -461,7 +461,9 @@ Full crosswalk key graph + 10 DuckDB recipes in `LABOR_x_GOVCON_CROSSWALK_GTM.md
 
 ---
 
-## 10. Entity Dimension (SCD2) — decision, not built
+## 10. Entity Dimension (SCD2) — BUILT (Cycle 3, 2026-07-04)
+
+> **Status update:** built per the §8 plan of `FPDS_L2_ENTITY_DIMENSION_BUILD_DECISION.md` (history-core-now). Live: `s3://data-sink/active/usaspending_fpds_entity_version/` — 769,474 entities / 11,266,415 versions from 107,948,116 UEI-era spine txns (99.9% coverage); 21,978 novation boundaries; verify pass. Builder: `pipelines/usaspending/usaspending_fpds_entity_version.py` (+ Modal wrapper, ops ledger `ops.usaspending_fpds_entity_version_runs`). Change classes: `initial` / `new_award_observation` (INV-MOD-ABSENCE) / the L2 `_KLASS_CASE` import. Known tail: concurrent-award interleave yields thin oscillating versions (max 217,296 for one placeholder-grade UEI) — filter `txn_count_in_version > 1` for stable states. award_search/SAM current-attribute enrichment remains additive-later. The decision analysis below is retained as the build's rationale record.
 
 **Status: decision recorded (PR #962). Build NOT started.**
 
@@ -530,7 +532,7 @@ Data-verified this workstream. These characterize the FPDS IDV/order/definitive 
 Factual list, no prioritization.
 
 1. ~~**`mod_delta.action_type_klass` `Y`-reclassification**~~ — ✅ **RESOLVED (PR #978, rebuild 2026-07-04).** `Y = "ADD SUBCONTRACT PLAN"` (documented, per the DEC) folded into `admin`; `nonstandard` klass retired. Live-verified: 8,736 `Y` rows now `admin`, `nonstandard` = 0. Landed as part of the Layer 0→2 ontology rebuild (`award_kind`→`award_topology`, `_KLASS_CASE` fix, `dec_code_domain_ref` bedrock, rollup rename).
-2. **Cycle 3 — Entity Dimension (SCD2)** — decision documented (§10, PR #962); build not started.
+2. ~~**Cycle 3 — Entity Dimension (SCD2)**~~ — ✅ **BUILT (PR #988, full build 2026-07-04).** `usaspending_fpds_entity_version` live: 769,474 entities / 11,266,415 versions, verify pass, ops-ledgered. See §10. award_search/SAM current-attribute enrichment remains open (additive).
 3. **Origination-engine per-agency percentile calibration model** — consumer-side, not pipeline. The pipeline-side prerequisite (`awarding_agency_code` + `award_pool` on `mod_delta`) is delivered (Cycle 2.5); the percentile CDF model + scoring is specified in `FPDS_L2_AGENCY_CALIBRATION.md` §4.
 4. **award_search-dependent work** — cross-source reconciliation (bottom-up `life_to_date_obligated` vs. top-down `total_obligation`) and entity-dimension current-attribute enrichment are deferred pending the reconciled `award_search` spine (owned by another agent; see `AWARD_API_PULL_HANDOFF.md`). `award_search_merged` is **coded** (`usaspending_award_search_reconcile.py`) but **not materialized** — the merged URI 404s.
 
@@ -556,6 +558,8 @@ Factual list, no prioritization.
 | `pipelines/usaspending/ops_usaspending_fpds_l2_runs.sql` | ops-ledger DDL for both tables |
 | `pipelines/reference/materialize_fpds_action_type_ref.py` | DEC-sourced `fpds_action_type_ref` loader (verbatim `Contracts:` domain, fail-closed) |
 | `pipelines/usaspending/usaspending_award_search_reconcile.py` | `award_search_merged` reconcile — coded, not materialized |
+| `pipelines/usaspending/usaspending_fpds_entity_version.py` | Cycle 3 entity-version dimension (SCD2 history core) — builder, gates, verify |
+| `pipelines/usaspending/usaspending_fpds_entity_version_modal.py` | Modal orchestrator for the entity-version build |
 
 ### Commits (PRs #955–#963, `main`)
 
