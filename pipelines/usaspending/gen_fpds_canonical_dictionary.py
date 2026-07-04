@@ -33,10 +33,10 @@ SIDE = HERE / "fpds_field_definitions.json"
 OUT_DEFAULT = REPO / "docs" / "reference" / "FPDS_CANONICAL_FIELD_DICTIONARY.md"
 
 DUCK2ARROW = {"DATE": "date32[day]", "TIMESTAMP": "timestamp[us]", "DOUBLE": "double",
-              "BIGINT": "int64", "VARCHAR": "string"}
+              "BIGINT": "int64", "VARCHAR": "string", "BOOLEAN": "bool"}
 # tokens that are SQL wrappers/type keywords, not source column identifiers
 _STOP = {"s", "kbulk", "TRY_CAST", "COALESCE", "AS", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP",
-         "VARCHAR", "INTEGER", "replace", "upper", "substr", "CAST", "lower", "trim", "nullif"}
+         "VARCHAR", "BOOLEAN", "INTEGER", "replace", "upper", "substr", "CAST", "lower", "trim", "nullif"}
 
 GROUP_LABEL = {
     "key": "Primary keys",

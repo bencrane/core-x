@@ -143,6 +143,7 @@ TARGETS: list[tuple[str, str]] = [
     ("resolution", "s3://data-sink/active/entity_profile_gold/"),
     # USAspending leaves — live API-fresh override feeds, the api-catalog leaf, rollups.
     ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/"),
+    ("usaspending", "s3://data-sink/active/usaspending_fpds_canonical_txn/"),  # 392-col OBT spine
     ("usaspending", "s3://data-sink/active/usaspending_api_fresh/contract_subaward/"),
     ("usaspending", "s3://data-sink/active/usaspending_api_catalog/"),
     ("usaspending", "s3://data-sink/active/contractor_award_summary/"),

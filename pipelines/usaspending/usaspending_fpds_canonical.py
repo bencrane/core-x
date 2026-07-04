@@ -1,55 +1,41 @@
 """USAspending FPDS CANONICAL transaction table (LOCAL CLI) — typed v2 SoR reconciliation.
 
-Reconciles the THREE FPDS transaction feeds into ONE typed, PK-grained read model
-(`s3://data-sink/active/usaspending_fpds_canonical_txn/`, Lance v2.1, ~78 typed columns):
+Reconciles the TWO FPDS transaction feeds into ONE typed, PK-grained read model
+(`s3://data-sink/active/usaspending_fpds_canonical_txn/`, Lance v2.1, 392 typed columns — the OBT):
 
     BULK   s3://data-sink/active/usaspending/transaction_search_fpds/   (~107.25M, 378 typed rpt.* cols)
     FRESH  s3://data-sink/active/usaspending_api_fresh/contract_prime_txn/ (~1.99M, 297 all-VARCHAR)
-    ARCH_F s3://data-sink/active/usaspending_archive_full_fpds/         (~2.98M, 300 all-VARCHAR)
-    ARCH_D s3://data-sink/active/usaspending_archive_delta_fpds/        (deletion ledger; correction_delete_ind)
 
-CANONICAL VOCABULARY = the FPDS bulk_download/awards names (FRESH/archive carry them verbatim);
-BULK is crosswalked into that vocabulary via the rpt.* map. BULK-only enrichment columns keep
-their rpt.* names verbatim.
+The MONTHLY / archive CSV feed (physical usaspending_archive_*_fpds) is OUT OF SCOPE in this build —
+its re-integration is owned by a parallel agent. The 12 monthly-unique enrichment cols are typed-NULL
+placeholders (feed_expr=None AND bulk_expr=None) reserved for that re-add; the schema stays 392-wide.
 
-MERGE (TWO-TIER logical reconciliation; monthly-CSV corrections land + monthly-unique enrichment):
-  • s()/kbulk() sentinel macros applied IDENTICALLY on every source — whole-string ''/'-NONE-' → NULL.
-  • fresh_latest / bulk_latest / monthly_latest: EACH source collapsed to latest-per-key (deterministic
-    tiebreaker). bulk_latest is ONE per-key collapse over FULL BULK (109M scanned ONCE). monthly_latest
-    is collapsed over the FULL monthly projection (NOT an anti-joined survivor set), so monthly competes
-    on shared keys — THE fix. (MONTHLY = the monthly bulk-download CSV feed; its physical R2 upstream is
-    still named usaspending_archive_*_fpds — a tracked rename follow-up. In-code the semantic name is
-    MONTHLY.)
-  • TIER 1  bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized): per-key
-    argmax(last_modified_date); equal-mtime tie → MONTHLY wins over pg. The reconciled base is the
-    semantic source of the enrichment fill.
-  • TIER 2  canonical core = bulk_base ⊕ fresh_latest: per-key argmax; tie → FRESH. argmax is
-    associative, so this two-tier order is executed as ONE flat 3-way row_number() window over the
-    union of the three collapsed cores (source_rank FRESH<MONTHLY<BULK) — emitted CORE stays
-    byte-identical to the pre-two-tier build (monthly.mtime ≥ pg on 100% of shared FY2026 keys).
-  • Enrichment: pg-preferred fill from the reconciled base. 27 pg-only enrich cols = plain bulk_latest;
-    12 monthly-unique cols (Treasury/federal-account funding + highly_compensated_officer_1..5 name +
-    amount — pg LACKS all 12) = COALESCE(pg, monthly), monthly leg from a SEPARATE
-    enrichment-populatedness dedup (monthly_enrich_latest). LEFT JOINs to PK-unique collapses → no
-    fan-out. recipient_uei is CORE (argmax-resolved), NOT enrichment.
-  • canonical_source: derived ONCE as the winning core row's src tag (fresh|bulk|monthly) — the true
-    per-key winner, never a partition literal.
-  • Tombstone (R6-scoped) − reinstatement (R5): delete_keys is scoped to the LATEST
-    archive_snapshot_stamp (an old-month delete must not tombstone forever). A 'D' key is honored only
-    when the reconciled winner mtime is NOT strictly newer than the delete mtime; a strictly-newer
-    non-'D' row REINSTATES the key. One coupled final-state op applied to `resolved` (post fresh
-    overlay). The delta scanner is filtered ONLY by correction_delete_ind='D' and NEVER receives --since.
+CANONICAL VOCABULARY = the FPDS bulk_download/awards names (FRESH carries them verbatim); BULK is
+crosswalked into that vocabulary via the rpt.* map. BULK-only enrichment columns keep their rpt.*
+names verbatim (the OBT carries all 378 BULK-dictionary columns).
+
+MERGE (2-source BULK+FRESH reconciliation):
+  • s()/kbulk() sentinel macros applied IDENTICALLY on both sources — whole-string ''/'-NONE-' → NULL.
+  • fresh_latest / bulk_latest: EACH source collapsed to latest-per-key (deterministic tiebreaker).
+    bulk_latest is ONE per-key collapse over FULL BULK (107M scanned ONCE) and is BOTH a core competitor
+    AND the SOLE pg enrichment source.
+  • CORE: per-key argmax(last_modified_date) over the union of the two collapsed cores, executed as ONE
+    2-way row_number() window (source_rank FRESH<BULK) — equal-mtime tie → FRESH wins.
+  • Enrichment: pg-only fill from bulk_latest (plain b.<col> for every enrich col). The 12 monthly-unique
+    cols resolve to CAST(NULL AS <type>) (bulk_expr None) — typed-NULL placeholders. recipient_uei is
+    CORE (argmax-resolved), NOT enrichment.
+  • canonical_source: derived ONCE as the winning core row's src tag (fresh|bulk) — the true per-key
+    winner, never a partition literal.
   • Fail-closed PK-uniqueness gate raises BEFORE publish on any dup (structural: one survivor per key).
 
 DISCIPLINES (d.8 / fleet rules):
   • module-top os.environ.setdefault("LANCE_BYPASS_SPILLING","true") BEFORE any import lance.
   • NO direct-R2 write of the table (Giants 400 InvalidPart) — LOCAL Lance write → boto3 uniform-part
     publish. data_storage_version="2.1", max_rows_per_file=1048576 (valid only on the boto3 path).
-  • built_at = ONE Python naive-UTC literal injected into all three projections (NOT now()).
+  • built_at = ONE Python naive-UTC literal injected into both projections (NOT now()).
   • last_modified_date parsed via replace(...,'+00','')+TRY_CAST (NO strptime hard-abort).
   • NO auto-retries in pipeline logic; overwrite idempotency.
-  • --since pushes action_date>= into the THREE DATA scanners ONLY (BULK date32; FRESH/archive
-    lexical ISO-10 string), NEVER the delta scanner.
+  • --since pushes action_date>= into the TWO DATA scanners (BULK date32; FRESH lexical ISO-10 string).
 
     # SAMPLE (on-box, 48GiB/3GB-free — SAMPLE ONLY, never prod):
     doppler run -p core-x -c prd -- uv run --no-project \
@@ -301,35 +287,37 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": "total_funding_amount", "duck_type": "DOUBLE", "group": "enrich",
      "bulk_expr": "total_funding_amount", "feed_expr": None},
 
-    # ---- (c2) MONTHLY-unique enrichment (canonical-vocab; pg/BULK LACKS all 12 → bulk_expr None =
-    #   typed NULL on the BULK leg; monthly/archive is the SOLE populated source via feed_expr s()).
-    #   COALESCE(pg, monthly) per key in the enrich block degenerates to monthly-only (pg absent),
-    #   but the COALESCE form ships correctly and future-proofs a pg schema add. Names + TAS/federal-
-    #   account lists stay VARCHAR; officer *_amount cols are typed DOUBLE (proven 0/507,542 non-castable). ----
+    # ---- (c2) MONTHLY-unique enrichment — TYPED-NULL PLACEHOLDERS in this 2-source (BULK+FRESH) build.
+    #   pg/BULK LACKS all 12 (bulk_expr None) AND monthly is OUT OF SCOPE here (feed_expr None) → each
+    #   is CAST(NULL AS <type>) on BOTH legs, 100% NULL in the live dataset. These 12 rows ARE the
+    #   coordination contract for the parallel MONTHLY agent: it flips feed_expr back on (or points them
+    #   at the renamed monthly upstream) and re-adds the monthly collapse + COALESCE leg — the schema
+    #   stays 392-wide throughout. Do NOT populate here. See the module MERGE header + Phase B of
+    #   docs/reference/FPDS_CANONICAL_OBT_EXECUTION_PLAN.md. ----
     {"canonical": "treasury_accounts_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(treasury_accounts_funding_this_award)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "federal_accounts_funding_this_award", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(federal_accounts_funding_this_award)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_1_name", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_1_name)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_2_name", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_2_name)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_3_name", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_3_name)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_4_name", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_4_name)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_5_name", "duck_type": "VARCHAR", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "s(highly_compensated_officer_5_name)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_1_amount", "duck_type": "DOUBLE", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_1_amount) AS DOUBLE)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_2_amount", "duck_type": "DOUBLE", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_2_amount) AS DOUBLE)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_3_amount", "duck_type": "DOUBLE", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_3_amount) AS DOUBLE)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_4_amount", "duck_type": "DOUBLE", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_4_amount) AS DOUBLE)"},
+     "bulk_expr": None, "feed_expr": None},
     {"canonical": "highly_compensated_officer_5_amount", "duck_type": "DOUBLE", "group": "enrich",
-     "bulk_expr": None, "feed_expr": "TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)"},
+     "bulk_expr": None, "feed_expr": None},
 
     # ---- (c2) FPDS spine expansion — tightened adds (2026-07-02; see FPDS_CANONICAL_FIELD_DICTIONARY.md) ----
     {"canonical": "women_owned_small_business", "duck_type": "VARCHAR", "group": "core",
@@ -422,6 +410,272 @@ COLUMN_SPEC: list[dict] = [
      "bulk_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)", "feed_expr": "TRY_CAST(s(number_of_offers_received) AS BIGINT)"},
     {"canonical": "number_of_actions", "duck_type": "BIGINT", "group": "core",
      "bulk_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)", "feed_expr": "TRY_CAST(s(number_of_actions) AS BIGINT)"},
+    # ── OBT expansion: 261 BULK-native "documented but not carried" columns ──────────
+    # All group="enrich", feed_expr=None (BULK-only pg enrichment), native typing.
+    # Generated deterministically from live BULK (378) − already-referenced (117) = 261.
+    # See docs/reference/fpds_obt_261_additions.json (committed derivation artifact).
+    {"canonical": "a_76_fair_act_action", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(a_76_fair_act_action)", "feed_expr": None},
+    {"canonical": "a_76_fair_act_action_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(a_76_fair_act_action_desc)", "feed_expr": None},
+    {"canonical": "action_type_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(action_type_description)", "feed_expr": None},
+    {"canonical": "afa_generated_unique", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(afa_generated_unique)", "feed_expr": None},
+    {"canonical": "agency_id", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(agency_id)", "feed_expr": None},
+    {"canonical": "airport_authority", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "airport_authority", "feed_expr": None},
+    {"canonical": "alaskan_native_owned_corpo", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "alaskan_native_owned_corpo", "feed_expr": None},
+    {"canonical": "alaskan_native_servicing_i", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "alaskan_native_servicing_i", "feed_expr": None},
+    {"canonical": "american_indian_owned_busi", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "american_indian_owned_busi", "feed_expr": None},
+    {"canonical": "asian_pacific_american_own", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "asian_pacific_american_own", "feed_expr": None},
+    {"canonical": "award_certified_date", "duck_type": "DATE", "group": "enrich", "bulk_expr": "award_certified_date", "feed_expr": None},
+    {"canonical": "award_date_signed", "duck_type": "DATE", "group": "enrich", "bulk_expr": "award_date_signed", "feed_expr": None},
+    {"canonical": "award_fiscal_year", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "award_fiscal_year", "feed_expr": None},
+    {"canonical": "award_update_date", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "award_update_date", "feed_expr": None},
+    {"canonical": "awarding_office_code", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(awarding_office_code)", "feed_expr": None},
+    {"canonical": "awarding_office_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(awarding_office_name)", "feed_expr": None},
+    {"canonical": "awarding_subtier_agency_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(awarding_subtier_agency_name_raw)", "feed_expr": None},
+    {"canonical": "awarding_toptier_agency_id", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "awarding_toptier_agency_id", "feed_expr": None},
+    {"canonical": "awarding_toptier_agency_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(awarding_toptier_agency_name_raw)", "feed_expr": None},
+    {"canonical": "black_american_owned_busin", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "black_american_owned_busin", "feed_expr": None},
+    {"canonical": "business_funds_ind_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(business_funds_ind_desc)", "feed_expr": None},
+    {"canonical": "business_funds_indicator", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(business_funds_indicator)", "feed_expr": None},
+    {"canonical": "business_types_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(business_types_desc)", "feed_expr": None},
+    {"canonical": "c1862_land_grant_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "c1862_land_grant_college", "feed_expr": None},
+    {"canonical": "c1890_land_grant_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "c1890_land_grant_college", "feed_expr": None},
+    {"canonical": "c1994_land_grant_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "c1994_land_grant_college", "feed_expr": None},
+    {"canonical": "cfda_id", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "cfda_id", "feed_expr": None},
+    {"canonical": "cfda_title", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(cfda_title)", "feed_expr": None},
+    {"canonical": "city_local_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "city_local_government", "feed_expr": None},
+    {"canonical": "clinger_cohen_act_pla_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(clinger_cohen_act_pla_desc)", "feed_expr": None},
+    {"canonical": "commercial_item_acqui_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(commercial_item_acqui_desc)", "feed_expr": None},
+    {"canonical": "commercial_item_test_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(commercial_item_test_desc)", "feed_expr": None},
+    {"canonical": "commercial_item_test_progr", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(commercial_item_test_progr)", "feed_expr": None},
+    {"canonical": "community_developed_corpor", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "community_developed_corpor", "feed_expr": None},
+    {"canonical": "community_development_corp", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "community_development_corp", "feed_expr": None},
+    {"canonical": "consolidated_contract_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(consolidated_contract_desc)", "feed_expr": None},
+    {"canonical": "construction_wage_rat_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(construction_wage_rat_desc)", "feed_expr": None},
+    {"canonical": "contingency_humanitar_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contingency_humanitar_desc)", "feed_expr": None},
+    {"canonical": "contingency_humanitarian_o", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contingency_humanitarian_o)", "feed_expr": None},
+    {"canonical": "contract_award_type_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contract_award_type_desc)", "feed_expr": None},
+    {"canonical": "contract_bundling_descrip", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contract_bundling_descrip)", "feed_expr": None},
+    {"canonical": "contract_financing_descrip", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contract_financing_descrip)", "feed_expr": None},
+    {"canonical": "contracting_officers_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(contracting_officers_desc)", "feed_expr": None},
+    {"canonical": "contracts", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "contracts", "feed_expr": None},
+    {"canonical": "corporate_entity_not_tax_e", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "corporate_entity_not_tax_e", "feed_expr": None},
+    {"canonical": "corporate_entity_tax_exemp", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "corporate_entity_tax_exemp", "feed_expr": None},
+    {"canonical": "correction_delete_ind_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(correction_delete_ind_desc)", "feed_expr": None},
+    {"canonical": "correction_delete_indicatr", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(correction_delete_indicatr)", "feed_expr": None},
+    {"canonical": "cost_accounting_stand_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(cost_accounting_stand_desc)", "feed_expr": None},
+    {"canonical": "cost_accounting_standards", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(cost_accounting_standards)", "feed_expr": None},
+    {"canonical": "cost_or_pricing_data_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(cost_or_pricing_data_desc)", "feed_expr": None},
+    {"canonical": "council_of_governments", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "council_of_governments", "feed_expr": None},
+    {"canonical": "country_of_product_or_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(country_of_product_or_desc)", "feed_expr": None},
+    {"canonical": "country_of_product_or_serv", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(country_of_product_or_serv)", "feed_expr": None},
+    {"canonical": "county_local_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "county_local_government", "feed_expr": None},
+    {"canonical": "create_date", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "create_date", "feed_expr": None},
+    {"canonical": "detached_award_procurement_id", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "detached_award_procurement_id", "feed_expr": None},
+    {"canonical": "dod_claimant_prog_cod_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(dod_claimant_prog_cod_desc)", "feed_expr": None},
+    {"canonical": "domestic_or_foreign_e_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(domestic_or_foreign_e_desc)", "feed_expr": None},
+    {"canonical": "domestic_shelter", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "domestic_shelter", "feed_expr": None},
+    {"canonical": "dot_certified_disadvantage", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "dot_certified_disadvantage", "feed_expr": None},
+    {"canonical": "economically_disadvantaged", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "economically_disadvantaged", "feed_expr": None},
+    {"canonical": "educational_institution", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "educational_institution", "feed_expr": None},
+    {"canonical": "emerging_small_business", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "emerging_small_business", "feed_expr": None},
+    {"canonical": "epa_designated_produc_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(epa_designated_produc_desc)", "feed_expr": None},
+    {"canonical": "epa_designated_product", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(epa_designated_product)", "feed_expr": None},
+    {"canonical": "etl_update_date", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "etl_update_date", "feed_expr": None},
+    {"canonical": "evaluated_preference", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(evaluated_preference)", "feed_expr": None},
+    {"canonical": "evaluated_preference_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(evaluated_preference_desc)", "feed_expr": None},
+    {"canonical": "extent_compete_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(extent_compete_description)", "feed_expr": None},
+    {"canonical": "face_value_loan_guarantee", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "face_value_loan_guarantee", "feed_expr": None},
+    {"canonical": "fain", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(fain)", "feed_expr": None},
+    {"canonical": "fair_opportunity_limi_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(fair_opportunity_limi_desc)", "feed_expr": None},
+    {"canonical": "fed_biz_opps", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(fed_biz_opps)", "feed_expr": None},
+    {"canonical": "fed_biz_opps_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(fed_biz_opps_description)", "feed_expr": None},
+    {"canonical": "federal_agency", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "federal_agency", "feed_expr": None},
+    {"canonical": "federally_funded_research", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "federally_funded_research", "feed_expr": None},
+    {"canonical": "fiscal_action_date", "duck_type": "DATE", "group": "enrich", "bulk_expr": "fiscal_action_date", "feed_expr": None},
+    {"canonical": "for_profit_organization", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "for_profit_organization", "feed_expr": None},
+    {"canonical": "foreign_funding", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(foreign_funding)", "feed_expr": None},
+    {"canonical": "foreign_funding_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(foreign_funding_desc)", "feed_expr": None},
+    {"canonical": "foreign_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "foreign_government", "feed_expr": None},
+    {"canonical": "foreign_owned_and_located", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "foreign_owned_and_located", "feed_expr": None},
+    {"canonical": "foundation", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "foundation", "feed_expr": None},
+    {"canonical": "funding_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "funding_amount", "feed_expr": None},
+    {"canonical": "funding_opportunity_goals", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_opportunity_goals)", "feed_expr": None},
+    {"canonical": "funding_opportunity_number", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_opportunity_number)", "feed_expr": None},
+    {"canonical": "funding_subtier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_subtier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "funding_subtier_agency_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_subtier_agency_name_raw)", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_abbreviation", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_toptier_agency_abbreviation)", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_id", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "funding_toptier_agency_id", "feed_expr": None},
+    {"canonical": "funding_toptier_agency_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(funding_toptier_agency_name_raw)", "feed_expr": None},
+    {"canonical": "generated_pragmatic_obligation", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "generated_pragmatic_obligation", "feed_expr": None},
+    {"canonical": "government_furnished_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(government_furnished_desc)", "feed_expr": None},
+    {"canonical": "government_furnished_prope", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(government_furnished_prope)", "feed_expr": None},
+    {"canonical": "grants", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "grants", "feed_expr": None},
+    {"canonical": "hispanic_american_owned_bu", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "hispanic_american_owned_bu", "feed_expr": None},
+    {"canonical": "hispanic_servicing_institu", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "hispanic_servicing_institu", "feed_expr": None},
+    {"canonical": "historically_black_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "historically_black_college", "feed_expr": None},
+    {"canonical": "hospital_flag", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "hospital_flag", "feed_expr": None},
+    {"canonical": "housing_authorities_public", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "housing_authorities_public", "feed_expr": None},
+    {"canonical": "idv_type_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(idv_type_description)", "feed_expr": None},
+    {"canonical": "indian_tribe_federally_rec", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "indian_tribe_federally_rec", "feed_expr": None},
+    {"canonical": "indirect_federal_sharing", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "indirect_federal_sharing", "feed_expr": None},
+    {"canonical": "information_technolog_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(information_technolog_desc)", "feed_expr": None},
+    {"canonical": "information_technology_com", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(information_technology_com)", "feed_expr": None},
+    {"canonical": "ingested_at", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "CAST(ingested_at AS TIMESTAMP)", "feed_expr": None},
+    {"canonical": "inherently_government_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(inherently_government_desc)", "feed_expr": None},
+    {"canonical": "initial_report_date", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "initial_report_date", "feed_expr": None},
+    {"canonical": "inter_municipal_local_gove", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "inter_municipal_local_gove", "feed_expr": None},
+    {"canonical": "interagency_contract_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(interagency_contract_desc)", "feed_expr": None},
+    {"canonical": "interagency_contracting_au", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(interagency_contracting_au)", "feed_expr": None},
+    {"canonical": "international_organization", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "international_organization", "feed_expr": None},
+    {"canonical": "interstate_entity", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "interstate_entity", "feed_expr": None},
+    {"canonical": "is_fpds", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "is_fpds", "feed_expr": None},
+    {"canonical": "joint_venture_economically", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "joint_venture_economically", "feed_expr": None},
+    {"canonical": "joint_venture_women_owned", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "joint_venture_women_owned", "feed_expr": None},
+    {"canonical": "labor_standards_descrip", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(labor_standards_descrip)", "feed_expr": None},
+    {"canonical": "labor_surplus_area_firm", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "labor_surplus_area_firm", "feed_expr": None},
+    {"canonical": "legal_entity_address_line2", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_address_line2)", "feed_expr": None},
+    {"canonical": "legal_entity_address_line3", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_address_line3)", "feed_expr": None},
+    {"canonical": "legal_entity_city_code", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_city_code)", "feed_expr": None},
+    {"canonical": "legal_entity_foreign_city", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_foreign_city)", "feed_expr": None},
+    {"canonical": "legal_entity_foreign_descr", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_foreign_descr)", "feed_expr": None},
+    {"canonical": "legal_entity_foreign_posta", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_foreign_posta)", "feed_expr": None},
+    {"canonical": "legal_entity_foreign_provi", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_foreign_provi)", "feed_expr": None},
+    {"canonical": "legal_entity_zip4", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_zip4)", "feed_expr": None},
+    {"canonical": "legal_entity_zip_last4", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(legal_entity_zip_last4)", "feed_expr": None},
+    {"canonical": "limited_liability_corporat", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "limited_liability_corporat", "feed_expr": None},
+    {"canonical": "local_area_set_aside", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(local_area_set_aside)", "feed_expr": None},
+    {"canonical": "local_area_set_aside_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(local_area_set_aside_desc)", "feed_expr": None},
+    {"canonical": "local_government_owned", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "local_government_owned", "feed_expr": None},
+    {"canonical": "manufacturer_of_goods", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "manufacturer_of_goods", "feed_expr": None},
+    {"canonical": "materials_supplies_article", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(materials_supplies_article)", "feed_expr": None},
+    {"canonical": "materials_supplies_descrip", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(materials_supplies_descrip)", "feed_expr": None},
+    {"canonical": "minority_institution", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "minority_institution", "feed_expr": None},
+    {"canonical": "minority_owned_business", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "minority_owned_business", "feed_expr": None},
+    {"canonical": "multi_year_contract_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(multi_year_contract_desc)", "feed_expr": None},
+    {"canonical": "multiple_or_single_aw_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(multiple_or_single_aw_desc)", "feed_expr": None},
+    {"canonical": "municipality_local_governm", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "municipality_local_governm", "feed_expr": None},
+    {"canonical": "national_interest_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(national_interest_desc)", "feed_expr": None},
+    {"canonical": "native_american_owned_busi", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "native_american_owned_busi", "feed_expr": None},
+    {"canonical": "native_hawaiian_owned_busi", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "native_hawaiian_owned_busi", "feed_expr": None},
+    {"canonical": "native_hawaiian_servicing", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "native_hawaiian_servicing", "feed_expr": None},
+    {"canonical": "non_federal_funding_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "non_federal_funding_amount", "feed_expr": None},
+    {"canonical": "nonprofit_organization", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "nonprofit_organization", "feed_expr": None},
+    {"canonical": "officer_1_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "officer_1_amount", "feed_expr": None},
+    {"canonical": "officer_1_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(officer_1_name)", "feed_expr": None},
+    {"canonical": "officer_2_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "officer_2_amount", "feed_expr": None},
+    {"canonical": "officer_2_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(officer_2_name)", "feed_expr": None},
+    {"canonical": "officer_3_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "officer_3_amount", "feed_expr": None},
+    {"canonical": "officer_3_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(officer_3_name)", "feed_expr": None},
+    {"canonical": "officer_4_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "officer_4_amount", "feed_expr": None},
+    {"canonical": "officer_4_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(officer_4_name)", "feed_expr": None},
+    {"canonical": "officer_5_amount", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "officer_5_amount", "feed_expr": None},
+    {"canonical": "officer_5_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(officer_5_name)", "feed_expr": None},
+    {"canonical": "organizational_type", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(organizational_type)", "feed_expr": None},
+    {"canonical": "original_loan_subsidy_cost", "duck_type": "DOUBLE", "group": "enrich", "bulk_expr": "original_loan_subsidy_cost", "feed_expr": None},
+    {"canonical": "other_minority_owned_busin", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "other_minority_owned_busin", "feed_expr": None},
+    {"canonical": "other_not_for_profit_organ", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "other_not_for_profit_organ", "feed_expr": None},
+    {"canonical": "other_statutory_authority", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(other_statutory_authority)", "feed_expr": None},
+    {"canonical": "other_than_full_and_o_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(other_than_full_and_o_desc)", "feed_expr": None},
+    {"canonical": "parent_recipient_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(parent_recipient_name_raw)", "feed_expr": None},
+    {"canonical": "parent_recipient_unique_id", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(parent_recipient_unique_id)", "feed_expr": None},
+    {"canonical": "partnership_or_limited_lia", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "partnership_or_limited_lia", "feed_expr": None},
+    {"canonical": "performance_based_se_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(performance_based_se_desc)", "feed_expr": None},
+    {"canonical": "period_of_perf_potential_e", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(period_of_perf_potential_e)", "feed_expr": None},
+    {"canonical": "place_of_manufacture", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(place_of_manufacture)", "feed_expr": None},
+    {"canonical": "place_of_manufacture_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(place_of_manufacture_desc)", "feed_expr": None},
+    {"canonical": "place_of_perform_zip_last4", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(place_of_perform_zip_last4)", "feed_expr": None},
+    {"canonical": "place_of_performance_zip4a", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(place_of_performance_zip4a)", "feed_expr": None},
+    {"canonical": "planning_commission", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "planning_commission", "feed_expr": None},
+    {"canonical": "pop_congressional_code_current", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_congressional_code_current)", "feed_expr": None},
+    {"canonical": "pop_congressional_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "pop_congressional_population", "feed_expr": None},
+    {"canonical": "pop_country_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_country_name)", "feed_expr": None},
+    {"canonical": "pop_county_code", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_county_code)", "feed_expr": None},
+    {"canonical": "pop_county_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_county_name)", "feed_expr": None},
+    {"canonical": "pop_county_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "pop_county_population", "feed_expr": None},
+    {"canonical": "pop_state_fips", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_state_fips)", "feed_expr": None},
+    {"canonical": "pop_state_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pop_state_name)", "feed_expr": None},
+    {"canonical": "pop_state_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "pop_state_population", "feed_expr": None},
+    {"canonical": "port_authority", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "port_authority", "feed_expr": None},
+    {"canonical": "potential_total_value_awar", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(potential_total_value_awar)", "feed_expr": None},
+    {"canonical": "private_university_or_coll", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "private_university_or_coll", "feed_expr": None},
+    {"canonical": "program_system_or_equ_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(program_system_or_equ_desc)", "feed_expr": None},
+    {"canonical": "program_system_or_equipmen", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(program_system_or_equipmen)", "feed_expr": None},
+    {"canonical": "published_fabs_id", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "published_fabs_id", "feed_expr": None},
+    {"canonical": "pulled_from", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(pulled_from)", "feed_expr": None},
+    {"canonical": "purchase_card_as_paym_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(purchase_card_as_paym_desc)", "feed_expr": None},
+    {"canonical": "receives_contracts_and_gra", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "receives_contracts_and_gra", "feed_expr": None},
+    {"canonical": "recipient_location_congressional_code_current", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_location_congressional_code_current)", "feed_expr": None},
+    {"canonical": "recipient_location_congressional_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "recipient_location_congressional_population", "feed_expr": None},
+    {"canonical": "recipient_location_country_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_location_country_name)", "feed_expr": None},
+    {"canonical": "recipient_location_county_code", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_location_county_code)", "feed_expr": None},
+    {"canonical": "recipient_location_county_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "recipient_location_county_population", "feed_expr": None},
+    {"canonical": "recipient_location_state_fips", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_location_state_fips)", "feed_expr": None},
+    {"canonical": "recipient_location_state_name", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_location_state_name)", "feed_expr": None},
+    {"canonical": "recipient_location_state_population", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "recipient_location_state_population", "feed_expr": None},
+    {"canonical": "recipient_name_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_name_raw)", "feed_expr": None},
+    {"canonical": "recipient_unique_id", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recipient_unique_id)", "feed_expr": None},
+    {"canonical": "record_type", "duck_type": "BIGINT", "group": "enrich", "bulk_expr": "record_type", "feed_expr": None},
+    {"canonical": "record_type_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(record_type_description)", "feed_expr": None},
+    {"canonical": "recovered_materials_s_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recovered_materials_s_desc)", "feed_expr": None},
+    {"canonical": "recovered_materials_sustai", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(recovered_materials_sustai)", "feed_expr": None},
+    {"canonical": "referenced_idv_agency_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(referenced_idv_agency_desc)", "feed_expr": None},
+    {"canonical": "referenced_idv_type_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(referenced_idv_type_desc)", "feed_expr": None},
+    {"canonical": "referenced_mult_or_si_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(referenced_mult_or_si_desc)", "feed_expr": None},
+    {"canonical": "referenced_mult_or_single", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(referenced_mult_or_single)", "feed_expr": None},
+    {"canonical": "research", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(research)", "feed_expr": None},
+    {"canonical": "research_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(research_description)", "feed_expr": None},
+    {"canonical": "sai_number", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(sai_number)", "feed_expr": None},
+    {"canonical": "sam_exception", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(sam_exception)", "feed_expr": None},
+    {"canonical": "sam_exception_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(sam_exception_description)", "feed_expr": None},
+    {"canonical": "sba_certified_8_a_joint_ve", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "sba_certified_8_a_joint_ve", "feed_expr": None},
+    {"canonical": "school_district_local_gove", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "school_district_local_gove", "feed_expr": None},
+    {"canonical": "school_of_forestry", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "school_of_forestry", "feed_expr": None},
+    {"canonical": "sea_transportation", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(sea_transportation)", "feed_expr": None},
+    {"canonical": "sea_transportation_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(sea_transportation_desc)", "feed_expr": None},
+    {"canonical": "self_certified_small_disad", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "self_certified_small_disad", "feed_expr": None},
+    {"canonical": "small_agricultural_coopera", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "small_agricultural_coopera", "feed_expr": None},
+    {"canonical": "small_business_competitive", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "small_business_competitive", "feed_expr": None},
+    {"canonical": "small_disadvantaged_busine", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "small_disadvantaged_busine", "feed_expr": None},
+    {"canonical": "sole_proprietorship", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "sole_proprietorship", "feed_expr": None},
+    {"canonical": "solicitation_procedur_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(solicitation_procedur_desc)", "feed_expr": None},
+    {"canonical": "source_schema", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(source_schema)", "feed_expr": None},
+    {"canonical": "source_table", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(source_table)", "feed_expr": None},
+    {"canonical": "state_controlled_instituti", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "state_controlled_instituti", "feed_expr": None},
+    {"canonical": "subchapter_s_corporation", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "subchapter_s_corporation", "feed_expr": None},
+    {"canonical": "subcontinent_asian_asian_i", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "subcontinent_asian_asian_i", "feed_expr": None},
+    {"canonical": "subcontracting_plan_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(subcontracting_plan_desc)", "feed_expr": None},
+    {"canonical": "tas_components", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(tas_components)", "feed_expr": None},
+    {"canonical": "the_ability_one_program", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "the_ability_one_program", "feed_expr": None},
+    {"canonical": "township_local_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "township_local_government", "feed_expr": None},
+    {"canonical": "transit_authority", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "transit_authority", "feed_expr": None},
+    {"canonical": "tribal_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "tribal_college", "feed_expr": None},
+    {"canonical": "tribally_owned_business", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "tribally_owned_business", "feed_expr": None},
+    {"canonical": "type", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type)", "feed_expr": None},
+    {"canonical": "type_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_description)", "feed_expr": None},
+    {"canonical": "type_description_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_description_raw)", "feed_expr": None},
+    {"canonical": "type_of_contract_pric_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_of_contract_pric_desc)", "feed_expr": None},
+    {"canonical": "type_of_idc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_of_idc)", "feed_expr": None},
+    {"canonical": "type_of_idc_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_of_idc_description)", "feed_expr": None},
+    {"canonical": "type_raw", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_raw)", "feed_expr": None},
+    {"canonical": "type_set_aside_description", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(type_set_aside_description)", "feed_expr": None},
+    {"canonical": "undefinitized_action_desc", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(undefinitized_action_desc)", "feed_expr": None},
+    {"canonical": "update_date", "duck_type": "TIMESTAMP", "group": "enrich", "bulk_expr": "update_date", "feed_expr": None},
+    {"canonical": "uri", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(uri)", "feed_expr": None},
+    {"canonical": "us_federal_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "us_federal_government", "feed_expr": None},
+    {"canonical": "us_government_entity", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "us_government_entity", "feed_expr": None},
+    {"canonical": "us_local_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "us_local_government", "feed_expr": None},
+    {"canonical": "us_state_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "us_state_government", "feed_expr": None},
+    {"canonical": "us_tribal_government", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "us_tribal_government", "feed_expr": None},
+    {"canonical": "usaspending_snapshot_date", "duck_type": "DATE", "group": "enrich", "bulk_expr": "usaspending_snapshot_date", "feed_expr": None},
+    {"canonical": "usaspending_unique_transaction_id", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(usaspending_unique_transaction_id)", "feed_expr": None},
+    {"canonical": "vendor_doing_as_business_n", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(vendor_doing_as_business_n)", "feed_expr": None},
+    {"canonical": "vendor_fax_number", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(vendor_fax_number)", "feed_expr": None},
+    {"canonical": "vendor_phone_number", "duck_type": "VARCHAR", "group": "enrich", "bulk_expr": "s(vendor_phone_number)", "feed_expr": None},
+    {"canonical": "veteran_owned_business", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "veteran_owned_business", "feed_expr": None},
+    {"canonical": "veterinary_college", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "veterinary_college", "feed_expr": None},
+    {"canonical": "veterinary_hospital", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "veterinary_hospital", "feed_expr": None},
+    {"canonical": "woman_owned_business", "duck_type": "BOOLEAN", "group": "enrich", "bulk_expr": "woman_owned_business", "feed_expr": None},
+    # ── end OBT expansion ────────────────────────────────────────────────────────────
     # ---- (d) provenance ----
     {"canonical": "canonical_source", "duck_type": "VARCHAR", "group": "prov",
      "bulk_expr": None, "feed_expr": None},   # literal per leg
@@ -465,17 +719,17 @@ def _bulk_source_cols() -> list[str]:
         if not expr:
             continue
         for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
-            if tok in ("s", "kbulk", "TRY_CAST", "COALESCE", "AS", "DOUBLE", "BIGINT",
-                       "DATE", "TIMESTAMP", "VARCHAR", "replace"):
+            if tok in ("s", "kbulk", "TRY_CAST", "CAST", "COALESCE", "AS", "DOUBLE", "BIGINT",
+                       "DATE", "TIMESTAMP", "VARCHAR", "INTEGER", "replace", "upper", "substr", "lower"):
                 continue
             raw.add(tok)
     return sorted(raw)
 
 
-# ----- canonical-vocabulary scanner column lists for the FRESH / archive feeds ----- #
+# ----- canonical-vocabulary scanner column list for the FRESH feed ----- #
 def _feed_source_cols() -> list[str]:
-    """Raw canonical-vocabulary columns the FRESH/archive projection reads (keys + core only;
-    enrichment is BULK-only). Parsed from feed_expr."""
+    """Raw canonical-vocabulary columns the FRESH projection reads (keys + core only; enrichment is
+    BULK-only). Parsed from feed_expr. Presence-filtered against the live FRESH schema in build()."""
     import re
     raw: set[str] = set()
     for c in COLUMN_SPEC:
@@ -483,8 +737,8 @@ def _feed_source_cols() -> list[str]:
         if not expr:
             continue
         for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
-            if tok in ("s", "TRY_CAST", "AS", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP",
-                       "VARCHAR", "replace"):
+            if tok in ("s", "TRY_CAST", "CAST", "AS", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP",
+                       "VARCHAR", "INTEGER", "replace", "upper", "substr", "lower"):
                 continue
             raw.add(tok)
     return sorted(raw)
@@ -526,48 +780,33 @@ def _enrich_replace_block() -> str:
     COLUMN_SPEC — no hand-transcription. The volatile-core winner is already resolved in
     `core_winner`, so this block touches ONLY the enrichment half.
 
-    Variant C — BRANCH per enrichment column by source availability:
-      • pg-only enrich (feed_expr None; the 27 rpt.* cols): plain b.<col> from bulk_latest (pg). No
-        monthly source exists → no COALESCE.
-      • monthly-unique enrich (feed_expr set; the 12 TAS/federal + officer-comp cols): pg LACKS these
-        canonical columns entirely, so the value is pg-preferred COALESCE(b.<col>, m.<col>) sourced
-        from the reconciled bulk_base = pg⊕monthly. The pg leg (b) is a typed NULL placeholder for
-        these 12 (bulk_expr None), so today the COALESCE degenerates to m.<col>; the form is kept so
-        a future pg schema add is picked up automatically. m = monthly_enrich_latest (an
-        enrichment-populatedness dedup, NOT monthly_latest's core dedup — see §3.6b)."""
+    2-source (BULK+FRESH) build: MONTHLY re-integration is owned by a parallel agent. EVERY enrichment
+    column projects plain b.<col> from bulk_latest (pg) — there is no monthly leg and no COALESCE. The
+    12 monthly-unique cols have bulk_expr=None → b.<col> = CAST(NULL AS <type>) (typed-NULL placeholder,
+    100% NULL in the live dataset), reserved for the monthly agent's re-add. Do NOT resurrect the
+    monthly COALESCE / monthly_enrich_latest here — re-author against the renamed monthly upstream when
+    it lands (see the module MERGE header)."""
     parts = []
     for c in _cols("enrich"):
         col = c["canonical"]
-        if c["feed_expr"] is None:
-            parts.append(f"    b.{col} AS {col}")
-        else:
-            parts.append(f"    COALESCE(b.{col}, m.{col}) AS {col}")
+        parts.append(f"    b.{col} AS {col}")
     return ",\n".join(parts)
 
 
 def _stage1_sql(built_at_iso: str) -> str:
-    """STAGE 1 — macros, the archive projection, and the three per-source collapses, with the
-    bulk/fresh projections INLINED into their collapse windows (P1-4 spill hygiene: the ~107M-row
-    bulk_proj duplicate materialization was the single largest spill contributor — 246 GB observed
-    on-disk before the collapses even completed on the first full-build attempt). archive_proj
-    stays materialized: it is small (~3M rows) and legitimately read twice (§3.4 core dedup +
-    §3.6b enrichment dedup). Executed as ONE multi-statement script; the schema-identity gate then
-    runs against the three COLLAPSED tables (identical canonical NAME+ORDER+TYPE by construction —
-    collapse = SELECT * EXCLUDE (rn) over a projection-shaped inner) before the stage-2 merge.
+    """STAGE 1 — macros + the two per-source collapses (BULK + FRESH), with the bulk/fresh projections
+    INLINED into their collapse windows (P1-4 spill hygiene: the ~107M-row bulk_proj duplicate
+    materialization was the single largest spill contributor — 246 GB observed on-disk before the
+    collapses even completed on the first full-build attempt). Executed as ONE multi-statement script;
+    the schema-identity gate then runs against the two COLLAPSED tables (identical canonical
+    NAME+ORDER+TYPE by construction — collapse = SELECT * EXCLUDE (rn) over a projection-shaped inner)
+    before the stage-2 merge.
 
-    Also captured here, as 1-row m_* tables, every metric whose source table is dropped in stage 2
-    (free-as-you-go DROPs), plus the narrow bulk_keys set (1 col) that outlives bulk_latest for the
-    late monthly_corrections metric."""
+    2-source (BULK+FRESH) build: no MONTHLY/archive projection or collapse. Also captured here, as
+    1-row m_* tables, every metric whose source table is dropped in stage 2 (free-as-you-go DROPs)."""
     bulk_proj = _proj_select("bulk", built_at_iso)
     fresh_proj = _proj_select("feed", built_at_iso)
-    arch_proj = _proj_select("feed", built_at_iso)
     return f"""{_MACROS}
--- ===== §3.1 archive projection (materialized ONCE; read twice: §3.4 + §3.6b) ===== --
-CREATE TEMP TABLE archive_proj AS
-SELECT
-{arch_proj}
-FROM archive_r;
-
 -- ===== §3.2 FRESH dedup → latest-per-key (projection INLINED; fresh_proj never materialized) ===== --
 CREATE TEMP TABLE fresh_latest AS
 SELECT * EXCLUDE (rn) FROM (
@@ -606,34 +845,8 @@ SELECT * EXCLUDE (rn) FROM (
   WHERE contract_transaction_unique_key IS NOT NULL
 ) WHERE rn = 1;
 
--- ===== §3.4 MONTHLY collapse → latest-per-key over the FULL monthly projection (THE fix) ===== --
--- NOTE: the physical R2 upstream is still usaspending_archive_full_fpds (registered as archive_r →
--- archive_proj); renaming that dataset is a tracked follow-up. In-code the SEMANTIC name is MONTHLY
--- (the monthly bulk-download CSV feed). Built over the ENTIRE monthly projection (NOT an anti-joined
--- survivor set), so monthly competes on shared keys. monthly lacks a stable transaction surrogate →
--- contract_award_unique_key (the same surrogate fresh_latest uses). monthly_full is FY2026-only
--- (2025-10-01..2026-06-04): under --since 2025-10-01 monthly_latest is the COMPLETE monthly universe
--- = complete correction-proof scope. CORE dedup ordering stays core-populatedness/mtime (do NOT
--- switch to enrichment-populatedness here — that would perturb the core argmax; §3.6b handles the
--- enrichment-first monthly row SEPARATELY).
-CREATE TEMP TABLE monthly_latest AS
-SELECT * EXCLUDE (rn) FROM (
-  SELECT *, row_number() OVER (
-            PARTITION BY contract_transaction_unique_key
-            ORDER BY last_modified_date DESC NULLS LAST,
-                     (federal_action_obligation IS NULL) ASC,
-                     contract_award_unique_key DESC NULLS LAST) AS rn
-  FROM archive_proj
-  WHERE contract_transaction_unique_key IS NOT NULL
-) WHERE rn = 1;
-
--- ===== §3.4k narrow BULK key set (1 col) — outlives bulk_latest for late metrics ===== --
-CREATE TEMP TABLE bulk_keys AS
-SELECT contract_transaction_unique_key AS k FROM bulk_latest;
-
 -- ===== early metric captures (1-row each) — sources dropped at stage-2 boundaries ===== --
 CREATE TEMP TABLE m_rows_in_fresh AS SELECT count(*) AS c FROM fresh_r;
-CREATE TEMP TABLE m_rows_in_archive AS SELECT count(*) AS c FROM archive_proj;
 -- BULK is consumed exactly once by the inlined collapse (single-pass reader) — the raw scanned
 -- count cannot be re-taken. BULK is proven PK-unique (107,250,527 distinct == rowcount), so the
 -- post-collapse count equals rows scanned; if BULK ever grows dup keys, dedup_collapsed
@@ -641,102 +854,59 @@ CREATE TEMP TABLE m_rows_in_archive AS SELECT count(*) AS c FROM archive_proj;
 CREATE TEMP TABLE m_rows_in_bulk AS SELECT count(*) AS c FROM bulk_latest;
 CREATE TEMP TABLE m_fresh_only_tail AS
 SELECT count(*) AS c FROM fresh_latest f
-ANTI JOIN bulk_keys b ON f.contract_transaction_unique_key = b.k;
+ANTI JOIN bulk_latest b ON f.contract_transaction_unique_key = b.contract_transaction_unique_key;
 """
 
 
 DELTA_STAMP_COL = "archive_snapshot_stamp"
 
 
-def _stage2_sql(delta_has_stamp: bool = True) -> str:
-    """STAGE 2 — the merge: TWO-TIER logical reconciliation, ONE physical artifact. Pipeline:
-      (stage-1 collapses: fresh_latest / bulk_latest / monthly_latest, ≤1 row per key each)
-        → bulk_base    (Tier 1, LOGICAL CTE — NOT materialized as a separate artifact: pg⊕monthly
-                        per-key argmax(last_modified_date); equal-mtime tie → monthly WINS over pg)
-        → core_union   (UNION ALL BY NAME of the three collapsed CORES, each tagged src+source_rank)
-        → core_winner  (Tier 2, SINGLE 3-way window: argmax(last_modified_date) per key, total-order
-                        tiebreak — associativity-equivalent to (bulk_base ⊕ fresh_latest); tie→FRESH)
-        → monthly_enrich_latest (§3.6b enrichment-populatedness dedup — the monthly leg of the fill)
-        → resolved     (LEFT JOIN bulk_latest [pg] + LEFT JOIN monthly_enrich_latest [monthly] →
-                        branched enrichment REPLACE [COALESCE pg-preferred for the 12 monthly-unique
-                        cols, plain pg for the 27] + w.src AS canonical_source)
-        → canonical_out(R6-scoped tombstone with R5 reinstatement + locked canonical projection)
+def _stage2_sql() -> str:
+    """STAGE 2 — the merge: 2-source (BULK + FRESH) reconciliation, ONE physical artifact. Pipeline:
+      (stage-1 collapses: fresh_latest / bulk_latest, ≤1 row per key each)
+        → core_union   (UNION ALL BY NAME of the two collapsed CORES, each tagged src+source_rank)
+        → core_winner  (SINGLE 2-way window: argmax(last_modified_date) per key, total-order tiebreak;
+                        source_rank FRESH(1) < BULK(2) → equal-mtime tie → FRESH wins)
+        → resolved     (LEFT JOIN bulk_latest [pg] → pg-only enrichment REPLACE + w.src AS canonical_source)
+        → canonical_out(locked canonical projection; NO tombstone/reinstatement in a 2-source build)
 
-    P1-4 SPILL HYGIENE: every giant TEMP TABLE is DROPped at its last-reader boundary (free-as-you-go),
+    P1-4 SPILL HYGIENE: every giant TEMP TABLE is dropped at its last-reader boundary (free-as-you-go),
     and the metrics whose sources are dropped are captured first as 1-row m_* tables (stage 1 +
-    m_merged / m_deletes / m_monthly_corr here). Peak concurrent spill is bounded by the join inputs
-    of the widest single statement (~3 wide ~107M-row relations at `resolved`), not by the sum of
-    every intermediate (~6 wide tables ≈ 350-520 GB unbounded, the first-attempt failure mode).
+    m_merged here). Peak concurrent spill is bounded by the join inputs of the widest single statement
+    (~2 wide ~107M-row relations at `resolved`), not by the sum of every intermediate.
 
-    TWO-TIER INVARIANT (CORE byte-identity): the emitted CORE is argmax(last_modified_date) over
-    {FRESH, BULK, MONTHLY}. argmax is associative, so the explicit two-tier framing
-    (bulk_base = BULK⊕MONTHLY, then canonical = bulk_base⊕FRESH) is IDENTICAL to the flat 3-way
-    window kept below. The tier-1 equal-mtime tie (monthly>pg) is subsumed by source_rank
-    (MONTHLY=2 < BULK=3) in the flat window; the tier-2 tie (fresh) by FRESH=1. Proven on the
-    --since 2025-10-01 window: monthly.mtime ≥ pg on 100% of 2,189,379 shared FY2026 keys (0 older),
-    so the flat window emits byte-identical CORE. bulk_base is retained as a documented LOGICAL CTE
-    so the reconciled base is the semantic source of the enrichment fill; it is NOT a second physical
-    Lance dataset — the single artifact usaspending_fpds_canonical_txn/ is unchanged.
+    CORE resolution: argmax(last_modified_date) over {FRESH, BULK}. After the two upstream collapses
+    there is AT MOST one row per source per key, so source_rank alone disambiguates every cross-source
+    mtime tie (FRESH=1 < BULK=2 → tie → FRESH). PK-uniqueness is structural (row_number()=1 over
+    ≤1-per-source collapses). Pure string; references the stage-1 collapses. Executed as ONE
+    multi-statement script.
 
-    THE FIX (correction landing): MONTHLY competes for the volatile core on EVERY key (monthly_latest
-    is collapsed over the FULL monthly projection, not an anti-joined survivor set), so a
-    strictly-newer monthly correction lands for keys shared with BULK/FRESH. PK-uniqueness is
-    structural (row_number()=1 over ≤1-per-source collapses). Pure string; references the stage-1
-    collapses + archive_delta_D relation. Executed as ONE multi-statement script."""
+    2-source scope: MONTHLY re-integration is owned by a parallel agent; the 12 monthly-unique enrich
+    cols are typed-NULL placeholders (feed_expr=None AND bulk_expr=None) reserved for that re-add. Do
+    NOT resurrect archive_proj/monthly_latest/monthly_enrich_latest/tombstone here — re-author against
+    the renamed monthly upstream when it lands (see the module MERGE header)."""
     enrich_block = _enrich_replace_block()
     canon_cols = ", ".join(_canon_order())
-    # R6 stamp scoping fragments — only when the delta feed actually carries the stamp column.
-    if delta_has_stamp:
-        latest_stamp_expr = f"max({DELTA_STAMP_COL}) AS s"
-        stamp_predicate = (f", latest WHERE {DELTA_STAMP_COL} = latest.s "
-                           f"OR (latest.s IS NULL AND {DELTA_STAMP_COL} IS NULL)")
-    else:
-        latest_stamp_expr = "CAST(NULL AS VARCHAR) AS s"
-        stamp_predicate = ""
-    return f"""-- ===== §3.4b TIER-1 bulk_base = bulk_latest ⊕ monthly_latest (LOGICAL CTE, NOT materialized) ===== --
--- Explicit two-tier framing: reconcile pg (bulk) with monthly by per-key argmax(last_modified_date);
--- equal-mtime tie → MONTHLY WINS over pg (rank 2 < 3). This is the semantic "reconciled base" the
--- enrichment fill (§3.7) draws from. It is a documented VIEW, not a second Lance artifact; the CORE
--- values it would emit are subsumed by the flat 3-way core_winner below (argmax associativity), so
--- it is defined for clarity/traceability and to name the tier boundary — the flat window remains the
--- executed path, keeping emitted CORE byte-identical to the pre-two-tier build.
-CREATE TEMP VIEW bulk_base AS
-SELECT * EXCLUDE (src, source_rank, rn) FROM (
-  SELECT *, row_number() OVER (
-            PARTITION BY contract_transaction_unique_key
-            ORDER BY last_modified_date DESC NULLS LAST, source_rank ASC,
-                     contract_award_unique_key DESC NULLS LAST) AS rn
-  FROM (
-    SELECT CAST('monthly' AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, m.* FROM monthly_latest m
-    UNION ALL BY NAME
-    SELECT CAST('bulk'    AS VARCHAR) AS src, CAST(3 AS INTEGER) AS source_rank, b.* FROM bulk_latest b
-  )
-) WHERE rn = 1;
-
--- ===== §3.5 three collapsed CORES → vertical union, each tagged src + source_rank ===== --
--- src CAST identically as VARCHAR and source_rank as INTEGER in all three arms so BY-NAME union
--- types align. source_rank encodes the locked precedence FRESH(1) > MONTHLY(2) > BULK(3) — which is
--- exactly the two-tier order flattened: tier-2 tie→FRESH (rank 1), tier-1 tie→MONTHLY (rank 2 < 3).
+    return f"""-- ===== §3.5 two collapsed CORES → vertical union, each tagged src + source_rank ===== --
+-- 2-source (BULK+FRESH) build. The monthly leg is owned by a parallel agent; the 12
+-- monthly-unique enrich cols (COLUMN_SPEC ~lines 309-332) are typed-NULL placeholders reserved for
+-- that re-add. Keep this build strictly BULK + FRESH; the monthly leg is re-authored elsewhere.
+-- src CAST identically as VARCHAR and source_rank as INTEGER in both arms so BY-NAME union types
+-- align. source_rank encodes the locked precedence FRESH(1) > BULK(2): equal-mtime tie → FRESH.
 CREATE TEMP TABLE core_union AS
-SELECT CAST('fresh'   AS VARCHAR) AS src, CAST(1 AS INTEGER) AS source_rank, f.* FROM fresh_latest f
+SELECT CAST('fresh' AS VARCHAR) AS src, CAST(1 AS INTEGER) AS source_rank, f.* FROM fresh_latest f
 UNION ALL BY NAME
-SELECT CAST('monthly' AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, a.* FROM monthly_latest a
-UNION ALL BY NAME
-SELECT CAST('bulk'    AS VARCHAR) AS src, CAST(3 AS INTEGER) AS source_rank, b.* FROM bulk_latest b;
+SELECT CAST('bulk'  AS VARCHAR) AS src, CAST(2 AS INTEGER) AS source_rank, b.* FROM bulk_latest b;
 
--- P1-4 boundary: core_union was the last reader of fresh_latest and monthly_latest (their metrics
--- were captured in stage 1). bulk_base is documentation-only (never queried) and must go before its
--- base tables. bulk_latest LIVES ON (enrichment source at §3.7).
-DROP VIEW bulk_base;
+-- P1-4 boundary: core_union was the last reader of fresh_latest (its metric was captured in stage 1).
+-- bulk_latest LIVES ON (enrichment source at §3.7).
 DROP TABLE fresh_latest;
-DROP TABLE monthly_latest;
 
--- ===== §3.6 SINGLE 3-way per-key core resolution: argmax(last_modified_date) (= flat two-tier) ===== --
--- Provably total order: after the three upstream collapses there is AT MOST one row per source per
--- key, so source_rank alone disambiguates every cross-source mtime tie; the trailing award-key term
--- is defense-in-depth. NULL mtime sorts LAST (= oldest) per BLOCKER-1. Exactly one survivor per key
--- (row_number()=1) → PK-uniqueness is structural, not anti-join-disjointness-dependent. This flat
--- window is argmax-associativity-identical to Tier2(bulk_base ⊕ fresh_latest); see §3.4b.
+-- ===== §3.6 SINGLE 2-way per-key core resolution: argmax(last_modified_date) ===== --
+-- Provably total order: after the two upstream collapses there is AT MOST one row per source per key,
+-- so source_rank alone disambiguates every cross-source mtime tie; the trailing award-key term is
+-- defense-in-depth. NULL mtime sorts LAST (= oldest) per BLOCKER-1. Exactly one survivor per key
+-- (row_number()=1) → PK-uniqueness is structural.
 CREATE TEMP TABLE core_winner AS
 SELECT * EXCLUDE (rn, source_rank) FROM (
   SELECT *, row_number() OVER (
@@ -751,42 +921,16 @@ SELECT * EXCLUDE (rn, source_rank) FROM (
 CREATE TEMP TABLE m_merged AS SELECT count(*) AS c FROM core_winner;
 DROP TABLE core_union;
 
--- ===== §3.6b monthly ENRICHMENT-populatedness dedup (the monthly leg of the COALESCE) ===== --
--- SEPARATE from monthly_latest's CORE dedup (§3.4): that one ranks on core-populatedness/mtime and
--- can surface a latest-but-enrich-NULL row, forfeiting the gain. Here rank ENRICHMENT-populated rows
--- ABOVE enrich-NULL rows for the same key, then latest-mtime among equally-populated, then a stable
--- award-key surrogate. On the --since 2025-10-01 window the delta vs the latest-mtime dedup is
--- empirically 0 (every key's latest-mtime monthly row already carries its enrichment), so CORE stays
--- byte-identical; it is REQUIRED as a cadence-robustness safeguard for a future core-only monthly
--- re-dump that lands a newer enrich-NULL row. Keyed downstream on the txn key → ≤1 row per key.
-CREATE TEMP TABLE monthly_enrich_latest AS
-SELECT * EXCLUDE (rn) FROM (
-  SELECT *, row_number() OVER (
-            PARTITION BY contract_transaction_unique_key
-            ORDER BY (treasury_accounts_funding_this_award IS NULL
-                      AND federal_accounts_funding_this_award IS NULL
-                      AND highly_compensated_officer_1_name IS NULL) ASC,
-                     last_modified_date DESC NULLS LAST,
-                     contract_award_unique_key DESC NULLS LAST) AS rn
-  FROM archive_proj
-  WHERE contract_transaction_unique_key IS NOT NULL
-) WHERE rn = 1;
-
--- P1-4 boundary: monthly_enrich_latest was archive_proj's second and last reader.
-DROP TABLE archive_proj;
-
--- ===== §3.7 enrichment fill: pg (bulk_latest) + monthly (monthly_enrich_latest) ===== --
--- Both LEFT JOINs are to PK-unique per-key collapses → no fan-out. The enrichment REPLACE (§3.7
--- builder) overwrites the enrich half: plain b.<col> for the 27 pg-only cols; pg-preferred
--- COALESCE(b.<col>, m.<col>) for the 12 monthly-unique cols (pg is a typed-NULL placeholder for
--- those, so today COALESCE = m.<col>; the reconciled bulk_base semantics = pg-preferred fill). b is
--- NULL for archive-only/fresh-only keys; m is NULL for fresh-only/pg-only keys. canonical_source is
--- derived HERE, exactly once, as the winning core row's src tag (INV-7) — the true per-key winner
--- (fresh|bulk|monthly), never a partition literal.
--- EXCLUDE the placeholder canonical_source carried up from the projections (typed NULL) as well as
--- src, then re-derive canonical_source := w.src. Excluding the placeholder is REQUIRED: keeping it
--- would collide with `w.src AS canonical_source` and DuckDB would silently rename the derived column
--- (canonical_source_1), leaving the locked-order projection to read the all-NULL placeholder.
+-- ===== §3.7 enrichment fill: pg (bulk_latest) ONLY ===== --
+-- The LEFT JOIN is to a PK-unique per-key collapse → no fan-out. The enrichment REPLACE (§3.7 builder)
+-- overwrites the enrich half with plain b.<col> (pg-only); the 12 monthly-unique cols resolve to
+-- CAST(NULL AS <type>) (bulk_expr None). b is NULL for fresh-only keys. canonical_source is derived
+-- HERE, exactly once, as the winning core row's src tag (INV-7) — the true per-key winner (fresh|bulk),
+-- never a partition literal. EXCLUDE the placeholder canonical_source carried up from the projections
+-- (typed NULL) as well as src, then re-derive canonical_source := w.src. Excluding the placeholder is
+-- REQUIRED: keeping it would collide with `w.src AS canonical_source` and DuckDB would silently rename
+-- the derived column (canonical_source_1), leaving the locked-order projection to read the all-NULL
+-- placeholder.
 CREATE TEMP TABLE resolved AS
 SELECT
   w.* EXCLUDE (src, canonical_source) REPLACE (
@@ -794,60 +938,18 @@ SELECT
   ),
   w.src AS canonical_source
 FROM core_winner w
-LEFT JOIN bulk_latest b ON w.contract_transaction_unique_key = b.contract_transaction_unique_key
-LEFT JOIN monthly_enrich_latest m ON w.contract_transaction_unique_key = m.contract_transaction_unique_key;
+LEFT JOIN bulk_latest b ON w.contract_transaction_unique_key = b.contract_transaction_unique_key;
 
--- P1-4 boundary: resolved supersedes core_winner + both enrichment legs. bulk_latest's late metric
--- (monthly_corrections) reads the narrow bulk_keys captured in stage 1, so the 107M-wide table goes
--- here. rows_in_bulk was captured in stage 1 (m_rows_in_bulk).
+-- P1-4 boundary: resolved supersedes core_winner + the enrichment leg. rows_in_bulk was captured in
+-- stage 1 (m_rows_in_bulk).
 DROP TABLE core_winner;
-DROP TABLE monthly_enrich_latest;
 DROP TABLE bulk_latest;
 
--- ===== §3.8 tombstone (R6-scoped) − reinstatement (R5) → canonical_out ===== --
--- delta scanner is filtered ONLY by correction_delete_ind='D' (caller side); NEVER --since.
--- R6 SNAPSHOT-STAMP SCOPING: delta 'D' rows accumulate across monthly snapshots; an OLD-month delete
--- must NOT tombstone forever. Scope delete_keys to the LATEST archive_snapshot_stamp present in the
--- delta-'D' set (a single scalar), so only the current snapshot's deletes apply. Guarded by
--- has_stamp: if the delta feed lacks the stamp column, fall back to the whole 'D' set (no scoping).
-CREATE TEMP TABLE delete_keys AS
-WITH d AS (SELECT * FROM archive_delta_D WHERE s(contract_transaction_unique_key) IS NOT NULL),
-     latest AS (SELECT {latest_stamp_expr} FROM d)
-SELECT s(contract_transaction_unique_key) AS k,
-       max(TRY_CAST(replace(s(last_modified_date),'+00','') AS TIMESTAMP)) AS delta_lmt
-FROM d {stamp_predicate}
-GROUP BY 1;
-
--- R5 REINSTATEMENT GATE: a delete tombstone is honored ONLY when the WINNING RECONCILED-winner row
--- (post Tier-2, in `resolved`) is NOT strictly newer than the delete's last_modified_date. If the
--- reconciled winner mtime > delta_lmt, the key was RE-INSTATED by a newer (non-'D') source row after
--- the delete — do NOT tombstone it. Ground fact (--since 2025-10-01): 92/656 'D' keys are live in
--- monthly_full; 39 are strictly-newer → those 39 survive. Tombstone-minus-reinstatement is ONE
--- coupled final-state op applied AFTER the fresh overlay (to `resolved`, never to the base alone).
--- Implemented as a LEFT JOIN + WHERE: keep a row unless it matches a delete that is NOT reinstated.
+-- ===== §3.8 locked canonical projection → canonical_out (NO tombstone in a 2-source build) ===== --
 CREATE TEMP TABLE canonical_out AS
-SELECT {canon_cols} FROM resolved
-LEFT JOIN delete_keys d ON resolved.contract_transaction_unique_key = d.k
-WHERE d.k IS NULL
-   OR (resolved.last_modified_date IS NOT NULL AND resolved.last_modified_date > d.delta_lmt);
-
--- ===== late metric captures, then the last P1-4 boundary ===== --
--- deletes_tombstoned = delete-keys present in resolved that were ACTUALLY dropped — i.e. NOT
--- R5-reinstated (the complement of the reinstatement predicate; post-R5 truth, not raw 'D' matches).
-CREATE TEMP TABLE m_deletes AS
-SELECT count(DISTINCT r.contract_transaction_unique_key) AS c FROM resolved r
-JOIN delete_keys d ON r.contract_transaction_unique_key = d.k
-WHERE r.last_modified_date IS NULL OR r.last_modified_date <= d.delta_lmt;
--- monthly_corrections_applied = canonical keys the MONTHLY core WON over a key BULK also holds —
--- the true correction count. SEMI JOIN on the narrow bulk_keys (bulk_latest already dropped).
-CREATE TEMP TABLE m_monthly_corr AS
-SELECT count(*) AS c FROM canonical_out co
-SEMI JOIN bulk_keys b ON co.contract_transaction_unique_key = b.k
-WHERE co.canonical_source = 'monthly';
+SELECT {canon_cols} FROM resolved;
 
 DROP TABLE resolved;
-DROP TABLE delete_keys;
-DROP TABLE bulk_keys;
 """
 
 
@@ -856,10 +958,10 @@ def _build_merge_sql(*, built_at_iso: str, since: str | None) -> str:
     build() executes _stage1_sql() and _stage2_sql() separately so the schema-identity gate can run
     between them (against the collapsed tables). No R2 access here; safe to print.
 
-    --since note: the predicate is pushed into the THREE DATA scanners (caller/build side), NEVER the
-    delta scanner. Carried here only as a comment marker for traceability."""
-    since_note = (f"-- --since={since} pushed into the THREE data scanners only "
-                  f"(delta NEVER filtered)\n" if since else "")
+    --since note: the predicate is pushed into the TWO DATA scanners (BULK + FRESH, caller/build side).
+    Carried here only as a comment marker for traceability."""
+    since_note = (f"-- --since={since} pushed into the TWO data scanners (BULK + FRESH)\n"
+                  if since else "")
     return (since_note + _stage1_sql(built_at_iso)
             + "\n-- [build() runs the schema-identity gate HERE, on the collapsed tables]\n"
             + _stage2_sql())
@@ -1113,13 +1215,13 @@ def init_ops() -> None:
 
 
 def _assert_collapse_schema_identity(con) -> None:
-    """§4 enforcement — PROGRAMMATIC, not aspirational. The three per-source COLLAPSES (which are
+    """§4 enforcement — PROGRAMMATIC, not aspirational. The two per-source COLLAPSES (which are
     SELECT * EXCLUDE (rn) over projection-shaped inners, so they carry the projections' exact
     (name, type) sequences) MUST be byte-identical before any union. Raise on mismatch (hard build
-    failure rather than a silent transposition). P1-4 note: the gate moved from the *_proj trio to
+    failure rather than a silent transposition). P1-4 note: the gate moved from the *_proj pair to
     the collapsed tables because the bulk/fresh projections are inlined and never materialized."""
     sigs = {}
-    for name in ("bulk_latest", "fresh_latest", "monthly_latest"):
+    for name in ("bulk_latest", "fresh_latest"):
         rows = con.execute(f"DESCRIBE {name}").fetchall()  # (column_name, column_type, ...)
         sigs[name] = [(r[0], r[1]) for r in rows]
     base = sigs["bulk_latest"]
@@ -1153,58 +1255,42 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         os.makedirs(SCRATCH, exist_ok=True)
         shutil.rmtree(local_ds, ignore_errors=True)
 
-        # --since pushed into the THREE DATA scanners ONLY. BULK action_date is date32 → compare to a
-        # DATE literal; FRESH/archive action_date is lexical ISO-10 string (0 nulls) → lexical compare.
+        # --since pushed into the TWO DATA scanners (BULK + FRESH). BULK action_date is date32 → compare
+        # to a DATE literal; FRESH action_date is lexical ISO-10 string (0 nulls) → lexical compare.
         bulk_data_filter = f"action_date >= DATE '{since}'" if since else None
         feed_data_filter = f"action_date >= '{since}'" if since else None
 
         bulk_ds = lance.dataset(BULK_URI, storage_options=so)
         fresh_ds = lance.dataset(FRESH_URI, storage_options=so)
-        arch_ds = lance.dataset(ARCHIVE_FULL_URI, storage_options=so)
-        delta_ds = lance.dataset(ARCHIVE_DELTA_URI, storage_options=so)
 
         bulk_present = set(bulk_ds.schema.names)
         feed_keys_core = _feed_source_cols()
         fresh_present = set(fresh_ds.schema.names)
-        arch_present = set(arch_ds.schema.names)
-        delta_present = set(delta_ds.schema.names)
 
         bulk_scan_cols = [c for c in _bulk_source_cols() if c in bulk_present]
         fresh_scan_cols = [c for c in feed_keys_core if c in fresh_present]
-        arch_scan_cols = [c for c in feed_keys_core if c in arch_present]
-        # R6: archive_snapshot_stamp scopes delete_keys to the LATEST monthly snapshot. Include it in
-        # the delta scan when present; delta_has_stamp gates the scoping fragments in _merge_tail_sql.
-        delta_scan_cols = [c for c in ("contract_transaction_unique_key", "last_modified_date",
-                                       "correction_delete_ind", DELTA_STAMP_COL) if c in delta_present]
-        delta_has_stamp = DELTA_STAMP_COL in delta_present
 
         con = _duck()
         log(f"registering sources (since={since}) → target {target_uri}")
         # BULK: single pass into the per-key collapse → .to_reader().
         con.register("bulk_r", bulk_ds.scanner(columns=bulk_scan_cols,
                                                filter=bulk_data_filter).to_reader())
-        # FRESH / archive: deduped then probed (multi-pass) → .to_table() (re-scannable).
+        # FRESH: deduped then probed (multi-pass) → .to_table() (re-scannable).
         con.register("fresh_r", fresh_ds.scanner(columns=fresh_scan_cols,
                                                  filter=feed_data_filter).to_table())
-        con.register("archive_r", arch_ds.scanner(columns=arch_scan_cols,
-                                                  filter=feed_data_filter).to_table())
-        # delta: FIXED/EXCLUSIVE correction_delete_ind='D'; NEVER --since.
-        con.register("archive_delta_D", delta_ds.scanner(
-            columns=delta_scan_cols, filter="correction_delete_ind = 'D'").to_table())
 
-        # Stage 1: archive projection + the three collapses (bulk/fresh projections INLINED — P1-4),
-        # then ENFORCE schema identity on the collapsed tables before any union (§4 — programmatic
-        # gate). Stage 2: the merge with free-as-you-go DROPs; metrics whose sources are dropped
-        # were captured as 1-row m_* tables at the correct boundaries.
+        # Stage 1: the two collapses (BULK + FRESH; projections INLINED — P1-4), then ENFORCE schema
+        # identity on the collapsed tables before the union (§4 — programmatic gate). Stage 2: the
+        # 2-source merge with free-as-you-go DROPs; metrics whose sources are dropped were captured as
+        # 1-row m_* tables at the correct boundaries.
         con.execute(_stage1_sql(built_at_iso))
         _assert_collapse_schema_identity(con)
-        con.execute(_stage2_sql(delta_has_stamp=delta_has_stamp))
+        con.execute(_stage2_sql())
 
         # rows_in_bulk = post-collapse count (BULK proven PK-unique → equals rows scanned; the
         # single-pass reader cannot be re-counted after the inlined collapse — see _stage1_sql).
         rows_in_bulk = con.execute("SELECT c FROM m_rows_in_bulk").fetchone()[0]
         rows_in_fresh = con.execute("SELECT c FROM m_rows_in_fresh").fetchone()[0]
-        rows_in_archive_full = con.execute("SELECT c FROM m_rows_in_archive").fetchone()[0]
 
         rows_out = con.execute("SELECT count(*) FROM canonical_out").fetchone()[0]
         pk_total, pk_distinct = con.execute(
@@ -1223,18 +1309,14 @@ def build(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         # All intermediate-table metrics come from the 1-row m_* captures (their giant sources are
         # already dropped by the stage-2 P1-4 boundaries; comments on each live at the capture site).
         fresh_only_tail = con.execute("SELECT c FROM m_fresh_only_tail").fetchone()[0]
-        deletes_tombstoned = con.execute("SELECT c FROM m_deletes").fetchone()[0]
-        # rows_out INVARIANT: distinct-key count of core_union = |FRESH∪BULK∪MONTHLY keys|; landing a
+        # rows_out INVARIANT: distinct-key count of core_union = |FRESH∪BULK keys|; landing a
         # correction REPLACES a key's core, never adds/removes a key. core_winner had exactly that
         # count (one survivor per key) — captured as m_merged before its drop.
         merged_rows = con.execute("SELECT c FROM m_merged").fetchone()[0]
-        dedup_collapsed = int(rows_in_bulk + rows_in_fresh + rows_in_archive_full - merged_rows)
-        monthly_corrections_applied = con.execute("SELECT c FROM m_monthly_corr").fetchone()[0]
+        dedup_collapsed = int(rows_in_bulk + rows_in_fresh - merged_rows)
         max_action_date = con.execute("SELECT max(action_date) FROM canonical_out").fetchone()[0]
 
         log(f"core_winner={merged_rows:,} rows_out={rows_out:,} fresh_only_tail={fresh_only_tail:,} "
-            f"deletes_tombstoned={deletes_tombstoned:,} "
-            f"monthly_corrections_applied={monthly_corrections_applied:,} "
             f"max_action_date={max_action_date}")
 
         # ── stream the result to a LOCAL Lance dir; boto3-publish (NO direct-R2 write) ──
@@ -1357,20 +1439,16 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
     structural invariants; the absolute numbers below are recorded as the full-build (--since NULL)
     reference and the --since 2025-10-01 proof scope, not hard-coded gate thresholds.
 
-      metric                        full-build reference     --since 2025-10-01 (proof)
-      rows_out                      ≈ |FRESH∪BULK∪MONTHLY| − tombstones + reinstatements
+      metric                        full-build reference (2-source BULK+FRESH)
+      rows_out                      ≈ |FRESH∪BULK| (no monthly / tombstone / reinstatement term)
       fresh_only_tail (keys∉BULK)   ≈ FRESH-only key count                        (scope-dependent)
-      deletes_tombstoned            present-in-universe D-keys, POST R5 reinstatement (39-key floor
-                                    survives on the --since 2025-10-01 window)
-      monthly_corrections_applied   ≥ monthly-only + shared monthly-wins
-                                    (monthly is the per-key core winner; > 0 REQUIRED)
-      canonical_source ∈ {fresh,bulk,monthly}; BULK dethroned on every shared key where a newer
-        (or equal-mtime, monthly-ranked-higher) source exists.
+      canonical_source ∈ {fresh,bulk}; BULK dethroned on every shared key where a newer
+        (or equal-mtime, FRESH-ranked-higher) source exists.
 
     GATES (raise / verdict=fail): INV-1 PK-unique; INV-4 rows_out == distinct-key count;
-    built_at_distinct == 1; canonical_source domain ⊆ {fresh,bulk,monthly}; INV-7 zero monthly-labeled
-    keys with a strictly-newer present fresh/bulk mtime (cannot check cross-source on the read model →
-    surfaced as canonical_source_bad_domain only); monthly_corrections_applied > 0."""
+    built_at_distinct == 1; INV-7 canonical_source domain ⊆ {fresh,bulk}. (MONTHLY / tombstone /
+    reinstatement / monthly_corrections_applied gates REMOVED — this is a 2-source BULK+FRESH build;
+    monthly re-integration is owned by a parallel agent.)"""
     import lance
     so = _r2_so()
     ds = lance.dataset(target_uri, storage_options=so)
@@ -1400,13 +1478,10 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
     enrich_on_fresh = con.execute(
         "SELECT count(*) FROM c WHERE canonical_source='fresh' AND recipient_hash IS NOT NULL"
     ).fetchone()[0]
-    # §7 monthly-corrections centerline: monthly is the per-key CORE winner (INV-3 fix landed).
-    monthly_corrections_applied = con.execute(
-        "SELECT count(*) FROM c WHERE canonical_source = 'monthly'").fetchone()[0]
-    # canonical_source domain gate (INV-7): only the three legal winner tags may appear.
+    # canonical_source domain gate (INV-7): only the two legal winner tags may appear (2-source build).
     bad_source_domain = con.execute(
         "SELECT count(*) FROM c WHERE canonical_source IS NULL "
-        "OR canonical_source NOT IN ('fresh','bulk','monthly')").fetchone()[0]
+        "OR canonical_source NOT IN ('fresh','bulk')").fetchone()[0]
     con.close()
 
     failures: list[str] = []
@@ -1417,10 +1492,7 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
         failures.append(f"built_at not a single literal: built_at_distinct={built_at_distinct}")
     if bad_source_domain:
         failures.append(f"INV-7 canonical_source domain: {bad_source_domain:,} rows NULL or "
-                        f"∉ {{fresh,bulk,monthly}}")
-    if monthly_corrections_applied <= 0:
-        failures.append("monthly_corrections_applied == 0 — corrections did NOT land "
-                        "(monthly never won a core; the P0-1 fix regressed)")
+                        f"∉ {{fresh,bulk}}")
 
     out = {
         "uri": target_uri,
@@ -1432,7 +1504,6 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
         "built_at_distinct": int(built_at_distinct),   # must be 1 (single injected literal)
         "canonical_source_distribution": {k: int(v) for k, v in src_dist.items()},
         "canonical_source_bad_domain": int(bad_source_domain),
-        "monthly_corrections_applied": int(monthly_corrections_applied),
         "fresh_rows_with_enrichment": int(enrich_on_fresh),
         "columns": len(ds.schema.names),
         "indices": idx,
@@ -1472,7 +1543,11 @@ if modal is not None:
     # NO auto-retries anywhere (pipeline discipline): a failed build is diagnosed, never re-fired
     # blind. ephemeral_disk expands /tmp → DuckDB spill + the local Lance stage both land on it.
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 12, memory=196_608, cpu=16.0,
-                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
+                        ephemeral_disk=1_572_864, retries=0)  # 1.5 TiB — the 512 GiB floor was exhausted
+    # by the 392-col stage-2 merge spill (run id=9, "No space left on device" at _stage2_sql). At 392
+    # cols ~3 wide 107M-row tables (bulk_latest + core_union + core_winner) co-reside → ~700 GiB peak;
+    # 1.5 TiB is 3x the failed ceiling. The compressed-Lance-ratio projection (1.48x → 337 GiB) badly
+    # underestimated DuckDB's UNCOMPRESSED intermediate spill — size the disk to the merge, not the artifact.
     def build_fn(since: str | None = None, target_uri: str = CANONICAL_URI) -> dict:
         return build(since=since, target_uri=target_uri)
 
@@ -1481,7 +1556,7 @@ if modal is not None:
     # since indices must be built locally then boto3-published (R2 rejects Lance's native multipart
     # index write). ephemeral_disk restored (#858 dropped it under the now-obsolete RAM-only model).
     @modal_app.function(secrets=_SECRETS, timeout=60 * 60 * 6, memory=196_608, cpu=8.0,
-                        ephemeral_disk=524_288, retries=0)  # 512 GiB — Modal's ephemeral_disk floor
+                        ephemeral_disk=1_572_864, retries=0)  # 1.5 TiB — match build_fn (repair-path standalone index)
     def index_fn(target_uri: str = CANONICAL_URI) -> dict:
         return index(target_uri=target_uri)
 
