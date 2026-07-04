@@ -1,4 +1,12 @@
-"""Reference loader — fpds_action_type_ref: FPDS action-type ("Reason for Modification") code ->
+"""DEPRECATED (2026-07-04) — RETIRED in favor of `dec_code_domain_ref`
+(materialize_dec_code_domain_ref.py). This one-off single-domain ref is exactly
+`dec_code_domain_ref` WHERE db_element='action_type' AND sub_domain='Contracts'. The canonical
+dimension normalizes ALL 146 DEC code domains (not just ActionType/Contracts) at grain
+(db_element, sub_domain, code). Kept for lineage only — do NOT run `build`; the live
+fpds_action_type_ref dataset is frozen pending consumer repoint + removal. A reconciliation gate
+in the new loader asserts the two agree (21 Contracts codes, Y = ADD SUBCONTRACT PLAN).
+
+Reference loader — fpds_action_type_ref: FPDS action-type ("Reason for Modification") code ->
 AUTHORITATIVE description, sourced VERBATIM from the DEC (usaspending_data_dictionary, element
 `ActionType`, `domain_values` — the `Contracts:` section). Government strings only; NO editorial
 gloss. The spine `usaspending_fpds_canonical_txn` carries only `action_type_code` (col 42); this dim
