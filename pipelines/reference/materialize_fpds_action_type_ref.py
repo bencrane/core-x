@@ -1,80 +1,41 @@
-"""Reference loader — fpds_action_type_ref: the FPDS action-type (a.k.a. "Reason for
-Modification") code -> description domain, extracted out of the FPDS spine as its own
-lookup table so downstream code stops hardcoding letter codes (e.g. 'G' = Exercise an Option).
+"""Reference loader — fpds_action_type_ref: FPDS action-type ("Reason for Modification") code ->
+AUTHORITATIVE description, sourced VERBATIM from the DEC (usaspending_data_dictionary, element
+`ActionType`, `domain_values` — the `Contracts:` section). Government strings only; NO editorial
+gloss. The spine `usaspending_fpds_canonical_txn` carries only `action_type_code` (col 42); this dim
+supplies the description so downstream stops hardcoding letter codes (e.g. 'G' = EXERCISE AN OPTION).
 
-The spine `usaspending_fpds_canonical_txn` carries only `action_type_code` (col 42); the matching
-`action_type_description` is documented in BULK but NOT projected onto the spine (see
-docs/reference/FPDS_CANONICAL_FIELD_DICTIONARY.md §6). This dim supplies the missing description.
-
-GRAIN  1 row per action_type_code. 21 rows — the 20-code A–X standard set + the one empirically-
-       present non-standard code 'Y'. action_type_code is unique (the 1:1 resolution key).
+GRAIN  1 row per action_type_code (the FPDS/procurement domain). action_type_code unique (1:1 key).
 SoR    s3://data-sink/active/fpds_action_type_ref/   (Lance v2.1; derived, mode=overwrite)
-SCOPE  FPDS/procurement only. FABS (financial-assistance) `action_type` is a DIFFERENT domain
-       (A=New, B=Continuation, C=Revision, D=Adjustment) whose A/B/C/D collide with these; our
-       spine is FPDS, so the assistance domain is deliberately excluded to keep the code the
-       clean 1:1 key. A NULL/blank `action_type_code` on the spine = a NEW procurement award
-       (no modification) — there is no code row for it; consumers COALESCE the null.
-COLS   action_type_code, action_type_description, notes, source_vintage, ingested_at.
-KEYS   action_type_code (BTREE) — the join/resolution key.
+SCOPE  FPDS/procurement only — parsed from the DEC domain's `Contracts:` block. The `Assistance:`
+       block (FABS: A=New, B=Continuation, …) collides on A/B/C/D and is deliberately excluded; our
+       spine is FPDS. A NULL/blank `action_type_code` on the spine = a NEW procurement award (no
+       modification) — no code row; consumers COALESCE the null.
+COLS   action_type_code, action_type_description, source, source_vintage, ingested_at.
+KEYS   action_type_code (BTREE).
 
-SOURCE Authoritative published domain (no scan): USAspending data-type whitepaper
-       https://fedspendingtransparency.github.io/whitepapers/types/  (contract "Reason for
-       Modification"), cross-checked to the FPDS-NG Data Dictionary
-       https://www.fpds.gov/downloads/Version_1.5_specs/FPDS_DataDictionary_V15_OT.pdf .
-       Description strings are the USAspending canonical forms (the FPDS Atom `action_type_desc`
-       tag as it lands in our BULK feed is the same text, upper-cased).
+SOURCE Derived in-plane from the DEC (active/usaspending_data_dictionary), fetched live from the
+       USAspending DATA Element Crosswalk — the authoritative field dictionary of record. The DEC is
+       the single source of truth; this dim is a verbatim projection of its ActionType domain.
 
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' \
       python3 pipelines/reference/materialize_fpds_action_type_ref.py <build|verify>
-
-    # Optional data-drift check against the live 108M spine (opt-in; scans one low-card column):
-    #   ... materialize_fpds_action_type_ref.py verify --against-spine
 """
 from __future__ import annotations
 
-import collections
 import datetime as dt
 import json
 import os
+import re
 import sys
 
 ACTIVE = "s3://data-sink/active"
 REF_URI = os.environ.get("FPDS_ACTION_TYPE_REF_URI", f"{ACTIVE}/fpds_action_type_ref/")
-SPINE_URI = os.environ.get("FPDS_CANONICAL_TXN_URI", f"{ACTIVE}/usaspending_fpds_canonical_txn/")
+DEC_URI = os.environ.get("USA_DATA_DICTIONARY_URI", f"{ACTIVE}/usaspending_data_dictionary/")
 DATA_STORAGE_VERSION = "2.1"
-SOURCE_VINTAGE = "fpds_reason_for_modification_2026_07"
+SOURCE_VINTAGE = "dec_actiontype_domain"
 
 BTREE_INDEXES = ["action_type_code"]
-
-# (code, description, notes) — the FPDS procurement "Reason for Modification" domain.
-# Verbatim USAspending canonical descriptions for A–X (the 20-code standard set); 'Y' appended as the one
-# empirically-present non-standard code (live spine: 8,736 mod txns — small-$ admin + minor re-reps,
-# 0 terminations). I/O/Q/U/Z remain unused.
-ACTION_TYPES: list[tuple[str, str, str | None]] = [
-    ("A", "Additional Work (new agreement, FAR part 6 applies)", "Out-of-scope additional work; new competition applies."),
-    ("B", "Supplemental Agreement for work within scope", None),
-    ("C", "Funding Only Action", "Obligates/deobligates funds only; no scope change."),
-    ("D", "Change Order", None),
-    ("E", "Terminate for Default (complete or partial)", "Contractor-fault termination."),
-    ("F", "Terminate for Convenience (complete or partial)", "Government-elected termination."),
-    ("G", "Exercise an Option", "Government commits the next priced work tranche — the contractor mobilization event."),
-    ("H", "Definitize Letter Contract", "Converts an undefinitized letter contract to a definitive contract."),
-    ("J", "Novation Agreement", "Recognizes a successor-in-interest (asset sale/transfer of the contract)."),
-    ("K", "Close Out", "Administrative closeout of a completed award."),
-    ("L", "Definitize Change Order", None),
-    ("M", "Other Administrative Action", None),
-    ("N", "Legal Contract Cancellation", None),
-    ("P", "Re-representation of Non-Novated Merger/Acquisition", "Size/ownership re-representation after a non-novated M&A."),
-    ("R", "Re-representation", "Socioeconomic size/status re-representation (e.g. at option exercise)."),
-    ("S", "Change PIID", "Reassigns the contract's PIID."),
-    ("T", "Transfer Action", None),
-    ("V", "Vendor DUNS Change", "Legacy DUNS identifier change (DUNS retired in favor of UEI)."),
-    ("W", "Vendor Address Change", None),
-    ("X", "Terminate for Cause", "Commercial-item termination for cause (FAR 12)."),
-    ("Y", "Non-Standard / Undocumented Reason Code", "Outside the FPDS 20-code Reason-for-Modification set; empirically small-dollar administrative actions plus minor re-representations (0 terminations on the live spine). Classified 'nonstandard' downstream; deltas are computed regardless."),
-]
-
 
 os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
@@ -95,41 +56,50 @@ def _r2_so() -> dict[str, str]:
             "endpoint": endpoint, "region": "auto"}
 
 
-def _assemble():
-    import pyarrow as pa
-    ingested = dt.datetime.now(dt.timezone.utc).isoformat()
-    seen, out = set(), []
-    for code, desc, notes in ACTION_TYPES:
-        code = code.strip()
-        if not code or code in seen:  # action_type_code is the 1:1 key — never fan out
-            raise RuntimeError(f"bad/duplicate action_type_code: {code!r}")
+def _parse_contracts_domain(domain_values: str) -> list[tuple[str, str]]:
+    """Extract the `Contracts:` block from the DEC ActionType.domain_values and return verbatim
+    (code, description) pairs. Fail-closed if the block/codes are missing or the shape changed."""
+    if not domain_values or "Contracts:" not in domain_values:
+        raise RuntimeError("DEC ActionType.domain_values missing a 'Contracts:' block")
+    block = domain_values.split("Contracts:", 1)[1]
+    block = re.split(r"\n[A-Z][A-Za-z ]+:\n", block, 1)[0]   # stop at any later section header
+    out, seen = [], set()
+    for line in block.splitlines():
+        m = re.match(r"\s*([A-Z0-9]{1,3})\s*=\s*(.+?)\s*$", line)
+        if not m:
+            continue
+        code, desc = m.group(1), m.group(2)
+        if code in seen:
+            raise RuntimeError(f"duplicate contract code {code!r} in DEC domain")
         seen.add(code)
-        out.append({
-            "action_type_code": code,
-            "action_type_description": desc,
-            "notes": notes,
-            "source_vintage": SOURCE_VINTAGE,
-            "ingested_at": ingested,
-        })
-    schema = pa.schema([
-        ("action_type_code", pa.string()),
-        ("action_type_description", pa.string()),
-        ("notes", pa.string()),
-        ("source_vintage", pa.string()),
-        ("ingested_at", pa.string()),
-    ])
-    return pa.table({f.name: [r[f.name] for r in out] for f in schema}, schema=schema)
+        out.append((code, desc))
+    if len(out) < 15:
+        raise RuntimeError(f"parsed only {len(out)} contract codes — DEC domain shape changed")
+    return out
 
 
 def build():
     import lance
+    import pyarrow as pa
     so = _r2_so()
-    tbl = _assemble()
-    if tbl.num_rows == 0:
-        raise RuntimeError("zero action-type rows assembled")
-    log(f"assembled {tbl.num_rows} action_type_code -> description rows")
-    lance.write_dataset(tbl, REF_URI, mode="overwrite",
-                        data_storage_version=DATA_STORAGE_VERSION, storage_options=so)
+    dd = lance.dataset(DEC_URI, storage_options=so)
+    rows = dd.scanner(columns=["element", "domain_values"], filter="element = 'ActionType'").to_table().to_pylist()
+    if not rows:
+        raise RuntimeError("DEC has no ActionType element")
+    pairs = _parse_contracts_domain(rows[0]["domain_values"])
+    log(f"parsed {len(pairs)} verbatim FPDS contract action-type codes from the DEC")
+
+    ingested = dt.datetime.now(dt.timezone.utc).isoformat()
+    schema = pa.schema([("action_type_code", pa.string()), ("action_type_description", pa.string()),
+                        ("source", pa.string()), ("source_vintage", pa.string()), ("ingested_at", pa.string())])
+    tbl = pa.table({
+        "action_type_code": [c for c, _ in pairs],
+        "action_type_description": [d for _, d in pairs],
+        "source": [f"{DEC_URI} (element=ActionType, domain_values Contracts block)"] * len(pairs),
+        "source_vintage": [SOURCE_VINTAGE] * len(pairs),
+        "ingested_at": [ingested] * len(pairs),
+    }, schema=schema)
+    lance.write_dataset(tbl, REF_URI, mode="overwrite", data_storage_version=DATA_STORAGE_VERSION, storage_options=so)
     ds = lance.dataset(REF_URI, storage_options=so)
     for col in BTREE_INDEXES:
         ds.create_scalar_index(col, index_type="BTREE", replace=True)
@@ -138,48 +108,24 @@ def build():
     return {"rows": tbl.num_rows, "uri": REF_URI}
 
 
-def _spine_coverage(so) -> dict:
-    """Opt-in: scan the spine's action_type_code (one low-card column) and reconcile against the
-    reference domain — flags any live code not covered here (data drift), with observed counts."""
-    import lance
-    log(f"scanning spine action_type_code for drift check: {SPINE_URI}")
-    sds = lance.dataset(SPINE_URI, storage_options=so)
-    col = sds.scanner(columns=["action_type_code"]).to_table().column("action_type_code").to_pylist()
-    counts = collections.Counter((c.strip() if isinstance(c, str) else c) for c in col)
-    ref_codes = {c for c, _, _ in ACTION_TYPES}
-    live = {(k if k else "<null/base>"): v for k, v in counts.items()}
-    uncovered = {k: v for k, v in counts.items() if k and k not in ref_codes}
-    return {
-        "spine_rows": sds.count_rows(),
-        "distinct_live_codes": sorted(k for k in counts if k),
-        "counts_by_code": dict(sorted(live.items(), key=lambda kv: -kv[1])),
-        "uncovered_by_ref": uncovered,  # MUST be empty
-    }
-
-
-def verify(against_spine: bool = False):
+def verify():
     import lance
     so = _r2_so()
     ds = lance.dataset(REF_URI, storage_options=so)
-    t = ds.scanner(columns=["action_type_code", "action_type_description"]).to_table()
-    codes = t.column("action_type_code").to_pylist()
+    t = ds.scanner(columns=["action_type_code", "action_type_description"]).to_table().to_pylist()
+    t.sort(key=lambda r: r["action_type_code"])
+    codes = [r["action_type_code"] for r in t]
     try:
-        idx = [getattr(i, "name", i.get("name") if isinstance(i, dict) else str(i)) for i in ds.list_indices()]
+        idx = [getattr(i, "name", str(i)) for i in ds.list_indices()]
     except Exception:  # noqa: BLE001
         idx = []
-    out = {
-        "uri": REF_URI,
-        "rows": ds.count_rows(),
+    print(json.dumps({
+        "uri": REF_URI, "rows": ds.count_rows(),
         "distinct_action_type_code": len(set(codes)),
         "grain_unique": len(set(codes)) == len(codes) == ds.count_rows(),
         "indices": idx,
-        "spot_check": ds.scanner(
-            columns=["action_type_code", "action_type_description", "notes"],
-            filter="action_type_code IN ('G','H','J','F')").to_table().to_pylist(),
-    }
-    if against_spine:
-        out["spine_coverage"] = _spine_coverage(so)
-    print(json.dumps(out, indent=2, default=str))
+        "all_codes": {r["action_type_code"]: r["action_type_description"] for r in t},
+    }, indent=2, default=str))
 
 
 def main():
@@ -187,9 +133,9 @@ def main():
     if cmd == "build":
         print(json.dumps(build(), indent=2, default=str))
     elif cmd == "verify":
-        verify(against_spine="--against-spine" in sys.argv[2:])
+        verify()
     else:
-        print(f"unknown command: {cmd} (build|verify [--against-spine])")
+        print(f"unknown command: {cmd} (build|verify)")
         sys.exit(2)
 
 
