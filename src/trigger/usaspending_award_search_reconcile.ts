@@ -5,14 +5,14 @@ import { task, schedules, wait, logger } from "@trigger.dev/sdk";
  *
  * Two tasks: backfill (one-time, all landings ≥ snapshot date) and daily (recurring, 7d trailing).
  * Both mint a Trigger.dev v4 waitpoint, POST the Universal Dispatcher to spawn the
- * `usaspending-pipelines` Modal worker, and suspend on `wait.forToken`.
+ * usaspending-pipelines Modal worker, and suspend on wait.forToken.
  *
- * The reconciliation pattern is:
- * - Read bulk historical (s3://data-sink/active/usaspending/award_search/, snapshot 2026-05-06)
- * - Read delta landings (s3://data-sink/usaspending_api_landings/award_search/pull_date=*/)
+ * The reconciliation pattern:
+ * - Read bulk historical from s3://data-sink/active/usaspending/award_search (snapshot 2026-05-06)
+ * - Read delta landings from s3://data-sink/usaspending_api_landings/award_search/ with pull_date partitions
  * - Merge on contract_award_unique_key, deduplicate taking argmax(last_modified_date)
  * - Filter out deletion records (correction_delete_ind='D')
- * - Write merged serving spine (s3://data-sink/active/usaspending/award_search_merged/)
+ * - Write merged serving spine to s3://data-sink/active/usaspending/award_search_merged/
  * - Build BTREE indices on award key and GTM filters
  * - Record ops.* audit row and POST Trigger callback
  */
