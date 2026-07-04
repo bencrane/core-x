@@ -302,7 +302,7 @@ def smoke_fn() -> dict:
     max_containers=1,       # double-launch guard (HIGH-1) — never two builds on the same R2 prefix
 )
 def build_fn(since: str | None = None, target_uri: str | None = None,
-             include_fresh: bool = True) -> dict:
+             include_fresh: bool = True, force: bool = False) -> dict:
     import os
     import shutil
 
@@ -315,7 +315,7 @@ def build_fn(since: str | None = None, target_uri: str | None = None,
 
     uri = target_uri or aw.CANONICAL_URI
     try:
-        metrics = aw.build(since=since, target_uri=uri, include_fresh=include_fresh)
+        metrics = aw.build(since=since, target_uri=uri, include_fresh=include_fresh, force=force)
     finally:
         # build() rmtrees SCRATCH in its own finally, but the DuckDB spill dir is NOT under SCRATCH →
         # wipe it so steady-state /tmp occupancy returns to ~0.
@@ -620,14 +620,16 @@ def smoke() -> None:
 
 
 @app.local_entrypoint()
-def build(since: str = "", target_uri: str = "", include_fresh: str = "") -> None:
+def build(since: str = "", target_uri: str = "", include_fresh: str = "", force: bool = False) -> None:
     """Full ~30.7M merge → local Lance on /tmp → boto3 publish. Prod first landing passes
-    --include-fresh false; the reconcile-later flip passes the default (True). Prod passes NO --since."""
+    --include-fresh false; the reconcile-later flip passes the default (True). Prod passes NO --since.
+    --force is REQUIRED to overwrite an existing spine (SoR-protection guard); the routine fresh
+    reconcile uses the merge/append worker, not this overwrite."""
     import json
 
     print(json.dumps(
         build_fn.remote(since=since or None, target_uri=target_uri or None,
-                        include_fresh=_coerce_include_fresh(include_fresh)),
+                        include_fresh=_coerce_include_fresh(include_fresh), force=force),
         indent=2, default=str,
     ))
 
