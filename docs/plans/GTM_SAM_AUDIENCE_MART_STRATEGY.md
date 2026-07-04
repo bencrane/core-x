@@ -103,8 +103,14 @@ Columns: `sam_person_id` (PK), `uei`, `name_key`, `person_linkedin_url_norm`, `m
 | Subaward activity, amounts, recency | `uei` → `usaspending_subaward_canonical.subawardee_uei` (`subaward_amount` is the sub-grain SUM-safe column) |
 | Prime activity | `uei` → `usaspending_fpds_prime_award_state.recipient_uei` (`life_to_date_obligated` is the award-grain SUM-safe column) |
 | Employee range / industry / company LinkedIn | `uei` → examined `bridge_sam_pdl` → `pdl_companies` (DSBS path: `crosswalk_dsbs_sam`) |
-| Mobile numbers | `gtm_sam_person_identity.person_linkedin_url_norm` → `phone_resolutions` |
-| Work emails | identity → `person_id` map (`clay_find_people` / `active_people`, read-only) → `work_emails` |
+| Mobile numbers | `gtm_sam_person_identity.person_linkedin_url_norm` → `phone_resolutions.person_linkedin_url` |
+| Work emails | identity `person_linkedin_url_norm` → `work_emails.person_linkedin_url` |
+
+**person_id doctrine:** `person_id` on `work_emails` / `phone_resolutions` is
+per-source-vendor vocabulary (Icypeas/LeadMagic/Blitz/supplied) — it is NEVER
+joined across datasets (in particular, never equated with
+`clay_find_people.person_id`) without a per-vendor empirical vocabulary proof.
+LinkedIn slug is the only cross-dataset person join key.
 
 Grain hazards inherited from the award workstream apply verbatim: only `subaward_amount`, `life_to_date_obligated`, `federal_action_obligation` (txn), `delta_federal_action_obligation` (mod) are SUM-safe; award-repeated context at sub grain is never aggregated without dedup to `prime_award_unique_key`.
 
