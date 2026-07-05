@@ -267,7 +267,10 @@ def _upsert_verification(cur, r: dict, batch_label: str | None) -> None:
             source              = EXCLUDED.source,
             company_domain      = EXCLUDED.company_domain,
             mv_raw              = EXCLUDED.mv_raw,
-            attempts            = EXCLUDED.attempts,
+            -- attempts ACCUMULATE stages (supplied lander, prior verifies) — never replace:
+            -- wholesale EXCLUDED.attempts clobbered supplied-payload custody (2026-07-05)
+            attempts            = coalesce(ops.email_verifications.attempts, '[]'::jsonb)
+                                  || EXCLUDED.attempts,
             batch_label         = EXCLUDED.batch_label,
             resolved_at         = now()
         """,
