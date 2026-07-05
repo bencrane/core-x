@@ -336,9 +336,10 @@ async def find_email(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _extract_file_id(data: Any) -> str | None:
-    """The bulk-search launch echoes a file/bulk id. Docs don't print the exact field
-    (VERIFY-AT-BUILD), so probe the known shapes in priority order: item._id (mirrors the
-    single /email-search response), then file / fileId / _id / id at top level."""
+    """The bulk-search launch echoes a file/bulk id. Verified live 2026-07-05: the launch returns
+    it at top-level ``file`` ({"success":true,"status":"in_progress","file":"<id>"}). Probe order
+    keeps the other shapes as defensive fallbacks: item._id (mirrors /email-search), then
+    file / fileId / _id / id at top level."""
     if not isinstance(data, dict):
         return None
     item = data.get("item")
@@ -352,9 +353,10 @@ def _extract_file_id(data: Any) -> str | None:
 
 
 def _first_file_record(data: Any, file_id: str) -> dict:
-    """Pull the record for ``file_id`` from a /search-files/read response. The array key is
-    VERIFY-AT-BUILD: probe items/files/results/data, prefer the record whose _id|file matches,
-    else the first. Some deployments may return the record at top level."""
+    """Pull the record for ``file_id`` from a /search-files/read response. Verified live
+    2026-07-05: the array key is ``files`` and each record matches on ``file`` (probe order keeps
+    items/results/data as defensive fallbacks). Prefer the record whose _id|file matches, else the
+    first; some deployments may return the record at top level."""
     if not isinstance(data, dict):
         return {}
     for key in ("items", "files", "results", "data"):
@@ -382,6 +384,9 @@ async def launch_bulk(
 ) -> dict[str, Any]:
     """Launch ONE Icypeas bulk search (≤5000 rows). Rate-gated to 1/sec globally.
 
+    Requires ``ICYPEAS_USER_ID`` (the account ObjectId; bulk routes 401 "UserNotFoundError"
+    without it), exactly like ``scrape_companies``.
+
     ``rows`` — for ``email-search`` each row is ``[firstname, lastname, domainOrCompany]``
     (firstname and/or lastname may be empty; the anchor is required). ``external_ids`` MUST be
     row-aligned; each is echoed on the corresponding result item so the caller maps a drained
@@ -396,6 +401,10 @@ async def launch_bulk(
     if headers is None:
         return {"ok": False, "file_id": None, "http_status": 0,
                 "error": "ICYPEAS_API_KEY absent in icypeas-api secret", "raw": None}
+    user_id = os.environ.get("ICYPEAS_USER_ID")
+    if not user_id:
+        return {"ok": False, "file_id": None, "http_status": 0,
+                "error": "ICYPEAS_USER_ID absent in icypeas-api secret — /bulk-search requires it", "raw": None}
     if not rows:
         return {"ok": False, "file_id": None, "http_status": 0, "error": "empty rows", "raw": None}
     if len(rows) > BULK_ROWS_MAX:
@@ -405,7 +414,7 @@ async def launch_bulk(
         return {"ok": False, "file_id": None, "http_status": 0,
                 "error": f"external_ids len {len(external_ids)} != rows len {len(rows)}", "raw": None}
 
-    body = {"name": name, "task": task, "data": rows, "custom": {"externalIds": external_ids}}
+    body = {"name": name, "task": task, "data": rows, "user": user_id, "custom": {"externalIds": external_ids}}
     last_err: str | None = None
     for attempt in range(MAX_RETRIES):
         await _launch_bucket.acquire()
@@ -454,7 +463,10 @@ async def file_status(file_id: str) -> dict[str, Any]:
         {"ok": bool, "status": str|None, "done": bool, "http_status": int,
          "error": str|None, "raw": <response, VERBATIM> | None}
 
-    ``done`` is True when the file's ``status == "done"``."""
+    The record carries per-state COUNTS (found/done/aborted/in-progress/total) + a ``finished``
+    boolean — there is NO ``status`` string (verified live 2026-07-05). ``done`` is True when
+    ``finished`` is true; ``status`` is a synthesized "finished"/"in_progress" label. Full
+    progress counts live in ``raw``."""
     import httpx
 
     headers = _headers()
@@ -473,9 +485,11 @@ async def file_status(file_id: str) -> dict[str, Any]:
                     "error": (resp.text[:300] if not isinstance(data, dict) else str(data)[:300]),
                     "raw": data}
         rec = _first_file_record(data, file_id)
-        status = rec.get("status") if isinstance(rec, dict) else None
-        return {"ok": True, "status": status, "done": status == "done",
-                "http_status": sc, "error": None, "raw": data}
+        # /search-files/read records carry per-state COUNTS + a `finished` boolean — there is NO
+        # `status` string (verified live 2026-07-05). `finished:true` is the terminal signal.
+        finished = bool(rec.get("finished")) if isinstance(rec, dict) else False
+        return {"ok": True, "status": ("finished" if finished else "in_progress"),
+                "done": finished, "http_status": sc, "error": None, "raw": data}
     except Exception as exc:  # noqa: BLE001 — network / timeout
         return {"ok": False, "status": None, "done": False, "http_status": 0,
                 "error": str(exc), "raw": None}
