@@ -23,10 +23,12 @@ PARAM SET v1 (every editorial decision, in one place):
     short windows (12/24mo) are FLOORS, not truth — reliable sub recency is 60mo/lifetime.
     Columns stay populated (they are the objective sum of what is reported); interpretation
     caveat lives here.
-  - ACTIVE POSTURE DEFERRED (v1): the spine's period_of_performance_current_end_date has a
-    hard ceiling at build-date-1 and potential_end_date is 100% NULL (probed 2026-07-05) —
-    active_award_ct / active_obl / earliest_pop_end / pop_expiring_180d_ct cannot be truthfully
-    derived. Restore them when the L1 substrate is fixed (see the PoP end-date task).
+  - ACTIVE POSTURE (restored in v2; deferred in v1 while the L1 substrate clamped future PoP
+    end dates to build-date): derived from period_of_performance_current_end_date on the prime
+    universe. active = pop_end >= as_of (NULL pop_end is not provably active → excluded, same
+    convention as contractor_award_summary). active_award_ct / active_obl over that predicate;
+    earliest_pop_end = MIN(pop_end) among active awards (next expiration — recompete timing);
+    pop_expiring_180d_ct = active awards ending within 180 days of as_of.
   - flags at the reliable window per side: is_prime_24mo (FPDS reports fast) /
     is_sub_60mo (lag physics above); prime_and_sub = lifetime both-sider (teaming signal)
   - lanes: prime naics/psc from the award row; sub naics/psc from prime_award_* inline codes;
@@ -53,7 +55,7 @@ import lance
 A = "s3://data-sink/active"
 ROLLUP_OUT = f"{A}/gtm_entity_behavior_rollup/"
 LANES_OUT = f"{A}/gtm_entity_code_lanes/"
-PARAM_SET_ID = "v1"
+PARAM_SET_ID = "v2"  # v1 + active posture (active_award_ct/active_obl/earliest_pop_end/pop_expiring_180d_ct)
 
 
 def so() -> dict:
@@ -85,7 +87,8 @@ def main() -> int:
 
     prime_reader = prime_ds.scanner(
         columns=["recipient_uei", "total_obligation", "action_date", "naics_code",
-                 "product_or_service_code", "awarding_agency_code"],
+                 "product_or_service_code", "awarding_agency_code",
+                 "period_of_performance_current_end_date"],
         filter="(category = 'contract' OR category IS NULL) AND recipient_uei IS NOT NULL",
     ).to_reader()
     con.register("_pr", prime_reader)
@@ -121,6 +124,13 @@ def main() -> int:
              COUNT(*)                                                               AS prime_award_ct_lifetime,
              MIN(action_date)                                                       AS p_first_action,
              MAX(action_date)                                                       AS p_last_action,
+             COUNT(*) FILTER (period_of_performance_current_end_date >= {today})    AS active_award_ct,
+             SUM(CASE WHEN period_of_performance_current_end_date >= {today}
+                      THEN total_obligation ELSE 0 END)                             AS active_obl,
+             MIN(period_of_performance_current_end_date)
+                 FILTER (period_of_performance_current_end_date >= {today})         AS earliest_pop_end,
+             COUNT(*) FILTER (period_of_performance_current_end_date
+                              BETWEEN {today} AND {today} + INTERVAL 180 DAY)       AS pop_expiring_180d_ct,
              COUNT(DISTINCT naics_code)                                             AS distinct_naics_ct,
              COUNT(DISTINCT product_or_service_code)                                AS distinct_psc_ct,
              COUNT(DISTINCT awarding_agency_code)                                   AS distinct_agency_ct
@@ -162,6 +172,10 @@ def main() -> int:
            COALESCE(p.prime_award_ct_24mo, 0)                            AS prime_award_ct_24mo,
            COALESCE(p.prime_award_ct_60mo, 0)                            AS prime_award_ct_60mo,
            COALESCE(p.prime_award_ct_lifetime, 0)                        AS prime_award_ct_lifetime,
+           COALESCE(p.active_award_ct, 0)                                AS active_award_ct,
+           COALESCE(p.active_obl, 0)                                     AS active_obl,
+           p.earliest_pop_end                                            AS earliest_pop_end,
+           COALESCE(p.pop_expiring_180d_ct, 0)                           AS pop_expiring_180d_ct,
            COALESCE(s.sub_amt_24mo, 0)                                   AS sub_amt_24mo,
            COALESCE(s.sub_amt_60mo, 0)                                   AS sub_amt_60mo,
            COALESCE(s.sub_amt_lifetime, 0)                               AS sub_amt_lifetime,
