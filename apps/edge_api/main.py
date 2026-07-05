@@ -75,7 +75,6 @@ from .src.routers.webhooks_stripe import router as webhooks_stripe_router
 from .src.routers.documenso_webhooks_v1 import router as documenso_webhooks_router
 from .src.routers.close_webhooks_v1 import webhook_router as close_webhook_router
 from .src.routers.close_webhooks_v1 import read_router as close_read_router
-from .src.routers.icypeas_webhooks_v1 import router as icypeas_webhooks_router
 from .src.routers.internal_cal_v1 import router as internal_cal_router
 from .src.routers.document_payments_v1 import router as document_payments_router
 from .src.routers.operator_settings_v1 import router as operator_settings_router
@@ -146,12 +145,6 @@ async def lifespan(app_: FastAPI):
             "CLOSE_WEBHOOK_SECRET unset -- /webhooks/close refuses (503), so Close call events will NOT "
             "be captured and the Insights call-sync stays idle. Set it in core-x/prd to match the Close "
             "webhook subscription signature_key."
-        )
-    if config.icypeas_webhook_secret() is None:
-        log.warning(
-            "ICYPEAS_API_SECRET unset -- /webhooks/icypeas/* refuses (503), so company-scrape results "
-            "will NOT be captured. Set it in core-x/prd and register the edge_api webhook URLs in the "
-            "Icypeas dashboard (or via the scrape submit's custom.webhookUrl* fields)."
         )
     if config.close_booking_custom_activity_type_id() is not None and (
         config.cal_api_key() is None or config.close_api_key() is None
@@ -400,13 +393,6 @@ app.include_router(webhooks_stripe_router)
 app.include_router(close_webhook_router)
 app.include_router(close_read_router)
 
-# icypeas webhooks: RAW capture of company-scrape results → business.icypeas_webhook_events.
-# Signature-gated (body {signature,timestamp,data}, HMAC-SHA1 over lower(pathname+timestamp) /
-# ICYPEAS_API_SECRET). NOT under /api/v1 — Icypeas posts /webhooks/icypeas/{item,bulk-done}. The
-# company scraper submits with these as custom.webhookUrl*; projection into a company dimension is a
-# separate step decided against the captured payloads.
-app.include_router(icypeas_webhooks_router)
-
 
 def _info() -> dict:
     return {
@@ -440,7 +426,6 @@ def _info() -> dict:
             "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
             "close_webhook": True,     # /webhooks/close (Close call events RAW capture → business.close_webhook_events)
             "close_active_call": True, # /api/v1/close/active-call (offline "now dialing" derivation, not operator-scoped)
-            "icypeas_webhook": True,   # /webhooks/icypeas/{item,bulk-done} (company-scrape RAW capture → business.icypeas_webhook_events)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)
         },
     }

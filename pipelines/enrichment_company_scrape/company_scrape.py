@@ -1,27 +1,25 @@
-"""Company-scrape worker — Icypeas /api/scrape bulk submit rail (webhook delivery).
+"""Company-scrape worker — Icypeas /api/scrape rail (SYNCHRONOUS, Postgres-direct landing).
 
-Decoupled, asynchronous company scraping. This worker is the SUBMIT + LEDGER half; the LANDING
-half is edge_api (``/webhooks/icypeas/*`` → ``business.icypeas_webhook_events``, the raw SoR). The
-worker NEVER polls Icypeas and NEVER reads results — it hands ≤50-URL batches to the single-
-container ``core/icypeas_gateway.py`` (``scrape_submit``, one owner of the /api/scrape submit
-governor), records what it submitted, and returns. Scraped rows arrive later, pushed to edge_api.
+Scrapes LinkedIn company URLs through Icypeas and lands the results in hq-x Postgres. /api/scrape
+is SYNCHRONOUS — it returns the scraped company data INLINE in the response (no file id, no webhook,
+no poll), so this worker gets the data back from the single-container ``core/icypeas_gateway.py``
+(``scrape_companies``) and writes it directly to ``gtm.icypeas_company_scrapes`` (the raw SoR),
+exactly as the email-cascade worker writes ``ops.email_resolutions`` — no edge_api hop.
 
-    run_company_scrape   company_urls[] → governed /api/scrape submits + ops ledger
+    run_company_scrape   company_urls[] → scraped rows in gtm.icypeas_company_scrapes
 
-WHY WEBHOOK, NOT DRAIN. The email cascade + bulk-drain rails already contend for the global 30/min
-``/bulk-single-searchs/read`` ceiling. Company scrape delivers by webhook (custom.webhookUrlItem →
-edge_api; custom.webhookUrlBulkDone → edge_api), so it makes ZERO reads — it never touches that
-ceiling. The account was suspended once by ungoverned probing; this rail is submit-only and gently
-rate-governed by construction.
+ZERO-READ. /api/scrape returns results inline, so this rail never touches the global 30/min
+``/bulk-single-searchs/read`` ceiling the email cascade + bulk drain contend for. The account was
+suspended once by ungoverned probing; the gateway governs the /api/scrape request rate.
 
-IDEMPOTENCY. ``ops.company_scrape_submissions`` (PK company_url) is the submit ledger: a URL already
-``submitted`` is skipped on re-run (never re-spend a scrape credit) unless ``force=True``. A prior
-``submit_failed`` is retryable. ``ops.company_scrape_runs`` records per-run terminal counts.
+IDEMPOTENCY. A company URL already landed with ``status='FOUND'`` is skipped on re-run (never
+re-spend a scrape credit) unless ``force=True`` — a prior NOT_FOUND / failed URL is retryable.
+``ops.company_scrape_runs`` records per-run terminal counts.
 
-SINK / RECONCILIATION. Results land in ``business.icypeas_webhook_events`` (edge_api), correlated by
-the ``externalId`` we stamp == the requested company URL, and by the bulk ``file_id`` this worker
-records per submission. A downstream materializer rolls landed rows into a company dimension on its
-own cadence (Directive 28 raw-first — never inferred ahead of real landed payloads).
+RAW-FIRST (Directive 28). ``gtm.icypeas_company_scrapes`` is append-only: ``raw_result`` holds the
+Icypeas ``data[]`` item VERBATIM (the system of record); the flat columns are a best-effort projection
+ON TOP of it, never a replacement. A downstream materializer picks the latest per company on its own
+cadence and bridges via ``company_url_norm`` / ``domain_norm``.
 
     modal deploy pipelines/enrichment_company_scrape/company_scrape.py
     modal run    pipelines/enrichment_company_scrape/company_scrape.py::init_ops
@@ -32,47 +30,56 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import time
 import uuid
 
 import modal
 
 FEED = "company_scrape"
-GATEWAY_APP, GATEWAY_FN = "icypeas-gateway", "scrape_submit"
+GATEWAY_APP, GATEWAY_FN = "icypeas-gateway", "scrape_companies"
 
-# Icypeas /api/scrape hard cap (≤50 URLs/submit). Mirror of the gateway's SCRAPE_MAX_BATCH.
+# Icypeas /api/scrape hard cap (≤50 URLs/request). Mirror of the gateway's SCRAPE_MAX_BATCH.
 SCRAPE_MAX_BATCH = int(os.environ.get("ICYPEAS_SCRAPE_MAX_BATCH", "50"))
 
-# edge_api raw-landing base — stable public URL; override via env only to pin a different host.
-EDGE_API_BASE = os.environ.get("EDGE_API_BASE_URL", "https://api.edgeapi.run").rstrip("/")
-WEBHOOK_ITEM_URL = f"{EDGE_API_BASE}/webhooks/icypeas/item"
-WEBHOOK_BULKDONE_URL = f"{EDGE_API_BASE}/webhooks/icypeas/bulk-done"
-
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
-    "psycopg[binary]>=3.2",  # ops.company_scrape_* ledger
+    "psycopg[binary]>=3.2",  # gtm.icypeas_company_scrapes + ops.company_scrape_runs
     "requests>=2.32",        # Trigger callback
 )
 
 app = modal.App("enrichment-company-scrape", image=image)
 
-SECRETS = [modal.Secret.from_name("hqx-postgres")]   # ops.company_scrape_* live in HQX
+SECRETS = [modal.Secret.from_name("hqx-postgres")]   # gtm.* + ops.* live in HQX
 
-# ── ops DDL — verbatim mirror of the .sql sibling; applied defensively before writes (idempotent). ──
-OPS_DDL = """
+# ── DDL — verbatim mirror of the .sql sibling; applied defensively before writes (idempotent). ──
+DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
+CREATE SCHEMA IF NOT EXISTS gtm;
 
-CREATE TABLE IF NOT EXISTS ops.company_scrape_submissions (
-    company_url   text        PRIMARY KEY,           -- the LinkedIn company URL (dedup / idempotency key)
-    file_id       text,                               -- Icypeas bulk file id this url was submitted in
-    external_id   text,                               -- what we stamped at submit (== company_url)
-    batch_label   text,
-    run_root      text,
-    status        text        NOT NULL,               -- 'submitted' | 'submit_failed'
-    submitted_at  timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT company_scrape_submissions_status_chk CHECK (status IN ('submitted', 'submit_failed'))
+CREATE TABLE IF NOT EXISTS gtm.icypeas_company_scrapes (
+    id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_url       text        NOT NULL,          -- the requested LinkedIn company URL
+    company_url_norm  text,                           -- normalized (idempotency / bridge key)
+    search_id         text,                           -- Icypeas searchId (provenance)
+    status            text,                           -- FOUND / NOT_FOUND / … verbatim
+    -- flat projection (best-effort, from result{}) — convenience OVER raw_result, never a replacement
+    company_name      text,
+    linkedin_url      text,                           -- result.url (canonical LinkedIn company url)
+    website           text,
+    domain_norm       text,                           -- normalized website domain — bridge to firmographics
+    industry          text,
+    headcount_range   text,
+    employee_count    int,
+    country           text,
+    raw_result        jsonb       NOT NULL,           -- the Icypeas data[] item VERBATIM — system of record
+    batch_label       text,
+    run_root          text,
+    scraped_at        timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS company_scrape_submissions_file_idx      ON ops.company_scrape_submissions (file_id);
-CREATE INDEX IF NOT EXISTS company_scrape_submissions_submitted_idx ON ops.company_scrape_submissions (submitted_at DESC);
+CREATE INDEX IF NOT EXISTS icypeas_company_scrapes_url_norm_idx ON gtm.icypeas_company_scrapes (company_url_norm);
+CREATE INDEX IF NOT EXISTS icypeas_company_scrapes_domain_idx   ON gtm.icypeas_company_scrapes (domain_norm);
+CREATE INDEX IF NOT EXISTS icypeas_company_scrapes_linkedin_idx ON gtm.icypeas_company_scrapes (linkedin_url);
+CREATE INDEX IF NOT EXISTS icypeas_company_scrapes_scraped_idx  ON gtm.icypeas_company_scrapes (scraped_at DESC);
 
 CREATE TABLE IF NOT EXISTS ops.company_scrape_runs (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -81,7 +88,8 @@ CREATE TABLE IF NOT EXISTS ops.company_scrape_runs (
     run_root      text,
     requested     bigint      NOT NULL DEFAULT 0,
     skipped       bigint      NOT NULL DEFAULT 0,
-    submitted     bigint      NOT NULL DEFAULT 0,
+    found         bigint      NOT NULL DEFAULT 0,
+    not_found     bigint      NOT NULL DEFAULT 0,
     batches       bigint      NOT NULL DEFAULT 0,
     failed        bigint      NOT NULL DEFAULT 0,
     status        text        NOT NULL,
@@ -95,11 +103,30 @@ CREATE INDEX IF NOT EXISTS company_scrape_runs_feed_idx     ON ops.company_scrap
 CREATE INDEX IF NOT EXISTS company_scrape_runs_recorded_idx ON ops.company_scrape_runs (recorded_at DESC);
 """
 
+_SCHEME = re.compile(r"^https?://")
+_WWW = re.compile(r"^www\.")
+
+
+def _norm_url(u: str | None) -> str | None:
+    """Normalize a URL for idempotency/bridging: drop scheme, www, trailing slash; lowercase."""
+    x = (u or "").strip().lower()
+    x = _SCHEME.sub("", x)
+    x = _WWW.sub("", x)
+    x = x.rstrip("/")
+    return x or None
+
+
+def _norm_domain(u: str | None) -> str | None:
+    """Normalize a website into a bare domain (bridge key to firmographics)."""
+    x = (u or "").strip().lower()
+    x = _SCHEME.sub("", x)
+    x = _WWW.sub("", x)
+    x = x.split("/", 1)[0].rstrip(".")
+    return x or None
+
 
 def _hqx_dsn() -> str:
-    """Transaction-mode (Supavisor :6543) hq-x DSN — the worker holds one mostly-idle connection
-    while blocked on the rate-governed gateway. Prefer HQX_DB_URL_TRANSACTION; else derive it from
-    the session DSN (5432→6543). Mirror of the email-cascade worker's DSN discipline."""
+    """Transaction-mode (Supavisor :6543) hq-x DSN — mirror of the email-cascade worker's discipline."""
     dsn = os.environ.get("HQX_DB_URL_TRANSACTION")
     if not dsn:
         pooled = os.environ.get("HQX_DB_URL_POOLED")
@@ -115,8 +142,6 @@ def _hqx_dsn() -> str:
 def _open_conn(dsn: str):
     import psycopg
 
-    # prepare_threshold=None: transaction-mode pooling may land consecutive statements on different
-    # backends. autocommit=True keeps each statement its own short txn so the pooler frees the backend.
     return psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
 
 
@@ -124,25 +149,20 @@ def _gateway():
     return modal.Function.from_name(GATEWAY_APP, GATEWAY_FN)
 
 
-def _normalize_url(raw: str | None) -> str | None:
-    u = (raw or "").strip()
-    return u or None
-
-
 def _chunk(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-def _already_submitted(cur, urls: list[str]) -> set[str]:
-    """Idempotency skip-set: URLs already terminally SUBMITTED (never re-spend a scrape credit).
-    A prior 'submit_failed' is intentionally NOT skipped (retryable)."""
-    if not urls:
+def _already_found(cur, url_norms: list[str]) -> set[str]:
+    """Idempotency skip-set: company_url_norm values already landed with status='FOUND' (never
+    re-spend a scrape credit). A prior NOT_FOUND / failed URL is intentionally retryable."""
+    if not url_norms:
         return set()
     try:
         cur.execute(
-            "SELECT company_url FROM ops.company_scrape_submissions "
-            "WHERE status = 'submitted' AND company_url = ANY(%s)",
-            (urls,),
+            "SELECT DISTINCT company_url_norm FROM gtm.icypeas_company_scrapes "
+            "WHERE status = 'FOUND' AND company_url_norm = ANY(%s)",
+            (url_norms,),
         )
         return {r[0] for r in cur.fetchall()}
     except Exception as exc:  # noqa: BLE001 — degrade skip, preserve correctness
@@ -150,37 +170,56 @@ def _already_submitted(cur, urls: list[str]) -> set[str]:
         return set()
 
 
-def _upsert_submission(cur, url: str, file_id: str | None, status: str,
-                       batch_label: str | None, run_root: str) -> None:
+def _insert_scrape(cur, requested_url: str, item: dict, batch_label: str | None, run_root: str) -> None:
+    """Append one scraped-company row. ``item`` is the Icypeas data[] element VERBATIM
+    (``{result:{…}, status, searchId}``) → raw_result; the scalar columns are a best-effort projection."""
+    from psycopg.types.json import Jsonb
+
+    result = item.get("result") if isinstance(item, dict) else None
+    result = result if isinstance(result, dict) else {}
+    addr = result.get("address") if isinstance(result.get("address"), dict) else {}
+    emp = result.get("numberOfEmployees")
     cur.execute(
         """
-        INSERT INTO ops.company_scrape_submissions
-            (company_url, file_id, external_id, batch_label, run_root, status, submitted_at)
-        VALUES (%s, %s, %s, %s, %s, %s, now())
-        ON CONFLICT (company_url) DO UPDATE SET
-            file_id      = EXCLUDED.file_id,
-            external_id  = EXCLUDED.external_id,
-            batch_label  = EXCLUDED.batch_label,
-            run_root     = EXCLUDED.run_root,
-            status       = EXCLUDED.status,
-            submitted_at = now()
+        INSERT INTO gtm.icypeas_company_scrapes
+            (company_url, company_url_norm, search_id, status, company_name, linkedin_url, website,
+             domain_norm, industry, headcount_range, employee_count, country, raw_result,
+             batch_label, run_root)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
-        (url, file_id, url, batch_label, run_root, status),
+        (
+            requested_url,
+            _norm_url(requested_url),
+            item.get("searchId") if isinstance(item, dict) else None,
+            (item.get("status") if isinstance(item, dict) else None),
+            result.get("name"),
+            result.get("url"),
+            result.get("website"),
+            _norm_domain(result.get("website")),
+            result.get("industry"),
+            result.get("headcountRange"),
+            int(emp) if isinstance(emp, (int, float)) and emp >= 0 else None,
+            addr.get("addressCountry") or addr.get("addressCountryCode"),
+            Jsonb(item),
+            batch_label,
+            run_root,
+        ),
     )
 
 
 def _record_run(cur, batch_label: str | None, run_root: str, counts: dict, status: str,
                 error: str | None, started_at: dt.datetime, completed_at: dt.datetime) -> None:
-    cur.execute(OPS_DDL)
+    cur.execute(DDL)
     cur.execute(
         """
         INSERT INTO ops.company_scrape_runs
-            (feed, batch_label, run_root, requested, skipped, submitted, batches, failed,
+            (feed, batch_label, run_root, requested, skipped, found, not_found, batches, failed,
              status, error, started_at, completed_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
-        (FEED, batch_label, run_root, counts["requested"], counts["skipped"], counts["submitted"],
-         counts["batches"], counts["failed"], status, error, started_at, completed_at),
+        (FEED, batch_label, run_root, counts["requested"], counts["skipped"], counts["found"],
+         counts["not_found"], counts["batches"], counts["failed"], status, error,
+         started_at, completed_at),
     )
 
 
@@ -208,7 +247,7 @@ def _run(company_urls: list[str], batch_label: str | None, run_id: str | None,
          force: bool, trigger_callback_url: str | None) -> dict:
     started_at = dt.datetime.now(dt.timezone.utc)
     run_root = run_id or uuid.uuid4().hex
-    counts = {"requested": 0, "skipped": 0, "submitted": 0, "batches": 0, "failed": 0}
+    counts = {"requested": 0, "skipped": 0, "found": 0, "not_found": 0, "batches": 0, "failed": 0}
     status, error = "error", None
     dsn = _hqx_dsn()
 
@@ -217,7 +256,7 @@ def _run(company_urls: list[str], batch_label: str | None, run_id: str | None,
         seen: set[str] = set()
         urls: list[str] = []
         for raw in (company_urls or []):
-            u = _normalize_url(raw if isinstance(raw, str) else None)
+            u = (raw or "").strip() if isinstance(raw, str) else ""
             if u and u not in seen:
                 seen.add(u)
                 urls.append(u)
@@ -227,29 +266,40 @@ def _run(company_urls: list[str], batch_label: str | None, run_id: str | None,
         conn = _open_conn(dsn)
         try:
             cur = conn.cursor()
-            cur.execute(OPS_DDL)  # ensure ledger exists before first write
+            cur.execute(DDL)  # ensure sink + ledger exist before first write
 
-            skip = set() if force else _already_submitted(cur, urls)
-            todo = [u for u in urls if u not in skip]
+            skip_norms = set() if force else _already_found(cur, [_norm_url(u) for u in urls])
+            todo = [u for u in urls if _norm_url(u) not in skip_norms]
             counts["skipped"] = len(urls) - len(todo)
 
             for batch in _chunk(todo, SCRAPE_MAX_BATCH):
                 counts["batches"] += 1
-                env = gw.remote(
-                    urls=batch,
-                    external_ids=batch,                    # externalId == company_url (correlation)
-                    webhook_item_url=WEBHOOK_ITEM_URL,
-                    webhook_bulkdone_url=WEBHOOK_BULKDONE_URL,
-                )
-                if env.get("ok") and env.get("file_id"):
-                    counts["submitted"] += len(batch)
-                    for u in batch:
-                        _upsert_submission(cur, u, env["file_id"], "submitted", batch_label, run_root)
-                else:
+                env = gw.remote(urls=batch, external_ids=batch)
+                if not env.get("ok"):
                     counts["failed"] += len(batch)
-                    print(f"WARN: scrape submit failed for {len(batch)} urls: {env.get('error')}")
-                    for u in batch:
-                        _upsert_submission(cur, u, None, "submit_failed", batch_label, run_root)
+                    print(f"WARN: scrape failed for {len(batch)} urls: {env.get('error')}")
+                    continue
+                results = env.get("results") or []
+                # results[] is positionally aligned to batch[]; persist each verbatim.
+                for i, item in enumerate(results):
+                    requested_url = batch[i] if i < len(batch) else (
+                        (item.get("result") or {}).get("url") if isinstance(item, dict) else None)
+                    try:
+                        _insert_scrape(cur, requested_url, item if isinstance(item, dict) else {},
+                                       batch_label, run_root)
+                    except Exception as exc:  # noqa: BLE001 — one row must not sink the batch
+                        counts["failed"] += 1
+                        print(f"WARN: insert failed for {requested_url!r}: {exc}")
+                        continue
+                    st = (item.get("status") if isinstance(item, dict) else None) or ""
+                    if st.upper() == "FOUND":
+                        counts["found"] += 1
+                    else:
+                        counts["not_found"] += 1
+                # Icypeas returned fewer items than submitted (shouldn't happen) → count the gap failed.
+                gap = len(batch) - len(results)
+                if gap > 0:
+                    counts["failed"] += gap
 
             status = "success"
             _record_run(cur, batch_label, run_root, counts, status, None,
@@ -283,78 +333,70 @@ def _run(company_urls: list[str], batch_label: str | None, run_id: str | None,
 def run_company_scrape(company_urls: list[str], batch_label: str | None = None,
                        run_id: str | None = None, force: bool = False,
                        trigger_callback_url: str | None = None) -> dict:
-    """Submit a chunk of LinkedIn company URLs to Icypeas /api/scrape via the gateway, record the
-    submit ledger, and return terminal counts. Results land asynchronously at edge_api (webhook).
-    ``company_urls`` — list of LinkedIn company profile URLs (e.g. linkedin.com/company/<slug>)."""
+    """Scrape a chunk of LinkedIn company URLs via Icypeas /api/scrape (through the gateway) and land
+    the results in gtm.icypeas_company_scrapes. Synchronous — the gateway returns the scraped data
+    inline. ``company_urls`` — LinkedIn company profile URLs (e.g. linkedin.com/company/<slug>)."""
     return _run(company_urls, batch_label, run_id, force, trigger_callback_url)
 
 
 @app.function(secrets=SECRETS, timeout=60 * 5)
-def apply_ops_ddl() -> dict:
-    """Create ops.company_scrape_submissions + ops.company_scrape_runs in HQX (idempotent)."""
+def apply_ddl() -> dict:
+    """Create gtm.icypeas_company_scrapes + ops.company_scrape_runs in HQX (idempotent)."""
     conn = _open_conn(_hqx_dsn())
     try:
         cur = conn.cursor()
-        cur.execute(OPS_DDL)
+        cur.execute(DDL)
         cur.execute("""
-            SELECT table_name, column_name FROM information_schema.columns
-            WHERE table_schema='ops' AND table_name IN ('company_scrape_submissions','company_scrape_runs')
-            ORDER BY table_name, ordinal_position
+            SELECT table_schema, table_name, count(*) AS cols
+            FROM information_schema.columns
+            WHERE (table_schema='gtm'  AND table_name='icypeas_company_scrapes')
+               OR (table_schema='ops'  AND table_name='company_scrape_runs')
+            GROUP BY table_schema, table_name ORDER BY table_schema, table_name
         """)
-        cols: dict[str, list[str]] = {}
-        for t, col in cur.fetchall():
-            cols.setdefault(t, []).append(col)
+        tables = {f"{s}.{t}": c for s, t, c in cur.fetchall()}
     finally:
         conn.close()
-    print(f"ops tables ready: { {k: len(v) for k, v in cols.items()} }")
-    return {"tables": cols}
+    print(f"tables ready: {tables}")
+    return {"tables": tables}
 
 
 @app.function(secrets=SECRETS, timeout=60 * 5)
 def verify(limit: int = 8) -> dict:
-    """Read-back: latest submissions + run-state + landed-result reconciliation counts."""
+    """Read-back: latest scraped companies + status histogram + recent run-state."""
     conn = _open_conn(_hqx_dsn())
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT company_url, file_id, status, batch_label, submitted_at
-               FROM ops.company_scrape_submissions ORDER BY submitted_at DESC LIMIT %s""",
+            """SELECT company_url, status, company_name, industry, headcount_range, domain_norm, scraped_at
+               FROM gtm.icypeas_company_scrapes ORDER BY scraped_at DESC LIMIT %s""",
             (limit,),
         )
         scols = [d.name for d in cur.description]
-        submissions = [dict(zip(scols, r)) for r in cur.fetchall()]
-        cur.execute("SELECT status, count(*) FROM ops.company_scrape_submissions GROUP BY 1")
-        sub_hist = {r[0]: r[1] for r in cur.fetchall()}
-        # Reconciliation: how many submitted urls have a landed webhook row (best-effort; the landing
-        # table may not exist yet if edge_api has not deployed the migration).
-        landed = None
-        try:
-            cur.execute("SELECT count(DISTINCT external_id) FROM business.icypeas_webhook_events "
-                        "WHERE kind = 'scrape_item'")
-            landed = cur.fetchone()[0]
-        except Exception as exc:  # noqa: BLE001
-            landed = f"unavailable ({exc})"
+        scrapes = [dict(zip(scols, r)) for r in cur.fetchall()]
+        cur.execute("SELECT status, count(*) FROM gtm.icypeas_company_scrapes GROUP BY 1")
+        histogram = {r[0]: r[1] for r in cur.fetchall()}
         cur.execute(
-            """SELECT batch_label, requested, skipped, submitted, batches, failed, status, recorded_at
+            """SELECT batch_label, requested, skipped, found, not_found, batches, failed, status, recorded_at
                FROM ops.company_scrape_runs ORDER BY recorded_at DESC LIMIT 3""")
         rcols = [d.name for d in cur.description]
         runs = [dict(zip(rcols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
-    print(f"submission histogram: {sub_hist} · landed scrape_items: {landed}")
-    return {"submission_histogram": sub_hist, "landed_scrape_items": landed,
-            "recent_submissions": submissions, "recent_runs": runs}
+    print(f"status histogram: {histogram}")
+    for s in scrapes:
+        print(f"  {(s['company_name'] or '-'):<32} {s['status']:<10} {s['domain_norm'] or '-'}")
+    return {"histogram": histogram, "recent_scrapes": scrapes, "recent_runs": runs}
 
 
 @app.local_entrypoint()
 def init_ops() -> None:
-    """Apply the ops.company_scrape_* DDL (HQX)."""
-    print(apply_ops_ddl.remote())
+    """Apply the gtm.icypeas_company_scrapes + ops.company_scrape_runs DDL (HQX)."""
+    print(apply_ddl.remote())
 
 
 @app.local_entrypoint()
 def verify_run(limit: int = 8) -> None:
-    """Read-back assertion on the most-recent submissions + landing reconciliation."""
+    """Read-back assertion on the most-recent scrapes."""
     import json
 
     print(json.dumps(verify.remote(limit), indent=2, default=str))

@@ -3,12 +3,13 @@ import { task, wait, logger } from "@trigger.dev/sdk";
 /**
  * Control plane — Company Scraper (Icypeas /api/scrape bulk rail).
  *
- * Feeds LinkedIn company URLs into Icypeas company scraping. This is the SUBMIT
- * orchestrator; results are delivered by WEBHOOK to edge_api (/webhooks/icypeas/*
- * → business.icypeas_webhook_events, the raw SoR) — NOT returned through here.
+ * Feeds LinkedIn company URLs into Icypeas company scraping. /api/scrape is SYNCHRONOUS —
+ * the Modal worker gets the scraped data back inline and lands it directly in
+ * gtm.icypeas_company_scrapes (the raw SoR in hq-x Postgres). Nothing is returned through here
+ * except terminal COUNTS.
  *
  * Task surface (the only id callers trigger):
- *   companyScraperEnroll   companyUrls[] → governed /api/scrape submits (+ ops ledger)
+ *   companyScraperEnroll   companyUrls[] → scraped rows in gtm.icypeas_company_scrapes (+ ops runs)
  *
  * Fan-out durable-callback pattern (mirror src/trigger/enrichment_email_cascade.ts).
  * enroll chunks the batch and fans out one CHILD run per chunk via batchTriggerAndWait
@@ -19,14 +20,14 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  * waitpoints in a single run, so batchTriggerAndWait (one batch waitpoint) is the sanctioned
  * parallel primitive; a Promise.all over wait.forToken would trip TASK_DID_CONCURRENT_WAIT.
  *
- * Throttle: the single-container core/icypeas_gateway.py scrape_submit bucket is the HARD
- * global governor on /api/scrape submits regardless of how many chunk-workers are in flight.
+ * Throttle: the single-container core/icypeas_gateway.py scrape_companies bucket is the HARD
+ * global governor on /api/scrape requests regardless of how many chunk-workers are in flight.
  * The chunk queue.concurrencyLimit is only a COARSE Modal-container budget, NOT the rate governor.
  *
- * The worker is submit-only and ZERO-read: it never polls Icypeas, so this rail never touches
- * the global 30/min read ceiling the email cascade + bulk drain contend for. A run completes at
- * "submitted", not "scraped" — scraped rows land asynchronously at edge_api over the following
- * seconds/minutes; reconcile via ops.company_scrape_submissions ⋈ business.icypeas_webhook_events.
+ * The rail is ZERO-read: /api/scrape returns results inline, so it never touches the global
+ * 30/min /bulk-single-searchs/read ceiling the email cascade + bulk drain contend for. A run
+ * completes once every chunk's rows are landed (found | not_found); idempotency skips URLs already
+ * landed FOUND (never re-spending a scrape credit).
  *
  * Trigger carries only signals: the callback body is terminal COUNTS, never scraped rows.
  */
@@ -38,7 +39,8 @@ interface CompanyScrapeCallback {
   batch_label?: string | null;
   requested: number;
   skipped: number;
-  submitted: number;
+  found: number;
+  not_found: number;
   batches: number;
   failed: number;
   error?: string | null;
@@ -47,7 +49,7 @@ interface CompanyScrapeCallback {
 interface CompanyScraperPayload {
   companyUrls: string[];
   batchLabel?: string;
-  force?: boolean; // re-submit urls already marked 'submitted' (default: skip them)
+  force?: boolean; // re-scrape urls already landed FOUND (default: skip them)
   chunkSize?: number; // urls per Modal worker invocation (default 500; worker sub-batches into 50s)
 }
 
@@ -68,7 +70,8 @@ const DEFAULT_CHUNK_SIZE = 500; // urls per worker; the worker slices into ≤50
 const ZERO: Omit<CompanyScrapeCallback, "status" | "feed"> = {
   requested: 0,
   skipped: 0,
-  submitted: 0,
+  found: 0,
+  not_found: 0,
   batches: 0,
   failed: 0,
 };
@@ -181,7 +184,8 @@ export const companyScraperEnroll = task({
       const c = run.output;
       totals.requested += c.requested;
       totals.skipped += c.skipped;
-      totals.submitted += c.submitted;
+      totals.found += c.found;
+      totals.not_found += c.not_found;
       totals.batches += c.batches;
       totals.failed += c.failed;
     }
