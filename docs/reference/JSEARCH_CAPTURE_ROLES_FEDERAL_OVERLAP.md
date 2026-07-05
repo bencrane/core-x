@@ -1,11 +1,11 @@
 # JSearch Capture-Roles Feed — Federal Prime/Subaward Overlap
 
-> **🟩 LIVE FEED + AD-HOC OVERLAP ANALYSIS.** The `jsearch_capture_roles` harvest feed is
-> built and landed (Gen-3 Lance SoR, indexed). The prime/subaward overlap numbers in §4 are
-> **ad-hoc** — computed live from scratch scripts (§5), **not yet materialized as a durable
-> dataset**. The durable form is specified in §7 and is the primary open work item. Any agent
-> picking this up: read §3 (methodology) before trusting §4, and §6 (caveats) before quoting a
-> number outward.
+> **🟩 LIVE FEED + BUILT ENRICHED DATASET.** The `jsearch_capture_roles` harvest feed is built and
+> landed, and the derived **`jsearch_capture_roles_enriched`** company-resolution dataset (§7) is now
+> **materialized on R2** (4,019 rows, 27 cols, 20 indexes; built 2026-07-04 from internal SoRs only —
+> no external/billed calls). The §4 numbers are the ad-hoc scratch that preceded it; the **as-built**
+> stats live in §7 and run slightly higher (§4.7 recall upgrades baked in). Any agent picking this up:
+> read §3 (methodology), §6 (caveats) before quoting a number, and §7 for the built dataset + rebuild.
 
 **Data as-of:** feed materialized `2026-07-03 03:22 UTC`; overlap analysis run `2026-07-04`.
 **Repo state:** feed code on `main` (PRs #918 → #929 → #931, all 2026-07-02).
@@ -30,9 +30,9 @@ market, as primes and/or subawardees, and how recently.**
 - **Reachable on LinkedIn:** **86%** match PDL directly (→ company LinkedIn URL), rising to **~90%**
   after de-artifacting names + internal-source joins; of the active-24mo govcon core, **95.9%** match.
   The remaining no-match set is mostly data-quality artifacts + noise, not genuinely missing firms (§4.6–4.7).
-- **No derived Lance exists yet.** Only the raw feed `jsearch_capture_roles` (9,422 rows) is
-  materialized; all of §4 is ad-hoc scratch. Persisting it = *building* `jsearch_capture_roles_enriched`
-  (§7) — the source feed is append-only and must not be mutated with derived columns.
+- **BUILT:** the derived `jsearch_capture_roles_enriched` Lance (**4,019 rows · 27 cols · 20 indexes**)
+  is materialized at `s3://data-sink/active/` (§7). Source feed stays append-only/untouched. As-built:
+  federal **1,858** · prime **1,593** · sub **1,517** · active-24mo **1,499** · **has_linkedin 3,641 (90.6%)**.
 
 ---
 
@@ -360,63 +360,81 @@ The consolidated, self-contained crosstab script is reproduced in **§8 (Appendi
 
 ---
 
-## 7. Open work — the durable enriched dataset (primary next item)
+## 7. The enriched dataset (BUILT 2026-07-04)
 
-Everything in §4 + §4.7 is ad-hoc scratch. **Nothing derived is materialized** (verified 2026-07-04:
-`jsearch_capture_roles_enriched` and every `_bridge`/`_enriched` variant are **absent**; the only Lance
-is the raw feed `jsearch_capture_roles`, 9,422 rows). Persisting this work means **building a new derived
-dataset** — the source feed is append-only and must **not** be overwritten with derived columns.
-Productionize as an OVERWRITE-snapshot Lance so downstream readers read a stable SoR instead of re-deriving.
+`jsearch_capture_roles_enriched` is **materialized** — a derived, recomputable OVERWRITE-snapshot Lance
+that resolves each harvested employer to federal prime/subaward status + PDL/LinkedIn, one row per
+`company_key`. Built **only from internal Lance SoRs — zero external/billed calls**. The source feed
+`jsearch_capture_roles` is append-only and is never mutated.
 
-**Proposed dataset:** `s3://data-sink/active/jsearch_capture_roles_enriched/` (Lance v2.1, OVERWRITE snapshot).
+**Dataset:** `s3://data-sink/active/jsearch_capture_roles_enriched/` (Lance v2.1, OVERWRITE snapshot).
+**Builder:** [`pipelines/jsearch/build_capture_roles_enriched.py`](../../pipelines/jsearch/build_capture_roles_enriched.py) (`build` / `verify`).
+**Ledger:** `ops.jsearch_capture_roles_enriched_runs` (one terminal row per build).
+
+**As-built (2026-07-04):** 4,019 rows · 27 cols · 5 BTREE + 15 BITMAP indexes · federal **1,858** · prime
+**1,593** · subawardee **1,517** · active-24mo **1,499** · has_pdl **3,623** · **has_linkedin 3,641 (90.6%)**.
+These run higher than §4's scratch numbers because the builder applies the §4.7 de-artifact +
+root-domain + internal-LinkedIn-union upgrades uniformly.
+
+```bash
+mkdir -p /tmp/jx_enriched
+SCRATCH=/tmp/jx_enriched doppler run -p core-x -c prd -- uv run --no-project \
+  --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.1' --with 'psycopg[binary]>=3.2' --with 'tldextract' \
+  python3 pipelines/jsearch/build_capture_roles_enriched.py build   # … verify → schema + indices
+```
 
 **Grain:** one row per jsearch `company_key` (= `coalesce(employer_domain, lower(employer_name))`).
 
-**Proposed schema:**
+**Schema (as built) — 27 columns:**
 
-| Column | Type | Notes |
-|---|---|---|
-| `company_key` | text | PK / BTREE. `coalesce(employer_domain, lower(employer_name))` |
-| `employer_name` | text | representative (most-recent posting) |
-| `employer_domain` | text | normalized; nullable |
-| `resolved_uei` | text[] | all SAM UEIs the domain maps to (BITMAP on cardinality bucket) |
-| `is_prime` | bool | any `recipient_uei`/name match — BITMAP |
-| `is_subawardee` | bool | any `subawardee_uei`/name match — BITMAP |
-| `match_path_prime` | text | `domain` \| `name` \| `both` \| `none` — BITMAP |
-| `match_path_sub` | text | idem |
-| `last_prime_action_date` | date | max `action_date` |
-| `last_subaward_action_date` | date | max `subaward_action_date` |
-| `prime_active_24mo` | bool | derived |
-| `sub_active_24mo` | bool | derived |
-| `has_pdl` | bool | matched `pdl_normalized_companies` — BITMAP |
-| `pdl_match_path` | text | `domain` \| `name` \| `both` \| `none` — BITMAP |
-| `pdl_company_id` | text | PDL id (best match) — BTREE |
-| `company_linkedin_url` | text | from PDL `linkedin_slug` (`linkedin.com/company/{slug}`); ~100% populated on match |
-| `pdl_employee_size_range` | text | PDL firmographic (bonus) — BITMAP |
-| `is_staffing` / `is_confidential` | bool | carried from feed |
-| `built_at` | timestamptz | run stamp |
+| Column | Type | Index | Notes |
+|---|---|---|---|
+| `company_key` | text | BTREE | PK. `coalesce(employer_domain, lower(employer_name))` |
+| `employer_name` | text | — | representative (longest raw name for the key) |
+| `employer_domain` | text | BTREE | normalized; nullable |
+| `root_domain` | text | BTREE | registrable eTLD+1 (ATS-vendor stripped); nullable |
+| `n_postings` | int | — | postings collapsed into this company |
+| `is_staffing` / `is_confidential` | bool | BITMAP | carried from feed |
+| `resolved_uei` | text[] | — | all SAM UEIs the (root) domain maps to |
+| `n_resolved_uei` | int | — | cardinality |
+| `is_prime` | bool | BITMAP | any `recipient_uei`/name match |
+| `match_path_prime` | text | BITMAP | `domain` \| `name` \| `both` \| `none` |
+| `last_prime_action_date` | date | — | max `action_date` |
+| `prime_active_24mo` | bool | BITMAP | derived vs 2024-07-04 |
+| `is_subawardee` | bool | BITMAP | any `subawardee_uei`/name match |
+| `match_path_sub` | text | BITMAP | idem |
+| `last_subaward_action_date` | date | — | max `subaward_action_date` |
+| `sub_active_24mo` | bool | BITMAP | derived |
+| `federal_footprint` | bool | BITMAP | `is_prime OR is_subawardee` |
+| `active_24mo` | bool | BITMAP | prime or sub action ≤ 24 mo |
+| `has_pdl` | bool | BITMAP | matched `pdl_normalized_companies` |
+| `pdl_match_path` | text | BITMAP | `domain` \| `name` \| `both` \| `none` |
+| `pdl_company_id` | text | BTREE | best PDL id (domain-match preferred) |
+| `pdl_employee_size_range` | text | BITMAP | PDL firmographic |
+| `company_linkedin_url` | text | BTREE | PDL `linkedin_slug`, else internal-union fallback |
+| `linkedin_source` | text | BITMAP | `pdl` \| `clay` \| `blitz` \| `company_addresses` \| `companies` |
+| `has_linkedin` | bool | BITMAP | `company_linkedin_url IS NOT NULL` (90.6%) |
+| `built_at` | timestamptz | — | run stamp |
 
-**Build approach:** Lance(jsearch, sam_master_domains, subaward_canonical, award_canonical,
-pdl_normalized_companies) →
-DuckDB (stream the 30.68M prime + 35.4M PDL single-pass-filtered, §3.5) → Arrow → `lance.write_dataset(..., mode="overwrite",
-data_storage_version="2.1")` → BTREE[`company_key`] + BITMAP[the bool/path columns]. Ops ledger
-row → `ops.jsearch_capture_roles_enriched_runs` (mirror the feed's `_record_run` pattern). Place the
-builder at `pipelines/jsearch/build_capture_roles_enriched.py`; wire a Trigger task only if a refresh
-cadence is wanted (it recomputes cheaply; a manual/monthly cadence is sufficient since the prime
-canonical refreshes on its own schedule).
+**Build path (as implemented):** Lance(jsearch, sam_master_domains, subaward_canonical, award_canonical,
+pdl_normalized_companies, clay/blitz/company_addresses/companies) → DuckDB (award 30.68M + PDL 35.4M
+streamed single-pass-filtered, §3.5) → Arrow → `lance.write_dataset(mode="overwrite", v2.1)` →
+5 BTREE + 15 BITMAP scalar indexes → `ops.jsearch_capture_roles_enriched_runs` ledger row. No Trigger
+task wired — recompute is cheap and manual/monthly suffices (rerun the `build` command). Add a schedule
+only if a cadence is wanted.
 
-**Recall upgrades to fold in at build time (each raises the match rate off the §6 floor):**
-- **Name de-artifacting (§4.7-B, biggest single win, +156):** strip glued leading digits, drop the
-  len≥4 guard for short legit names (`3m`/`abb`), filter staffing/jobboard/gov noise out of the target.
-- **Root-domain normalization (§4.7-A/B):** reduce `employer_domain` to registrable eTLD+1 with
-  ATS-vendor stripping (`careers.serco-na.com`→`serco-na.com`) *before* any domain join.
-- **Internal-LinkedIn-union fallback:** after PDL, coalesce a LinkedIn URL from `clay_find_companies` /
-  `firmographics_blitz` / `company_addresses` / `companies` by (root) domain — free, +16 on its own.
-- Parent rollup via `entity_hierarchy` (caveat #2).
-- Add `crosswalk_dsbs_sam.best_domain` as a second domain→UEI crosswalk for DSBS-only firms.
-- Containment / fuzzy name match (token-set / trigram) for the name-only companies (`amazon.com
-  services llc`→`amazon`), gated by a score threshold and kept in a separate match-path for auditability.
-- **Genuine residual (~45 real domains, §4.7-C):** absent from all ingested SoRs — resolve via a
+**Recall upgrades — ✅ shipped in the builder · ⬜ still open:**
+- ✅ **Name de-artifacting (§4.7-B):** strip glued leading digits, drop the len≥4 guard for short legit
+  names (`3m`/`abb`), filter staffing/jobboard/gov noise out of the name-match target.
+- ✅ **Root-domain normalization (§4.7-A/B):** `employer_domain` reduced to registrable eTLD+1 with
+  ATS-vendor stripping (`careers.serco-na.com`→`serco-na.com`), matched alongside the raw domain.
+- ✅ **Internal-LinkedIn-union fallback:** after PDL, `company_linkedin_url` coalesces from
+  `clay_find_companies` / `firmographics_blitz` / `company_addresses` / `companies` (`linkedin_source` tags which).
+- ⬜ Parent rollup via `entity_hierarchy` (caveat #2) — would raise `resolved_uei` recall.
+- ⬜ `crosswalk_dsbs_sam.best_domain` as a second domain→UEI crosswalk for DSBS-only firms.
+- ⬜ Containment / fuzzy name match (token-set / trigram) for name-only companies (`amazon.com services
+  llc`→`amazon`), gated by a score threshold, kept in a separate match-path for auditability.
+- ⬜ **Genuine residual (~45 real domains, §4.7-C):** absent from all ingested SoRs — resolve via a
   policy-approved live enrichment (blitz/Clay, billed) or `WebFetch`; never a billed rail without a "yes."
 
 **Downstream consumers** once built: anything that reads company-level resolution — `gtm_*` marts,
@@ -513,3 +531,4 @@ print("active 24mo    :", q(f"SELECT count(*) FROM m WHERE last_sub >= DATE '{C2
 | 2026-07-04 | This doc — ad-hoc prime/subaward overlap + recency analysis; durable enriched-dataset spec (§7). |
 | 2026-07-04 | Added §4.6 PDL / company-LinkedIn coverage (86% overall, 95.9% of active-24mo). |
 | 2026-07-04 | Added §4.7 no-PDL residual analysis (internal recovery → ~91%, 0/45 residual verified); recorded ad-hoc Serper pass + caveat #9; renamed the derived dataset `…_federal_bridge` → `jsearch_capture_roles_enriched` (drop GTM-encoded naming). |
+| 2026-07-04 | **BUILT** `jsearch_capture_roles_enriched` (4,019 rows · 27 cols · 20 idx) via `pipelines/jsearch/build_capture_roles_enriched.py` — federal 1,858 / prime 1,593 / sub 1,517 / active-24mo 1,499 / has_linkedin 3,641 (90.6%). Internal SoRs only; §4.7 upgrades baked in; §7 flipped spec→as-built. |
