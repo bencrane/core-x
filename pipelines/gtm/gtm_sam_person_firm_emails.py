@@ -9,11 +9,15 @@ Grain: 1 row per (uei, email) with a UNIQUE-person ruling. Surname-ties and
 true ambiguities are EXCLUDED from rows (counted in the ledger); generic
 mailboxes excluded outright.
 
-Matcher (measured 2026-07-04 over 58,961 emails):
-    T1 0.95 full-name construction   fn+ln / ln+fn (+nickname expansion)
-    T2 0.90 initial construction     f+ln / ln+f / fn+l
-    T3 0.85 single-name exact        lp == ln (≥4) or lp == fn (≥4)
-    T4 0.70-0.75 containment         ln (≥4) or fn (≥4) inside lp
+Matcher (measured 2026-07-04 over 58,961 emails). match_tier values are
+self-describing — the label states exactly which name form matched:
+    tier1_full_name                      0.95  fn+ln / ln+fn (+nickname expansion)
+    tier2_first_initial_plus_surname     0.90  f+ln / ln+f          (jdoe@, doej@)
+    tier2_first_name_plus_surname_initial 0.90  fn+l                 (johnd@)
+    tier3_surname_exact                  0.85  lp == surname (≥4)   (smith@)
+    tier3_first_name_exact               0.85  lp == first name (≥4)
+    tier4_surname_inside_address         0.75  surname (≥4) inside lp
+    tier4_first_name_inside_address      0.70  first name (≥4) inside lp
 Alpha-only local-part canon (john.doe ≡ john_doe ≡ johndoe); candidates are
 ALL gtm_sam_people at the uei; best-score wins; normalization is
 lower→strip_accents→[a-z] (order matters — uppercase-first strips everything).
@@ -204,23 +208,42 @@ def run() -> dict:
                   WHEN len(p.ln)>=4 AND contains(e.lp, p.ln) THEN 0.75
                   WHEN len(p.fn)>=4 AND (contains(e.lp, p.fn)
                        OR contains(e.lp, p.fn_full)) THEN 0.70
-                END AS score
+                END AS score,
+                CASE
+                  WHEN e.lp IN ({GENERIC}) THEN NULL
+                  WHEN len(p.fn)>=2 AND len(p.ln)>=2 AND e.lp IN
+                       (p.fn||p.ln, p.ln||p.fn, p.fn_full||p.ln, p.ln||p.fn_full)
+                       THEN 'tier1_full_name'
+                  WHEN len(p.fn)>=1 AND len(p.ln)>=3 AND e.lp IN
+                       (substr(p.fn,1,1)||p.ln, p.ln||substr(p.fn,1,1),
+                        substr(p.fn_full,1,1)||p.ln)
+                       THEN 'tier2_first_initial_plus_surname'
+                  WHEN len(p.fn)>=3 AND len(p.ln)>=1 AND e.lp IN
+                       (p.fn||substr(p.ln,1,1), p.fn_full||substr(p.ln,1,1))
+                       THEN 'tier2_first_name_plus_surname_initial'
+                  WHEN len(p.ln)>=4 AND e.lp = p.ln THEN 'tier3_surname_exact'
+                  WHEN len(p.fn)>=4 AND (e.lp = p.fn OR e.lp = p.fn_full)
+                       THEN 'tier3_first_name_exact'
+                  WHEN len(p.ln)>=4 AND contains(e.lp, p.ln)
+                       THEN 'tier4_surname_inside_address'
+                  WHEN len(p.fn)>=4 AND (contains(e.lp, p.fn)
+                       OR contains(e.lp, p.fn_full))
+                       THEN 'tier4_first_name_inside_address'
+                END AS tier_label
             FROM emails e JOIN ppl2 p USING (uei)""")
 
         con.execute("""CREATE TEMP TABLE best AS
             SELECT uei, email, email_norm, max(score) AS best_score,
                    count(DISTINCT sam_person_id) FILTER (WHERE score = mx) AS n_best,
                    count(DISTINCT ln) FILTER (WHERE score = mx) AS n_surnames,
-                   min(sam_person_id) FILTER (WHERE score = mx) AS person
+                   min(sam_person_id) FILTER (WHERE score = mx) AS person,
+                   min(tier_label) FILTER (WHERE score = mx) AS tier_label
             FROM (SELECT *, max(score) OVER (PARTITION BY uei, email) AS mx FROM scored)
             GROUP BY 1, 2, 3""")
 
         con.execute(f"""CREATE TEMP TABLE final AS
             SELECT person AS sam_person_id, uei, email, email_norm,
-                   CASE WHEN best_score >= 0.95 THEN 't1_full_name'
-                        WHEN best_score >= 0.90 THEN 't2_initial'
-                        WHEN best_score >= 0.85 THEN 't3_single_name'
-                        ELSE 't4_containment' END AS match_tier,
+                   tier_label AS match_tier,
                    best_score AS match_score,
                    '{build_id}' AS build_id,
                    TIMESTAMP '{started:%Y-%m-%d %H:%M:%S}' AS built_at
@@ -230,10 +253,10 @@ def run() -> dict:
             SELECT count(*), count(*) FILTER (WHERE lp IN ({GENERIC})) FROM emails""").fetchone()
         (rows, t1, t2, t3, t4) = con.execute("""
             SELECT count(*),
-                   count(*) FILTER (WHERE match_tier='t1_full_name'),
-                   count(*) FILTER (WHERE match_tier='t2_initial'),
-                   count(*) FILTER (WHERE match_tier='t3_single_name'),
-                   count(*) FILTER (WHERE match_tier='t4_containment')
+                   count(*) FILTER (WHERE match_tier LIKE 'tier1%'),
+                   count(*) FILTER (WHERE match_tier LIKE 'tier2%'),
+                   count(*) FILTER (WHERE match_tier LIKE 'tier3%'),
+                   count(*) FILTER (WHERE match_tier LIKE 'tier4%')
             FROM final""").fetchone()
         (ties, ambig) = con.execute("""
             SELECT count(*) FILTER (WHERE n_best > 1 AND n_surnames = 1),

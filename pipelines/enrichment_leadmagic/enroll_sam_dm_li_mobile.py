@@ -159,7 +159,8 @@ def _build_contacts(limit: int | None) -> tuple[list[dict], dict]:
     con.execute("""CREATE TABLE enr AS
         SELECT DISTINCT i.person_linkedin_url_norm AS slug
         FROM r JOIN i ON i.sam_person_id = r.sam_person_id
-        WHERE r.match_tier IN ('t1_full_name','t2_initial')
+        WHERE r.match_tier IN ('tier1_full_name','tier2_first_initial_plus_surname',
+                               'tier2_first_name_plus_surname_initial')
           AND i.person_linkedin_url_norm IS NOT NULL""")
 
     rows = con.execute(f"""

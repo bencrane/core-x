@@ -5,7 +5,7 @@ Cohort (operator-directed 2026-07-04): the DSBS email→mobile waterfall queue
 (gtm_sam_person_firm_emails rulings, no owned mobile), constrained to:
 
     money24 = greatest(sub-$ 24m, prime-$ 24m) >= $1M            (either side)
-    ∧ hi-confidence ruling (t1_full_name | t2_initial)
+    ∧ hi-confidence ruling (tier1_full_name | tier2 initial forms)
     ∧ ( confirmed <500 employees (blitz uei-direct ∨ PDL unique-domain)
         OR size UNKNOWN ∧ money24 < $100M )
 
@@ -107,7 +107,8 @@ def _build_contacts(limit: int | None) -> tuple[list[dict], dict]:
 
     reg("rul", "gtm_sam_person_firm_emails",
         ["sam_person_id", "uei", "email", "match_tier"],
-        "match_tier IN ('t1_full_name','t2_initial')")
+        "match_tier IN ('tier1_full_name','tier2_first_initial_plus_surname',"
+        "'tier2_first_name_plus_surname_initial')")
     con.execute("CREATE TABLE r AS SELECT * FROM rul WHERE uei IN (SELECT uei FROM aud)")
     reg("ppl", "gtm_sam_people", ["sam_person_id", "first_name", "last_name"])
     con.execute("CREATE TABLE pp AS SELECT * FROM ppl "
