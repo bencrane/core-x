@@ -1138,6 +1138,10 @@ _SURFACE_DATASETS = {
     "subawardee_profiles": lambda: config.SUBAWARDEE_CAPABILITY_PROFILES_URI,
     "contract_subaward": lambda: config.CONTRACT_SUBAWARD_URI,
     "people": lambda: config.PEOPLE_URI,
+    # Market query engine substrate (the spine-derived L2 entity grain).
+    "gtm_entity_behavior_rollup": lambda: config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI,
+    "gtm_entity_code_lanes": lambda: config.GTM_ENTITY_CODE_LANES_URI,
+    "gtm_sam_entities": lambda: config.GTM_SAM_ENTITIES_URI,
 }
 
 

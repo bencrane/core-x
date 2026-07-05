@@ -157,6 +157,40 @@ MAP_DATASET_URIS = {"winners": WINNERS_MAP_URI, "company": COMPANY_MAP_URI,
                     "contracts": CONTRACTS_MAP_URI}
 
 
+# ── Market query engine substrate (the spine-derived L2 datasets) ─────────────
+# The deterministic entity-grain query surface (apps/catalyst_api/src/market_registry.py +
+# market_store.py). All three are canonical spine-derived L2 Lance datasets — grain and
+# universe semantics live in the registry field descriptions (the product surface).
+# Schemas + indices probed live 2026-07-05.
+#
+# gtm_entity_behavior_rollup — 1 row/uei (261,316), BTREE uei. Contracts-only money
+# rollups (IDV vehicle parents excluded), windows bind to action_date.
+GTM_ENTITY_BEHAVIOR_ROLLUP_URI = os.environ.get(
+    "GTM_ENTITY_BEHAVIOR_ROLLUP_LANCE_URI", "s3://data-sink/active/gtm_entity_behavior_rollup/"
+)
+# gtm_entity_code_lanes — 1 row/(uei, side, code_type, code) (1,670,905). BTREE uei +
+# code; BITMAP side + code_type. The per-lane obligation windows behind lane predicates.
+GTM_ENTITY_CODE_LANES_URI = os.environ.get(
+    "GTM_ENTITY_CODE_LANES_LANCE_URI", "s3://data-sink/active/gtm_entity_code_lanes/"
+)
+# gtm_sam_entities — 1 row/uei (2,025,707). BTREE uei/normalized_domain/primary_naics;
+# BITMAP in_sam/sam_is_active/in_dsbs/is_subawardee/is_prime_recipient/physical_state.
+GTM_SAM_ENTITIES_URI = os.environ.get(
+    "GTM_SAM_ENTITIES_LANCE_URI", "s3://data-sink/active/gtm_sam_entities/"
+)
+
+# ── Code reference dimensions (the /market/codes typeahead) ──────────────────
+# naics_reference — 1 row per NAICS code (2-6 digit, ~2,125): naics_code + naics_title.
+NAICS_REFERENCE_URI = os.environ.get(
+    "NAICS_REFERENCE_LANCE_URI", "s3://data-sink/active/naics_reference/"
+)
+# psc_reference — 1 row per (psc_code, effective period) (~6,108): psc_code + psc_name;
+# is_active = current meaning (retired rows carry end_date).
+PSC_REFERENCE_URI = os.environ.get(
+    "PSC_REFERENCE_LANCE_URI", "s3://data-sink/active/psc_reference/"
+)
+
+
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
 def operator_token() -> str | None:
     """The shared secret the platform-api BFF presents as ``Authorization: Bearer``.

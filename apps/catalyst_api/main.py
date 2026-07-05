@@ -33,7 +33,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, 
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
-from .src import config, dossier, lance_store
+from .src import config, dossier, lance_store, market_registry, market_store
 from .src.map_decoders import DECODERS
 from .src.card_html import render_card, render_not_found
 from .src.models import (
@@ -47,6 +47,7 @@ from .src.models import (
     EntityDossierResponse,
     MapAggregateRequest,
     MapQueryRequest,
+    MarketQueryRequest,
     OverviewResponse,
     PastPerformanceResponse,
     PersonByLinkedInRequest,
@@ -175,8 +176,11 @@ def _info() -> dict:
             "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
             "person_by_linkedin": "/api/v1/people/by-linkedin  (POST: {url})",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
+            "market_fields": "/api/v1/market/fields",
+            "market_query": "/api/v1/market/query  (POST: {grain:'entity', filters:[{field,op,value}|{lane:{...}}], limit:N})",
+            "market_codes": "/api/v1/market/codes?type=naics|psc&q=<text>&limit=20",
         },
-        "map_datasets": list(DECODERS),
+        "map_datasets": [*DECODERS, "entities"],
     }
 
 
@@ -481,11 +485,18 @@ def map_fields() -> JSONResponse:
     from the frozen decoder specs (never hand-maintained). One payload for all datasets
     so a filter-builder UI learns fields, per-field ops, enum vocabularies, and the
     aggregate allowlist in a single fetch. An axis absent here is by definition not yet
-    configured — the honest 'what works' contract for the query workbench."""
+    configured — the honest 'what works' contract for the query workbench.
+
+    The five pre-spine map datasets carry ``legacy: true`` (the workbench uses it to
+    hide their tabs; the public /ask still executes against them — the decoders stay).
+    The spine-backed ``entities`` dataset (the market query engine, ``legacy: false``)
+    rides in the SAME payload so the workbench learns it with zero extra fetches; its
+    queries route to POST /api/v1/map/entities/query (the adapter below)."""
     out = {}
     for name, decoder in DECODERS.items():
         out[name] = {
             "decoderVersion": decoder.version,
+            "legacy": True,
             "fields": [
                 {
                     "name": qname,
@@ -508,7 +519,101 @@ def map_fields() -> JSONResponse:
                 if decoder.aggregate is not None else None
             ),
         }
+    out["entities"] = market_registry.fields_payload()
     return JSONResponse({"data": {"datasets": out}})
+
+
+# ── Market query engine (spine-backed, entity grain — the replace-forward surface) ──
+@app.get("/api/v1/market/fields", response_model=None, dependencies=[Depends(require_operator)])
+def market_fields() -> JSONResponse:
+    """The market registry, projected verbatim (market_registry.fields_payload) in the
+    same ``{"data": {"datasets": {...}}}`` shape as /api/v1/map/fields — the clean alias
+    for consumers that only want the spine-backed grains."""
+    return JSONResponse({"data": {"datasets": {"entities": market_registry.fields_payload()}}})
+
+
+@app.post("/api/v1/market/query", response_model=None, dependencies=[Depends(require_operator)])
+def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
+    """Deterministic entity-grain query over the spine-derived L2 datasets. The body is
+    a constrained ``{grain, filters, limit}`` object — scalar ``{field, op, value}``
+    clauses (registry-validated) and/or ``{"lane": {...}}`` predicates, AND-combined.
+    Execution: per-table predicate compile → UEI-set intersection (lanes ∩ rollup ∩
+    entities) → hydration join on the survivors. 422 on any off-registry field/op/enum
+    or malformed lane; ``meta.executed`` echoes the validated filter object (lane
+    pseudo-fields desugared), ``meta.total`` is exact."""
+    if body.grain != "entity":
+        raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} — v1 serves 'entity'")
+    try:
+        result = market_store.execute_entity_query(
+            [c.model_dump() for c in body.filters], body.limit
+        )
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    return JSONResponse({
+        "data": {"rows": result["rows"]},
+        "meta": {
+            "grain": "entity",
+            "registryVersion": market_registry.REGISTRY_VERSION,
+            "returned": result["returned"],
+            "total": result["total"],
+            "capped": result["capped"],
+            "executed": result["executed"],
+        },
+    })
+
+
+@app.get("/api/v1/market/codes", response_model=None, dependencies=[Depends(require_operator)])
+def market_codes(
+    type: str = Query(..., description="Code system: 'naics' | 'psc'"),
+    q: str = Query("", description="Search text: code prefix OR description substring."),
+    limit: int = Query(market_store.CODES_DEFAULT_LIMIT, ge=1, le=market_store.CODES_MAX_LIMIT),
+) -> JSONResponse:
+    """Code typeahead for the workbench lane fields: ranked match over the reference
+    dimensions (naics_reference / psc_reference, loaded once in-memory). Code-PREFIX
+    matches rank above description-SUBSTRING matches. Empty q / bad type → 422."""
+    try:
+        codes = market_store.code_search(type, q, limit)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid code search: {exc}")
+    return JSONResponse({
+        "data": {"codes": codes},
+        "meta": {"type": type, "q": q.strip(), "returned": len(codes)},
+    })
+
+
+# NOTE: registered BEFORE the parametrized /api/v1/map/{dataset}/query route below —
+# FastAPI matches in registration order, so the literal path wins for dataset='entities'.
+@app.post("/api/v1/map/entities/query", response_model=None, dependencies=[Depends(require_operator)])
+def map_entities_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
+    """Workbench adapter over the market query engine: accepts the SAME body the map
+    datasets take (``{filters, limit}`` — lane objects also pass) and returns the SAME
+    envelope the workbench parses (``data`` = a FeatureCollection whose features carry
+    ``geometry: null`` + the entity row as ``properties``; ``meta`` = dataset/
+    decoderVersion/returned/plottable/total/capped). The clean row-shaped surface is
+    POST /api/v1/market/query."""
+    if body.grain != "entity":
+        raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} — v1 serves 'entity'")
+    try:
+        result = market_store.execute_entity_query(
+            [c.model_dump() for c in body.filters], body.limit
+        )
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    features = [
+        {"type": "Feature", "geometry": None, "properties": row} for row in result["rows"]
+    ]
+    return JSONResponse({
+        "data": {"type": "FeatureCollection", "features": features},
+        "meta": {
+            "dataset": "entities",
+            "decoderVersion": market_registry.REGISTRY_VERSION,
+            "returned": result["returned"],
+            "plottable": 0,
+            "total": result["total"],
+            "capped": result["capped"],
+            "executed": result["executed"],
+        },
+    })
 
 
 @app.post("/api/v1/map/{dataset}/query", response_model=None, dependencies=[Depends(require_operator)])

@@ -46,6 +46,29 @@ class MapQueryRequest(_Model):
     limit: int | None = None          # caller hint, clamped to MAP_HARD_ROW_CAP
 
 
+class MarketFilterClause(_Model):
+    """One entity-grain filter: EITHER a scalar ``{field, op, value}`` clause (validated
+    against the market registry in ``market_store.compile_market_filters`` — Pydantic
+    checks JSON shape only) OR a ``{"lane": {...}}`` lane predicate. The compiler
+    rejects a clause carrying both (or neither) with a 422."""
+
+    field: str | None = None
+    op: str | None = None
+    value: Any = None                 # scalar | list (for `in` / `between`)
+    lane: dict | None = None          # {side, code_type, codes[], min_obl_*} — validated fail-closed
+
+
+class MarketQueryRequest(_Model):
+    """POST body for the market query engine (/api/v1/market/query and the
+    /api/v1/map/entities/query workbench adapter). ``grain`` is 'entity' (the only v1
+    grain — anything else is a 422); ``filters`` are AND-combined."""
+
+    grain: str = "entity"
+    title: str | None = None          # echo-through label (unused by EXECUTE)
+    filters: list[MarketFilterClause] = []
+    limit: int | None = None          # clamped to market_store.MARKET_HARD_ROW_CAP
+
+
 class AggregateIntent(_Model):
     """The group-by + metrics of an aggregate request. ``group_by`` is a dataset dim or a
     pseudo-dim ('winner' | 'size_band'); ``metrics`` ⊆ the decoder's allowlist. Validated
