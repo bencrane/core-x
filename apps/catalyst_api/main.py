@@ -475,6 +475,42 @@ def person_by_linkedin(body: PersonByLinkedInRequest = Body(...)) -> JSONRespons
 
 
 # ── Map EXECUTE surface (deterministic filter-and-render; no LLM, no SQL engine) ──
+@app.get("/api/v1/map/fields", response_model=None, dependencies=[Depends(require_operator)])
+def map_fields() -> JSONResponse:
+    """Field-registry introspection: every dataset's queryable axes, projected verbatim
+    from the frozen decoder specs (never hand-maintained). One payload for all datasets
+    so a filter-builder UI learns fields, per-field ops, enum vocabularies, and the
+    aggregate allowlist in a single fetch. An axis absent here is by definition not yet
+    configured — the honest 'what works' contract for the query workbench."""
+    out = {}
+    for name, decoder in DECODERS.items():
+        out[name] = {
+            "decoderVersion": decoder.version,
+            "fields": [
+                {
+                    "name": qname,
+                    "type": spec.type,
+                    "ops": list(spec.ops),
+                    "enum": list(spec.enum) if spec.enum is not None else None,
+                    "index": spec.index,
+                    "gated": spec.gated,
+                }
+                for qname, spec in decoder.fields.items()
+            ],
+            "aggregate": (
+                {
+                    "measure": decoder.aggregate.measure,
+                    "dims": list(decoder.aggregate.dims.keys()),
+                    "metrics": list(decoder.aggregate.metrics),
+                    "defaultLimit": decoder.aggregate.default_limit,
+                    "maxLimit": decoder.aggregate.max_limit,
+                }
+                if decoder.aggregate is not None else None
+            ),
+        }
+    return JSONResponse({"data": {"datasets": out}})
+
+
 @app.post("/api/v1/map/{dataset}/query", response_model=None, dependencies=[Depends(require_operator)])
 def map_query(
     dataset: str = Path(..., description="Map serving table: 'winners' | 'company' | 'awards'"),
