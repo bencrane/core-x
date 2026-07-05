@@ -78,9 +78,14 @@ ON CONFLICT (contact_id) DO NOTHING
 """
 
 
+_MAPPED_COLS = {"person_id", "Work Email", "domain", "person_linkedin_url"}
+
+
 def _read_csv(path: str, source: str) -> list[dict]:
     """One row per contact_id (person_id→email is 1:1 on this feed). Verbatim email + linkedin;
-    company_domain normalized, falling back to the email's own domain when the CSV domain is blank."""
+    company_domain normalized, falling back to the email's own domain when the CSV domain is blank.
+    Every non-mapped, non-empty CSV column rides verbatim in the attempts stage as ``payload`` —
+    supplied feeds keep their full provider payload (attempts is carried losslessly to Lance)."""
     out: dict[str, dict] = {}
     with open(path, newline="", encoding="utf-8-sig") as fh:
         for r in csvmod.DictReader(fh):
@@ -90,6 +95,10 @@ def _read_csv(path: str, source: str) -> list[dict]:
                 continue
             dom = _normalize_domain(r.get("domain")) or _normalize_domain(email.split("@", 1)[-1])
             li = (r.get("person_linkedin_url") or "").strip() or None
+            stage: dict = {"stage": "supplied", "source": source}
+            payload = {k: v for k, v in r.items() if k not in _MAPPED_COLS and (v or "").strip()}
+            if payload:
+                stage["payload"] = payload
             out.setdefault(pid, {  # first row wins; feed is 1:1 so this is deterministic
                 "contact_id": pid,
                 "email": email,
@@ -97,7 +106,7 @@ def _read_csv(path: str, source: str) -> list[dict]:
                 "person_linkedin_url": li,
                 "source": source,
                 "batch_label": source,
-                "attempts": Jsonb([{"stage": "supplied", "source": source}]),
+                "attempts": Jsonb([stage]),
             })
     return list(out.values())
 
