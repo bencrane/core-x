@@ -300,12 +300,32 @@ def anthropic_api_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY")
 
 
+def openai_api_key() -> str | None:
+    """Key for the OpenAI compiler lane of the map /ask TRANSLATE. When unset and the
+    openai lane is active, the /ask route refuses (503)."""
+    return os.environ.get("OPENAI_API_KEY")
+
+
+def map_compiler_provider() -> str:
+    """Which compiler lane the map /ask TRANSLATE uses: ``openai`` or ``anthropic``.
+    Both lanes ship; this switch picks one at request time. Default ``openai`` — the
+    operational lane while ANTHROPIC_API_KEY is unfunded. Flip back by setting
+    ``MAP_COMPILER_PROVIDER=anthropic`` (no deploy needed if set in Doppler)."""
+    return os.environ.get("MAP_COMPILER_PROVIDER", "openai").strip().lower()
+
+
+_MAP_COMPILER_DEFAULT_MODEL = {"openai": "gpt-4.1", "anthropic": "claude-opus-4-7"}
+
+
 def map_compiler_model() -> str:
     """Model id for the map NL→filter translate (forced single-tool extraction over a
-    cached prompt). Defaults to ``claude-opus-4-7``: the map search box is low-volume
-    and operator-facing, so translation QUALITY is worth the cost over a faster Haiku.
-    Override with ``MAP_COMPILER_MODEL``."""
-    return os.environ.get("MAP_COMPILER_MODEL", "claude-opus-4-7")
+    cached prompt). Defaults per active lane — ``gpt-4.1`` / ``claude-opus-4-7``: the
+    map search box is low-volume and operator-facing, so translation QUALITY is worth
+    the cost over a mini/Haiku tier. Override with ``MAP_COMPILER_MODEL`` (must match
+    the active MAP_COMPILER_PROVIDER)."""
+    return os.environ.get(
+        "MAP_COMPILER_MODEL",
+        _MAP_COMPILER_DEFAULT_MODEL.get(map_compiler_provider(), "gpt-4.1"))
 
 
 # ── Job-title normalizer (forced-tool Anthropic Messages → strict {level, function}) ──
