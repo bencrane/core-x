@@ -112,7 +112,8 @@ def _project(row: dict, item: dict, batch_label: str, now: dt.datetime) -> dict:
         "li_source": row.get("li_source"),
         "source_class": row.get("source_class"),
         "money24_usd": row.get("money24_usd"),
-        "in_dsbs": row.get("in_dsbs"),
+        "in_dsbs": (row.get("in_dsbs") if isinstance(row.get("in_dsbs"), bool)
+                    else str(row.get("in_dsbs")).strip().lower() in ("true", "1", "t", "yes")),
         "status": (item.get("status") if isinstance(item, dict) else None),
         "search_id": (item.get("searchId") if isinstance(item, dict) else None),
         "linkedin_url": result.get("url"),
@@ -241,6 +242,60 @@ def verify(limit: int = 8) -> dict:
            "sample": sample}
     print(f"rows={n} found={found} ({out['found_rate']}) emp_cov={out['employee_count_coverage']}")
     return out
+
+
+@app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 15)
+def verify_batch(batch_label: str) -> list[dict]:
+    """Precision check for a landed batch: scraped domain/name vs the requested target. Returns per-uei
+    {uei, target_name, target_domain, scraped_name, scraped_domain, status, domain_match, name_match}."""
+    import re as _re
+
+    import lance
+
+    so = _storage_options()
+    ds = lance.dataset(RESULTS_URI, storage_options=so)
+    t = ds.scanner(filter=f"batch_label = '{batch_label}'",
+                   columns=["uei", "name", "domain", "domain_norm", "status", "raw_result"]).to_table()
+
+    _skip = {"llc", "inc", "corp", "the", "and", "ltd", "company", "corporation", "solutions",
+             "services", "group", "technologies", "systems", "consulting", "international"}
+
+    def toks(s):
+        return {w for w in _re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split()
+                if len(w) >= 3 and w not in _skip}
+
+    out = []
+    for i in range(t.num_rows):
+        row = {c: t[c][i].as_py() for c in ("uei", "name", "domain", "domain_norm", "status", "raw_result")}
+        try:
+            sname = (json.loads(row["raw_result"]).get("result") or {}).get("name")
+        except Exception:  # noqa: BLE001
+            sname = None
+        tdom = _norm(row["domain"])
+        dmatch = bool(tdom and row["domain_norm"] and tdom == row["domain_norm"])
+        nmatch = bool(toks(row["name"]) & toks(sname))
+        out.append({"uei": row["uei"], "target_name": row["name"], "target_domain": row["domain"],
+                    "scraped_name": sname, "scraped_domain": row["domain_norm"], "status": row["status"],
+                    "domain_match": dmatch, "name_match": nmatch})
+    return out
+
+
+@app.local_entrypoint()
+def verify_batch_run(batch_label: str, out_file: str = "") -> None:
+    """Dump per-uei verify records for a batch (JSON) so precision can be joined to resolver confidence."""
+    recs = verify_batch.remote(batch_label)
+    if not recs:
+        print("no rows")
+        return
+    dm = sum(1 for r in recs if r["domain_match"])
+    nm = sum(1 for r in recs if r["name_match"])
+    conf = sum(1 for r in recs if r["domain_match"] or r["name_match"])
+    print(f"batch={batch_label} n={len(recs)} domain_match={dm} name_match={nm} "
+          f"confirmed(d|n)={conf} ({conf/len(recs):.1%})")
+    if out_file:
+        with open(out_file, "w") as f:
+            json.dump(recs, f)
+        print(f"wrote {out_file}")
 
 
 @app.local_entrypoint()
