@@ -27,8 +27,12 @@ market, as primes and/or subawardees, and how recently.**
 - **1,405 (35%)** are **actively winning** (prime or sub action within the last 24 months).
 - The subawardees skew established: **83% of subawardees also hold prime awards** — they are
   two-sided contractors, not pure subs.
-- **Reachable on LinkedIn:** **86%** of all companies match PDL (→ company LinkedIn URL); of the
-  active-24mo govcon core, **95.9%** match — only **73** federal-footprint companies lack one (§4.6).
+- **Reachable on LinkedIn:** **86%** match PDL directly (→ company LinkedIn URL), rising to **~90%**
+  after de-artifacting names + internal-source joins; of the active-24mo govcon core, **95.9%** match.
+  The remaining no-match set is mostly data-quality artifacts + noise, not genuinely missing firms (§4.6–4.7).
+- **No derived Lance exists yet.** Only the raw feed `jsearch_capture_roles` (9,422 rows) is
+  materialized; all of §4 is ad-hoc scratch. Persisting it = *building* `jsearch_capture_roles_enriched`
+  (§7) — the source feed is append-only and must not be mutated with derived columns.
 
 ---
 
@@ -233,6 +237,49 @@ LinkedIn URL (`linkedin_slug`/`linkedin_url` ~100% populated).
 companies lack a PDL match. Domain match (2,219) is the precision floor; the name path lifts total
 coverage to 3,457 (same normalized-collision caveat as §6 #3, bounded by length ≥ 4 + flag exclusion).
 
+### 4.7 The no-PDL residual — what it actually is, and closing it
+
+The **562** companies that missed PDL are **not** 562 firms absent from the internet. Decomposed,
+the "gap" is overwhelmingly data-quality artifacts + non-company noise, and it closes cheaply:
+
+**A. What the 562 are.** Only **78** have a domain; **484 are name-only** (JSearch returned no
+`employer_website`). Of the 78 domains, most are **ATS/careers subdomains** — `careers.serco-na.com`,
+`boxunionservicesllc.applytojob.com`, `*.icims.com` — where the *root* domain is in PDL but the
+captured subdomain is not.
+
+**B. Free internal recovery (no external calls).**
+
+| Lever | Recovered | Mechanism |
+|---|---|---|
+| Internal LinkedIn sources | +16 | domain-join to `clay_find_companies`, `firmographics_blitz`, `company_addresses`, `companies` |
+| Root-domain re-join | +31 | strip `careers.`/ATS subdomain → registrable eTLD+1, re-join PDL + internal |
+| Name-join (clay/companies/blitz) | +25 | normalized `name` → their company names |
+| **De-artifact names** | **+156** | strip glued leading digits (`100 salesforce, inc.` → Salesforce), drop the len≥4 guard (recovers `3m`/`abb`/`aar`), filter staffing/jobboard/gov noise |
+
+De-artifacting alone lifts **PDL coverage 86.0% → 89.9%** (3,613/4,019). With the internal joins on
+top, ~91% carry a LinkedIn URL deterministically, **zero external calls**.
+
+**C. The genuine residual is small.** After the free passes, the true remainder is **45 real domains
+absent from every ingested SoR** (`haydon.com`, `oceus.io`, `credence.ai`, `ingrammarinegroup.com`,
+`hcahoustonhealthcare.com`, `honeywellaerospace.com`, `amadeus-hospitality.com`, …) plus ATS/noise.
+**Verified: 0 of those 45 match `pdl_normalized_companies`, `firmographics_blitz`, or
+`clay_find_companies` — by raw domain OR root domain** (`verify_residual_domains.py`). The ingested
+snapshots simply do not contain them.
+
+**D. Getting the genuine residual.** Two rails, and the choice is a policy decision, not a technical one:
+- **Free / owned:** `WebFetch` each domain's site → read its LinkedIn link; or the **live** blitz/Clay
+  APIs (`core/blitz_gateway.py`, Clay find-companies) which *would* resolve most of the 45 by domain
+  but are **billed — do not call without explicit operator authorization**.
+- ⚠️ **Recorded for honesty:** an ad-hoc external-search pass (Serper, `core/serper_gateway.py`) was
+  run against the 506-row residual and returned 488 candidate LinkedIn URLs (**501 Serper credits
+  spent**). Those results are **unvalidated** (confidence-tiered: 364 high / 50 mid / 74 low / 18 none)
+  and live in **scratch only — not persisted, not shipped**. The rail was not pre-authorized; the
+  canonical recovery path is B (free/internal) + a policy-approved live enrichment for the ~45 tail.
+
+**Durable fix:** items B (leading-digit strip, root-domain eTLD+1 + ATS strip, internal-LinkedIn-union
+fallback, containment name match) are normalizer upgrades that belong in the §7 builder, not one-off
+scratch — folded into §7's recall list.
+
 ---
 
 ## 5. Reproduce
@@ -262,7 +309,11 @@ re-create from there if the scratch files are gone):
 - `jsearch_subawardee_overlap.py` — §4.2 subawardee union.
 - `jsearch_prime_sub_crosstab.py` — §4.3–4.5 full 2×2 + recency (streams the 30.68M prime rows).
 - `jsearch_pdl_federal.py` — §4.6 PDL/LinkedIn × federal cross (streams 35.4M PDL + 30.68M prime,
-  both single-pass-filtered). This is the closest scratch prototype to the §7 bridge builder.
+  both single-pass-filtered). Closest scratch prototype to the §7 `jsearch_capture_roles_enriched` builder.
+- `jsearch_no_pdl_cascade.py` / `jsearch_no_pdl_rootfix.py` — §4.7-B internal recovery (internal-LinkedIn
+  union, root-domain re-join, name-join). `rootfix` adds `tldextract` for eTLD+1 + ATS-vendor stripping.
+- `jsearch_deartifact.py` — §4.7-B de-artifact pass (leading-digit strip, len≥2, noise filter): 86.0%→89.9%.
+- `verify_residual_domains.py` — §4.7-C proof: 0/45 residual domains in PDL/blitz/clay (raw + root).
 
 ```bash
 mkdir -p /tmp/jx_crosstab
@@ -296,16 +347,28 @@ The consolidated, self-contained crosstab script is reproduced in **§8 (Appendi
 6. **`sam_master_domains` domain→UEI is many-to-many.** A domain can map to several UEIs (holding
    companies, shared registrations); path A treats a company as prime/sub if **any** mapped UEI
    qualifies. This is intentional (recall) but can over-attribute for shared/reseller domains.
+7. **A "no-match" is usually an artifact, not a missing company (§4.7).** Leading-digit-glued names,
+   sub-4-char big caps (`3m`/`abb`), over-strict normalization (`amazon.com services llc`≠`amazon`),
+   and staffing/jobboard/gov noise dominate the gap. De-artifact + noise-filter *before* concluding a
+   company is absent or spending an external call on it.
+8. **ATS/careers subdomains poison the domain key.** `employer_domain` is often `careers.<co>.com` or
+   `<co>.icims.com`, not the corporate root. Normalize to registrable eTLD+1 (with ATS-vendor stripping)
+   before any domain join, or real firms read as unresolved.
+9. **Billed rails require explicit authorization.** Serper / live blitz / Clay / OpenWeb Ninja all spend
+   credits on `core-x/prd`. The §4.7-D Serper pass (501 credits) was ad-hoc and its output is unvalidated
+   scratch — do not treat those 488 URLs as SoR, and do not fire a billed rail without an operator "yes."
 
 ---
 
-## 7. Open work — the durable bridge (primary next item)
+## 7. Open work — the durable enriched dataset (primary next item)
 
-The overlap is currently ad-hoc scratch. Productionize it as an append-/overwrite Lance dataset
-so downstream serving (GTM audiences, scoring, MCP recall) reads a stable SoR instead of
-re-deriving. This is the `employer_website → federal entity` resolution the feed was designed to feed.
+Everything in §4 + §4.7 is ad-hoc scratch. **Nothing derived is materialized** (verified 2026-07-04:
+`jsearch_capture_roles_enriched` and every `_bridge`/`_enriched` variant are **absent**; the only Lance
+is the raw feed `jsearch_capture_roles`, 9,422 rows). Persisting this work means **building a new derived
+dataset** — the source feed is append-only and must **not** be overwritten with derived columns.
+Productionize as an OVERWRITE-snapshot Lance so downstream readers read a stable SoR instead of re-deriving.
 
-**Proposed dataset:** `s3://data-sink/active/jsearch_capture_roles_federal_bridge/` (Lance v2.1, OVERWRITE snapshot).
+**Proposed dataset:** `s3://data-sink/active/jsearch_capture_roles_enriched/` (Lance v2.1, OVERWRITE snapshot).
 
 **Grain:** one row per jsearch `company_key` (= `coalesce(employer_domain, lower(employer_name))`).
 
@@ -337,21 +400,28 @@ re-deriving. This is the `employer_website → federal entity` resolution the fe
 pdl_normalized_companies) →
 DuckDB (stream the 30.68M prime + 35.4M PDL single-pass-filtered, §3.5) → Arrow → `lance.write_dataset(..., mode="overwrite",
 data_storage_version="2.1")` → BTREE[`company_key`] + BITMAP[the bool/path columns]. Ops ledger
-row → `ops.jsearch_federal_bridge_runs` (mirror the feed's `_record_run` pattern). Place the
-builder at `pipelines/jsearch/build_federal_bridge.py`; wire a Trigger task only if a refresh
+row → `ops.jsearch_capture_roles_enriched_runs` (mirror the feed's `_record_run` pattern). Place the
+builder at `pipelines/jsearch/build_capture_roles_enriched.py`; wire a Trigger task only if a refresh
 cadence is wanted (it recomputes cheaply; a manual/monthly cadence is sufficient since the prime
 canonical refreshes on its own schedule).
 
 **Recall upgrades to fold in at build time (each raises the match rate off the §6 floor):**
+- **Name de-artifacting (§4.7-B, biggest single win, +156):** strip glued leading digits, drop the
+  len≥4 guard for short legit names (`3m`/`abb`), filter staffing/jobboard/gov noise out of the target.
+- **Root-domain normalization (§4.7-A/B):** reduce `employer_domain` to registrable eTLD+1 with
+  ATS-vendor stripping (`careers.serco-na.com`→`serco-na.com`) *before* any domain join.
+- **Internal-LinkedIn-union fallback:** after PDL, coalesce a LinkedIn URL from `clay_find_companies` /
+  `firmographics_blitz` / `company_addresses` / `companies` by (root) domain — free, +16 on its own.
 - Parent rollup via `entity_hierarchy` (caveat #2).
-- Add `crosswalk_dsbs_sam.best_domain` as a second domain→UEI bridge for DSBS-only firms.
-- Fuzzy name match (token-set / trigram) for the 1,495 name-only companies, gated by a score
-  threshold and kept in a separate `name_fuzzy` match-path so precision stays auditable.
+- Add `crosswalk_dsbs_sam.best_domain` as a second domain→UEI crosswalk for DSBS-only firms.
+- Containment / fuzzy name match (token-set / trigram) for the name-only companies (`amazon.com
+  services llc`→`amazon`), gated by a score threshold and kept in a separate match-path for auditability.
+- **Genuine residual (~45 real domains, §4.7-C):** absent from all ingested SoRs — resolve via a
+  policy-approved live enrichment (blitz/Clay, billed) or `WebFetch`; never a billed rail without a "yes."
 
-**Downstream consumers to notify** once built: the GTM audience marts (`gtm_*`), subawardee
-designation/serving pipelines (`pipelines/serving/materialize_subawardee_*`), and any MCP recall
-surface — a "hiring a capture manager AND actively winning subawards" segment is a strong,
-novel GTM signal none of them currently have.
+**Downstream consumers** once built: anything that reads company-level resolution — `gtm_*` marts,
+`pipelines/serving/materialize_subawardee_*`, MCP recall. The join it exposes ("posting a capture role
+AND actively winning federal work, with a LinkedIn URL") isn't materialized anywhere else yet.
 
 ---
 
@@ -440,5 +510,6 @@ print("active 24mo    :", q(f"SELECT count(*) FROM m WHERE last_sub >= DATE '{C2
 | Date | Change |
 |---|---|
 | 2026-07-02 | Feed built — PRs #918 (wiring), #929 (expanded backfill), #931 (NUL-sanitize + 48→133 hubs, 6→10 geo titles). |
-| 2026-07-04 | This doc — ad-hoc prime/subaward overlap + recency analysis; durable bridge spec (§7). |
-| 2026-07-04 | Added §4.6 PDL / company-LinkedIn coverage (86% overall, 95.9% of active-24mo); extended bridge spec with PDL/LinkedIn columns. |
+| 2026-07-04 | This doc — ad-hoc prime/subaward overlap + recency analysis; durable enriched-dataset spec (§7). |
+| 2026-07-04 | Added §4.6 PDL / company-LinkedIn coverage (86% overall, 95.9% of active-24mo). |
+| 2026-07-04 | Added §4.7 no-PDL residual analysis (internal recovery → ~91%, 0/45 residual verified); recorded ad-hoc Serper pass + caveat #9; renamed the derived dataset `…_federal_bridge` → `jsearch_capture_roles_enriched` (drop GTM-encoded naming). |
