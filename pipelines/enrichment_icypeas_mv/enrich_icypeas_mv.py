@@ -241,16 +241,18 @@ def _extract(item: dict) -> tuple[str, str | None, str | None]:
 
 
 def _item_external_id(item: dict) -> str | None:
-    """The echoed externalId that maps a drained item back to its contact_id. Exact location
-    is VERIFY-AT-BUILD — probe custom.externalId then top-level externalId/external_id."""
+    """The echoed externalId that maps a drained item back to its contact_id. Verified live
+    2026-07-05: the drain item carries it at ``userData.externalId``; probe that first, then
+    custom.externalId and top-level externalId/external_id as defensive fallbacks."""
     if not isinstance(item, dict):
         return None
-    custom = item.get("custom")
-    if isinstance(custom, dict):
-        for k in ("externalId", "external_id"):
-            v = custom.get(k)
-            if isinstance(v, str) and v:
-                return v
+    for container in ("userData", "custom"):
+        c = item.get(container)
+        if isinstance(c, dict):
+            for k in ("externalId", "external_id"):
+                v = c.get(k)
+                if isinstance(v, str) and v:
+                    return v
     for k in ("externalId", "external_id"):
         v = item.get(k)
         if isinstance(v, str) and v:
