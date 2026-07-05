@@ -27,6 +27,8 @@ market, as primes and/or subawardees, and how recently.**
 - **1,405 (35%)** are **actively winning** (prime or sub action within the last 24 months).
 - The subawardees skew established: **83% of subawardees also hold prime awards** — they are
   two-sided contractors, not pure subs.
+- **Reachable on LinkedIn:** **86%** of all companies match PDL (→ company LinkedIn URL); of the
+  active-24mo govcon core, **95.9%** match — only **73** federal-footprint companies lack one (§4.6).
 
 ---
 
@@ -90,8 +92,12 @@ recoverable signal; the SoR carries raw truth and a stage-2 reader refines.
 | DSBS↔SAM crosswalk (alt bridge) | `s3://data-sink/active/crosswalk_dsbs_sam/` | 67,234 | `uei` | `best_domain`, `normalized_domain` (DSBS-scoped; **not used** — `sam_master_domains` is broader) |
 | subaward canonical | `s3://data-sink/active/usaspending_subaward_canonical/` | 1,315,680 | (prime, subaward_number) | `subawardee_uei`, `subawardee_name`, `subaward_action_date` |
 | prime award canonical | `s3://data-sink/active/usaspending_award_canonical/` | 30,683,126 | award (393-col OBT) | `recipient_uei`, `recipient_name`, `action_date` |
+| PDL normalized companies **(enrichment)** | `s3://data-sink/active/pdl_normalized_companies/` | 35,446,771 | `pdl_company_id` | `normalized_domain`, `company_name`, `linkedin_slug`, `is_generic_domain` |
 
 Universe sizes: subawardee side = **105,189** distinct `subawardee_uei` / 94,339 normalized names.
+PDL `linkedin_url`/`linkedin_slug` is ~100% populated (base `pdl_companies`, 35.4M rows) — a PDL
+match therefore yields a company LinkedIn URL. `is_generic_domain` excludes shared/generic domains
+(e.g. `wixsite.com`) from the domain join to prevent many-to-one false matches.
 
 ---
 
@@ -198,6 +204,35 @@ The small sides (jsearch 9.4k, sam 710k, subaward 1.3M) load fully to Arrow.
 **1,405 of 4,019 (35%)** are **actively winning** federal work — a prime *or* subaward action
 within the last 24 months. That is the live-govcon core of the capture-role harvest.
 
+### 4.6 PDL / company-LinkedIn coverage (reachability)
+
+Match against `pdl_normalized_companies` (35.4M) — domain (`employer_domain` → `normalized_domain`,
+non-generic) ∪ name (normalized `employer_name` → PDL `company_name`). A PDL match yields a company
+LinkedIn URL (`linkedin_slug`/`linkedin_url` ~100% populated).
+
+| PDL match | Count | Note |
+|---|---|---|
+| **Any path** | **3,457 (86.0%)** | has a company LinkedIn URL |
+| via domain | 2,219 | near-clean key |
+| via name | 3,247 | carries the 1,495 name-only postings |
+| both (cross-validated) | 2,009 | |
+| among domained (of 2,524) | 2,219 (**87.9%**) | |
+| **no PDL match** | 562 (14%) | no LinkedIn |
+
+**PDL × federal (reachable + in-market):**
+
+| Segment | Count | Match PDL/LinkedIn |
+|---|---|---|
+| Federal footprint (prime OR sub) | 1,730 | **1,657 (95.8%)** |
+| Subawardees (any) | 1,414 | 1,352 |
+| **★ Active last 24 mo** | 1,405 | **1,347 (95.9%)** |
+
+2×2 (federal × PDL): federal+PDL **1,657** · federal, no-PDL **73** · PDL, no-federal 1,800 · neither 489.
+
+→ The govcon-relevant companies are almost entirely on LinkedIn: only **73** federal-footprint
+companies lack a PDL match. Domain match (2,219) is the precision floor; the name path lifts total
+coverage to 3,457 (same normalized-collision caveat as §6 #3, bounded by length ≥ 4 + flag exclusion).
+
 ---
 
 ## 5. Reproduce
@@ -226,6 +261,8 @@ re-create from there if the scratch files are gone):
 - `jsearch_company_breakdown.py` — §4.1 funnel (PG-side distinct counts).
 - `jsearch_subawardee_overlap.py` — §4.2 subawardee union.
 - `jsearch_prime_sub_crosstab.py` — §4.3–4.5 full 2×2 + recency (streams the 30.68M prime rows).
+- `jsearch_pdl_federal.py` — §4.6 PDL/LinkedIn × federal cross (streams 35.4M PDL + 30.68M prime,
+  both single-pass-filtered). This is the closest scratch prototype to the §7 bridge builder.
 
 ```bash
 mkdir -p /tmp/jx_crosstab
@@ -288,11 +325,17 @@ re-deriving. This is the `employer_website → federal entity` resolution the fe
 | `last_subaward_action_date` | date | max `subaward_action_date` |
 | `prime_active_24mo` | bool | derived |
 | `sub_active_24mo` | bool | derived |
+| `has_pdl` | bool | matched `pdl_normalized_companies` — BITMAP |
+| `pdl_match_path` | text | `domain` \| `name` \| `both` \| `none` — BITMAP |
+| `pdl_company_id` | text | PDL id (best match) — BTREE |
+| `company_linkedin_url` | text | from PDL `linkedin_slug` (`linkedin.com/company/{slug}`); ~100% populated on match |
+| `pdl_employee_size_range` | text | PDL firmographic (bonus) — BITMAP |
 | `is_staffing` / `is_confidential` | bool | carried from feed |
 | `built_at` | timestamptz | run stamp |
 
-**Build approach:** Lance(jsearch, sam_master_domains, subaward_canonical, award_canonical) →
-DuckDB (stream the 30.68M prime, §3.5) → Arrow → `lance.write_dataset(..., mode="overwrite",
+**Build approach:** Lance(jsearch, sam_master_domains, subaward_canonical, award_canonical,
+pdl_normalized_companies) →
+DuckDB (stream the 30.68M prime + 35.4M PDL single-pass-filtered, §3.5) → Arrow → `lance.write_dataset(..., mode="overwrite",
 data_storage_version="2.1")` → BTREE[`company_key`] + BITMAP[the bool/path columns]. Ops ledger
 row → `ops.jsearch_federal_bridge_runs` (mirror the feed's `_record_run` pattern). Place the
 builder at `pipelines/jsearch/build_federal_bridge.py`; wire a Trigger task only if a refresh
@@ -398,3 +441,4 @@ print("active 24mo    :", q(f"SELECT count(*) FROM m WHERE last_sub >= DATE '{C2
 |---|---|
 | 2026-07-02 | Feed built — PRs #918 (wiring), #929 (expanded backfill), #931 (NUL-sanitize + 48→133 hubs, 6→10 geo titles). |
 | 2026-07-04 | This doc — ad-hoc prime/subaward overlap + recency analysis; durable bridge spec (§7). |
+| 2026-07-04 | Added §4.6 PDL / company-LinkedIn coverage (86% overall, 95.9% of active-24mo); extended bridge spec with PDL/LinkedIn columns. |
