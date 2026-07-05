@@ -5,7 +5,8 @@ Cohort (operator-directed 2026-07-04): the DSBS email→mobile waterfall queue
 (gtm_sam_person_firm_emails rulings, no owned mobile), constrained to:
 
     money24 = greatest(sub-$ 24m, prime-$ 24m) >= $1M            (either side)
-    ∧ hi-confidence ruling (tier1_full_name | tier2 initial forms)
+    ∧ any firm-email ruling (all tiers — each is already the unique best
+      match at its entity; tier carried as confidence metadata only)
     ∧ ( confirmed <500 employees (blitz uei-direct ∨ PDL unique-domain)
         OR size UNKNOWN ∧ money24 < $100M )
 
@@ -26,9 +27,9 @@ any of profile_url / work_email / personal_email):
 Results land in ops.phone_resolutions (misses free, 5 credits/hit) and flow
 through materialize_phone_resolutions → active/phone_resolutions unchanged.
 
-RUN:
-    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_premium_mobile.py --dry-run
-    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_premium_mobile.py
+RUN (dry-run is the DEFAULT — nothing fires without --apply):
+    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_premium_mobile.py           # preview
+    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_premium_mobile.py --apply   # fire
     [--limit N] [--batch-size 1500] [--chunk-size 250] [--force]
 """
 from __future__ import annotations
@@ -105,10 +106,11 @@ def _build_contacts(limit: int | None) -> tuple[list[dict], dict]:
         WHERE (s.last_sub >= DATE '{WINDOW}' OR coalesce(p.prime24,0) <> 0)
           AND greatest(coalesce(s.sub24,0), coalesce(p.prime24,0)) >= 1_000_000""")
 
+    # ALL rulings are eligible (operator decision 2026-07-05): the builder's
+    # unambiguity gate already made each ruling the unique best match at its
+    # entity. match_tier rides along as recorded confidence, never as a wall.
     reg("rul", "gtm_sam_person_firm_emails",
-        ["sam_person_id", "uei", "email", "match_tier"],
-        "match_tier IN ('tier1_full_name','tier2_first_initial_plus_surname',"
-        "'tier2_first_name_plus_surname_initial')")
+        ["sam_person_id", "uei", "email", "match_tier"])
     con.execute("CREATE TABLE r AS SELECT * FROM rul WHERE uei IN (SELECT uei FROM aud)")
     reg("ppl", "gtm_sam_people", ["sam_person_id", "first_name", "last_name"])
     con.execute("CREATE TABLE pp AS SELECT * FROM ppl "
@@ -216,7 +218,10 @@ def _trigger_batch(contacts: list[dict], batch_label: str, force: bool, chunk_si
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--apply", action="store_true",
+                    help="actually fire triggers; without it this is a dry-run")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="(default behavior; kept for compatibility)")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=1500)
     ap.add_argument("--chunk-size", type=int, default=250)
@@ -239,7 +244,7 @@ def main() -> int:
     if n == 0:
         print("\nNothing to enroll — idempotent no-op.", flush=True)
         return 0
-    if args.dry_run:
+    if not args.apply:
         print("\n[dry-run] sample contacts:", flush=True)
         for c in contacts[:6]:
             print("      " + json.dumps(c, ensure_ascii=False), flush=True)
