@@ -161,6 +161,19 @@ TARGETS: list[tuple[str, str]] = [
     ("resolution", "s3://data-sink/active/crosswalk_sos_sam/"),
     ("resolution", "s3://data-sink/active/bridge_sam_pdl/"),
     ("resolution", "s3://data-sink/active/bridge_sam_fmcsa_domain/"),
+    # GTM SAM audience mart — spines, match custody, sidecars (built 2026-07-04/05).
+    ("gtm", "s3://data-sink/active/gtm_sam_entities/"),
+    ("gtm", "s3://data-sink/active/gtm_sam_people/"),
+    ("gtm", "s3://data-sink/active/gtm_sam_people_evidence/"),
+    ("gtm", "s3://data-sink/active/gtm_sam_person_identity/"),
+    ("gtm", "s3://data-sink/active/gtm_sam_person_firm_emails/"),
+    ("gtm", "s3://data-sink/active/gtm_sam_person_titles/"),
+    ("gtm", "s3://data-sink/active/web_homepage_meta/"),
+    # Icypeas rails — worklists, template registry, scrape + email custody.
+    ("icypeas", "s3://data-sink/active/icypeas_company_scrape_worklist/"),
+    ("icypeas", "s3://data-sink/active/icypeas_bulk_templates/"),
+    ("icypeas", "s3://data-sink/active/icypeas_dsbs_company_profiles/"),
+    ("icypeas", "s3://data-sink/active/icypeas_dmu_work_emails/"),
 ]
 
 
