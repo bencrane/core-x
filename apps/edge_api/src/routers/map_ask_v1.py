@@ -1,6 +1,11 @@
-"""Map ``/ask`` — the TRANSLATE route. NL sentence → forced-tool Messages call →
+"""Map ``/ask`` — the TRANSLATE route. NL sentence → ONE forced-tool LLM call →
 constrained filter object → catalyst_api EXECUTE → GeoJSON. The single LLM touchpoint
 of the portal map; deterministic from the filter object onward.
+
+TWO COMPILER LANES, one active: ``MAP_COMPILER_PROVIDER`` picks ``openai`` (default —
+the operational lane while ANTHROPIC_API_KEY is unfunded) or ``anthropic`` (flip back
+when funded; both clients ship identical force-tool semantics). The memo key carries
+the model id, so a lane flip never serves a stale translation.
 
   POST /api/v1/map/{dataset}/ask   {"q": "<sentence>"}   service-token gated
 
@@ -38,7 +43,16 @@ from pydantic import BaseModel
 from .. import config, map_decoders
 from ..db import get_db_connection
 from ..service_token import require_service_token
-from ..services import anthropic_messages, catalyst_client
+from ..services import anthropic_messages, catalyst_client, openai_messages
+
+# ── Compiler lanes: MAP_COMPILER_PROVIDER picks the active one at request time ──
+_COMPILERS = {"openai": openai_messages, "anthropic": anthropic_messages}
+_COMPILER_KEY_GUARDS = {"openai": config.openai_api_key, "anthropic": config.anthropic_api_key}
+TranslateError = (openai_messages.OpenAIMessagesError, anthropic_messages.AnthropicMessagesError)
+
+
+def _compiler():
+    return _COMPILERS[config.map_compiler_provider()]
 
 log = logging.getLogger("edge_api.map_ask")
 
@@ -82,7 +96,7 @@ async def _translate(dataset: str, q: str) -> dict:
         "cache_control": {"type": "ephemeral"},
     }]
     tool = map_decoders.build_emit_filter_tool(dataset)
-    filt = await anthropic_messages.emit_filter(
+    filt = await _compiler().emit_filter(
         model=model, system_blocks=system_blocks, tool=tool, user_text=q)
     filt["dataset"] = dataset
     filt["unmapped"] = _sanitize_unmapped(filt.get("unmapped"))
@@ -104,7 +118,7 @@ async def _translate_auto(q: str) -> dict:
         "cache_control": {"type": "ephemeral"},
     }]
     tool = map_decoders.build_router_tool()
-    filt = await anthropic_messages.emit_filter(
+    filt = await _compiler().emit_filter(
         model=model, system_blocks=system_blocks, tool=tool, user_text=q)
     filt = map_decoders.reconcile_routed_filters(filt)
     filt["unmapped"] = _sanitize_unmapped(filt.get("unmapped"))
@@ -174,8 +188,13 @@ async def ask(dataset: str, body: AskRequest) -> JSONResponse:
     q = (body.q or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="q required")
-    if config.anthropic_api_key() is None:
-        raise HTTPException(status_code=503, detail="map /ask unavailable: ANTHROPIC_API_KEY unset")
+    provider = config.map_compiler_provider()
+    if provider not in _COMPILERS:
+        raise HTTPException(status_code=503,
+                            detail=f"map /ask unavailable: unknown MAP_COMPILER_PROVIDER {provider!r}")
+    if _COMPILER_KEY_GUARDS[provider]() is None:
+        raise HTTPException(status_code=503,
+                            detail=f"map /ask unavailable: {provider} compiler lane has no API key")
     if config.catalyst_base_url() is None:
         raise HTTPException(status_code=503, detail="map /ask unavailable: CATALYST_API_BASE_URL unset")
     started = time.monotonic()
@@ -185,7 +204,7 @@ async def ask(dataset: str, body: AskRequest) -> JSONResponse:
 
     try:
         filt = await (_translate_auto(q) if dataset == "auto" else _translate(dataset, q))
-    except anthropic_messages.AnthropicMessagesError as exc:
+    except TranslateError as exc:
         log.warning("map /ask translate failed: %s", exc.message)
         _record_query_run(dataset=dataset, q=q, filt=None, meta=None,
                           status="translate_error", error=(exc.message or "")[:500], latency_ms=_ms())
