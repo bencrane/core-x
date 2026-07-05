@@ -150,6 +150,24 @@ _file_status_bucket = _Bucket(FILE_STATUS_MAX, FILE_STATUS_WINDOW)
 # Independent 30/min bucket on the shared read route — see the GLOBAL-CEILING CAVEAT.
 _bulk_read_bucket = _Bucket(READ_MAX, READ_WINDOW)
 
+# ── Company-scrape coordinates (bulk /api/scrape → WEBHOOK delivery, added 2026-07-04) ─
+# Company scraping is a SEPARATE bulk route from /bulk-search: POST /api/scrape with
+# {type:"company", data:[≤50 urls], user:<ObjectId>}. Unlike /bulk-search it REQUIRES the
+# account `user` id (ICYPEAS_USER_ID in the icypeas-api secret) — a bare key 401s
+# "UserNotFoundError" (verified live 2026-07-04). Results are delivered by WEBHOOK
+# (custom.webhookUrlItem → edge_api landing; custom.webhookUrlBulkDone → completion), so this
+# path makes ZERO reads and NEVER touches the shared 30/min read route the email cascade +
+# bulk drain already contend for (the GLOBAL-CEILING CAVEAT). Its ONLY Icypeas rate surface is
+# the /api/scrape submit, governed by its OWN single-container bucket. The submit ceiling is
+# undocumented → default deliberately gentle for account safety (the account was suspended once
+# by ungoverned probing); raise ICYPEAS_SCRAPE_SUBMIT_PER_SEC once the true limit is confirmed.
+SCRAPE_SUBMIT_PATH = "/scrape"          # POST /api/scrape (type=company)
+SCRAPE_MAX_BATCH = int(os.environ.get("ICYPEAS_SCRAPE_MAX_BATCH", "50"))   # Icypeas hard cap
+SCRAPE_SUBMIT_MAX = int(os.environ.get("ICYPEAS_SCRAPE_SUBMIT_PER_SEC", "2"))
+SCRAPE_SUBMIT_WINDOW = 1.0
+
+_scrape_submit_bucket = _Bucket(SCRAPE_SUBMIT_MAX, SCRAPE_SUBMIT_WINDOW)
+
 
 def _safe_json(resp) -> Any:
     try:
@@ -509,6 +527,110 @@ async def drain_results(
                 "error": str(exc), "raw_page": None}
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# COMPANY SCRAPE — Icypeas /api/scrape (≤50 company URLs/submit → webhook delivery).
+# The go-forward path for the `enrichment-company-scrape` rail. Submit-ONLY and
+# ZERO-read: results are pushed to edge_api (webhookUrlItem) and completion to a
+# caller URL (webhookUrlBulkDone). One max_containers=1 owner of its submit bucket,
+# exactly like launch_bulk — but on a route that never touches /bulk-single-searchs/read.
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("icypeas-api")],
+    max_containers=1,        # global /api/scrape submit governor lives in exactly one process
+    timeout=60 * 5,
+)
+@modal.concurrent(max_inputs=32)
+async def scrape_submit(
+    urls: list[str],
+    external_ids: list[str] | None = None,
+    webhook_item_url: str | None = None,
+    webhook_bulkdone_url: str | None = None,
+) -> dict[str, Any]:
+    """Submit ONE company-scrape batch (≤50 LinkedIn company URLs) to /api/scrape.
+
+    Governed to a gentle global submit rate; makes ZERO reads — results arrive by webhook
+    (``webhookUrlItem`` → edge_api landing; ``webhookUrlBulkDone`` → completion signal). Requires
+    ``ICYPEAS_USER_ID`` (bulk /api/scrape 401s "UserNotFoundError" without it). ``external_ids`` MUST
+    be row-aligned with ``urls`` — each is echoed on its result item so the landing correlates a
+    scraped row back to the requested URL. NEVER raises across the Modal boundary — returns::
+
+        {"ok": bool, "file_id": str|None, "count": int, "http_status": int,
+         "error": str|None, "raw": <submit response, VERBATIM> | None}
+
+    ``file_id`` is the Icypeas bulk file id — the correlation key for reconciling landed webhook
+    rows against the submitted batch. Persist it in the run-ledger.
+    """
+    import httpx
+
+    headers = _headers()
+    if headers is None:
+        return {"ok": False, "file_id": None, "count": 0, "http_status": 0,
+                "error": "ICYPEAS_API_KEY absent in icypeas-api secret", "raw": None}
+    user_id = os.environ.get("ICYPEAS_USER_ID")
+    if not user_id:
+        return {"ok": False, "file_id": None, "count": 0, "http_status": 0,
+                "error": "ICYPEAS_USER_ID absent in icypeas-api secret — /api/scrape requires it", "raw": None}
+
+    urls = [u for u in (urls or []) if isinstance(u, str) and u.strip()]
+    if not urls:
+        return {"ok": False, "file_id": None, "count": 0, "http_status": 0, "error": "empty urls", "raw": None}
+    if len(urls) > SCRAPE_MAX_BATCH:
+        return {"ok": False, "file_id": None, "count": len(urls), "http_status": 0,
+                "error": f"batch {len(urls)} exceeds Icypeas scrape cap {SCRAPE_MAX_BATCH}; caller must chunk",
+                "raw": None}
+    if external_ids is not None and len(external_ids) != len(urls):
+        return {"ok": False, "file_id": None, "count": len(urls), "http_status": 0,
+                "error": f"external_ids len {len(external_ids)} != urls len {len(urls)}", "raw": None}
+
+    body: dict[str, Any] = {"type": "company", "data": urls, "user": user_id}
+    custom: dict[str, Any] = {}
+    if external_ids:
+        custom["externalIds"] = list(external_ids)          # row-aligned to data[]
+    if webhook_item_url:
+        custom["webhookUrlItem"] = webhook_item_url
+    if webhook_bulkdone_url:
+        custom["webhookUrlBulkDone"] = webhook_bulkdone_url
+    if custom:
+        body["custom"] = custom
+
+    last_err: str | None = None
+    for attempt in range(MAX_RETRIES):
+        await _scrape_submit_bucket.acquire()
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                resp = await client.post(f"{BASE_URL}{SCRAPE_SUBMIT_PATH}", json=body, headers=headers)
+            sc = resp.status_code
+            if sc == 429:
+                last_err = "429 scrape-submit rate limited"
+                await asyncio.sleep(RATE_429_COOLDOWN)
+                continue
+            data = _safe_json(resp)
+            # Icypeas returns validation errors as HTTP 200 + success:false.
+            if isinstance(data, dict) and data.get("success") is False:
+                return {"ok": False, "file_id": None, "count": len(urls), "http_status": sc,
+                        "error": str(data.get("validationErrors") or data)[:300], "raw": data}
+            if sc // 100 != 2:
+                if sc // 100 == 5:
+                    last_err = f"HTTP {sc} on scrape-submit"
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return {"ok": False, "file_id": None, "count": len(urls), "http_status": sc,
+                        "error": resp.text[:300], "raw": data if isinstance(data, dict) else None}
+            file_id = _extract_file_id(data)     # reuse the bulk id-probe (item._id / file / _id / id)
+            if not file_id:
+                return {"ok": False, "file_id": None, "count": len(urls), "http_status": sc,
+                        "error": f"scrape-submit ok but no file id: {str(data)[:200]}", "raw": data}
+            return {"ok": True, "file_id": file_id, "count": len(urls),
+                    "http_status": sc, "error": None, "raw": data}
+        except Exception as exc:  # noqa: BLE001 — network / timeout
+            last_err = str(exc)
+            await asyncio.sleep(2 ** attempt)
+    return {"ok": False, "file_id": None, "count": len(urls), "http_status": 0,
+            "error": last_err or "scrape-submit retries exhausted", "raw": None}
+
+
 @app.function(image=image, secrets=[modal.Secret.from_name("icypeas-api")], timeout=60)
 def key_check() -> dict[str, Any]:
     """Health gate — submit a throwaway discovery to confirm the key authenticates.
@@ -566,3 +688,23 @@ def bulk_smoke(firstname: str = "Jean", lastname: str = "Dupont", domain: str = 
 
     page = drain_results.remote(file_id)
     print("drain_results:", json.dumps(page, indent=2, default=str))
+
+
+@app.local_entrypoint()
+def scrape_smoke(url: str = "https://www.linkedin.com/company/nec-technologies",
+                 webhook_item_url: str = "", webhook_bulkdone_url: str = "") -> None:
+    """Governed ONE-URL company scrape submit — confirms ICYPEAS_USER_ID clears the 401
+    UserNotFoundError and /api/scrape returns a bulk file id. Pass --webhook-item-url to also
+    register edge_api delivery and watch a row land end-to-end.
+
+        modal run core/icypeas_gateway.py::scrape_smoke \\
+            --webhook-item-url https://api.edgeapi.run/webhooks/icypeas/item
+    """
+    import json
+
+    env = scrape_submit.remote(
+        [url], external_ids=[url],
+        webhook_item_url=(webhook_item_url or None),
+        webhook_bulkdone_url=(webhook_bulkdone_url or None),
+    )
+    print("scrape_submit:", json.dumps(env, indent=2, default=str))

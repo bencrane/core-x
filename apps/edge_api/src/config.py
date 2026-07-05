@@ -61,6 +61,15 @@ def close_webhook_secret() -> str | None:
     return os.environ.get("CLOSE_WEBHOOK_SECRET")
 
 
+def icypeas_webhook_secret() -> str | None:
+    """Secret Icypeas signs each webhook delivery with — ``HMAC-SHA1(secret, lower(url_pathname +
+    timestamp))`` hex, carried in the POST body's ``signature`` field alongside ``timestamp`` and
+    ``data``. This is the Icypeas *API secret* (NOT the API key). When unset,
+    ``/webhooks/icypeas/*`` refuses (503) rather than accepting unverified events.
+    From ``core-x/prd`` (``ICYPEAS_API_SECRET``)."""
+    return os.environ.get("ICYPEAS_API_SECRET")
+
+
 # ── cal.com booking (OUTBOUND create) + Close API (read-back) ────────────────────────────────────
 # The Close custom-activity webhook fires the cal-book Trigger.dev task, which calls /internal/cal/book
 # here; that route reads the activity + contact from the Close API and creates a cal.com booking.
