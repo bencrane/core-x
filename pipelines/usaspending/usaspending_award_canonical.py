@@ -71,6 +71,13 @@ SENTINEL CLAMPS (value-level, row always survives; NEVER touch last_modified_dat
     FRESH-TRY_CAST.
   • action dates (both legs): CASE WHEN <date> BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN <date>
     END → row survives, garbage date → NULL. NOT the argmax driver, so nulling never perturbs merge.
+    The CURRENT_DATE ceiling applies ONLY to dates that cannot legitimately be future (action_date,
+    date_signed). Period/ordering dates (period_of_performance_start_date,
+    period_of_performance_current_end_date, ordering_period_end_date) legitimately extend YEARS into
+    the future (live BULK 2026-07-05: 152,941 contract end dates >= probe date) — their ceiling is the
+    fixed garbage bound DATE '2100-12-31' (kills 8201/9019-style typos), NEVER CURRENT_DATE. A
+    CURRENT_DATE ceiling on an end date nulls every active contract's future end and caps MAX(end)
+    at build date (the v24 defect).
 
 is_fpds NOTE (P1-7 / SCOPE CORRECTION): the contract scope is generated_unique_award_id LIKE 'CONT%',
 NOT is_fpds=TRUE. is_fpds is NULL on 263,371 real CONT-prefix contracts (never FALSE for a contract);
@@ -229,9 +236,11 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": 'highly_compensated_officer_4_name', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'officer_4_name', "feed_expr": 's(highly_compensated_officer_4_name)'},
     {"canonical": 'highly_compensated_officer_5_amount', "duck_type": 'DOUBLE', "group": 'core', "bulk_expr": 'CASE WHEN abs(officer_5_amount) <= 1e12 THEN officer_5_amount END', "feed_expr": 'CASE WHEN abs(TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)) <= 1e12 THEN TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE) END'},
     {"canonical": 'highly_compensated_officer_5_name', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'officer_5_name', "feed_expr": 's(highly_compensated_officer_5_name)'},
-    {"canonical": 'ordering_period_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN ordering_period_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN ordering_period_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(ordering_period_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(ordering_period_end_date) AS DATE) END"},
-    {"canonical": 'period_of_performance_current_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_current_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN period_of_performance_current_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) END"},
-    {"canonical": 'period_of_performance_start_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_start_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN period_of_performance_start_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_start_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(period_of_performance_start_date) AS DATE) END"},
+    # Period/ordering dates are FUTURE-LEGIT (active contracts end years out) — ceiling is the fixed
+    # garbage bound DATE '2100-12-31', NEVER CURRENT_DATE (see SENTINEL CLAMPS in module docstring).
+    {"canonical": 'ordering_period_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN ordering_period_end_date BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN ordering_period_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(ordering_period_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN TRY_CAST(s(ordering_period_end_date) AS DATE) END"},
+    {"canonical": 'period_of_performance_current_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_current_end_date BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN period_of_performance_current_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) END"},
+    {"canonical": 'period_of_performance_start_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_start_date BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN period_of_performance_start_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_start_date) AS DATE) BETWEEN DATE '1776-01-01' AND DATE '2100-12-31' THEN TRY_CAST(s(period_of_performance_start_date) AS DATE) END"},
     {"canonical": 'award_id_piid', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'piid', "feed_expr": 's(award_id_piid)'},
     {"canonical": 'product_or_service_code', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'product_or_service_code', "feed_expr": 's(product_or_service_code)'},
     {"canonical": 'recipient_uei', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'recipient_uei', "feed_expr": 's(recipient_uei)'},
