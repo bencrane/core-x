@@ -20,9 +20,9 @@ FOUND in live ops.phone_resolutions (covers the 635 just landed).
 Payload: person_linkedin_url always; vendor work_email attached where owned
 (work_emails via slug); company_domain/name, first/last from the mart.
 
-RUN:
-    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_dm_li_mobile.py --dry-run
-    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_dm_li_mobile.py
+RUN (dry-run is the DEFAULT — nothing fires without --apply):
+    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_dm_li_mobile.py           # preview
+    doppler run -- python3 pipelines/enrichment_leadmagic/enroll_sam_dm_li_mobile.py --apply   # fire
 """
 from __future__ import annotations
 
@@ -155,13 +155,13 @@ def _build_contacts(limit: int | None) -> tuple[list[dict], dict]:
     con.execute(f"""CREATE TABLE vem AS SELECT {sl} AS s, min(email) AS email
         FROM we WHERE person_linkedin_url IS NOT NULL GROUP BY 1""")
 
-    # ruled-email enrolled cohort slugs (the email-first tranche)
+    # ruled-email enrolled cohort slugs (the email-first tranche).
+    # All tiers — mirrors enroll_sam_premium_mobile eligibility (operator
+    # decision 2026-07-05: no tier wall on contactability).
     con.execute("""CREATE TABLE enr AS
         SELECT DISTINCT i.person_linkedin_url_norm AS slug
         FROM r JOIN i ON i.sam_person_id = r.sam_person_id
-        WHERE r.match_tier IN ('tier1_full_name','tier2_first_initial_plus_surname',
-                               'tier2_first_name_plus_surname_initial')
-          AND i.person_linkedin_url_norm IS NOT NULL""")
+        WHERE i.person_linkedin_url_norm IS NOT NULL""")
 
     rows = con.execute(f"""
         WITH q AS (
@@ -256,7 +256,10 @@ def _trigger_batch(contacts: list[dict], batch_label: str, force: bool, chunk_si
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--apply", action="store_true",
+                    help="actually fire triggers; without it this is a dry-run")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="(default behavior; kept for compatibility)")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=1500)
     ap.add_argument("--chunk-size", type=int, default=250)
@@ -279,7 +282,7 @@ def main() -> int:
     if n == 0:
         print("\nNothing to enroll — idempotent no-op.", flush=True)
         return 0
-    if args.dry_run:
+    if not args.apply:
         print("\n[dry-run] sample contacts:", flush=True)
         for c in contacts[:6]:
             print("      " + json.dumps(c, ensure_ascii=False), flush=True)
