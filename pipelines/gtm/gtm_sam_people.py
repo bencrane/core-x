@@ -286,14 +286,15 @@ def _materialize(con, so: dict, build_id: str, built_at: dt.datetime):
             + least(len(coalesce(full_name_verbatim, '')), 999) AS pref
         FROM evidence_d WHERE name_key IS NOT NULL
     )
+    , collapsed AS (
     SELECT
         sha256(uei || '|' || name_key)             AS sam_person_id,
         uei, name_key,
         max_by(full_name_verbatim, pref)           AS display_name,
         max_by(first_name, CASE WHEN first_name IS NOT NULL THEN pref ELSE -1 END)
-                                                   AS first_name,
+                                                   AS src_first_name,
         max_by(last_name,  CASE WHEN last_name  IS NOT NULL THEN pref ELSE -1 END)
-                                                   AS last_name,
+                                                   AS src_last_name,
         max_by(title, CASE WHEN title IS NOT NULL AND title <> '' THEN pref ELSE -1 END)
                                                    AS best_title,
         bool_or(source_role IN ('government_business','government_business_alt'))
@@ -315,6 +316,32 @@ def _materialize(con, so: dict, build_id: str, built_at: dt.datetime):
         TIMESTAMP '{built_at:%Y-%m-%d %H:%M:%S}'   AS built_at
     FROM scored
     GROUP BY uei, name_key
+    ),
+    -- Fallback name split: exec-comp sources (ffata, subaward officers) carry only a full-name
+    -- string, so people seen ONLY there collapse with NULL parsed names. Derive first/last from
+    -- display_name (first/last token; junk-guarded) and FLAG it — token order in exec-comp
+    -- verbatims is mixed (FIRST LAST vs LAST FIRST M), so consumers gate on name_parse_source.
+    splitter AS (
+    SELECT *,
+        regexp_replace(trim(display_name), '\\s+', ' ', 'g') AS _dn,
+        (src_first_name IS NULL OR src_last_name IS NULL)
+        AND display_name IS NOT NULL
+        AND lower(trim(display_name)) NOT IN ('null null', 'null')
+        AND regexp_matches(regexp_replace(trim(display_name), '\\s+', ' ', 'g'), ' ')
+                                                             AS _dn_split_ok
+    FROM collapsed
+    )
+    SELECT * EXCLUDE (_dn, _dn_split_ok, src_first_name, src_last_name),
+        coalesce(src_first_name,
+                 CASE WHEN _dn_split_ok THEN regexp_extract(_dn, '^(\\S+)', 1) END)
+                                                   AS first_name,
+        coalesce(src_last_name,
+                 CASE WHEN _dn_split_ok THEN regexp_extract(_dn, '(\\S+)$', 1) END)
+                                                   AS last_name,
+        CASE WHEN src_first_name IS NOT NULL AND src_last_name IS NOT NULL THEN 'source'
+             WHEN _dn_split_ok THEN 'display_split'
+        END                                        AS name_parse_source
+    FROM splitter
     """)
 
     # Referential integrity vs the entity spine (uei set only — cheap column pull).
