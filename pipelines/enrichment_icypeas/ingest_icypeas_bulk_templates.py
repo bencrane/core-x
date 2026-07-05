@@ -44,7 +44,7 @@ TEMPLATES: list[dict] = [
                  "no-blitz/no-PDL gap list: 1,209/24,553 found (4.9%).",
     },
     {
-        "template_key": "company_profile_scraper",
+        "template_key": "company_linkedin_profile_scraper",
         "tool_name": "Company Profile Scraper",
         "headers": ["LINKEDIN COMPANY"],
         "example_row": ["https://www.linkedin.com/company/icypeas"],
@@ -73,7 +73,7 @@ TEMPLATES: list[dict] = [
                  "gtm_sam_person_identity as match_method='icypeas_profile_finder' (403 rows).",
     },
     {
-        "template_key": "linkedin_profile_scraper",
+        "template_key": "person_linkedin_profile_scraper",
         "tool_name": "LinkedIn Profile Scraper",
         "headers": ["LINKEDIN PROFILE"],
         "example_row": ["https://www.linkedin.com/in/pierre-baptiste-landoin-icypeas"],
