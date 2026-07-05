@@ -31,8 +31,25 @@ secret, mirror of Doppler ``core-x/prd``). The worker never holds it. Auth is a 
 key in the ``Authorization`` header — NOT an HMAC of outbound requests (the Icypeas
 HMAC-SHA1 scheme is webhook-verification-only and unused here).
 
+BULK EGRESS (added 2026-07-04). ``find_email`` above is the ONE-contact submit+poll
+path (10/s submit, 30/min read). The ``enrichment-icypeas-mv`` rail uses the Icypeas
+*bulk* primitive instead — ``launch_bulk`` (≤5000 rows/call, 1/s), ``file_status``
+(bulk-file progression, 15/min), ``drain_results`` (paginated ``mode:"bulk"`` read,
+30/min). Same single-container discipline: each is ``max_containers=1`` so its
+module-level bucket is the authoritative global limiter. ONE launch enqueues 5000
+rows the single path would need 5000 submits + ≥5000 reads to cover, so the bulk rail
+is ~100× the read-bound throughput of ``find_email``. Both hold ``ICYPEAS_API_KEY``
+here and nowhere else.
+
+    GLOBAL-CEILING CAVEAT. ``drain_results`` and ``find_email``'s poll hit the SAME
+    ``/bulk-single-searchs/read`` route (30/min global) but run in SEPARATE containers,
+    so each owns an independent 30/min bucket — up to 60/min collectively if a large
+    single-cascade backfill and a large bulk drain run at once. Bulk is the supplanting
+    path; do not run both at scale simultaneously. Each alone is compliant.
+
     modal deploy core/icypeas_gateway.py
-    modal run    core/icypeas_gateway.py::smoke --domain icypeas.com   # smoke test
+    modal run    core/icypeas_gateway.py::smoke --domain icypeas.com        # single path
+    modal run    core/icypeas_gateway.py::bulk_smoke                        # bulk path
 """
 
 from __future__ import annotations
@@ -53,6 +70,11 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install("httpx>=0.27,
 BASE_URL = os.environ.get("ICYPEAS_API_BASE", "https://app.icypeas.com/api").rstrip("/")
 SUBMIT_PATH = "/email-search"
 READ_PATH = "/bulk-single-searchs/read"  # NOTE: docs spell it "searchs" (sic)
+
+# Bulk egress routes (live docs 2026-07-04). See the BULK EGRESS docstring section.
+BULK_SEARCH_PATH = "/bulk-search"        # launch a bulk search: 1 call/sec, ≤5000 rows/call
+FILE_STATUS_PATH = "/search-files/read"  # bulk-file progression poll: 15 calls/min
+BULK_READ_PATH = READ_PATH               # drain results (mode:"bulk"): 30 calls/min, paginated
 
 # Per-route rate caps (live docs 2026-06-03). Pinned as the authoritative buckets;
 # overridable via env if Icypeas revises them ("always subject to change").
@@ -114,6 +136,19 @@ class _Bucket:
 
 _submit_bucket = _Bucket(SUBMIT_MAX, SUBMIT_WINDOW)
 _read_bucket = _Bucket(READ_MAX, READ_WINDOW)
+
+# ── Bulk-route rate caps (live docs 2026-07-04) ───────────────────────────────
+BULK_LAUNCH_MAX = int(os.environ.get("ICYPEAS_BULK_LAUNCH_PER_SEC", "1"))    # /bulk-search 1/sec
+BULK_LAUNCH_WINDOW = 1.0
+FILE_STATUS_MAX = int(os.environ.get("ICYPEAS_FILE_STATUS_PER_MIN", "15"))   # /search-files/read 15/min
+FILE_STATUS_WINDOW = 60.0
+BULK_ROWS_MAX = int(os.environ.get("ICYPEAS_BULK_ROWS_MAX", "5000"))         # hard per-launch row ceiling
+BULK_READ_LIMIT = int(os.environ.get("ICYPEAS_BULK_READ_LIMIT", "100"))      # ≤100 results/page (docs max)
+
+_launch_bucket = _Bucket(BULK_LAUNCH_MAX, BULK_LAUNCH_WINDOW)
+_file_status_bucket = _Bucket(FILE_STATUS_MAX, FILE_STATUS_WINDOW)
+# Independent 30/min bucket on the shared read route — see the GLOBAL-CEILING CAVEAT.
+_bulk_read_bucket = _Bucket(READ_MAX, READ_WINDOW)
 
 
 def _safe_json(resp) -> Any:
@@ -270,6 +305,210 @@ async def find_email(
             "error": last_err or "poll exhausted before terminal status"}
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# BULK EGRESS — Icypeas /bulk-search (≤5000 rows/launch). The go-forward batch
+# path for the icypeas+MV rail (pipelines/enrichment_icypeas_mv). Three rate-
+# governed primitives — launch, file-status poll, paginated drain — each a
+# max_containers=1 owner of its global token bucket, exactly like find_email.
+# ════════════════════════════════════════════════════════════════════════════
+
+def _extract_file_id(data: Any) -> str | None:
+    """The bulk-search launch echoes a file/bulk id. Docs don't print the exact field
+    (VERIFY-AT-BUILD), so probe the known shapes in priority order: item._id (mirrors the
+    single /email-search response), then file / fileId / _id / id at top level."""
+    if not isinstance(data, dict):
+        return None
+    item = data.get("item")
+    if isinstance(item, dict) and isinstance(item.get("_id"), str) and item["_id"]:
+        return item["_id"]
+    for k in ("file", "fileId", "_id", "id"):
+        v = data.get(k)
+        if isinstance(v, str) and v:
+            return v
+    return None
+
+
+def _first_file_record(data: Any, file_id: str) -> dict:
+    """Pull the record for ``file_id`` from a /search-files/read response. The array key is
+    VERIFY-AT-BUILD: probe items/files/results/data, prefer the record whose _id|file matches,
+    else the first. Some deployments may return the record at top level."""
+    if not isinstance(data, dict):
+        return {}
+    for key in ("items", "files", "results", "data"):
+        arr = data.get(key)
+        if isinstance(arr, list) and arr:
+            for rec in arr:
+                if isinstance(rec, dict) and (rec.get("_id") == file_id or rec.get("file") == file_id):
+                    return rec
+            return arr[0] if isinstance(arr[0], dict) else {}
+    return data
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("icypeas-api")],
+    max_containers=1,        # global 1/sec launch bucket lives in exactly one process
+    timeout=60 * 5,
+)
+@modal.concurrent(max_inputs=32)
+async def launch_bulk(
+    name: str,
+    rows: list[list[str]],
+    external_ids: list[str],
+    task: str = "email-search",
+) -> dict[str, Any]:
+    """Launch ONE Icypeas bulk search (≤5000 rows). Rate-gated to 1/sec globally.
+
+    ``rows`` — for ``email-search`` each row is ``[firstname, lastname, domainOrCompany]``
+    (firstname and/or lastname may be empty; the anchor is required). ``external_ids`` MUST be
+    row-aligned; each is echoed on the corresponding result item so the caller maps a drained
+    item back to its ``contact_id``. NEVER raises across the Modal boundary — returns::
+
+        {"ok": bool, "file_id": str|None, "http_status": int, "error": str|None,
+         "raw": <launch response, VERBATIM> | None}
+    """
+    import httpx
+
+    headers = _headers()
+    if headers is None:
+        return {"ok": False, "file_id": None, "http_status": 0,
+                "error": "ICYPEAS_API_KEY absent in icypeas-api secret", "raw": None}
+    if not rows:
+        return {"ok": False, "file_id": None, "http_status": 0, "error": "empty rows", "raw": None}
+    if len(rows) > BULK_ROWS_MAX:
+        return {"ok": False, "file_id": None, "http_status": 0,
+                "error": f"row count {len(rows)} exceeds Icypeas bulk max {BULK_ROWS_MAX}", "raw": None}
+    if len(external_ids) != len(rows):
+        return {"ok": False, "file_id": None, "http_status": 0,
+                "error": f"external_ids len {len(external_ids)} != rows len {len(rows)}", "raw": None}
+
+    body = {"name": name, "task": task, "data": rows, "custom": {"externalIds": external_ids}}
+    last_err: str | None = None
+    for attempt in range(MAX_RETRIES):
+        await _launch_bucket.acquire()
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                resp = await client.post(f"{BASE_URL}{BULK_SEARCH_PATH}", json=body, headers=headers)
+            sc = resp.status_code
+            if sc == 429:
+                last_err = "429 bulk-launch rate limited"
+                await asyncio.sleep(RATE_429_COOLDOWN)
+                continue
+            data = _safe_json(resp)
+            # Icypeas returns validation errors as HTTP 200 + success:false.
+            if isinstance(data, dict) and data.get("success") is False:
+                return {"ok": False, "file_id": None, "http_status": sc,
+                        "error": str(data.get("validationErrors") or data)[:300], "raw": data}
+            if sc // 100 != 2:
+                if sc // 100 == 5:
+                    last_err = f"HTTP {sc} on bulk-launch"
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return {"ok": False, "file_id": None, "http_status": sc,
+                        "error": resp.text[:300], "raw": data}
+            file_id = _extract_file_id(data)
+            if not file_id:
+                return {"ok": False, "file_id": None, "http_status": sc,
+                        "error": f"launch ok but no file id in response: {str(data)[:200]}", "raw": data}
+            return {"ok": True, "file_id": file_id, "http_status": sc, "error": None, "raw": data}
+        except Exception as exc:  # noqa: BLE001 — network / timeout
+            last_err = str(exc)
+            await asyncio.sleep(2 ** attempt)
+    return {"ok": False, "file_id": None, "http_status": 0,
+            "error": last_err or "bulk-launch retries exhausted", "raw": None}
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("icypeas-api")],
+    max_containers=1,        # global 15/min file-status bucket
+    timeout=60 * 5,
+)
+@modal.concurrent(max_inputs=16)
+async def file_status(file_id: str) -> dict[str, Any]:
+    """Poll /search-files/read (15/min) for ONE bulk file's progression. Returns::
+
+        {"ok": bool, "status": str|None, "done": bool, "http_status": int,
+         "error": str|None, "raw": <response, VERBATIM> | None}
+
+    ``done`` is True when the file's ``status == "done"``."""
+    import httpx
+
+    headers = _headers()
+    if headers is None:
+        return {"ok": False, "status": None, "done": False, "http_status": 0,
+                "error": "ICYPEAS_API_KEY absent in icypeas-api secret", "raw": None}
+    body = {"file": file_id, "limit": 1}
+    await _file_status_bucket.acquire()
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            resp = await client.post(f"{BASE_URL}{FILE_STATUS_PATH}", json=body, headers=headers)
+        sc = resp.status_code
+        data = _safe_json(resp)
+        if sc // 100 != 2:
+            return {"ok": False, "status": None, "done": False, "http_status": sc,
+                    "error": (resp.text[:300] if not isinstance(data, dict) else str(data)[:300]),
+                    "raw": data}
+        rec = _first_file_record(data, file_id)
+        status = rec.get("status") if isinstance(rec, dict) else None
+        return {"ok": True, "status": status, "done": status == "done",
+                "http_status": sc, "error": None, "raw": data}
+    except Exception as exc:  # noqa: BLE001 — network / timeout
+        return {"ok": False, "status": None, "done": False, "http_status": 0,
+                "error": str(exc), "raw": None}
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("icypeas-api")],
+    max_containers=1,        # global 30/min drain bucket (shared route — see caveat)
+    timeout=60 * 10,
+)
+@modal.concurrent(max_inputs=16)
+async def drain_results(
+    file_id: str,
+    sorts: list | None = None,
+    limit: int = BULK_READ_LIMIT,
+) -> dict[str, Any]:
+    """Drain ONE page of a bulk file's results from /bulk-single-searchs/read (30/min,
+    ``mode:"bulk"``). Paginated via ``sorts`` (the opaque token echoed by the previous page —
+    pass it back with ``next:true`` to advance). Returns::
+
+        {"ok": bool, "items": [<result item, VERBATIM>, ...], "sorts": <next token|None>,
+         "count": int, "http_status": int, "error": str|None, "raw_page": <response, VERBATIM>}
+
+    Each item is the untouched Icypeas result object (results.emails[], certainty, status, and
+    the echoed externalId). The caller pages until ``count < limit`` or ``sorts`` is None."""
+    import httpx
+
+    headers = _headers()
+    if headers is None:
+        return {"ok": False, "items": [], "sorts": None, "count": 0, "http_status": 0,
+                "error": "ICYPEAS_API_KEY absent in icypeas-api secret", "raw_page": None}
+    body: dict[str, Any] = {"mode": "bulk", "file": file_id, "limit": min(limit, BULK_READ_LIMIT)}
+    if sorts:
+        body["sorts"] = sorts
+        body["next"] = True
+    await _bulk_read_bucket.acquire()
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            resp = await client.post(f"{BASE_URL}{BULK_READ_PATH}", json=body, headers=headers)
+        sc = resp.status_code
+        data = _safe_json(resp)
+        if sc // 100 != 2:
+            return {"ok": False, "items": [], "sorts": None, "count": 0, "http_status": sc,
+                    "error": (resp.text[:300] if not isinstance(data, dict) else str(data)[:300]),
+                    "raw_page": data}
+        items = data.get("items") if isinstance(data, dict) else None
+        items = items if isinstance(items, list) else []
+        next_sorts = data.get("sorts") if isinstance(data, dict) else None
+        return {"ok": True, "items": items, "sorts": next_sorts, "count": len(items),
+                "http_status": sc, "error": None, "raw_page": data}
+    except Exception as exc:  # noqa: BLE001 — network / timeout
+        return {"ok": False, "items": [], "sorts": None, "count": 0, "http_status": 0,
+                "error": str(exc), "raw_page": None}
+
+
 @app.function(image=image, secrets=[modal.Secret.from_name("icypeas-api")], timeout=60)
 def key_check() -> dict[str, Any]:
     """Health gate — submit a throwaway discovery to confirm the key authenticates.
@@ -300,3 +539,30 @@ def smoke(firstname: str = "Jean", lastname: str = "Dupont", domain: str = "icyp
     print("key_check:", json.dumps(key_check.remote(), indent=2, default=str))
     print("find_email:", json.dumps(
         find_email.remote(firstname, lastname, domain), indent=2, default=str))
+
+
+@app.local_entrypoint()
+def bulk_smoke(firstname: str = "Jean", lastname: str = "Dupont", domain: str = "icypeas.com") -> None:
+    """Bulk-path smoke test: launch a 1-row bulk search, poll to done, drain the page.
+    Confirms the launch response id field + the file-status/drain shapes end-to-end
+    (the three VERIFY-AT-BUILD unknowns) against the live key."""
+    import json
+    import time
+
+    ext_id = "bulk-smoke-1"
+    launch = launch_bulk.remote("core-x bulk_smoke", [[firstname, lastname, domain]], [ext_id])
+    print("launch_bulk:", json.dumps(launch, indent=2, default=str))
+    file_id = launch.get("file_id")
+    if not file_id:
+        print("no file_id — cannot poll/drain; inspect launch.raw for the id field.")
+        return
+
+    for _ in range(20):
+        st = file_status.remote(file_id)
+        print("file_status:", json.dumps(st, indent=2, default=str))
+        if st.get("done"):
+            break
+        time.sleep(5)
+
+    page = drain_results.remote(file_id)
+    print("drain_results:", json.dumps(page, indent=2, default=str))
