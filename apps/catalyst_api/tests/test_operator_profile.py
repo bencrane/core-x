@@ -51,19 +51,27 @@ CARD_ROW = {"uei": UEI, "firm_name": "EMERZIAN WOODWORKING", "federal_status": "
             "materialized_at": "2026-07-01T22:35:00"}
 GOLD_ROW = {"uei": UEI, "active_award_count": 0, "award_count": 4}
 SUBOUT_RESULT = {
-    "meta": {"recipeId": "subout_opportunities.v2", "total": 1,
+    "meta": {"recipeId": "subout_opportunities.v3", "total": 1,
              "target_hq": {"latitude": 36.7, "longitude": -119.8}},
     "data": {"opportunities": [{
         "generated_unique_award_id": "AWD1", "award_id_piid": "PIID1",
         "prime_name": "DELOITTE CONSULTING LLP", "prime_uei": "UEIPRIME0001",
         "awarding_agency_name": "GSA", "total_obligation": 86_000_000.0,
         "period_of_performance_current_end_date": "2026-09-27",
-        "ordering_period_end_date": None, "distance_mi": 118.6, "score": 0.87,
-        "nearest_federal_site": {"site_name": "CENTRAL COAST FIELD OFFICE"},
-        "matched": [{"lens": "delivered_subawards_under_code", "code": "236220",
-                     "evidence": {}}],
-        "components": [],
-    }], "peers": []},
+        "ordering_period_end_date": None, "distance_mi": 118.6,
+        "naics_code": "236220", "product_or_service_code": None,
+        "nearest_federal_site": {"site_name": "CENTRAL COAST FIELD OFFICE",
+                                 "distance_mi": 1.0},
+        "matched_via": [
+            {"rule": "worked_under_prime", "prime_uei": "UEIPRIME0001",
+             "subaward_amt_from_prime": 2_400_000.0, "edge_ct": 2,
+             "last_action_date": "2024-12-06"},
+            {"rule": "peer_subawardee", "peer_ct": 7, "peers": [
+                {"uei": "UEIPEER00001", "shared_pairs": [
+                    {"agency_code": "097", "code_type": "naics", "code": "236220"}]},
+            ]},
+        ],
+    }]},
 }
 
 
@@ -113,7 +121,7 @@ def seams(monkeypatch):
     s = ProfileSeams()
     monkeypatch.setattr(profile_html, "_rows", s.rows)
     monkeypatch.setattr(profile_html, "_load_subout",
-                        lambda uei, include_peers: json.loads(json.dumps(SUBOUT_RESULT)))
+                        lambda uei: json.loads(json.dumps(SUBOUT_RESULT)))
     monkeypatch.setattr(profile_html, "_load_code_titles", lambda: CODE_TITLES)
     yield s
 
@@ -153,8 +161,9 @@ def test_compose_assembles_every_section_with_sources(seams):
     assert p["sections"]["inferred_primeable"]["data"]["codes"][0]["code_title"] == \
         "Support Activities for Forestry"
     opp0 = p["sections"]["subout_opportunities"]["data"]["data"]["opportunities"][0]
-    assert opp0["matched"][0]["code_title"] == \
-        "Commercial and Institutional Building Construction"
+    assert opp0["naics_title"] == "Commercial and Institutional Building Construction"
+    peer_pair = opp0["matched_via"][1]["peers"][0]["shared_pairs"][0]
+    assert peer_pair["code_title"] == "Commercial and Institutional Building Construction"
 
 
 def test_one_dead_dataset_degrades_only_its_section(seams):
@@ -183,12 +192,14 @@ def test_render_is_selfcontained_maximal_and_escaped(seams):
         assert title in html_doc, title
     # the cold-call payload is on the page
     assert "+1 559 555 0100" in html_doc and "pat@emerzian.com" in html_doc
-    # the opportunities card renders with score + prime + site + the COMPACT matched
-    # summary (titled codes, no wall of raw lens:code pairs)
-    assert "DELOITTE CONSULTING LLP" in html_doc and "0.87" in html_doc
+    # the opportunity card renders prime + site + the RELATIONSHIP evidence
+    # (v3: flat list, no score anywhere)
+    assert "DELOITTE CONSULTING LLP" in html_doc
     assert "CENTRAL COAST FIELD OFFICE" in html_doc
-    assert "Delivered subs under" in html_doc
+    assert "Worked under this prime:" in html_doc and "$2.4M received" in html_doc
+    assert "Peers subbing on this award:" in html_doc and "+6 more peers" in html_doc
     assert "Commercial and Institutional Building Construction" in html_doc
+    assert "score" not in html_doc.lower().replace("scoring", "")
     # the nothing-hidden guarantee: raw JSON blocks per section
     assert html_doc.count("<details>") == len(EXPECTED_SECTIONS)
     # source labels ride each section
