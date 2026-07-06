@@ -80,6 +80,16 @@ MART_VIEWS = {
     "gtm_sam_person_firm_emails": f"{ACTIVE}/gtm_sam_person_firm_emails/",
     "phone_resolutions":          f"{ACTIVE}/phone_resolutions/",
     "work_emails":                f"{ACTIVE}/work_emails/",
+    # cohort-side inputs (audience definition, not engine enrichment)
+    "usaspending_subaward_canonical": f"{ACTIVE}/usaspending_subaward_canonical/",
+    "firmographics_blitz":            f"{ACTIVE}/firmographics_blitz/",
+    "gtm_sam_person_contactability":  f"{ACTIVE}/gtm_sam_person_contactability/",
+    # audience marts (scripts/build_gtm_audience_marts.py) — prefer these in cohort
+    # SQL over the raw sources above; windowed aggregates, seconds not minutes
+    "gtm_sub_combo_lanes":            f"{ACTIVE}/gtm_sub_combo_lanes/",
+    "gtm_prime_combo_lanes":          f"{ACTIVE}/gtm_prime_combo_lanes/",
+    "gtm_audience_entities":          f"{ACTIVE}/gtm_audience_entities/",
+    "gtm_audience_people":            f"{ACTIVE}/gtm_audience_people/",
 }
 
 # House slug canon (match_sam_person_identity.py): both sides normalize to
