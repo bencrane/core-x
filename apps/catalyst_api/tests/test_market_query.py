@@ -53,7 +53,11 @@ _SCHEMAS = {"rollup": ROLLUP_SCHEMA, "entities": ENTITIES_SCHEMA}
 
 
 def _compile(filters):
-    return market_store.compile_market_filters(filters, today=TODAY)
+    """3-slot view (preds, lanes, executed) — the pre-inference contract most tests pin.
+    Inferred-aware tests call market_store.compile_market_filters directly."""
+    preds, lanes, inferred, executed = market_store.compile_market_filters(filters, today=TODAY)
+    assert inferred == []              # these tests never carry inferred clauses
+    return preds, lanes, executed
 
 
 # ── registry integrity ────────────────────────────────────────────────────────
@@ -634,8 +638,9 @@ def test_entities_fields_payload_is_workbench_parsable():
     assert payload["decoderVersion"] == market_registry.REGISTRY_VERSION
     assert payload["legacy"] is False and payload["grain"] == "entity"
     fields = {f["name"]: f for f in payload["fields"]}
-    # every registry field + every lane pseudo-field is published exactly once
-    assert set(fields) == set(ENTITY_FIELDS) | set(LANE_PSEUDO_FIELDS)
+    # every registry field + every lane/inferred pseudo-field is published exactly once
+    assert set(fields) == (set(ENTITY_FIELDS) | set(LANE_PSEUDO_FIELDS)
+                           | set(market_registry.INFERRED_PSEUDO_FIELDS))
     assert len(payload["fields"]) == len(fields)
     for f in payload["fields"]:
         # the workbench WorkbenchFieldType/WorkbenchOp unions
@@ -656,6 +661,8 @@ def test_fields_payload_codes_attribute_present_only_on_code_valued_fields():
         "prime_naics": "naics", "sub_naics": "naics",
         "prime_psc": "psc", "sub_psc": "psc",
         "top_naics": "naics", "top_agency_code": "agency",
+        "inferred_primeable_naics": "naics", "inferred_primeable_psc": "psc",
+        "inferred_subbable_naics": "naics", "inferred_subbable_psc": "psc",
     }
     for name, system in expected.items():
         assert fields[name]["codes"] == system, f"{name}: wrong codes system"
@@ -933,3 +940,124 @@ def test_table_fields_payloads_and_map_fields_carry_new_datasets():
     assert body["transactions"]["decoderVersion"] == "transactions.v1"
     market = json.loads(bytes(market_fields().body))["data"]["datasets"]
     assert set(market) == {"entities", "prime_awards", "transactions"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CAPABILITY-INFERENCE LAYER — inferred_* pseudo-fields + is_sub_only_lifetime
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_is_sub_only_lifetime_compiles_expr_both_branches():
+    preds, _, _ = _compile([{"field": "is_sub_only_lifetime", "op": "=", "value": True}])
+    assert preds["rollup"] == "(sub_ct_lifetime > 0 AND prime_award_ct_lifetime = 0)"
+    preds_f, _, _ = _compile([{"field": "is_sub_only_lifetime", "op": "=", "value": False}])
+    assert preds_f["rollup"] == "(sub_ct_lifetime = 0 OR prime_award_ct_lifetime > 0)"
+    # '=' with a bool is the only accepted shape
+    for bad_op, bad_val in ((">=", True), ("=", "true"), ("in", [True])):
+        with pytest.raises(lance_store.MapCompileError):
+            _compile([{"field": "is_sub_only_lifetime", "op": bad_op, "value": bad_val}])
+    # description states the exact predicate; column anchor exists in the rollup schema
+    spec = ENTITY_FIELDS["is_sub_only_lifetime"]
+    assert "(sub_ct_lifetime > 0 AND prime_award_ct_lifetime = 0)" in spec.description
+    assert spec.column in ROLLUP_SCHEMA
+
+
+def test_inferred_object_validates_and_compiles():
+    preds, lanes, inferred, executed = market_store.compile_market_filters(
+        [{"inferred": {"kind": "primeable", "code_type": "naics", "codes": ["562910"],
+                       "min_supporting_bothsider_firm_ct": 3}}], today=TODAY)
+    assert preds == {"rollup": None, "entities": None} and lanes == []
+    assert inferred == [{"kind": "primeable", "code_type": "naics", "codes": ["562910"],
+                         "min_supporting_bothsider_firm_ct": 3}]
+    assert executed == [{"inferred": inferred[0]}]
+    assert market_store._compile_inferred_predicate(inferred[0]) == (
+        "code_type = 'naics' AND code IN ('562910') AND supporting_bothsider_firm_ct >= 3")
+    # support floor is OPTIONAL — omitted means NO floor clause (pre-weighting doctrine)
+    _, _, inf2, _ = market_store.compile_market_filters(
+        [{"inferred": {"kind": "subbable", "code_type": "psc", "codes": ["R425", "R499"]}}],
+        today=TODAY)
+    assert market_store._compile_inferred_predicate(inf2[0]) == (
+        "code_type = 'psc' AND code IN ('R425', 'R499')")
+    assert "supporting" not in market_store._compile_inferred_predicate(inf2[0])
+
+
+def test_inferred_validation_fail_closed():
+    ok = {"kind": "primeable", "code_type": "naics", "codes": ["562910"]}
+    for bad in (
+        {**ok, "kind": "possible"},                        # bad kind
+        {**ok, "code_type": "agency"},                     # agency is not a lane/inference axis
+        {**ok, "codes": []},                               # empty codes
+        {**ok, "codes": ["562910' OR '1'='1"]},            # injection-shaped code
+        {**ok, "min_supporting_bothsider_firm_ct": 0},     # floor must be >= 1
+        {**ok, "min_supporting_bothsider_firm_ct": True},  # bool is not a count
+        {**ok, "min_supporting_bothsider_firm_ct": 2.5},   # fractional firms don't exist
+        {**ok, "weight": 0.5},                             # unknown key (pre-weighting!)
+        {"kind": "primeable"},                             # missing required keys
+        "primeable",                                       # not an object
+    ):
+        with pytest.raises(lance_store.MapCompileError):
+            market_store.compile_market_filters([{"inferred": bad}], today=TODAY)
+    # a clause carrying two predicate kinds at once is rejected
+    with pytest.raises(lance_store.MapCompileError):
+        market_store.compile_market_filters(
+            [{"field": "state", "op": "=", "value": "VA", "inferred": ok}], today=TODAY)
+    with pytest.raises(lance_store.MapCompileError):
+        market_store.compile_market_filters(
+            [{"lane": {"side": "sub", "code_type": "naics", "codes": ["541512"]},
+              "inferred": ok}], today=TODAY)
+
+
+def test_inferred_pseudo_fields_desugar():
+    _, _, inferred, executed = market_store.compile_market_filters(
+        [{"field": "inferred_primeable_naics", "op": "=", "value": "562910"}], today=TODAY)
+    assert inferred == [{"kind": "primeable", "code_type": "naics", "codes": ["562910"]}]
+    assert executed == [{"inferred": inferred[0]}]        # desugared truth echoed
+    _, _, inf2, _ = market_store.compile_market_filters(
+        [{"field": "inferred_subbable_psc", "op": "in", "value": ["R425", "R499"]}], today=TODAY)
+    assert inf2 == [{"kind": "subbable", "code_type": "psc", "codes": ["R425", "R499"]}]
+    with pytest.raises(lance_store.MapCompileError):      # range ops rejected
+        market_store.compile_market_filters(
+            [{"field": "inferred_primeable_naics", "op": ">=", "value": "5"}], today=TODAY)
+    # pseudo-fields never shadow registry fields or lane pseudo-fields
+    assert not set(market_registry.INFERRED_PSEUDO_FIELDS) & set(ENTITY_FIELDS)
+    assert not set(market_registry.INFERRED_PSEUDO_FIELDS) & set(LANE_PSEUDO_FIELDS)
+
+
+def test_inferred_set_intersects_with_scalar_and_lane_sets(seams, monkeypatch):
+    inferred_calls = []
+    orig = seams.uei_set
+
+    def routed(uri, predicate):
+        if uri in (config.GTM_INFERRED_PRIMEABLE_URI, config.GTM_INFERRED_SUBBABLE_URI):
+            inferred_calls.append((uri, predicate))
+            return {"UEIAAAAAAAA1", "UEIZZZZZZZZ9"}
+        return orig(uri, predicate)
+
+    monkeypatch.setattr(market_store, "_uei_set", routed)
+    out = market_store.execute_entity_query(
+        [{"field": "is_sub_only_lifetime", "op": "=", "value": True},
+         {"inferred": {"kind": "primeable", "code_type": "naics", "codes": ["562910"]}}],
+        limit=10, today=TODAY)
+    # inferred set {A, Z} ∩ rollup expr set {A, B} → {A}
+    assert inferred_calls == [(config.GTM_INFERRED_PRIMEABLE_URI,
+                               "code_type = 'naics' AND code IN ('562910')")]
+    assert out["total"] == 1 and out["rows"][0]["uei"] == "UEIAAAAAAAA1"
+    # the rollup side ran the compiled expression, not a plain column comparison
+    rollup_preds = [p for u, p in seams.uei_set_calls
+                    if u == config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI]
+    assert rollup_preds == ["(sub_ct_lifetime > 0 AND prime_award_ct_lifetime = 0)"]
+
+
+def test_inferred_payload_contract():
+    payload = market_registry.fields_payload()
+    fields = {f["name"]: f for f in payload["fields"]}
+    for name, (kind, ct) in market_registry.INFERRED_PSEUDO_FIELDS.items():
+        f = fields[name]
+        assert f["ops"] == ["=", "in"] and f["source"] == "inferred"
+        assert f["codes"] == ct                            # typeahead lights up
+        # verb doctrine verbatim: inference is never a demonstration
+        assert "NOT a demonstration" in f["description"]
+        if kind == "primeable":
+            assert "never a claim of what it can prime" in f["description"]
+    inf = payload["inferred"]
+    assert inf["kinds"] == ["primeable", "subbable"]
+    assert inf["minSupportKey"] == "min_supporting_bothsider_firm_ct"
+    assert "pre-weighting" in inf["semantics"]

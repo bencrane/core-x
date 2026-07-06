@@ -37,11 +37,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Version key surfaced as decoderVersion in the fields payload.
+# v4: capability-inference axes — inferred_primeable_*/inferred_subbable_* pseudo-fields
+# (semi-joins against the pre-weighting cooccurrence projections) + is_sub_only_lifetime
+# (registry-level compiled expression over the rollup).
 # v3: HQ geo sidecar (gtm_entity_geo) LEFT-joined at hydration — result rows carry
 # latitude/longitude/geo_precision; the map adapter emits real Point geometry.
 # v2: state → closed enum (live-probed USPS codes); `codes` typeahead attribute on the
 # code-valued fields (naics/psc/agency); agency added to the /market/codes systems.
-REGISTRY_VERSION = "entities.v3"
+REGISTRY_VERSION = "entities.v4"
 
 # The two scalar source tables (keys into market_store's URI map). Lane predicates are
 # a third, non-scalar source compiled separately (see LANE below).
@@ -86,6 +89,11 @@ class MarketFieldSpec:
     codes: str | None = None          # CODE_SYSTEMS member → the workbench renders a
                                       # /market/codes typeahead for this field; None =
                                       # not code-valued (payload OMITS the key entirely)
+    expr: tuple[str, str] | None = None  # (sql_when_true, sql_when_false) — a registry-
+                                      # level COMPILED boolean expression ('=' bool only;
+                                      # column anchors the schema check). The two branches
+                                      # are written out explicitly (no NOT()) so NULL
+                                      # semantics stay exact.
 
 
 # Shared doctrine strings — composed into every money/window description so the
@@ -178,6 +186,15 @@ ENTITY_FIELDS: dict[str, MarketFieldSpec] = {
         "rollup", "prime_and_sub", "bool", ("=",),
         "True when the entity has BOTH lifetime prime contract obligations AND lifetime "
         f"FSRS subaward dollars (plays both sides).{_GRAIN}"),
+    "is_sub_only_lifetime": MarketFieldSpec(
+        "rollup", "sub_ct_lifetime", "bool", ("=",),
+        "True when the entity has FSRS subaward history and ZERO prime contract awards, "
+        "lifetime. Exact compiled predicate: (sub_ct_lifetime > 0 AND "
+        "prime_award_ct_lifetime = 0); false compiles to (sub_ct_lifetime = 0 OR "
+        f"prime_award_ct_lifetime > 0). A registry-level expression over the behavior "
+        f"rollup — no rebuilt column.{_GRAIN}",
+        expr=("(sub_ct_lifetime > 0 AND prime_award_ct_lifetime = 0)",
+              "(sub_ct_lifetime = 0 OR prime_award_ct_lifetime > 0)")),
     # ── entities: SAM identity axes (universe: the full 2.03M-UEI SAM∪DSBS∪FSRS spine) ──
     "state": MarketFieldSpec(
         "entities", "physical_state", "string", ("=", "in"),
@@ -261,6 +278,67 @@ LANE_PSEUDO_DESCRIPTIONS = {
 }
 
 
+# ── Inferred-capability predicates (the capability-inference layer) ───────────
+# VERB DOCTRINE (contractual): registered_* = SAM claims; primed_in_* = demonstrated as
+# prime; subbed_under_* = the PRIME award's codes on subawards the firm delivered under
+# — where the firm worked as a sub, NEVER a claim of what it can prime; inferred_* =
+# cooccurrence evidence from both-sider firms, NOT a demonstration.
+#
+# An inferred predicate semi-joins one of the two pre-weighting projections built by
+# scripts/build_gtm_capability_inference.py (grain (uei, code_type, code); a row exists
+# only where the firm does NOT already demonstrate the code):
+#   primeable → gtm_entity_inferred_primeable_codes  (evidence the firm could PRIME in
+#               the code: both-sider firms sharing its subbed_under codes prime there)
+#   subbable  → gtm_entity_inferred_subbable_codes   (the mirror: evidence the firm
+#               could win SUB work under the code)
+# Wire form ({"inferred": {...}} on POST /api/v1/market/query):
+#   {"kind": "primeable"|"subbable", "code_type": "naics"|"psc", "codes": [...],
+#    "min_supporting_bothsider_firm_ct": N?}
+# The support floor is OPTIONAL and caller-supplied — never defaulted above 1
+# (pre-weighting doctrine: the registry serves raw evidence; consumers weight at read).
+# supporting_bothsider_firm_ct is the PAIR-SUM of cooccurring both-sider firm counts
+# across the firm's matched codes (a both-sider supporting via k shared codes counts k
+# times; the exact distinct-firm union is not materialized at this grain).
+INFERRED_KINDS = ("primeable", "subbable")
+INFERRED_MIN_SUPPORT_KEY = "min_supporting_bothsider_firm_ct"
+INFERRED_REQUIRED_KEYS = ("kind", "code_type", "codes")
+INFERRED_ALLOWED_KEYS = frozenset(INFERRED_REQUIRED_KEYS) | {INFERRED_MIN_SUPPORT_KEY}
+
+# Workbench-composable pseudo-fields (codes only; the support floor needs the explicit
+# inferred object). name → (kind, code_type).
+INFERRED_PSEUDO_FIELDS: dict[str, tuple[str, str]] = {
+    "inferred_primeable_naics": ("primeable", "naics"),
+    "inferred_primeable_psc": ("primeable", "psc"),
+    "inferred_subbable_naics": ("subbable", "naics"),
+    "inferred_subbable_psc": ("subbable", "psc"),
+}
+_INFERRED_PSEUDO_DESC = {
+    "primeable": (
+        "INFERRED capability cut ({ct}): both-sider evidence suggests the entity could "
+        "PRIME in this exact code — firms that demonstrably prime in it also worked as "
+        "subs under the entity's subbed_under codes. subbed_under codes are the PRIME "
+        "award's codes on subawards the firm delivered under (where it worked as a sub, "
+        "never a claim of what it can prime); inferred is cooccurrence evidence, NOT a "
+        "demonstration, and a row exists only where the entity does not already prime "
+        "in the code. Support floor ({minkey}) available via the inferred object on "
+        "POST /api/v1/market/query. Grain: one row per UEI."
+    ),
+    "subbable": (
+        "INFERRED capability cut ({ct}), mirror direction: both-sider evidence suggests "
+        "the entity could win SUB work under this exact code — firms that demonstrably "
+        "subbed under it also prime in the entity's primed_in codes. inferred is "
+        "cooccurrence evidence, NOT a demonstration, and a row exists only where the "
+        "entity does not already sub under the code. Support floor ({minkey}) available "
+        "via the inferred object on POST /api/v1/market/query. Grain: one row per UEI."
+    ),
+}
+INFERRED_PSEUDO_DESCRIPTIONS = {
+    name: _INFERRED_PSEUDO_DESC[kind].format(ct=ct.upper(),
+                                             minkey=INFERRED_MIN_SUPPORT_KEY)
+    for name, (kind, ct) in INFERRED_PSEUDO_FIELDS.items()
+}
+
+
 # ── Result row (hydration projection per source table, in wire column order) ──
 # uei leads; entities identity columns next; rollup behavior columns after.
 RESULT_COLUMNS_ENTITIES = ("uei", "legal_business_name", "physical_state",
@@ -324,6 +402,22 @@ def fields_payload() -> dict:
         }
         for name, (_side, code_type) in LANE_PSEUDO_FIELDS.items()
     )
+    # Inferred-capability pseudo-fields: cooccurrence-evidence code cuts (semi-joins
+    # against the pre-weighting projections; verb doctrine in each description).
+    fields.extend(
+        {
+            "name": name,
+            "type": "string",
+            "ops": ["=", "in"],
+            "enum": None,
+            "index": "BTREE",          # projections carry BTREE uei + code
+            "gated": False,
+            "source": "inferred",
+            "description": INFERRED_PSEUDO_DESCRIPTIONS[name],
+            "codes": code_type,
+        }
+        for name, (_kind, code_type) in INFERRED_PSEUDO_FIELDS.items()
+    )
     return {
         "decoderVersion": REGISTRY_VERSION,
         "grain": "entity",
@@ -340,6 +434,20 @@ def fields_payload() -> dict:
                 "optional min_obl_24mo/min_obl_60mo/min_obl_lifetime apply to the lane's "
                 "obligation (contracts-only; IDV parents excluded; action_date windows; "
                 "sub-side short windows are floors)."
+            ),
+        },
+        "inferred": {
+            "kinds": list(INFERRED_KINDS),
+            "codeTypes": list(LANE_CODE_TYPES),
+            "requiredKeys": list(INFERRED_REQUIRED_KEYS),
+            "minSupportKey": INFERRED_MIN_SUPPORT_KEY,
+            "semantics": (
+                "Selects entities by INFERRED capability (cooccurrence evidence from "
+                "both-sider firms — never a demonstration; rows exist only where the "
+                "entity does not already demonstrate the code). kind + code_type + "
+                "codes[] required; optional min_supporting_bothsider_firm_ct is a "
+                "caller-supplied support floor over the pair-sum evidence count "
+                "(pre-weighting: nothing is thresholded for you)."
             ),
         },
         "resultColumns": list(RESULT_ROW_ORDER),

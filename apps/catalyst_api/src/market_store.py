@@ -69,6 +69,9 @@ _SOURCE_URIS = {
     "entities": lambda: config.GTM_SAM_ENTITIES_URI,
     "lanes": lambda: config.GTM_ENTITY_CODE_LANES_URI,
     "geo": lambda: config.GTM_ENTITY_GEO_URI,
+    # capability-inference projections (kind → dataset; see market_registry verb doctrine)
+    "primeable": lambda: config.GTM_INFERRED_PRIMEABLE_URI,
+    "subbable": lambda: config.GTM_INFERRED_SUBBABLE_URI,
 }
 
 # Table-grain sources (market_registry.TableGrainSpec.source → URI).
@@ -172,47 +175,124 @@ def _compile_lane_predicate(lane: dict[str, Any]) -> str:
     return " AND ".join(parts)
 
 
+def _validate_inferred(inf: Any) -> dict[str, Any]:
+    """Fail-closed inferred-object validation → a normalized dict. kind/code_type/codes
+    are required; the support floor is OPTIONAL and caller-supplied (pre-weighting: the
+    engine never defaults a threshold). Codes charset-validated then escaped."""
+    if not isinstance(inf, dict):
+        raise MapCompileError("inferred must be an object")
+    unknown = set(inf) - market_registry.INFERRED_ALLOWED_KEYS
+    if unknown:
+        raise MapCompileError(f"unknown inferred key(s) {sorted(unknown)!r}")
+    kind = inf.get("kind")
+    if kind not in market_registry.INFERRED_KINDS:
+        raise MapCompileError(f"inferred.kind must be one of {list(market_registry.INFERRED_KINDS)}")
+    code_type = inf.get("code_type")
+    if code_type not in market_registry.LANE_CODE_TYPES:
+        raise MapCompileError(f"inferred.code_type must be one of {list(market_registry.LANE_CODE_TYPES)}")
+    codes = inf.get("codes")
+    if not isinstance(codes, list) or not codes:
+        raise MapCompileError("inferred.codes must be a non-empty array of code strings")
+    for c in codes:
+        if not isinstance(c, str) or not _CODE_OK.match(c):
+            raise MapCompileError(f"inferred code {c!r} is not a valid NAICS/PSC code")
+    out: dict[str, Any] = {"kind": kind, "code_type": code_type, "codes": list(codes)}
+    key = market_registry.INFERRED_MIN_SUPPORT_KEY
+    if key in inf:
+        v = inf[key]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise MapCompileError(f"inferred.{key} must be a positive whole number")
+        out[key] = v
+    return out
+
+
+def _compile_inferred_predicate(inf: dict[str, Any]) -> str:
+    """Normalized inferred dict → filter string over the matching projection dataset
+    (grain (uei, code_type, code); BTREE code serves the IN pushdown)."""
+    parts = [
+        f"code_type = {_sql_str(inf['code_type'])}",
+        _in_predicate("code", inf["codes"]),
+    ]
+    key = market_registry.INFERRED_MIN_SUPPORT_KEY
+    if key in inf:
+        parts.append(f"supporting_bothsider_firm_ct >= {int(inf[key])}")
+    return " AND ".join(parts)
+
+
 def compile_market_filters(
     filters: list[dict[str, Any]], today: "dt_date | None" = None
-) -> tuple[dict[str, str | None], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Validate + compile the request's filter list. Each entry is EITHER a scalar
-    clause ``{field, op, value}`` (field from the registry; lane pseudo-fields desugar
-    to lane predicates) OR a lane object ``{"lane": {...}}`` — anything else raises
-    ``MapCompileError`` (→ 422). Returns ``(predicates_by_source, lanes, executed)``:
-    one AND-combined predicate string (or None) per scalar source table, the normalized
-    lane dicts, and the validated/normalized filter list echoed for ``meta.executed``."""
+) -> tuple[dict[str, str | None], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate + compile the request's filter list. Each entry is EXACTLY ONE of: a
+    scalar clause ``{field, op, value}`` (registry field; lane/inferred pseudo-fields
+    desugar to their object forms), a lane object ``{"lane": {...}}``, or an inferred
+    object ``{"inferred": {...}}`` — anything else raises ``MapCompileError`` (→ 422).
+    Returns ``(predicates_by_source, lanes, inferred, executed)``."""
     today = today or dt_date.today()
     parts: dict[str, list[str]] = {src: [] for src in market_registry.SOURCES}
     lanes: list[dict[str, Any]] = []
+    inferred: list[dict[str, Any]] = []
     executed: list[dict[str, Any]] = []
     for clause in filters:
         if not isinstance(clause, dict):
             raise MapCompileError("each filter must be an object")
-        has_lane = clause.get("lane") is not None
-        has_field = clause.get("field") is not None
-        if has_lane and has_field:
-            raise MapCompileError("a filter is EITHER {field, op, value} OR {lane: {...}}, not both")
-        if has_lane:
+        kinds_present = [k for k in ("lane", "inferred", "field") if clause.get(k) is not None]
+        if len(kinds_present) > 1:
+            raise MapCompileError(
+                "a filter is EXACTLY ONE of {field, op, value} | {lane: {...}} | {inferred: {...}}")
+        if clause.get("lane") is not None:
             lane = _validate_lane(clause["lane"])
             lanes.append(lane)
             executed.append({"lane": lane})
             continue
-        if not has_field:
-            raise MapCompileError("a filter needs a 'field' (or a 'lane' object)")
+        if clause.get("inferred") is not None:
+            inf = _validate_inferred(clause["inferred"])
+            inferred.append(inf)
+            executed.append({"inferred": inf})
+            continue
         field, op, value = clause.get("field"), clause.get("op"), clause.get("value")
+        if field is None:
+            raise MapCompileError("a filter needs a 'field' (or a 'lane'/'inferred' object)")
         pseudo = market_registry.LANE_PSEUDO_FIELDS.get(field)
         if pseudo is not None:
             lane = _desugar_lane_pseudo(field, pseudo, op, value)
             lanes.append(lane)
             executed.append({"lane": lane})
             continue
+        inf_pseudo = market_registry.INFERRED_PSEUDO_FIELDS.get(field)
+        if inf_pseudo is not None:
+            inf = _desugar_inferred_pseudo(field, inf_pseudo, op, value)
+            inferred.append(inf)
+            executed.append({"inferred": inf})
+            continue
         spec = market_registry.ENTITY_FIELDS.get(field)
         if spec is None:
             raise MapCompileError(f"field {field!r} not in the entity registry")
-        parts[spec.source].append(_map_clause_sql(spec, op, value, today))
+        if spec.expr is not None:
+            # registry-level compiled boolean expression ('=' bool only; both branches
+            # written out explicitly — see the field's description for the exact SQL).
+            if op != "=" or not isinstance(value, bool):
+                raise MapCompileError(f"field {field!r} takes '=' with a boolean value")
+            parts[spec.source].append(spec.expr[0] if value else spec.expr[1])
+        else:
+            parts[spec.source].append(_map_clause_sql(spec, op, value, today))
         executed.append({"field": field, "op": op, "value": value})
     predicates = {src: (" AND ".join(p) if p else None) for src, p in parts.items()}
-    return predicates, lanes, executed
+    return predicates, lanes, inferred, executed
+
+
+def _desugar_inferred_pseudo(field: str, pseudo: tuple[str, str], op: Any, value: Any) -> dict[str, Any]:
+    """A workbench scalar clause on inferred_primeable_*/inferred_subbable_* → the
+    equivalent inferred object (codes only; the support floor needs the object form)."""
+    kind, code_type = pseudo
+    if op == "=":
+        codes = [value]
+    elif op == "in":
+        if not isinstance(value, list) or not value:
+            raise MapCompileError(f"{field}: 'in' needs a non-empty array value")
+        codes = list(value)
+    else:
+        raise MapCompileError(f"op {op!r} not allowed for inferred field {field!r} ('=' or 'in')")
+    return _validate_inferred({"kind": kind, "code_type": code_type, "codes": codes})
 
 
 def _desugar_lane_pseudo(field: str, pseudo: tuple[str, str], op: Any, value: Any) -> dict[str, Any]:
@@ -301,12 +381,16 @@ def execute_entity_query(
     ``{rows, total, returned, capped, executed}``; ``total`` is the EXACT match count
     (set-intersection size, or count_rows pushdown on the single-table fast paths).
     Raises ``MapCompileError`` (→ 422) on any off-registry filter."""
-    predicates, lanes, executed = compile_market_filters(filters, today)
+    predicates, lanes, inferred, executed = compile_market_filters(filters, today)
     cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
 
     sets: list[set[str]] = []
     for lane in lanes:
         sets.append(_uei_set(_SOURCE_URIS["lanes"](), _compile_lane_predicate(lane)))
+    for inf in inferred:
+        # semi-join against the matching inference projection (BTREE uei + code),
+        # identical shape to the demonstrated-lane semi-join.
+        sets.append(_uei_set(_SOURCE_URIS[inf["kind"]](), _compile_inferred_predicate(inf)))
     if predicates["rollup"] is not None:
         sets.append(_uei_set(_SOURCE_URIS["rollup"](), predicates["rollup"]))
 

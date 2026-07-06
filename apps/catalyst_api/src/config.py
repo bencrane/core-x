@@ -196,6 +196,22 @@ NAICS_REFERENCE_URI = os.environ.get(
 PSC_REFERENCE_URI = os.environ.get(
     "PSC_REFERENCE_LANCE_URI", "s3://data-sink/active/psc_reference/"
 )
+# Capability-inference layer (scripts/build_gtm_capability_inference.py, all
+# pre-weighting raw evidence). Matrix: (subbed_under_code -> primed_in_code) same-type
+# cooccurrence over both-sider firms. Projections: per-entity inferred codes, BTREE
+# uei + code, semi-joined by the entity-grain executor like the demonstrated lanes.
+GTM_COOCCURRENCE_MATRIX_URI = os.environ.get(
+    "GTM_SUBBED_UNDER_TO_PRIMED_IN_COOCCURRENCE_LANCE_URI",
+    "s3://data-sink/active/gtm_subbed_under_to_primed_in_cooccurrence/"
+)
+GTM_INFERRED_PRIMEABLE_URI = os.environ.get(
+    "GTM_ENTITY_INFERRED_PRIMEABLE_CODES_LANCE_URI",
+    "s3://data-sink/active/gtm_entity_inferred_primeable_codes/"
+)
+GTM_INFERRED_SUBBABLE_URI = os.environ.get(
+    "GTM_ENTITY_INFERRED_SUBBABLE_CODES_LANCE_URI",
+    "s3://data-sink/active/gtm_entity_inferred_subbable_codes/"
+)
 # FPDS prime-award STATE table (82.87M rows, 1 row/contract_award_unique_key, topology-
 # aware) — the prime_awards market grain. BTREE recipient_uei/award_id_piid/…; BITMAP
 # award_topology/awarding_agency_code/…. NO place-of-performance columns (probed

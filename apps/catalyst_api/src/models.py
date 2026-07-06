@@ -56,6 +56,8 @@ class MarketFilterClause(_Model):
     op: str | None = None
     value: Any = None                 # scalar | list (for `in` / `between`)
     lane: dict | None = None          # {side, code_type, codes[], min_obl_*} — validated fail-closed
+    inferred: dict | None = None      # {kind, code_type, codes[], min_supporting_bothsider_firm_ct?}
+                                      # — cooccurrence-evidence predicate, validated fail-closed
 
 
 class MarketQueryRequest(_Model):

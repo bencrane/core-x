@@ -1145,6 +1145,9 @@ _SURFACE_DATASETS = {
     "gtm_entity_geo": lambda: config.GTM_ENTITY_GEO_URI,
     "fpds_prime_award_state": lambda: config.FPDS_PRIME_AWARD_STATE_URI,
     "fpds_canonical_txn": lambda: config.FPDS_CANONICAL_TXN_URI,
+    "gtm_cooccurrence_matrix": lambda: config.GTM_COOCCURRENCE_MATRIX_URI,
+    "gtm_inferred_primeable": lambda: config.GTM_INFERRED_PRIMEABLE_URI,
+    "gtm_inferred_subbable": lambda: config.GTM_INFERRED_SUBBABLE_URI,
 }
 
 
