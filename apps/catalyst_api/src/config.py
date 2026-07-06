@@ -186,6 +186,21 @@ GTM_ENTITY_GEO_URI = os.environ.get(
     "GTM_ENTITY_GEO_LANCE_URI", "s3://data-sink/active/gtm_entity_geo/"
 )
 
+# ── SAM person layer (the operator profile's people + contactability reads) ──
+# gtm_sam_people — 1 row per sam_person_id: every distinct person observed across the
+# SAM/DSBS POC surfaces for a UEI, role-flagged (govt/ebiz/past-perf POC, DSBS
+# contact/principal, exec officer prime/sub side). Probed live 2026-07-06: 2,252,385 rows.
+GTM_SAM_PEOPLE_URI = os.environ.get(
+    "GTM_SAM_PEOPLE_LANCE_URI", "s3://data-sink/active/gtm_sam_people/"
+)
+# gtm_sam_person_contactability — 1 row per bridged sam_person_id (124,608 live):
+# best mobile + best work email + linkedin, PROVIDER VALUES VERBATIM (never
+# normalized; filter at compose time only — e.g. phone_status='found').
+GTM_SAM_PERSON_CONTACTABILITY_URI = os.environ.get(
+    "GTM_SAM_PERSON_CONTACTABILITY_LANCE_URI",
+    "s3://data-sink/active/gtm_sam_person_contactability/"
+)
+
 # ── Code reference dimensions (the /market/codes typeahead) ──────────────────
 # naics_reference — 1 row per NAICS code (2-6 digit, ~2,125): naics_code + naics_title.
 NAICS_REFERENCE_URI = os.environ.get(
