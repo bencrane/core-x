@@ -10,6 +10,7 @@ operator token when one is set; query-param and bearer both accepted).
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -99,12 +100,21 @@ class ProfileSeams:
         return rows
 
 
+CODE_TITLES = {
+    "naics": {"236220": "Commercial and Institutional Building Construction",
+              "115310": "Support Activities for Forestry",
+              "221122": "Electric Power Distribution"},
+    "psc": {},
+}
+
+
 @pytest.fixture()
 def seams(monkeypatch):
     s = ProfileSeams()
     monkeypatch.setattr(profile_html, "_rows", s.rows)
     monkeypatch.setattr(profile_html, "_load_subout",
-                        lambda uei, include_peers: dict(SUBOUT_RESULT))
+                        lambda uei, include_peers: json.loads(json.dumps(SUBOUT_RESULT)))
+    monkeypatch.setattr(profile_html, "_load_code_titles", lambda: CODE_TITLES)
     yield s
 
 
@@ -137,6 +147,14 @@ def test_compose_assembles_every_section_with_sources(seams):
     assert p["sections"]["lanes"]["data"]["lanes"][0]["last_action_date"] == "2026-05-01"
     # firmographics resolved through the sam row's normalized_domain
     assert p["sections"]["firmographics"]["data"]["employee_size_band"] == "11-50"
+    # code-title enrichment rides the ASSEMBLY (both routes serve human names)
+    assert p["sections"]["lanes"]["data"]["lanes"][0]["code_title"] == \
+        "Commercial and Institutional Building Construction"
+    assert p["sections"]["inferred_primeable"]["data"]["codes"][0]["code_title"] == \
+        "Support Activities for Forestry"
+    opp0 = p["sections"]["subout_opportunities"]["data"]["data"]["opportunities"][0]
+    assert opp0["matched"][0]["code_title"] == \
+        "Commercial and Institutional Building Construction"
 
 
 def test_one_dead_dataset_degrades_only_its_section(seams):
@@ -165,9 +183,12 @@ def test_render_is_selfcontained_maximal_and_escaped(seams):
         assert title in html_doc, title
     # the cold-call payload is on the page
     assert "+1 559 555 0100" in html_doc and "pat@emerzian.com" in html_doc
-    # the opportunities row renders with score + prime + site
+    # the opportunities card renders with score + prime + site + the COMPACT matched
+    # summary (titled codes, no wall of raw lens:code pairs)
     assert "DELOITTE CONSULTING LLP" in html_doc and "0.87" in html_doc
     assert "CENTRAL COAST FIELD OFFICE" in html_doc
+    assert "Delivered subs under" in html_doc
+    assert "Commercial and Institutional Building Construction" in html_doc
     # the nothing-hidden guarantee: raw JSON blocks per section
     assert html_doc.count("<details>") == len(EXPECTED_SECTIONS)
     # source labels ride each section
