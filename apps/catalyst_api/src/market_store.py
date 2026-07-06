@@ -71,6 +71,12 @@ _SOURCE_URIS = {
     "geo": lambda: config.GTM_ENTITY_GEO_URI,
 }
 
+# Table-grain sources (market_registry.TableGrainSpec.source → URI).
+TABLE_GRAIN_URIS = {
+    "prime_awards": lambda: config.FPDS_PRIME_AWARD_STATE_URI,
+    "transactions": lambda: config.FPDS_CANONICAL_TXN_URI,
+}
+
 
 # ── Low-level I/O seams (monkeypatch targets for the hermetic tests) ──────────
 def _count_rows(uri: str, predicate: str | None) -> int:
@@ -350,6 +356,89 @@ def execute_entity_query(
         "returned": len(rows),
         "capped": total > len(rows),
         "executed": {"grain": "entity", "filters": executed, "limit": cap},
+    }
+
+
+# ── Table grains (prime_awards / transactions): one predicate over one table ──
+def _stream_rows(uri: str, columns: list[str], predicate: str | None, limit: int) -> list[dict[str, Any]]:
+    """First ``limit`` rows of a filtered projection via streamed batches (never
+    ``scanner(limit=)`` — the pylance limit-before-filter planner under-returns)."""
+    scanner = _dataset(uri).scanner(columns=columns, filter=predicate)
+    out: list[dict[str, Any]] = []
+    for batch in scanner.to_batches():
+        out.extend(batch.to_pylist())
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def compile_table_filters(
+    spec, filters: list[dict[str, Any]], today: "dt_date | None" = None
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Validate + compile a table grain's filter list to ONE predicate. Scalar
+    ``{field, op, value}`` clauses only — lane objects are entity-grain vocabulary and
+    are rejected here. ``require_filter`` grains refuse an empty filter list (a full
+    scan of an 82.9M/108M-row table is never an accident worth serving)."""
+    today = today or dt_date.today()
+    parts: list[str] = []
+    executed: list[dict[str, Any]] = []
+    for clause in filters:
+        if not isinstance(clause, dict):
+            raise MapCompileError("each filter must be an object")
+        if clause.get("lane") is not None:
+            raise MapCompileError(
+                f"lane predicates apply to the entity grain only, not {spec.dataset_key!r}")
+        field, op, value = clause.get("field"), clause.get("op"), clause.get("value")
+        if field is None:
+            raise MapCompileError("a filter needs a 'field'")
+        fspec = spec.fields.get(field)
+        if fspec is None:
+            raise MapCompileError(f"field {field!r} not in the {spec.dataset_key} registry")
+        parts.append(_map_clause_sql(fspec, op, value, today))
+        executed.append({"field": field, "op": op, "value": value})
+    if not parts and spec.require_filter:
+        raise MapCompileError(
+            f"{spec.dataset_key} requires at least one filter — an unfiltered scan of "
+            f"this table is not served (use a recency, code, agency, or UEI predicate)")
+    return (" AND ".join(parts) if parts else None), executed
+
+
+def _hydrate_recipient_hq(rows: list[dict[str, Any]]) -> None:
+    """LEFT-join the gtm_entity_geo HQ sidecar onto table-grain rows by recipient_uei
+    (in place). Rows whose recipient has no sidecar row get NULL lat/lon/precision —
+    the adapter emits geometry:null for them. This is the RECIPIENT'S HQ, not place of
+    performance (the award state table carries no PoP columns — probed 2026-07-05)."""
+    ueis = sorted({r.get("recipient_uei") for r in rows if r.get("recipient_uei")})
+    geo = _rows_by_uei(_SOURCE_URIS["geo"](), ueis,
+                       list(market_registry.RESULT_COLUMNS_GEO)) if ueis else {}
+    for r in rows:
+        g = geo.get(r.get("recipient_uei")) or {}
+        r["latitude"] = g.get("latitude")
+        r["longitude"] = g.get("longitude")
+        r["geo_precision"] = g.get("geo_precision")
+
+
+def execute_table_query(
+    spec, filters: list[dict[str, Any]], limit: int | None, today: "dt_date | None" = None
+) -> dict[str, Any]:
+    """Single-table grain plan: compile ONE predicate (fail-closed, min-one-filter on
+    require_filter grains) → exact ``count_rows`` total → streamed limit scan of the
+    result projection → optional recipient-HQ geometry hydration. Returns the same
+    ``{rows, total, returned, capped, executed}`` contract as the entity executor."""
+    predicate, executed = compile_table_filters(spec, filters, today)
+    cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
+    uri = TABLE_GRAIN_URIS[spec.source]()
+    total = _count_rows(uri, predicate)
+    raw = _stream_rows(uri, list(spec.result_columns), predicate, cap) if total else []
+    rows = [{k: _map_jsonable(r.get(k)) for k in spec.result_columns} for r in raw]
+    if spec.geometry == "recipient_hq":
+        _hydrate_recipient_hq(rows)
+    return {
+        "rows": rows,
+        "total": total,
+        "returned": len(rows),
+        "capped": total > len(rows),
+        "executed": {"grain": spec.grain, "filters": executed, "limit": cap},
     }
 
 

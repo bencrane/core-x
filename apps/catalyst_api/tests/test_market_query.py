@@ -687,4 +687,249 @@ def test_market_fields_alias_shape():
     import json
 
     body = json.loads(bytes(market_fields().body))
-    assert set(body["data"]["datasets"]) == {"entities"}
+    assert set(body["data"]["datasets"]) == {"entities", "prime_awards", "transactions"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TABLE GRAINS — prime_awards (award grain) + transactions (raw FPDS action grain)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Live-probed 2026-07-05 (usaspending_fpds_prime_award_state v22 / _fpds_canonical_txn
+# v19) — the subset of each schema the registry touches.
+PRIME_AWARD_SCHEMA = {
+    "contract_award_unique_key", "award_topology", "idv_type_code", "award_id_piid",
+    "awarding_agency_code", "awarding_sub_agency_code", "recipient_uei", "recipient_name",
+    "naics_code", "product_or_service_code", "life_to_date_obligated",
+    "current_total_value_of_award", "potential_ceiling", "rollup_obligated",
+    "rollup_order_count", "first_action_date", "last_action_date", "current_end_date",
+    "parent_award_id_piid", "days_to_expiry", "is_terminated",
+}
+TXN_SCHEMA = {
+    "contract_transaction_unique_key", "contract_award_unique_key", "award_id_piid",
+    "recipient_uei", "recipient_name", "action_date", "action_type_code",
+    "action_type_description", "subcontracting_plan", "subcontracting_plan_desc",
+    "federal_action_obligation", "base_and_all_options_value", "naics_code",
+    "product_or_service_code", "awarding_agency_code", "awarding_agency_name",
+}
+_TABLE_SCHEMAS = {"prime_awards": PRIME_AWARD_SCHEMA, "transactions": TXN_SCHEMA}
+
+
+def test_table_grain_registry_integrity():
+    for spec in (market_registry.PRIME_AWARDS, market_registry.TRANSACTIONS):
+        schema = _TABLE_SCHEMAS[spec.dataset_key]
+        for name, f in spec.fields.items():
+            assert f.column in schema, f"{spec.dataset_key}.{name}: column {f.column!r} not in schema"
+            assert f.type in ("string", "int", "float", "bool", "days_ago"), name
+            assert set(f.ops) <= set(market_registry.OPS), name
+            if f.codes is not None:
+                assert f.codes in market_registry.CODE_SYSTEMS, name
+            assert f.description, name
+        assert set(spec.result_columns) <= schema, spec.dataset_key
+        assert spec.require_filter is True          # 82.9M / 108M rows — never a full scan
+    # probed enum vocabularies, frozen exactly
+    assert market_registry.PRIME_AWARD_FIELDS["award_topology"].enum == (
+        "standalone", "vehicle", "vehicle_order")
+    assert market_registry.TRANSACTION_FIELDS["subcontracting_plan"].enum == (
+        "A", "B", "C", "D", "E", "F", "G", "H")     # H (DoD comprehensive) IS live
+    assert len(market_registry.TRANSACTION_FIELDS["action_type_code"].enum) == 21
+    # code-valued fields carry the typeahead attribute
+    assert market_registry.PRIME_AWARD_FIELDS["naics_code"].codes == "naics"
+    assert market_registry.PRIME_AWARD_FIELDS["psc_code"].codes == "psc"
+    assert market_registry.PRIME_AWARD_FIELDS["awarding_agency_code"].codes == "agency"
+    assert market_registry.TRANSACTION_FIELDS["awarding_agency_code"].codes == "agency"
+    # grain dispatch accepts singular + plural for both grains
+    assert set(market_registry.TABLE_GRAINS) == {
+        "prime_award", "prime_awards", "transaction", "transactions"}
+
+
+def test_table_grain_descriptions_carry_doctrine():
+    # award_topology meanings spelled out; txn = per-action deltas, stated.
+    topo = market_registry.PRIME_AWARD_FIELDS["award_topology"].description
+    for term in ("standalone", "vehicle_order", "IDV", "rollup_obligated"):
+        assert term in topo
+    assert "per-action delta" in market_registry.TRANSACTION_FIELDS[
+        "federal_action_obligation"].description.lower() or \
+        "by this action" in market_registry.TRANSACTION_FIELDS[
+            "federal_action_obligation"].description.lower()
+    # subcontracting plan codes carry the government definitions
+    subk = market_registry.TRANSACTION_FIELDS["subcontracting_plan"].description
+    for frag in ("INDIVIDUAL SUBCONTRACT PLAN", "COMMERCIAL SUBCONTRACT PLAN",
+                 "DOD COMPREHENSIVE", "FAR 19.701"):
+        assert frag in subk
+
+
+def _tcompile(spec, filters):
+    return market_store.compile_table_filters(spec, filters, today=TODAY)
+
+
+def test_table_compile_and_min_one_filter_guard():
+    pred, executed = _tcompile(market_registry.PRIME_AWARDS, [
+        {"field": "award_topology", "op": "=", "value": "vehicle"},
+        {"field": "rollup_obligated", "op": ">=", "value": 100_000_000},
+    ])
+    assert pred == "award_topology = 'vehicle' AND rollup_obligated >= 100000000.0"
+    assert executed == [
+        {"field": "award_topology", "op": "=", "value": "vehicle"},
+        {"field": "rollup_obligated", "op": ">=", "value": 100_000_000},
+    ]
+    # the SUBK trigger compiles (enum + days_ago + range on the txn grain)
+    pred2, _ = _tcompile(market_registry.TRANSACTIONS, [
+        {"field": "subcontracting_plan", "op": "in", "value": ["C", "D", "F", "G"]},
+        {"field": "action_date", "op": "<=", "value": 90},
+        {"field": "base_and_all_options_value", "op": ">=", "value": 750_000},
+    ])
+    assert pred2 == ("subcontracting_plan IN ('C', 'D', 'F', 'G') AND "
+                     f"action_date >= DATE '{(TODAY - timedelta(days=90)).isoformat()}' AND "
+                     "base_and_all_options_value >= 750000.0")
+    # EMPTY filters on a require_filter grain → 422-class error, never a full scan
+    with pytest.raises(lance_store.MapCompileError):
+        _tcompile(market_registry.PRIME_AWARDS, [])
+    with pytest.raises(lance_store.MapCompileError):
+        _tcompile(market_registry.TRANSACTIONS, [])
+
+
+def test_table_compile_fail_closed():
+    with pytest.raises(lance_store.MapCompileError):    # lane is entity-grain vocabulary
+        _tcompile(market_registry.PRIME_AWARDS,
+                  [{"lane": {"side": "prime", "code_type": "naics", "codes": ["541512"]}}])
+    with pytest.raises(lance_store.MapCompileError):    # unknown field
+        _tcompile(market_registry.PRIME_AWARDS, [{"field": "state", "op": "=", "value": "VA"}])
+    with pytest.raises(lance_store.MapCompileError):    # topology enum violation
+        _tcompile(market_registry.PRIME_AWARDS,
+                  [{"field": "award_topology", "op": "=", "value": "idv"}])
+    with pytest.raises(lance_store.MapCompileError):    # subk enum violation
+        _tcompile(market_registry.TRANSACTIONS,
+                  [{"field": "subcontracting_plan", "op": "=", "value": "Z"}])
+    with pytest.raises(lance_store.MapCompileError):    # illegal op
+        _tcompile(market_registry.PRIME_AWARDS,
+                  [{"field": "award_id_piid", "op": "in", "value": ["X", "Y"]}])
+
+
+# ── table executor (seams stubbed) ────────────────────────────────────────────
+PA_ROWS = [
+    {"contract_award_unique_key": "CONT_AWD_1", "award_topology": "vehicle",
+     "award_id_piid": "GS00Q14OADU101", "parent_award_id_piid": None,
+     "recipient_uei": "UEIAAAAAAAA1", "recipient_name": "ACME FEDERAL LLC",
+     "naics_code": "541512", "product_or_service_code": "D302",
+     "awarding_agency_code": "047", "life_to_date_obligated": 1_000_000.0,
+     "current_total_value_of_award": 2_000_000.0, "potential_ceiling": 5_000_000_000.0,
+     "rollup_obligated": 250_000_000.0, "rollup_order_count": 120,
+     "first_action_date": date(2020, 1, 15), "last_action_date": date(2026, 6, 1),
+     "current_end_date": date(2029, 1, 14)},
+    {"contract_award_unique_key": "CONT_AWD_2", "award_topology": "vehicle",
+     "award_id_piid": "W52P1J18DA000", "parent_award_id_piid": None,
+     "recipient_uei": "UEIZZZZZZZZ9", "recipient_name": "NOGEO CORP",
+     "naics_code": "541511", "product_or_service_code": "D399",
+     "awarding_agency_code": "097", "life_to_date_obligated": 0.0,
+     "current_total_value_of_award": 0.0, "potential_ceiling": 900_000_000.0,
+     "rollup_obligated": 180_000_000.0, "rollup_order_count": 60,
+     "first_action_date": date(2018, 3, 1), "last_action_date": date(2026, 5, 1),
+     "current_end_date": None},
+]
+
+
+@pytest.fixture()
+def table_seams(monkeypatch):
+    calls = {"count": [], "stream": [], "geo": []}
+
+    def fake_count(uri, predicate):
+        calls["count"].append((uri, predicate))
+        return 41
+
+    def fake_stream(uri, columns, predicate, limit):
+        calls["stream"].append((uri, tuple(columns), predicate, limit))
+        return [dict(r) for r in PA_ROWS][:limit]
+
+    def fake_rows_by_uei(uri, ueis, columns):
+        calls["geo"].append((uri, tuple(ueis), tuple(columns)))
+        return {"UEIAAAAAAAA1": dict(GEO_ROWS["UEIAAAAAAAA1"])}   # NOGEO absent
+
+    monkeypatch.setattr(market_store, "_count_rows", fake_count)
+    monkeypatch.setattr(market_store, "_stream_rows", fake_stream)
+    monkeypatch.setattr(market_store, "_rows_by_uei", fake_rows_by_uei)
+    return calls
+
+
+def test_execute_prime_awards_with_recipient_hq_geometry(table_seams):
+    out = market_store.execute_table_query(
+        market_registry.PRIME_AWARDS,
+        [{"field": "award_topology", "op": "=", "value": "vehicle"},
+         {"field": "rollup_obligated", "op": ">=", "value": 100_000_000}],
+        limit=10, today=TODAY)
+    assert out["total"] == 41 and out["returned"] == 2 and out["capped"] is True
+    assert out["executed"] == {"grain": "prime_award", "limit": 10, "filters": [
+        {"field": "award_topology", "op": "=", "value": "vehicle"},
+        {"field": "rollup_obligated", "op": ">=", "value": 100_000_000}]}
+    r1, r2 = out["rows"]
+    # rows are keyed result_columns + hydrated geo; dates JSON-shaped
+    assert list(r1)[:len(market_registry.PRIME_AWARD_RESULT_COLUMNS)] == \
+        list(market_registry.PRIME_AWARD_RESULT_COLUMNS)
+    assert r1["last_action_date"] == "2026-06-01"
+    assert r1["latitude"] == 38.8816 and r1["geo_precision"] == "address"
+    assert r2["latitude"] is None and r2["geo_precision"] is None    # honest absence
+    # geo join keyed on recipient_uei against the gtm_entity_geo sidecar
+    assert table_seams["geo"][0][0] == config.GTM_ENTITY_GEO_URI
+    assert table_seams["geo"][0][1] == ("UEIAAAAAAAA1", "UEIZZZZZZZZ9")
+    # adapter shaping: ACME plots, NOGEO stays as a null-geometry table row
+    features, plottable = market_store.to_entity_features(out["rows"])
+    assert plottable == 1
+    assert features[0]["geometry"] == {"type": "Point", "coordinates": [-77.0910, 38.8816]}
+    assert features[1]["geometry"] is None
+    assert features[0]["properties"]["geo_precision"] == "address"
+    assert "latitude" not in features[0]["properties"]
+
+
+def test_execute_transactions_no_geometry(table_seams, monkeypatch):
+    tx_row = {c: None for c in market_registry.TRANSACTION_RESULT_COLUMNS}
+    tx_row.update({"contract_transaction_unique_key": "TXN_1", "recipient_uei": "UEIAAAAAAAA1",
+                   "subcontracting_plan": "F", "federal_action_obligation": 1_000_000.0,
+                   "action_date": date(2026, 6, 20)})
+    monkeypatch.setattr(market_store, "_stream_rows",
+                        lambda uri, cols, pred, limit: [dict(tx_row)])
+    out = market_store.execute_table_query(
+        market_registry.TRANSACTIONS,
+        [{"field": "subcontracting_plan", "op": "=", "value": "F"}], limit=5, today=TODAY)
+    row = out["rows"][0]
+    assert list(row) == list(market_registry.TRANSACTION_RESULT_COLUMNS)
+    assert "latitude" not in row                       # geometry null in v1 — no geo keys
+    assert row["action_date"] == "2026-06-20"
+    features, plottable = market_store.to_entity_features(out["rows"])
+    assert plottable == 0 and features[0]["geometry"] is None
+    # the geo sidecar was NOT consulted for a geometry-less grain
+    assert table_seams["geo"] == []
+
+
+def test_execute_table_zero_total_skips_stream(table_seams, monkeypatch):
+    monkeypatch.setattr(market_store, "_count_rows", lambda uri, pred: 0)
+    out = market_store.execute_table_query(
+        market_registry.TRANSACTIONS,
+        [{"field": "subcontracting_plan", "op": "=", "value": "H"}], limit=5, today=TODAY)
+    assert out == {**out, "rows": [], "total": 0, "returned": 0, "capped": False}
+    assert table_seams["stream"] == []                 # short-circuit: no row scan
+
+
+def test_table_fields_payloads_and_map_fields_carry_new_datasets():
+    import json
+    from apps.catalyst_api.main import map_fields, market_fields
+
+    pa = market_registry.table_fields_payload(market_registry.PRIME_AWARDS)
+    tx = market_registry.table_fields_payload(market_registry.TRANSACTIONS)
+    for payload in (pa, tx):
+        assert payload["legacy"] is False and payload["requireFilter"] is True
+        assert payload["aggregate"] is None
+        names = {f["name"] for f in payload["fields"]}
+        assert names == set(
+            (market_registry.PRIME_AWARD_FIELDS if payload is pa
+             else market_registry.TRANSACTION_FIELDS))
+        for f in payload["fields"]:
+            assert f["type"] in ("string", "int", "float", "bool", "days_ago", "list")
+            if f["name"] in ("naics_code", "psc_code", "awarding_agency_code"):
+                assert f["codes"] in market_registry.CODE_SYSTEMS
+    # geometry contract: prime_awards hydrates recipient-HQ geo columns; txn does not
+    assert pa["geometry"] == "recipient_hq" and tx["geometry"] is None
+    assert pa["resultColumns"][-3:] == ["latitude", "longitude", "geo_precision"]
+    assert "latitude" not in tx["resultColumns"]
+    body = json.loads(bytes(map_fields().body))["data"]["datasets"]
+    assert body["prime_awards"]["decoderVersion"] == "prime_awards.v1"
+    assert body["transactions"]["decoderVersion"] == "transactions.v1"
+    market = json.loads(bytes(market_fields().body))["data"]["datasets"]
+    assert set(market) == {"entities", "prime_awards", "transactions"}
