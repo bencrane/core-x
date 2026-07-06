@@ -163,7 +163,17 @@
 > PoP), `is_ffata_disclosing`, DSBS cert flags (`dsbs_8a/hubzone/wosb/edwosb/sdvosb/vosb`), FSRS
 > subawardee designation flags (`fsrs_*` + `fsrs_any_designation`/`fsrs_designation_count`), and
 > NAICS 2–6 rollup strings (`naics_2`…`naics_6`, "code - title"); people gain
-> `is_exec_officer_prime/sub` + `max_officer_amount` (FFATA comp).
+> `is_exec_officer_prime/sub` + `max_officer_amount` (FFATA comp). **v3 (same day):** people gain
+> `dm_class_v2` — deterministic DM-title upgrade over provider-verbatim `dm_class`, which has a
+> ~25% false-negative rate at subawardees (titles literally "Chief Executive Officer",
+> "President & CEO", "Founder" marked `not_dm`; VP excluded by policy). Regexes in
+> `DM_TITLE_REGEXES`/`dm_title_hit_sql` (builder): CEO, owner, founder, president
+> (vice/asst/deputy stripped first), managing partner/member/principal/director, principal,
+> partner, C-suite officers, exec director, VP/SVP/EVP/AVP (deliberately re-included), GM.
+> Upgrades only — never downgrades; `dm_class` stays verbatim; NULL dm_class rows have no title
+> and stay NULL. Post-backfill: dm 769,788 (541,559 verbatim + 228,229 upgraded) / not_dm 618,796
+> / NULL 863,801. Live column backfilled in-session 2026-07-06 (`ds.merge` on sam_person_id);
+> next full rebuild stamps `param_set_id=v3`.
 
 > **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
 > of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
