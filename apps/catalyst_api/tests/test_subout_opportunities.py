@@ -58,16 +58,17 @@ EVIDENCE_ROWS = [
 ]
 
 # ── In-process cache fixtures (loader seams) ───────────────────────────────────
-# The cube MARGINAL shape the loader seam returns: (recipient_code_type,
-# recipient_code, prime_awardee_uei) → (subaward_amt_total, subaward_edge_ct,
-# distinct_recipient_ct, last_subaward_action_date) — tuple cells, for RSS.
-CUBE_MARGINAL = {
-    ("naics", "541512", P1): (40_000_000.0, 120, 35, date(2026, 5, 15)),
-    ("naics", "541511", P1): (5_000_000.0, 20, 8, date(2026, 2, 1)),
-    ("naics", "238220", P2): (2_500_000.0, 15, 12, date(2025, 11, 3)),
-    ("naics", "562910", P3): (1_000_000.0, 4, 5, date(2026, 1, 20)),
-    ("naics", "611430", P4): (2_000_000.0, 6, 4, date(2026, 3, 1)),
-}
+# The row tuples _iter_marginal_rows yields off the PRE-AGGREGATED
+# gtm_primes_by_recipient_code table (MARGINAL_COLUMNS order):
+# (code_type, code, prime, subaward_amt_total, subaward_edge_ct,
+#  distinct_recipient_ct, last_subaward_action_date).
+MARGINAL_ROWS = [
+    ("naics", "541512", P1, 40_000_000.0, 120, 35, date(2026, 5, 15)),
+    ("naics", "541511", P1, 5_000_000.0, 20, 8, date(2026, 2, 1)),
+    ("naics", "238220", P2, 2_500_000.0, 15, 12, date(2025, 11, 3)),
+    ("naics", "562910", P3, 1_000_000.0, 4, 5, date(2026, 1, 20)),
+    ("naics", "611430", P4, 2_000_000.0, 6, 4, date(2026, 3, 1)),
+]
 # gtm_open_awards rows: pre-joined PoP geo rides each row. HQ = (38.8816, -77.0910).
 # A1 = zip5 ~15 mi from HQ (Reston, VA — distance must be NONZERO); A2 has NO centroid
 # (nulls); A3 county-precision (distance computed, proximity NEUTRAL); A4 zip5 across
@@ -199,11 +200,11 @@ class Seams:
         self.open_award_loads += 1
         return [dict(r) for r in OPEN_AWARD_ROWS]
 
-    def load_cube_marginal(self):
+    def iter_marginal_rows(self):
         if self.loader_error is not None:
             raise self.loader_error
         self.cube_loads += 1
-        return dict(CUBE_MARGINAL)
+        return iter(MARGINAL_ROWS)
 
 
 @pytest.fixture()
@@ -212,7 +213,7 @@ def seams(monkeypatch):
     monkeypatch.setattr(subout_store, "_scan_to_pylist", s.scan_to_pylist)
     monkeypatch.setattr(subout_store, "_stream_rows", s.stream_rows)
     monkeypatch.setattr(subout_store, "_load_open_awards", s.load_open_awards)
-    monkeypatch.setattr(subout_store, "_load_cube_marginal", s.load_cube_marginal)
+    monkeypatch.setattr(subout_store, "_iter_marginal_rows", s.iter_marginal_rows)
     subout_store.reset_caches_for_tests()
     yield s
     subout_store.reset_caches_for_tests()
@@ -327,17 +328,24 @@ def test_hot_path_makes_no_remote_scans_beyond_point_lookups(seams):
         assert f"uei = '{TARGET}'" in pred              # every remote read is a uei probe
 
 
-def test_failed_cold_build_degrades_and_next_request_retries(seams):
-    seams.loader_error = OSError("gtm_open_awards not materialized yet")
+def test_failed_cold_build_is_never_silent_and_next_request_retries(seams):
+    # THE production incident pin: a dead build must never sit as an unexplained
+    # 'unavailable' — the state is 'failed' and the ERROR STRING rides the wire.
+    seams.loader_error = OSError("gtm_primes_by_recipient_code not materialized yet")
     out = _run({"uei": TARGET})
-    assert out["meta"]["cache_state"] == "unavailable"
+    assert out["meta"]["cache_state"] == "failed"
     assert out["meta"]["cache_build_ms"] is None
     assert out["data"]["opportunities"] == [] and out["meta"]["total"] == 0
-    assert any("caches unavailable" in n for n in out["meta"]["notes"])
+    assert any("cache build FAILED" in n and
+               "OSError: gtm_primes_by_recipient_code not materialized yet" in n
+               for n in out["meta"]["notes"])
+    assert subout_store.last_build_error() == (
+        "OSError: gtm_primes_by_recipient_code not materialized yet")
     # the failure was NOT cached: clearing the fault lets the next request build
     seams.loader_error = None
     out2 = _run({"uei": TARGET})
     assert out2["meta"]["cache_state"] == "cold" and out2["meta"]["total"] == 3
+    assert subout_store.last_build_error() is None      # cleared on success
 
 
 def test_stale_cache_refreshes_in_background_without_blocking(seams, monkeypatch):
@@ -371,16 +379,17 @@ def test_index_builders_are_pure_and_complete():
         ["CONT_AWD_A1", "CONT_AWD_A5_EXPIRED"]
     assert by_naics["541519"] == by_prime[P1]
     assert by_psc["D302"] == by_prime[P1]
-    # _index_cube consumes its input destructively (RSS: one copy, not two) — pass a copy
-    marginal = dict(CUBE_MARGINAL)
-    cube, n = subout_store._index_cube(marginal)
-    assert marginal == {}                               # consumed, by contract
-    assert n == len(CUBE_MARGINAL)
+    cube, n = subout_store._group_marginal(iter(MARGINAL_ROWS))
+    assert n == len(MARGINAL_ROWS)
     # COLUMNAR block: (primes, amt_totals, edge_cts, distinct_cts, last_dates)
     primes, amts, edges, distincts, lasts = cube[("naics", "541512")]
     assert primes == (P1,)
     assert list(amts) == [40_000_000.0] and list(edges) == [120]
     assert list(distincts) == [35] and lasts == (date(2026, 5, 15),)
+    # NULL-guarded: rows without a code or prime are dropped, not indexed
+    cube2, n2 = subout_store._group_marginal(iter(
+        [("naics", "", P1, 1.0, 1, 1, None), ("naics", "541512", None, 1.0, 1, 1, None)]))
+    assert cube2 == {} and n2 == 0
 
 
 # ── default all-lens flow ──────────────────────────────────────────────────────

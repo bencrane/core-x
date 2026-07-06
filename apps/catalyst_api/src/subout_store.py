@@ -15,12 +15,16 @@ TTL-refreshed in a background thread — a request never blocks on a refresh):
   • gtm_open_awards   — every OPEN prime award (~150-250K rows), pre-joined with the
                         PoP centroid geo + agency names; indexed in-process by
                         recipient_uei / naics_code / product_or_service_code.
-  • the cube marginal — gtm_prime_subout_by_recipient_code (11.8M cells) streamed
-                        through a column-projected batch reader ONCE and grouped to
-                        (recipient_code_type, recipient_code, prime_awardee_uei):
-                        Σ subaward_amt_total, Σ subaward_edge_ct,
-                        max distinct_recipient_ct, max last_subaward_action_date.
-Cache build stats (row counts, build ms, ru_maxrss delta) are logged LOUD at build.
+  • the cube marginal — gtm_primes_by_recipient_code (~1.7M rows, PRE-AGGREGATED
+                        upstream from the 11.8M-cell cube to the
+                        (recipient_code_type, recipient_code, prime_awardee_uei)
+                        grain): a plain columnar load, regrouped in-process to
+                        per-(code_type, code) blocks. Boot NEVER aggregates the
+                        cube — the in-process aggregation was 10-20x slower on
+                        Railway's throttled CPU than locally and starved the prewarm.
+Cache build stats (row counts, build seconds, ru_maxrss delta) are logged LOUD at
+build; a FAILED build stores its error (last_build_error) and rides the wire as
+cache_state='failed' + a meta note — never a silent 'unavailable'.
 
 PER-REQUEST REMOTE HOPS (all BTREE uei point-lookups — nothing else leaves process):
   1. probe_codes — the target's codes BY LENS (how the code is known):
@@ -124,11 +128,14 @@ OPEN_AWARD_COLUMNS = [
     "type_of_set_aside_code", "awarding_agency_code", "awarding_agency_name",
     "primary_place_of_performance_state_code", "latitude", "longitude", "geo_precision",
 ]
-# The cube columns the marginal needs (NEVER the full grain — recipient_code_source /
-# context_code are aggregated away at load; every source value present in the cube is
-# demonstrated/declared by construction, so the marginal sums them all).
-CUBE_MARGINAL_COLUMNS = [
-    "prime_awardee_uei", "recipient_code_type", "recipient_code",
+# The pre-aggregated marginal's projection (gtm_primes_by_recipient_code, ~1.7M rows,
+# 1 row / (recipient_code_type, recipient_code, prime_awardee_uei)). Built UPSTREAM
+# from the 11.8M-cell cube — boot never aggregates, only loads and regroups (the
+# in-process aggregation was 10-20x slower on Railway's throttled CPU than locally
+# and starved the prewarm). Every recipient_code_source in the source cube is
+# demonstrated/declared by construction, so the marginal's sums carry them all.
+MARGINAL_COLUMNS = [
+    "recipient_code_type", "recipient_code", "prime_awardee_uei",
     "subaward_amt_total", "subaward_edge_ct", "distinct_recipient_ct",
     "last_subaward_action_date",
 ]
@@ -158,6 +165,11 @@ _build_lock = threading.Lock()
 _caches: SuboutCaches | None = None
 _caches_built_at: float | None = None
 _cache_refreshing = False
+# The LAST build failure, as a string — a silently-dead prewarm was undiagnosable in
+# prod (cache_state sat 'unavailable' with no reason on the wire). Set on any failed
+# build (cold, prewarm, or refresh), cleared on the next successful one; surfaced as
+# cache_state='failed' + a meta note carrying the error on every affected response.
+_last_build_error: str | None = None
 
 
 # ── I/O seams (monkeypatch targets for the hermetic tests) ─────────────────────
@@ -189,42 +201,17 @@ def _load_open_awards() -> list[dict[str, Any]]:
     return rows
 
 
-def _load_cube_marginal() -> dict[tuple[str, str, str], tuple[float, int, int, Any]]:
-    """The (recipient_code_type, recipient_code, prime_awardee_uei) marginal of the
-    11.8M-cell cube: one column-projected streamed pass over the Lance batches,
-    aggregated in-process (Σ$, Σ edges, max distinct_recipient_ct, max last date) —
-    no extra engine dependency. MEMORY-COMPACT by construction: value cells are
-    tuples (never per-cell dicts), key strings are ``sys.intern``-ed (primes/codes
-    repeat across millions of cells), and the full grain is never materialized —
-    measured live, this keeps the retained marginal (~1.7M cells) inside the RSS
-    budget where dict-shaped cells blew past it."""
-    from sys import intern
-
-    agg: dict[tuple[str, str, str], list[Any]] = {}
-    date_memo: dict[Any, Any] = {}       # dedupe date objects (1.7M cells, few thousand dates)
-    scanner = _dataset(config.GTM_PRIME_SUBOUT_BY_RECIPIENT_CODE_URI).scanner(
-        columns=CUBE_MARGINAL_COLUMNS)
+def _iter_marginal_rows():
+    """Streamed column-projected pass over the PRE-AGGREGATED
+    gtm_primes_by_recipient_code marginal (~1.7M rows) — yields
+    ``(code_type, code, prime, amt_total, edge_ct, distinct_ct, last_date)`` tuples.
+    A plain columnar load: NO aggregation happens here, ever (the upstream builder
+    owns the Σ/MAX over the 11.8M-cell cube)."""
+    scanner = _dataset(config.GTM_PRIMES_BY_RECIPIENT_CODE_URI).scanner(
+        columns=MARGINAL_COLUMNS)
     for batch in scanner.to_batches():
-        cols = [batch.column(c).to_pylist() for c in CUBE_MARGINAL_COLUMNS]
-        for prime, ct, code, amt, edges, distinct, last in zip(*cols):
-            if not prime or not code:
-                continue
-            if last is not None:
-                last = date_memo.setdefault(last, last)
-            key = (intern(ct) if ct else ct, intern(code), intern(prime))
-            cur = agg.get(key)
-            if cur is None:
-                agg[key] = [float(amt or 0.0), int(edges or 0), int(distinct or 0), last]
-            else:
-                cur[0] += float(amt or 0.0)
-                cur[1] += int(edges or 0)
-                if (distinct or 0) > cur[2]:
-                    cur[2] = int(distinct)
-                if last is not None and (cur[3] is None or last > cur[3]):
-                    cur[3] = last
-    for k in agg:                        # list → tuple IN PLACE (no duplicate dict)
-        agg[k] = tuple(agg[k])           # type: ignore[assignment]
-    return agg                           # type: ignore[return-value]
+        cols = [batch.column(c).to_pylist() for c in MARGINAL_COLUMNS]
+        yield from zip(*cols)
 
 
 # ── Cache build (pure indexers over the loader seams) ─────────────────────────
@@ -246,31 +233,33 @@ def _index_open_awards(rows: list[dict[str, Any]]) -> tuple[
     return by_prime, by_naics, by_psc
 
 
-def _index_cube(marginal: dict[tuple[str, str, str], tuple[float, int, int, Any]]) -> tuple[
-        dict[tuple[str | None, str], tuple], int]:
-    """(ct, code, prime) → cell tuple, regrouped to (ct, code) → COLUMNAR block
+def _group_marginal(rows) -> tuple[dict[tuple[str | None, str], tuple], int]:
+    """Marginal row tuples → (code_type, code) → COLUMNAR block
     ``(primes, amt_totals, edge_cts, distinct_cts, last_dates)`` (parallel sequences;
     array('d')/array('q') for the numbers). Columnar cells cost ~40B where per-cell
-    dict entries cost ~300B — the difference is the RSS budget at 1.7M cells.
-    CONSUMES the marginal destructively (popitem) so the flat and grouped forms are
-    never both fully resident."""
+    dict entries cost ~300B — the difference is the RSS budget at 1.7M cells. Key
+    strings are ``sys.intern``-ed (codes/primes repeat); date objects are memo-deduped
+    (few thousand distinct dates across 1.7M rows). Pure — takes any iterable of
+    ``(ct, code, prime, amt, edges, distinct, last)`` tuples."""
     from array import array
+    from sys import intern
 
     grouped: dict[tuple[str | None, str], tuple[list, list, list, list, list]] = {}
+    date_memo: dict[Any, Any] = {}
     n = 0
-    while marginal:
-        (ct, code, prime), cell = marginal.popitem()
+    for ct, code, prime, amt, edges, distinct, last in rows:
         if not code or not prime:
             continue
-        block = grouped.get((ct, code))
+        key = (intern(ct) if ct else ct, intern(code))
+        block = grouped.get(key)
         if block is None:
             block = ([], [], [], [], [])
-            grouped[(ct, code)] = block
-        block[0].append(prime)
-        block[1].append(cell[0])
-        block[2].append(cell[1])
-        block[3].append(cell[2])
-        block[4].append(cell[3])
+            grouped[key] = block
+        block[0].append(intern(prime))
+        block[1].append(float(amt or 0.0))
+        block[2].append(int(edges or 0))
+        block[3].append(int(distinct or 0))
+        block[4].append(date_memo.setdefault(last, last) if last is not None else None)
         n += 1
     cube: dict[tuple[str | None, str], tuple] = {
         key: (tuple(b[0]), array("d", b[1]), array("q", b[2]),
@@ -291,14 +280,13 @@ def _rss() -> int | None:
 
 
 def _build_caches() -> SuboutCaches:
-    """Build both in-process read models, LOUDLY (row counts / build ms / RSS delta
-    in the log). Called cold (first request / prewarm) and by the background TTL
-    refresh — never on the hot path of a warm request."""
+    """Build both in-process read models, LOUDLY (row counts / build seconds / RSS
+    delta in the log — the numbers that diagnose a starved prewarm). Called cold
+    (first request / prewarm) and by the background TTL refresh — never on the hot
+    path of a warm request. Both loads are plain columnar streams; NO aggregation."""
     t0 = time.monotonic()
     rss_before = _rss()
-    # Cube FIRST: its streaming aggregation is the RSS peak of the build — running it
-    # before the open-award table is resident keeps the two from stacking.
-    cube, cube_cells = _index_cube(_load_cube_marginal())
+    cube, cube_cells = _group_marginal(_iter_marginal_rows())
     open_awards = _load_open_awards()
     by_prime, by_naics, by_psc = _index_open_awards(open_awards)
     build_ms = round((time.monotonic() - t0) * 1000.0, 1)
@@ -306,11 +294,11 @@ def _build_caches() -> SuboutCaches:
     rss_delta = ((rss_after - rss_before)
                  if (rss_before is not None and rss_after is not None) else "n/a")
     log.info(
-        "subout caches built: open_awards=%d rows (primes=%d naics=%d psc=%d), "
-        "cube_marginal=%d cells over %d (code_type, code) keys; build_ms=%s "
+        "subout caches built in %.1fs: open_awards=%d rows (primes=%d naics=%d "
+        "psc=%d), marginal=%d cells over %d (code_type, code) keys; "
         "ru_maxrss_delta=%s (platform units)",
-        len(open_awards), len(by_prime), len(by_naics), len(by_psc),
-        cube_cells, len(cube), build_ms, rss_delta)
+        build_ms / 1000.0, len(open_awards), len(by_prime), len(by_naics),
+        len(by_psc), cube_cells, len(cube), rss_delta)
     return SuboutCaches(open_awards=open_awards, awards_by_prime=by_prime,
                         awards_by_naics=by_naics, awards_by_psc=by_psc,
                         cube=cube, cube_cell_count=cube_cells, build_ms=build_ms)
@@ -319,14 +307,17 @@ def _build_caches() -> SuboutCaches:
 def _refresh_caches() -> None:
     """Background TTL refresh: build fresh, swap under the lock. Failure keeps the
     old (stale-but-serving) cache — a refresh NEVER degrades a working process."""
-    global _caches, _caches_built_at, _cache_refreshing
+    global _caches, _caches_built_at, _cache_refreshing, _last_build_error
     try:
         fresh = _build_caches()
         with _cache_lock:
             _caches = fresh
             _caches_built_at = time.monotonic()
+            _last_build_error = None
     except Exception as exc:  # noqa: BLE001 — keep serving the stale cache
         log.warning("subout cache refresh failed (stale cache stays live): %s", exc)
+        with _cache_lock:
+            _last_build_error = f"{type(exc).__name__}: {exc}"
     finally:
         with _cache_lock:
             _cache_refreshing = False
@@ -338,7 +329,7 @@ def _ensure_caches() -> tuple[str, SuboutCaches]:
     means THIS call built it (first request or post-failure retry). Raises when a
     cold build fails — the executor degrades to an empty answer with a note, and the
     NEXT request retries (a failed build is never cached)."""
-    global _caches, _caches_built_at, _cache_refreshing
+    global _caches, _caches_built_at, _cache_refreshing, _last_build_error
     with _cache_lock:
         if _caches is not None:
             stale = (_caches_built_at is None
@@ -352,31 +343,50 @@ def _ensure_caches() -> tuple[str, SuboutCaches]:
         with _cache_lock:
             if _caches is not None:
                 return "warm", _caches
-        built = _build_caches()
+        try:
+            built = _build_caches()
+        except Exception as exc:
+            with _cache_lock:
+                _last_build_error = f"{type(exc).__name__}: {exc}"
+            raise
         with _cache_lock:
             _caches = built
             _caches_built_at = time.monotonic()
+            _last_build_error = None
         return "cold", built
+
+
+def last_build_error() -> str | None:
+    """The most recent cache-build failure as a string (None after a successful
+    build) — the diagnosis the 'silent unavailable' production incident lacked."""
+    with _cache_lock:
+        return _last_build_error
 
 
 def prewarm_caches() -> None:
     """Boot-time best-effort warm (called from a daemon thread in main.lifespan) so
-    the FIRST request after a deploy is already in-memory. Never raises."""
+    the FIRST request after a deploy is already in-memory. Never raises — but a
+    failure is stored in ``_last_build_error`` (via _ensure_caches) AND logged with
+    the full traceback, so a dead prewarm is never silent again."""
     try:
         state, caches = _ensure_caches()
-        log.info("subout cache prewarm: state=%s build_ms=%s", state, caches.build_ms)
-    except Exception as exc:  # noqa: BLE001 — prewarm must never brick boot
-        log.warning("subout cache prewarm failed (first request will retry): %s", exc)
+        log.info("subout cache prewarm: state=%s build_s=%.1f open_awards=%d "
+                 "marginal_cells=%d", state, caches.build_ms / 1000.0,
+                 len(caches.open_awards), caches.cube_cell_count)
+    except Exception:  # noqa: BLE001 — prewarm must never brick boot
+        log.exception("subout cache prewarm FAILED (first request will retry; "
+                      "error rides cache_state='failed' + meta.notes)")
 
 
 def reset_caches_for_tests() -> None:
     """Test hook: drop the module cache state (hermetic tests build via the stubbed
     loader seams)."""
-    global _caches, _caches_built_at, _cache_refreshing
+    global _caches, _caches_built_at, _cache_refreshing, _last_build_error
     with _cache_lock:
         _caches = None
         _caches_built_at = None
         _cache_refreshing = False
+        _last_build_error = None
 
 
 # ── Request validation (fail-closed — MapCompileError → 422 at the route) ─────
@@ -821,13 +831,17 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     for e in lens_entries:
         entries_by_code.setdefault(e["code"], []).append(e)
 
-    # 2. the in-process caches (cold path builds; warm path is a dict handoff)
+    # 2. the in-process caches (cold path builds; warm path is a dict handoff). A
+    # failed build is NEVER silent: cache_state='failed' + the error string ride the
+    # wire on every affected response (the 'silent unavailable' incident fix).
     try:
         cache_state, caches = _ensure_caches()
         cache_build_ms = caches.build_ms
     except Exception as exc:  # noqa: BLE001 — a failed build degrades; next request retries
         log.warning("subout caches unavailable (%s): serving degraded empty answer", exc)
-        notes.append("in-process caches unavailable (build failed) — no matches served")
+        cache_state = "failed"
+        notes.append("in-process cache build FAILED — no matches served; error: "
+                     f"{type(exc).__name__}: {exc}")
         _mark("cache_ensure", t)
         return {"meta": _meta(0), "data": {"opportunities": [], "peers": []}}
     t = _mark("cache_ensure", t)
