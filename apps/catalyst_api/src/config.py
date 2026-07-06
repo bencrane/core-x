@@ -196,6 +196,19 @@ NAICS_REFERENCE_URI = os.environ.get(
 PSC_REFERENCE_URI = os.environ.get(
     "PSC_REFERENCE_LANCE_URI", "s3://data-sink/active/psc_reference/"
 )
+# FPDS prime-award STATE table (82.87M rows, 1 row/contract_award_unique_key, topology-
+# aware) — the prime_awards market grain. BTREE recipient_uei/award_id_piid/…; BITMAP
+# award_topology/awarding_agency_code/…. NO place-of-performance columns (probed
+# 2026-07-05) — map geometry comes from the recipient's gtm_entity_geo row.
+FPDS_PRIME_AWARD_STATE_URI = os.environ.get(
+    "FPDS_PRIME_AWARD_STATE_LANCE_URI", "s3://data-sink/active/usaspending_fpds_prime_award_state/"
+)
+# Canonical FPDS transaction spine (107.96M rows, 1 row/contract_transaction_unique_key)
+# — the transactions market grain. BTREE action_date/federal_action_obligation/
+# recipient_uei/naics/psc; BITMAP subcontracting_plan/awarding_agency_code.
+FPDS_CANONICAL_TXN_URI = os.environ.get(
+    "FPDS_CANONICAL_TXN_LANCE_URI", "s3://data-sink/active/usaspending_fpds_canonical_txn/"
+)
 # usaspending_award_canonical — the canonical prime-award fact (30.7M rows). The agency
 # typeahead streams a DISTINCT over (awarding_agency_code, awarding_agency_name) from it
 # (~136 pairs; no dedicated agency reference dimension exists yet) — lazy, once/process.

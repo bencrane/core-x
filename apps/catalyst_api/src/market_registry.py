@@ -344,3 +344,279 @@ def fields_payload() -> dict:
         },
         "resultColumns": list(RESULT_ROW_ORDER),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TABLE GRAINS — single-table filter surfaces over the two FPDS canonicals.
+# Unlike the entity grain (multi-table UEI-set intersection), a table grain compiles
+# ONE predicate over ONE table and streams rows. Both tables are huge (82.9M / 108M
+# rows), so require_filter=True: an empty filter list is a 422, never a full scan.
+# Schemas + enum vocabularies probed live 2026-07-05 (never trusted from docs).
+# ═══════════════════════════════════════════════════════════════════════════════
+@dataclass(frozen=True)
+class TableGrainSpec:
+    """One single-table query grain. ``fields`` reuse MarketFieldSpec (their ``source``
+    is the dataset_key, informational); ``result_columns`` is the wire row projection
+    (geometry hydration appends latitude/longitude/geo_precision when ``geometry`` is
+    set). ``require_filter`` guards the full-scan footgun on the 100M-row tables."""
+
+    grain: str                        # wire grain value for POST /api/v1/market/query
+    dataset_key: str                  # fields-payload key + /api/v1/map/{key}/query
+    version: str                      # decoderVersion (bump on any field/enum change)
+    source: str                       # market_store TABLE_GRAIN_URIS key
+    description: str                  # grain + universe, stated explicitly
+    fields: dict[str, MarketFieldSpec]
+    result_columns: tuple[str, ...]
+    require_filter: bool = True
+    geometry: str | None = None       # "recipient_hq" (gtm_entity_geo join) | None
+
+
+# ── prime_awards: one row per award, topology-aware ───────────────────────────
+# award_topology IS the grain-honesty axis: FPDS mixes self-contained contracts,
+# IDV vehicles, and the orders placed against them — a naive $ filter double-counts
+# vehicles + their orders. Probed live: vehicle_order 64.81M | standalone 17.07M |
+# vehicle 0.99M.
+AWARD_TOPOLOGIES = ("standalone", "vehicle", "vehicle_order")
+_PA_GRAIN = " Grain: one row per contract_award_unique_key (award, not action)."
+_PA_UNIVERSE = ("Universe: the FPDS prime-award state table (82.87M awards — definitive "
+                "contracts, purchase orders, IDV vehicles, and orders under them). ")
+
+PRIME_AWARD_FIELDS: dict[str, MarketFieldSpec] = {
+    "award_topology": MarketFieldSpec(
+        "prime_awards", "award_topology", "string", ("=", "in"),
+        "THE grain-honesty axis. 'standalone' = a self-contained definitive contract / "
+        "purchase order (its own money, no parent vehicle). 'vehicle' = an IDV parent "
+        "(IDIQ/GWAC/BPA/FSS/BOA) — a contracting CHANNEL: its own ledger is mostly "
+        "ceiling, the real money rides on its orders (use rollup_obligated / "
+        "rollup_order_count for the vehicle's aggregated order money). 'vehicle_order' "
+        "= a task/delivery order placed AGAINST a vehicle (its own obligations; "
+        "parent_award_id_piid names the vehicle). Filter this axis to avoid mixing "
+        f"grains in $ comparisons.{_PA_UNIVERSE}{_PA_GRAIN}",
+        enum=AWARD_TOPOLOGIES, index="BITMAP"),
+    "recipient_uei": MarketFieldSpec(
+        "prime_awards", "recipient_uei", "string", ("=", "in"),
+        f"The awarded entity's SAM UEI (exact, 12-char). {_PA_UNIVERSE}{_PA_GRAIN}",
+        index="BTREE"),
+    "award_id_piid": MarketFieldSpec(
+        "prime_awards", "award_id_piid", "string", ("=",),
+        f"The award's PIID (procurement instrument identifier), exact match. "
+        f"{_PA_UNIVERSE}{_PA_GRAIN}", index="BTREE"),
+    "parent_award_id_piid": MarketFieldSpec(
+        "prime_awards", "parent_award_id_piid", "string", ("=", "in"),
+        "The parent VEHICLE's PIID (populated on vehicle_order rows) — 'every order "
+        f"under this IDV'. {_PA_UNIVERSE}{_PA_GRAIN}"),
+    "rollup_obligated": MarketFieldSpec(
+        "prime_awards", "rollup_obligated", "float", (">=", "<=", "between"),
+        "VEHICLE-ROLLUP money: Σ life-to-date obligated USD across the orders resolved "
+        "to this award as their parent vehicle. Meaningful on award_topology='vehicle' "
+        "rows (the vehicle's real throughput — its own ledger is mostly ceiling); 0 on "
+        f"awards with no resolved child orders. {_PA_UNIVERSE}{_PA_GRAIN}"),
+    "rollup_order_count": MarketFieldSpec(
+        "prime_awards", "rollup_order_count", "int", (">=", "<=", "between"),
+        "VEHICLE-ROLLUP order count: number of child orders resolved to this award as "
+        f"their parent vehicle (topology='vehicle' semantics; 0 = no resolved orders). "
+        f"{_PA_UNIVERSE}{_PA_GRAIN}"),
+    "life_to_date_obligated": MarketFieldSpec(
+        "prime_awards", "life_to_date_obligated", "float", (">=", "<=", "between"),
+        "The award's OWN life-to-date obligated USD (Σ of its FPDS action obligations). "
+        "On a vehicle row this is the parent's own ledger, NOT its orders — use "
+        f"rollup_obligated for vehicle throughput. {_PA_UNIVERSE}{_PA_GRAIN}"),
+    "current_total_value_of_award": MarketFieldSpec(
+        "prime_awards", "current_total_value_of_award", "float", (">=", "<=", "between"),
+        f"Current total value of the award (base + exercised options) as stated on the "
+        f"latest action. {_PA_UNIVERSE}{_PA_GRAIN}"),
+    "potential_ceiling": MarketFieldSpec(
+        "prime_awards", "potential_ceiling", "float", (">=", "<=", "between"),
+        "Potential ceiling USD (base and all options / potential total value; a "
+        "reconciled fallback fills gaps per potential_ceiling_is_fallback upstream). "
+        f"Ceiling ≠ money spent. {_PA_UNIVERSE}{_PA_GRAIN}"),
+    "naics_code": MarketFieldSpec(
+        "prime_awards", "naics_code", "string", ("=", "in"),
+        f"The award's NAICS code (exact). {_PA_UNIVERSE}{_PA_GRAIN}", codes="naics"),
+    "psc_code": MarketFieldSpec(
+        "prime_awards", "product_or_service_code", "string", ("=", "in"),
+        f"The award's Product/Service Code (exact). {_PA_UNIVERSE}{_PA_GRAIN}",
+        codes="psc"),
+    "awarding_agency_code": MarketFieldSpec(
+        "prime_awards", "awarding_agency_code", "string", ("=", "in"),
+        f"Awarding toptier agency CODE (e.g. '097'). {_PA_UNIVERSE}{_PA_GRAIN}",
+        index="BITMAP", codes="agency"),
+    "last_action_date": MarketFieldSpec(
+        "prime_awards", "last_action_date", "days_ago", ("<=", ">=", "between"),
+        "Relative-time axis over the award's most recent FPDS action date, resolved "
+        "against today at REQUEST time ('<= 90' = acted within the last 90 days). "
+        f"{_PA_UNIVERSE}{_PA_GRAIN}"),
+}
+PRIME_AWARD_RESULT_COLUMNS = (
+    "contract_award_unique_key", "award_topology", "award_id_piid",
+    "parent_award_id_piid", "recipient_uei", "recipient_name", "naics_code",
+    "product_or_service_code", "awarding_agency_code", "life_to_date_obligated",
+    "current_total_value_of_award", "potential_ceiling", "rollup_obligated",
+    "rollup_order_count", "first_action_date", "last_action_date", "current_end_date",
+)
+
+PRIME_AWARDS = TableGrainSpec(
+    grain="prime_award",
+    dataset_key="prime_awards",
+    version="prime_awards.v1",
+    source="prime_awards",
+    description=(
+        "Award-grain FPDS query surface (one row per contract_award_unique_key, "
+        "topology-aware). GEOMETRY NOTE: the state table carries NO place-of-performance "
+        "columns (probed 2026-07-05) — map dots are the RECIPIENT'S HQ via the "
+        "gtm_entity_geo sidecar (geo_precision 'address'|'county'), not the work site."
+    ),
+    fields=PRIME_AWARD_FIELDS,
+    result_columns=PRIME_AWARD_RESULT_COLUMNS,
+    require_filter=True,
+    geometry="recipient_hq",
+)
+
+
+# ── transactions: one row per raw FPDS action ─────────────────────────────────
+# Amounts are PER-ACTION DELTAS (a modification's change, possibly negative), never
+# award totals — the award-total axis lives on the prime_awards grain.
+_TX_GRAIN = " Grain: one row per contract_transaction_unique_key (raw FPDS action)."
+_TX_UNIVERSE = ("Universe: the canonical FPDS transaction spine (107.96M actions, "
+                "2008+ as reconciled). Amounts are PER-ACTION deltas, not award totals. ")
+
+# Subcontracting-plan government definitions, resolved live from dec_code_domain_ref
+# (db_element='subcontracting_plan', dec v31) — probed live codes A..H (H is DoD-only;
+# ~83M actions carry no code at all and are not selectable).
+SUBCONTRACTING_PLANS = ("A", "B", "C", "D", "E", "F", "G", "H")
+_SUBK_DEFS = (
+    "A = PLAN NOT INCLUDED - NO SUBCONTRACTING POSSIBILITIES (FAR 19.705-2I). "
+    "B = PLAN NOT REQUIRED (below FAR 19.702(a) thresholds). "
+    "C = PLAN REQUIRED - INCENTIVE NOT INCLUDED (FAR 19.702(a)/19.708(c); end-dated May 2015). "
+    "D = PLAN REQUIRED - INCENTIVE INCLUDED (FAR 19.702(a)/19.708(c)/DFARS 219.708(c); end-dated May 2015). "
+    "E = PLAN REQUIRED (PRE 2004). "
+    "F = INDIVIDUAL SUBCONTRACT PLAN (contract-specific goals covering the entire period incl. options, FAR 19.701). "
+    "G = COMMERCIAL SUBCONTRACT PLAN (company/division-wide commercial-items plan for the offeror's fiscal year, FAR 19.701). "
+    "H = DOD COMPREHENSIVE SUBCONTRACT PLAN (plant/division/company-wide; DoD only, DFARS 219.702)."
+)
+# FPDS 'reason for modification' contract domain — the 21 observed codes match the
+# dec_code_domain_ref ActionType contract vocabulary exactly. ~83M original-award rows
+# carry an empty code (not a mod) and are not selectable on this axis.
+ACTION_TYPE_CODES = ("A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M",
+                     "N", "P", "R", "S", "T", "V", "W", "X", "Y")
+_ACTION_TYPE_DEFS = (
+    "A=ADDITIONAL WORK (new agreement, justification required), B=SUPPLEMENTAL "
+    "AGREEMENT FOR WORK WITHIN SCOPE, C=FUNDING ONLY ACTION, D=CHANGE ORDER, "
+    "E=TERMINATE FOR DEFAULT, F=TERMINATE FOR CONVENIENCE, G=EXERCISE AN OPTION, "
+    "H=DEFINITIZE LETTER CONTRACT, J=NOVATION AGREEMENT, K=CLOSE OUT, L=DEFINITIZE "
+    "CHANGE ORDER, M=OTHER ADMINISTRATIVE ACTION, N=LEGAL CONTRACT CANCELLATION, "
+    "P=REREPRESENTATION OF NON-NOVATED MERGER/ACQUISITION, R=REREPRESENTATION, "
+    "S=CHANGE PIID, T=TRANSFER ACTION, V=UEI/LEGAL BUSINESS NAME CHANGE (non-novation), "
+    "W=ENTITY ADDRESS CHANGE, X=TERMINATE FOR CAUSE, Y=ADD SUBCONTRACT PLAN. "
+    "NULL/empty = the original award action (not a modification) — not selectable."
+)
+
+TRANSACTION_FIELDS: dict[str, MarketFieldSpec] = {
+    "subcontracting_plan": MarketFieldSpec(
+        "transactions", "subcontracting_plan", "string", ("=", "in"),
+        f"FPDS Subcontracting Plan code on the action. {_SUBK_DEFS} C/D/F/G flag a plan "
+        "attached to the action (the SUBK trigger set adds H for DoD-wide plans). "
+        f"{_TX_UNIVERSE}{_TX_GRAIN}",
+        enum=SUBCONTRACTING_PLANS, index="BITMAP"),
+    "action_type_code": MarketFieldSpec(
+        "transactions", "action_type_code", "string", ("=", "in"),
+        f"FPDS reason-for-modification code. {_ACTION_TYPE_DEFS} {_TX_UNIVERSE}{_TX_GRAIN}",
+        enum=ACTION_TYPE_CODES),
+    "action_date": MarketFieldSpec(
+        "transactions", "action_date", "days_ago", ("<=", ">=", "between"),
+        "Relative-time axis over the action's date, resolved against today at REQUEST "
+        f"time ('<= 90' = actions in the trailing 90 days). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BTREE"),
+    "federal_action_obligation": MarketFieldSpec(
+        "transactions", "federal_action_obligation", "float", (">=", "<=", "between"),
+        "USD obligated BY THIS ACTION alone (a delta: mods can be negative "
+        f"de-obligations; never an award total). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BTREE"),
+    "base_and_all_options_value": MarketFieldSpec(
+        "transactions", "base_and_all_options_value", "float", (">=", "<=", "between"),
+        "Base-and-all-options (potential ceiling) USD AS REPORTED ON THIS ACTION (a "
+        f"per-action delta/statement, not the award's reconciled ceiling). "
+        f"{_TX_UNIVERSE}{_TX_GRAIN}"),
+    "recipient_uei": MarketFieldSpec(
+        "transactions", "recipient_uei", "string", ("=", "in"),
+        f"The awarded entity's SAM UEI (exact, 12-char). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BTREE"),
+    "naics_code": MarketFieldSpec(
+        "transactions", "naics_code", "string", ("=", "in"),
+        f"The action's NAICS code (exact). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BTREE", codes="naics"),
+    "psc_code": MarketFieldSpec(
+        "transactions", "product_or_service_code", "string", ("=", "in"),
+        f"The action's Product/Service Code (exact). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BTREE", codes="psc"),
+    "awarding_agency_code": MarketFieldSpec(
+        "transactions", "awarding_agency_code", "string", ("=", "in"),
+        f"Awarding toptier agency CODE (e.g. '097'). {_TX_UNIVERSE}{_TX_GRAIN}",
+        index="BITMAP", codes="agency"),
+}
+TRANSACTION_RESULT_COLUMNS = (
+    "contract_transaction_unique_key", "contract_award_unique_key", "award_id_piid",
+    "recipient_uei", "recipient_name", "action_date", "action_type_code",
+    "action_type_description", "subcontracting_plan", "subcontracting_plan_desc",
+    "federal_action_obligation", "base_and_all_options_value", "naics_code",
+    "product_or_service_code", "awarding_agency_code", "awarding_agency_name",
+)
+
+TRANSACTIONS = TableGrainSpec(
+    grain="transaction",
+    dataset_key="transactions",
+    version="transactions.v1",
+    source="transactions",
+    description=(
+        "Raw FPDS action-grain query surface (one row per transaction; amounts are "
+        "per-action deltas). Geometry is null in v1 — award dots live on prime_awards."
+    ),
+    fields=TRANSACTION_FIELDS,
+    result_columns=TRANSACTION_RESULT_COLUMNS,
+    require_filter=True,
+    geometry=None,
+)
+
+# Wire-grain → spec dispatch (POST /api/v1/market/query accepts both the singular
+# grain and the dataset_key plural; the map adapters use the dataset_key paths).
+TABLE_GRAINS: dict[str, TableGrainSpec] = {
+    PRIME_AWARDS.grain: PRIME_AWARDS,
+    PRIME_AWARDS.dataset_key: PRIME_AWARDS,
+    TRANSACTIONS.grain: TRANSACTIONS,
+    TRANSACTIONS.dataset_key: TRANSACTIONS,
+}
+
+
+def table_fields_payload(spec: TableGrainSpec) -> dict:
+    """Fields-payload entry for a table grain — same workbench-parsable shape as the
+    entities entry (name/type/ops/enum/index/gated + codes-when-code-valued +
+    description), plus the safety/geometry contract (requireFilter, geometry)."""
+    fields = []
+    for qname, fspec in spec.fields.items():
+        f = {
+            "name": qname,
+            "type": fspec.type,
+            "ops": list(fspec.ops),
+            "enum": list(fspec.enum) if fspec.enum is not None else None,
+            "index": fspec.index,
+            "gated": fspec.gated,
+            "source": fspec.source,
+            "description": fspec.description,
+        }
+        if fspec.codes is not None:
+            f["codes"] = fspec.codes
+        fields.append(f)
+    cols = list(spec.result_columns)
+    if spec.geometry is not None:
+        cols += ["latitude", "longitude", "geo_precision"]
+    return {
+        "decoderVersion": spec.version,
+        "grain": spec.grain,
+        "legacy": False,
+        "fields": fields,
+        "aggregate": None,
+        "requireFilter": spec.require_filter,
+        "geometry": spec.geometry,
+        "description": spec.description,
+        "resultColumns": cols,
+    }

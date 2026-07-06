@@ -1143,6 +1143,8 @@ _SURFACE_DATASETS = {
     "gtm_entity_code_lanes": lambda: config.GTM_ENTITY_CODE_LANES_URI,
     "gtm_sam_entities": lambda: config.GTM_SAM_ENTITIES_URI,
     "gtm_entity_geo": lambda: config.GTM_ENTITY_GEO_URI,
+    "fpds_prime_award_state": lambda: config.FPDS_PRIME_AWARD_STATE_URI,
+    "fpds_canonical_txn": lambda: config.FPDS_CANONICAL_TXN_URI,
 }
 
 

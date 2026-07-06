@@ -177,10 +177,10 @@ def _info() -> dict:
             "person_by_linkedin": "/api/v1/people/by-linkedin  (POST: {url})",
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
             "market_fields": "/api/v1/market/fields",
-            "market_query": "/api/v1/market/query  (POST: {grain:'entity', filters:[{field,op,value}|{lane:{...}}], limit:N})",
+            "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
         },
-        "map_datasets": [*DECODERS, "entities"],
+        "map_datasets": [*DECODERS, "entities", "prime_awards", "transactions"],
     }
 
 
@@ -520,40 +520,64 @@ def map_fields() -> JSONResponse:
             ),
         }
     out["entities"] = market_registry.fields_payload()
+    out["prime_awards"] = market_registry.table_fields_payload(market_registry.PRIME_AWARDS)
+    out["transactions"] = market_registry.table_fields_payload(market_registry.TRANSACTIONS)
     return JSONResponse({"data": {"datasets": out}})
 
 
-# ── Market query engine (spine-backed, entity grain — the replace-forward surface) ──
+# ── Market query engine (spine-backed — the replace-forward surface) ──────────
+def _market_datasets_payload() -> dict:
+    return {
+        "entities": market_registry.fields_payload(),
+        "prime_awards": market_registry.table_fields_payload(market_registry.PRIME_AWARDS),
+        "transactions": market_registry.table_fields_payload(market_registry.TRANSACTIONS),
+    }
+
+
 @app.get("/api/v1/market/fields", response_model=None, dependencies=[Depends(require_operator)])
 def market_fields() -> JSONResponse:
-    """The market registry, projected verbatim (market_registry.fields_payload) in the
-    same ``{"data": {"datasets": {...}}}`` shape as /api/v1/map/fields — the clean alias
-    for consumers that only want the spine-backed grains."""
-    return JSONResponse({"data": {"datasets": {"entities": market_registry.fields_payload()}}})
+    """The market registry, projected verbatim in the same ``{"data": {"datasets":
+    {...}}}`` shape as /api/v1/map/fields — the clean alias for consumers that only
+    want the spine-backed grains (entities + prime_awards + transactions)."""
+    return JSONResponse({"data": {"datasets": _market_datasets_payload()}})
+
+
+def _run_market_query(grain: str, filters, limit: int | None) -> dict:
+    """Grain dispatch shared by /market/query and the map adapters: 'entity' → the
+    multi-table UEI-intersection executor; a table grain (prime_award[s] /
+    transaction[s]) → the single-table executor. MapCompileError → 422 at the caller."""
+    if grain == "entity":
+        return market_store.execute_entity_query(filters, limit)
+    spec = market_registry.TABLE_GRAINS.get(grain)
+    if spec is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown grain {grain!r} — serves 'entity', 'prime_award', 'transaction'")
+    return market_store.execute_table_query(spec, filters, limit)
 
 
 @app.post("/api/v1/market/query", response_model=None, dependencies=[Depends(require_operator)])
 def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
-    """Deterministic entity-grain query over the spine-derived L2 datasets. The body is
-    a constrained ``{grain, filters, limit}`` object — scalar ``{field, op, value}``
-    clauses (registry-validated) and/or ``{"lane": {...}}`` predicates, AND-combined.
-    Execution: per-table predicate compile → UEI-set intersection (lanes ∩ rollup ∩
-    entities) → hydration join on the survivors. 422 on any off-registry field/op/enum
-    or malformed lane; ``meta.executed`` echoes the validated filter object (lane
-    pseudo-fields desugared), ``meta.total`` is exact."""
-    if body.grain != "entity":
-        raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} — v1 serves 'entity'")
+    """Deterministic query over the spine-backed market grains. The body is a
+    constrained ``{grain, filters, limit}`` object — scalar ``{field, op, value}``
+    clauses (registry-validated per grain) plus, on the entity grain only,
+    ``{"lane": {...}}`` predicates. Grains: 'entity' (UEI-set intersection over the
+    L2 spine datasets), 'prime_award' (one FPDS award row, topology-aware), and
+    'transaction' (one raw FPDS action). The 100M-row table grains REQUIRE at least
+    one filter (422 otherwise). 422 on any off-registry field/op/enum; ``meta.executed``
+    echoes the validated filter object, ``meta.total`` is exact."""
+    grain = body.grain
     try:
-        result = market_store.execute_entity_query(
-            [c.model_dump() for c in body.filters], body.limit
-        )
+        result = _run_market_query(grain, [c.model_dump() for c in body.filters], body.limit)
     except lance_store.MapCompileError as exc:
         raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    version = (market_registry.REGISTRY_VERSION if grain == "entity"
+               else market_registry.TABLE_GRAINS[grain].version)
     return JSONResponse({
         "data": {"rows": result["rows"]},
         "meta": {
-            "grain": "entity",
-            "registryVersion": market_registry.REGISTRY_VERSION,
+            "grain": result["executed"]["grain"],
+            "registryVersion": version,
             "returned": result["returned"],
             "total": result["total"],
             "capped": result["capped"],
@@ -616,6 +640,49 @@ def map_entities_query(body: MarketQueryRequest = Body(default=MarketQueryReques
             "executed": result["executed"],
         },
     })
+
+
+def _table_grain_adapter(spec, body: MarketQueryRequest) -> JSONResponse:
+    """Shared workbench adapter for the table grains: run the single-table executor,
+    emit the exact FeatureCollection + meta envelope the workbench parses. prime_awards
+    rows carry recipient-HQ geometry (gtm_entity_geo LEFT-join; ``geo_precision`` in
+    properties — the award state table has NO place-of-performance columns, so the dot
+    is the recipient's HQ, not the work site); transactions are geometry:null in v1."""
+    grain_ok = body.grain in ("entity", spec.grain, spec.dataset_key)  # 'entity' = model default
+    if not grain_ok:
+        raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} for {spec.dataset_key}")
+    try:
+        result = market_store.execute_table_query(
+            spec, [c.model_dump() for c in body.filters], body.limit)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    features, plottable = market_store.to_entity_features(result["rows"])
+    return JSONResponse({
+        "data": {"type": "FeatureCollection", "features": features},
+        "meta": {
+            "dataset": spec.dataset_key,
+            "decoderVersion": spec.version,
+            "returned": result["returned"],
+            "plottable": plottable,
+            "total": result["total"],
+            "capped": result["capped"],
+            "executed": result["executed"],
+        },
+    })
+
+
+@app.post("/api/v1/map/prime_awards/query", response_model=None, dependencies=[Depends(require_operator)])
+def map_prime_awards_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
+    """Workbench adapter — award-grain FPDS queries (topology-aware; min one filter).
+    Dots = recipient HQ (geo_precision in properties); see market_registry.PRIME_AWARDS."""
+    return _table_grain_adapter(market_registry.PRIME_AWARDS, body)
+
+
+@app.post("/api/v1/map/transactions/query", response_model=None, dependencies=[Depends(require_operator)])
+def map_transactions_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
+    """Workbench adapter — raw FPDS action-grain queries (per-action deltas; min one
+    filter). geometry:null in v1 — award dots live on prime_awards."""
+    return _table_grain_adapter(market_registry.TRANSACTIONS, body)
 
 
 @app.post("/api/v1/map/{dataset}/query", response_model=None, dependencies=[Depends(require_operator)])
