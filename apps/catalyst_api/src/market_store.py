@@ -329,14 +329,45 @@ def execute_entity_query(
 
 
 # ── Code typeahead (GET /api/v1/market/codes) ─────────────────────────────────
-# naics_reference / psc_reference are tiny (~2.1k / ~6.1k rows): loaded ONCE into memory
-# on first request (lazy, thread-safe, per-process) and ranked in-process. PSC keeps only
-# is_active rows with a name (retired duplicate rows carry end_date and often no name).
+# All three code systems load ONCE into memory on first request (lazy, thread-safe,
+# per-process) and rank in-process. naics_reference / psc_reference are tiny reference
+# dimensions (~2.1k / ~6.1k rows; PSC keeps only is_active rows with a name). AGENCY has
+# no reference dimension yet — the pairs come from a streamed DISTINCT over
+# usaspending_award_canonical (awarding_agency_code, awarding_agency_name): ~136 distinct
+# pairs off 30.7M rows, a one-time ~20s first-request cost per process, then in-memory.
 _CODES_LOCK = threading.Lock()
 _codes_cache: dict[str, list[tuple[str, str]]] = {}
 
 CODES_DEFAULT_LIMIT = 20
 CODES_MAX_LIMIT = 100
+
+
+def _stream_agency_pairs() -> "dict[tuple[str, str], int]":
+    """Streamed DISTINCT (awarding_agency_code, awarding_agency_name) with row counts,
+    from the canonical prime-award fact. Counts feed the one-name-per-code dedupe (a few
+    codes carry historical name variants — the majority name wins)."""
+    from collections import Counter
+    scanner = _dataset(config.USASPENDING_AWARD_CANONICAL_URI).scanner(
+        columns=["awarding_agency_code", "awarding_agency_name"])
+    pairs: "Counter[tuple[str, str]]" = Counter()
+    for batch in scanner.to_batches():
+        pairs.update(zip(batch.column("awarding_agency_code").to_pylist(),
+                         batch.column("awarding_agency_name").to_pylist()))
+    return dict(pairs)
+
+
+def _dedupe_agency_pairs(pair_counts: "dict[tuple[str, str], int]") -> list[tuple[str, str]]:
+    """One (code, name) per agency code: NULL-guarded, majority name wins (probed live
+    2026-07-05: 136 distinct pairs, 2 codes with historical name variants), ties break
+    lexicographically for determinism. Pure — unit-tested without R2."""
+    best: dict[str, tuple[int, str]] = {}          # code -> (-count, name); min = winner
+    for (code, name), n in pair_counts.items():
+        if not code or not name:
+            continue
+        key = (-n, name)
+        if code not in best or key < best[code]:
+            best[code] = key
+    return sorted((code, name) for code, (_negn, name) in best.items())
 
 
 def _load_codes(code_type: str) -> list[tuple[str, str]]:
@@ -345,6 +376,8 @@ def _load_codes(code_type: str) -> list[tuple[str, str]]:
     if code_type == "naics":
         rows = _scan_to_pylist(config.NAICS_REFERENCE_URI, ["naics_code", "naics_title"], None)
         pairs = [(r.get("naics_code"), r.get("naics_title")) for r in rows]
+    elif code_type == "agency":
+        return _dedupe_agency_pairs(_stream_agency_pairs())
     else:
         rows = _scan_to_pylist(config.PSC_REFERENCE_URI,
                                ["psc_code", "psc_name"], "is_active = true")
@@ -362,11 +395,13 @@ def _codes_for(code_type: str) -> list[tuple[str, str]]:
 
 
 def code_search(code_type: str, q: str, limit: int | None = None) -> list[dict[str, str]]:
-    """Ranked typeahead over one code system: CODE-PREFIX matches first (shortest code
-    first — sectors before industries), then case-insensitive DESCRIPTION-substring
-    matches (by code). Raises ``MapCompileError`` (→ 422) on a bad type or empty q."""
-    if code_type not in market_registry.LANE_CODE_TYPES:
-        raise MapCompileError(f"type must be one of {list(market_registry.LANE_CODE_TYPES)}")
+    """Ranked typeahead over one code system (naics | psc | agency): CODE-PREFIX matches
+    first (shortest code first — sectors before industries), then case-insensitive
+    DESCRIPTION-substring matches (by code). Raises ``MapCompileError`` (→ 422) on a bad
+    type or empty q. NOTE: lane predicates accept only naics|psc — agency serves the
+    top_agency_code scalar field's typeahead, not a lane axis."""
+    if code_type not in market_registry.CODE_SYSTEMS:
+        raise MapCompileError(f"type must be one of {list(market_registry.CODE_SYSTEMS)}")
     q = (q or "").strip()
     if not q:
         raise MapCompileError("q (search text) is required")

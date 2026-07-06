@@ -178,7 +178,7 @@ def _info() -> dict:
             "map_query": "/api/v1/map/{dataset}/query  (POST: {filters:[{field,op,value}]})",
             "market_fields": "/api/v1/market/fields",
             "market_query": "/api/v1/market/query  (POST: {grain:'entity', filters:[{field,op,value}|{lane:{...}}], limit:N})",
-            "market_codes": "/api/v1/market/codes?type=naics|psc&q=<text>&limit=20",
+            "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
         },
         "map_datasets": [*DECODERS, "entities"],
     }
@@ -564,13 +564,15 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
 
 @app.get("/api/v1/market/codes", response_model=None, dependencies=[Depends(require_operator)])
 def market_codes(
-    type: str = Query(..., description="Code system: 'naics' | 'psc'"),
+    type: str = Query(..., description="Code system: 'naics' | 'psc' | 'agency'"),
     q: str = Query("", description="Search text: code prefix OR description substring."),
     limit: int = Query(market_store.CODES_DEFAULT_LIMIT, ge=1, le=market_store.CODES_MAX_LIMIT),
 ) -> JSONResponse:
-    """Code typeahead for the workbench lane fields: ranked match over the reference
-    dimensions (naics_reference / psc_reference, loaded once in-memory). Code-PREFIX
-    matches rank above description-SUBSTRING matches. Empty q / bad type → 422."""
+    """Code typeahead for every field the registry marks ``codes`` (the workbench
+    renders a typeahead for those): ranked match over the in-memory code dimensions
+    (naics_reference / psc_reference; agency = DISTINCT awarding agency code+name pairs
+    from usaspending_award_canonical, majority-name deduped). Code-PREFIX matches rank
+    above description-SUBSTRING matches. Empty q / bad type → 422."""
     try:
         codes = market_store.code_search(type, q, limit)
     except lance_store.MapCompileError as exc:

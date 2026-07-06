@@ -37,7 +37,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Version key surfaced as decoderVersion in the fields payload.
-REGISTRY_VERSION = "entities.v1"
+# v2: state → closed enum (live-probed USPS codes); `codes` typeahead attribute on the
+# code-valued fields (naics/psc/agency); agency added to the /market/codes systems.
+REGISTRY_VERSION = "entities.v2"
 
 # The two scalar source tables (keys into market_store's URI map). Lane predicates are
 # a third, non-scalar source compiled separately (see LANE below).
@@ -45,6 +47,24 @@ SOURCES = ("rollup", "entities")
 
 # Ops grammar is the map compiler's (compile discipline reused verbatim).
 OPS = ("=", ">=", "<=", "in", "between")
+
+# Code systems the /api/v1/market/codes typeahead serves. A field carrying a `codes`
+# attribute (MarketFieldSpec.codes / the lane pseudo-fields) names one of these — the
+# workbench renders a typeahead for it, querying /market/codes?type=<system>.
+CODE_SYSTEMS = ("naics", "psc", "agency")
+
+# US state/territory/military USPS codes OBSERVED LIVE in gtm_sam_entities.physical_state
+# (probed 2026-07-05: 2,774 raw distinct values — free-text foreign provinces included —
+# filtered to 2-char uppercase ∩ the canonical USPS set; 61 remain, sorted). The state
+# field is a CLOSED enum over these: an off-list value (a foreign province, a spelled-out
+# state) is a 422, never a silent zero-row scan.
+US_STATE_CODES = (
+    "AA", "AE", "AK", "AL", "AP", "AR", "AS", "AZ", "CA", "CO", "CT", "DC", "DE",
+    "FL", "FM", "GA", "GU", "HI", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA",
+    "MD", "ME", "MH", "MI", "MN", "MO", "MP", "MS", "MT", "NC", "ND", "NE", "NH",
+    "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN",
+    "TX", "UT", "VA", "VI", "VT", "WA", "WI", "WV", "WY",
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +81,9 @@ class MarketFieldSpec:
     enum: tuple | None = None         # closed vocabulary; None = open-valued
     index: str | None = None          # "BTREE" | "BITMAP" | None — observability only
     gated: bool = False               # parity with the map FieldSpec shape (always False here)
+    codes: str | None = None          # CODE_SYSTEMS member → the workbench renders a
+                                      # /market/codes typeahead for this field; None =
+                                      # not code-valued (payload OMITS the key entirely)
 
 
 # Shared doctrine strings — composed into every money/window description so the
@@ -133,11 +156,13 @@ ENTITY_FIELDS: dict[str, MarketFieldSpec] = {
     "top_naics": MarketFieldSpec(
         "rollup", "top_naics", "string", ("=", "in"),
         "The entity's top NAICS code by lifetime contract dollars (one code; exact match). "
-        f"For 'has ANY lane on code X' use the lane fields (prime_naics / sub_naics).{_GRAIN}"),
+        f"For 'has ANY lane on code X' use the lane fields (prime_naics / sub_naics).{_GRAIN}",
+        codes="naics"),
     "top_agency_code": MarketFieldSpec(
         "rollup", "top_agency_code", "string", ("=", "in"),
         "The entity's top awarding agency (toptier agency CODE, e.g. '097') by lifetime "
-        f"prime contract dollars.{_GRAIN}"),
+        f"prime contract dollars.{_GRAIN}",
+        codes="agency"),
     # ── rollup: posture flags ──────────────────────────────────────────────────
     "is_prime_24mo": MarketFieldSpec(
         "rollup", "is_prime_24mo", "bool", ("=",),
@@ -154,9 +179,12 @@ ENTITY_FIELDS: dict[str, MarketFieldSpec] = {
     # ── entities: SAM identity axes (universe: the full 2.03M-UEI SAM∪DSBS∪FSRS spine) ──
     "state": MarketFieldSpec(
         "entities", "physical_state", "string", ("=", "in"),
-        "Physical address state (2-letter USPS code) from the SAM registration. Universe: "
-        f"the full SAM∪DSBS∪FSRS entity spine (2.03M UEIs), not just award winners.{_GRAIN}",
-        index="BITMAP"),
+        "Physical address state (2-letter USPS code) from the SAM registration. CLOSED "
+        "enum: the US state/territory/military codes observed live in the spine (the raw "
+        "column also carries free-text foreign provinces — those are not selectable). "
+        f"Universe: the full SAM∪DSBS∪FSRS entity spine (2.03M UEIs), not just award "
+        f"winners.{_GRAIN}",
+        enum=US_STATE_CODES, index="BITMAP"),
     "in_dsbs": MarketFieldSpec(
         "entities", "in_dsbs", "bool", ("=",),
         "True when the entity appears in SBA's Dynamic Small Business Search (DSBS) — the "
@@ -253,9 +281,12 @@ def fields_payload() -> dict:
     'entities' key inside /api/v1/map/fields). Projected VERBATIM from the registry —
     never hand-maintained. Shape-compatible with the workbench catalog parser
     (name/type/ops/enum/index/gated), with description + source riding along and the
-    lane contract published under 'lane'."""
-    fields = [
-        {
+    lane contract published under 'lane'. A code-valued field carries ``"codes":
+    "naics"|"psc"|"agency"`` (the workbench renders a /market/codes typeahead for it);
+    the key is OMITTED ENTIRELY on non-code fields — presence IS the signal."""
+    fields = []
+    for qname, spec in ENTITY_FIELDS.items():
+        f = {
             "name": qname,
             "type": spec.type,
             "ops": list(spec.ops),
@@ -265,9 +296,12 @@ def fields_payload() -> dict:
             "source": spec.source,
             "description": spec.description,
         }
-        for qname, spec in ENTITY_FIELDS.items()
-    ]
+        if spec.codes is not None:
+            f["codes"] = spec.codes
+        fields.append(f)
     # Lane pseudo-fields: workbench-composable code cuts (string, = / in, open-valued).
+    # Each carries its lane code system as `codes` (prime_naics/sub_naics → naics,
+    # prime_psc/sub_psc → psc) so the workbench typeahead lights up on them too.
     fields.extend(
         {
             "name": name,
@@ -278,8 +312,9 @@ def fields_payload() -> dict:
             "gated": False,
             "source": "lane",
             "description": LANE_PSEUDO_DESCRIPTIONS[name],
+            "codes": code_type,
         }
-        for name in LANE_PSEUDO_FIELDS
+        for name, (_side, code_type) in LANE_PSEUDO_FIELDS.items()
     )
     return {
         "decoderVersion": REGISTRY_VERSION,

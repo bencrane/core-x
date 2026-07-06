@@ -99,6 +99,30 @@ def test_lane_pseudo_fields_never_shadow_registry_fields():
     assert not set(LANE_PSEUDO_FIELDS) & set(ENTITY_FIELDS)
 
 
+def test_codes_attribute_is_a_known_system_and_only_on_code_valued_fields():
+    # exactly these registry fields are code-valued; every codes value names a system
+    # the /market/codes endpoint actually serves.
+    assert {n for n, s in ENTITY_FIELDS.items() if s.codes is not None} == \
+        {"top_naics", "top_agency_code"}
+    assert ENTITY_FIELDS["top_naics"].codes == "naics"
+    assert ENTITY_FIELDS["top_agency_code"].codes == "agency"
+    for n, s in ENTITY_FIELDS.items():
+        if s.codes is not None:
+            assert s.codes in market_registry.CODE_SYSTEMS, f"{n}: unknown code system"
+
+
+def test_state_enum_is_live_probed_usps_codes():
+    enum = ENTITY_FIELDS["state"].enum
+    assert enum is not None and enum == market_registry.US_STATE_CODES
+    assert list(enum) == sorted(enum)                       # sorted, stable
+    assert all(len(c) == 2 and c.isupper() for c in enum)   # 2-char uppercase only
+    # canonical members present; free-text noise and foreign codes are NOT
+    for present in ("VA", "TX", "DC", "PR", "GU", "AE"):
+        assert present in enum
+    for absent in ("AB", "ON", "QC", "ALABAMA", "ZZ", ""):  # AB/ON/QC live in the raw column
+        assert absent not in enum
+
+
 # ── compiler: scalar clauses split per source table ───────────────────────────
 def test_scalar_clauses_split_by_source_and_compile():
     preds, lanes, executed = _compile([
@@ -154,6 +178,18 @@ def test_type_mismatch_rejected():
         _compile([{"field": "prime_obl_24mo", "op": ">=", "value": "1000000"}])
     with pytest.raises(lance_store.MapCompileError):
         _compile([{"field": "prime_award_ct_24mo", "op": ">=", "value": True}])
+
+
+def test_state_enum_violation_rejected():
+    # closed enum: canonical codes compile; anything off-list (foreign province code,
+    # spelled-out state, lowercase) is a 422-class error, never a silent zero-row scan.
+    preds, _, _ = _compile([{"field": "state", "op": "in", "value": ["VA", "GU"]}])
+    assert preds["entities"] == "physical_state IN ('VA', 'GU')"
+    for bad in ("ZZ", "AB", "ALABAMA", "va"):
+        with pytest.raises(lance_store.MapCompileError):
+            _compile([{"field": "state", "op": "=", "value": bad}])
+    with pytest.raises(lance_store.MapCompileError):
+        _compile([{"field": "state", "op": "in", "value": ["VA", "ON"]}])
 
 
 def test_clause_with_neither_field_nor_lane_rejected():
@@ -455,6 +491,66 @@ def test_code_search_fail_closed(codes):
         market_store.code_search("duns", "54")              # bad type → 422
 
 
+# ── agency code system ────────────────────────────────────────────────────────
+AGENCY_FIXTURE = [
+    ("012", "Department of Agriculture"),
+    ("047", "General Services Administration"),
+    ("057", "Department of the Air Force"),
+    ("097", "Department of Defense"),
+    ("9700", "DEPT OF DEFENSE"),
+]
+
+
+@pytest.fixture()
+def agency_codes(monkeypatch):
+    monkeypatch.setattr(market_store, "_load_codes",
+                        lambda kind: sorted(AGENCY_FIXTURE) if kind == "agency"
+                        else sorted(NAICS_FIXTURE))
+    market_store._codes_cache.clear()
+    yield
+    market_store._codes_cache.clear()
+
+
+def test_agency_type_accepted_with_prefix_beats_substring(agency_codes):
+    # '097' is a pure code-prefix probe; 'defense' a pure name-substring probe.
+    assert [c["code"] for c in market_store.code_search("agency", "097")] == ["097"]
+    out2 = market_store.code_search("agency", "defense")
+    assert [c["code"] for c in out2] == ["097", "9700"]     # case-insensitive, code-sorted
+    # '0' prefix-matches three codes (shortest-first tiebreak is code order at equal len)
+    out3 = market_store.code_search("agency", "0")
+    assert [c["code"] for c in out3] == ["012", "047", "057", "097"]
+
+
+def test_agency_ranking_prefix_first_deterministic(agency_codes):
+    out = market_store.code_search("agency", "Department")
+    # pure name-substring probe → code-sorted ("DEPT OF DEFENSE" does not contain it)
+    assert [c["code"] for c in out] == ["012", "057", "097"]
+
+
+def test_lane_code_type_agency_rejected():
+    # 'agency' is a /market/codes system, NOT a lane axis — lanes stay naics|psc.
+    with pytest.raises(lance_store.MapCompileError):
+        _compile([{"lane": {"side": "prime", "code_type": "agency", "codes": ["097"]}}])
+
+
+def test_dedupe_agency_pairs_majority_name_wins_null_guarded():
+    pairs = {
+        ("097", "Department of Defense"): 900,
+        ("097", "DEPT OF DEFENSE"): 5,          # historical variant loses on count
+        ("020", "Department of the Treasury"): 50,
+        ("020", "Department of the Interior"): 50,   # tie → lexicographically first
+        (None, "General Services Administration"): 10,  # NULL code guarded out
+        ("013", None): 10,                                # NULL name guarded out
+        ("012", "Department of Agriculture"): 1,
+    }
+    out = market_store._dedupe_agency_pairs(pairs)
+    assert out == [
+        ("012", "Department of Agriculture"),
+        ("020", "Department of the Interior"),
+        ("097", "Department of Defense"),
+    ]
+
+
 def test_codes_cache_loads_once(codes, monkeypatch):
     calls = {"n": 0}
 
@@ -486,6 +582,29 @@ def test_entities_fields_payload_is_workbench_parsable():
     assert fields["prime_naics"]["ops"] == ["=", "in"]
     assert payload["lane"]["sides"] == ["prime", "sub"]
     assert payload["resultColumns"] == list(market_registry.RESULT_ROW_ORDER)
+
+
+def test_fields_payload_codes_attribute_present_only_on_code_valued_fields():
+    # The typeahead contract: `codes` names the /market/codes system on EXACTLY the six
+    # code-valued fields; on every other field the key is ABSENT (never null) — the
+    # workbench keys the typeahead off key presence.
+    fields = {f["name"]: f for f in market_registry.fields_payload()["fields"]}
+    expected = {
+        "prime_naics": "naics", "sub_naics": "naics",
+        "prime_psc": "psc", "sub_psc": "psc",
+        "top_naics": "naics", "top_agency_code": "agency",
+    }
+    for name, system in expected.items():
+        assert fields[name]["codes"] == system, f"{name}: wrong codes system"
+        assert system in market_registry.CODE_SYSTEMS
+    for name, f in fields.items():
+        if name not in expected:
+            assert "codes" not in f, f"{name}: codes key must be omitted entirely"
+
+
+def test_fields_payload_state_is_closed_enum():
+    fields = {f["name"]: f for f in market_registry.fields_payload()["fields"]}
+    assert fields["state"]["enum"] == list(market_registry.US_STATE_CODES)
 
 
 def test_map_fields_payload_marks_legacy_and_carries_entities():
