@@ -71,8 +71,12 @@ log = logging.getLogger("catalyst_api.subout_store")
 # scoring — operator-directed replacement of v2's code-lens matching + 7-component
 # score. v2 history: code lenses + weighted components (see git history).
 RECIPE_ID = "subout_opportunities.v3"
+# The combos mode (operator-directed 2026-07-06, second mode alongside v3): its own
+# recipe id — matching logic differs wholesale, so it versions independently.
+COMBOS_RECIPE_ID = "subout_combos.v1"
 
-ALLOWED_BODY_KEYS = frozenset({"uei", "limit"})
+MODES = ("relationships", "combos")
+ALLOWED_BODY_KEYS = frozenset({"uei", "limit", "mode"})
 
 DEFAULT_LIMIT = 50
 LIMIT_CAP = 200
@@ -84,6 +88,13 @@ PEERS_PER_PAIR_CAP = 200      # distinct peer firms admitted per pair
 PEER_UNION_CAP = 1_000        # peer firms total across pairs
 PEER_EDGE_SCAN_CAP = 25_000   # streamed subaward-edge rows across the peer chunks
 MATCH_PEERS_SHOWN = 5         # peer firms listed per row in matched_via (rest counted)
+
+# ── Combos-mode bounds (named parameters; applications noted on the wire) ──────
+TARGET_COMBO_CAP = 5          # target's top (naics, psc) sub combos by its own sub $
+LOOKALIKE_EDGE_SCAN = 20_000  # streamed candidate edges per target combo
+LOOKALIKE_CANDIDATE_CHECK = 25  # top overlap candidates checked for has-primed
+LOOKALIKE_CT = 3              # named lookalikes on the POV
+EXPANSION_COMBO_CAP = 10      # lookalikes' other sub combos admitted, by their sub $
 
 # ── Federal-site enrichment (informational only in v3 — never a score input) ──
 NEAREST_SITE_MAX_MI = 50.0
@@ -122,6 +133,7 @@ class SuboutCaches:
     open_awards: list[dict[str, Any]]
     awards_by_prime: dict[str, list[int]]
     awards_by_id: dict[str, int]
+    awards_by_combo: dict[tuple[str, str], list[int]]
     geo_table: Any                       # pyarrow.Table, sorted by uei, single chunk
     federal_sites: list[tuple]
     federal_site_buckets: dict[tuple[int, int], list[int]]
@@ -292,9 +304,10 @@ def _nearest_federal_site(lat: float, lon: float,
 
 # ── Cache build ────────────────────────────────────────────────────────────────
 def _index_open_awards(rows: list[dict[str, Any]]) -> tuple[
-        dict[str, list[int]], dict[str, int]]:
+        dict[str, list[int]], dict[str, int], dict[tuple[str, str], list[int]]]:
     by_prime: dict[str, list[int]] = {}
     by_id: dict[str, int] = {}
+    by_combo: dict[tuple[str, str], list[int]] = {}
     for i, row in enumerate(rows):
         uei = row.get("recipient_uei")
         if uei:
@@ -302,7 +315,10 @@ def _index_open_awards(rows: list[dict[str, Any]]) -> tuple[
         award_id = row.get("generated_unique_award_id")
         if award_id:
             by_id[award_id] = i
-    return by_prime, by_id
+        naics, psc = row.get("naics_code"), row.get("product_or_service_code")
+        if naics and psc:
+            by_combo.setdefault((naics, psc), []).append(i)
+    return by_prime, by_id, by_combo
 
 
 def _rss() -> int | None:
@@ -319,7 +335,7 @@ def _build_caches() -> SuboutCaches:
     t0 = time.monotonic()
     rss_before = _rss()
     open_awards = _load_open_awards()
-    by_prime, by_id = _index_open_awards(open_awards)
+    by_prime, by_id, by_combo = _index_open_awards(open_awards)
     geo_table = _load_entity_geo()
     federal_sites = _load_federal_sites()
     federal_site_buckets = _index_federal_sites(federal_sites)
@@ -340,7 +356,8 @@ def _build_caches() -> SuboutCaches:
         geo_table.num_rows, geo_table.nbytes / 1e6,
         len(federal_sites), len(federal_site_buckets), rss_delta)
     return SuboutCaches(open_awards=open_awards, awards_by_prime=by_prime,
-                        awards_by_id=by_id, geo_table=geo_table,
+                        awards_by_id=by_id, awards_by_combo=by_combo,
+                        geo_table=geo_table,
                         federal_sites=federal_sites,
                         federal_site_buckets=federal_site_buckets, build_ms=build_ms)
 
@@ -447,7 +464,13 @@ def validate_request(body: Any) -> dict[str, Any]:
         raise MapCompileError("limit must be a positive whole number")
     limit = min(limit, LIMIT_CAP)
 
-    return {"uei": uei, "limit": limit}
+    mode = body.get("mode")
+    if mode is None:
+        mode = "relationships"
+    elif mode not in MODES:
+        raise MapCompileError(f"mode must be one of {list(MODES)} (or omitted)")
+
+    return {"uei": uei, "limit": limit, "mode": mode}
 
 
 def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -628,6 +651,347 @@ def _finalize_rule_b_evidence(ev: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMBOS MODE (subout_combos.v1) — lookalike sub-combo expansion + PoP-state POV
+# (operator-directed 2026-07-06; ships ALONGSIDE the relationships mode)
+#
+# THE POV: (1) the target's own demonstrated sub combos — the (prime-award NAICS ×
+# PSC) pairs on subawards it delivered; (2) its top-LOOKALIKE_CT lookalikes —
+# firms sharing those sub combos (ranked by overlapping sub $) that ALSO PRIME
+# (the has-primed clause is a lookalike QUALIFIER, never a combo source); (3) the
+# expansion set — those lookalikes' OTHER sub combos; (4) the geography default —
+# the states where the TARGET has actually performed (its subaward PoP states ∪
+# its own prime awards' PoP states), applied as a filter on the award's
+# pop_state_code and disclosed with its basis in meta.pov.
+#
+# Dots = OPEN awards whose (naics, psc) combo ∈ (target combos ∪ expansion
+# combos), PoP-state-filtered per the default. Flat total_obligation sort — no
+# scoring, per the standing directive. Every hop is demonstrated dollars.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _target_sub_combo_profile(uei: str) -> tuple[dict[tuple[str, str], dict[str, Any]], set[str]]:
+    """The target's demonstrated sub-combo profile + its subaward PoP states —
+    ONE BTREE point-lookup on the subaward canonical. Returns
+    ({(naics, psc): {amt, edge_ct}}, {states})."""
+    rows = _scan_to_pylist(
+        config.CONTRACT_SUBAWARD_URI,
+        ["subawardee_uei", "prime_award_naics_code",
+         "prime_award_product_or_service_code", "subaward_amount",
+         "subaward_primary_place_of_performance_state_code"],
+        f"subawardee_uei = {_sql_str(uei)}")
+    combos: dict[tuple[str, str], dict[str, Any]] = {}
+    states: set[str] = set()
+    for r in rows:
+        st = r.get("subaward_primary_place_of_performance_state_code")
+        if st:
+            states.add(st)
+        naics = r.get("prime_award_naics_code")
+        psc = r.get("prime_award_product_or_service_code")
+        if not naics or not psc:
+            continue
+        entry = combos.setdefault((naics, psc), {"amt": 0.0, "edge_ct": 0})
+        entry["amt"] += float(r.get("subaward_amount") or 0.0)
+        entry["edge_ct"] += 1
+    return combos, states
+
+
+def _target_prime_pop_states(uei: str) -> set[str]:
+    """PoP states of the target's OWN prime awards (recipient_uei point-lookup) —
+    the prime half of the geography-default basis. Empty for never-primed firms."""
+    rows = _scan_to_pylist(
+        config.USASPENDING_AWARD_CANONICAL_URI,
+        ["recipient_uei", "primary_place_of_performance_state_code"],
+        f"recipient_uei = {_sql_str(uei)}")
+    return {r["primary_place_of_performance_state_code"] for r in rows
+            if r.get("primary_place_of_performance_state_code")}
+
+
+def _lookalike_candidates(uei: str, combos: dict[tuple[str, str], dict[str, Any]],
+                          notes: list[str]) -> list[dict[str, Any]]:
+    """Firms sharing the target's top sub combos, ranked by overlapping sub $.
+    Streams up to LOOKALIKE_EDGE_SCAN edges per combo (indexed
+    prime_award_naics_code + prime_award_product_or_service_code)."""
+    top = sorted(combos.items(), key=lambda kv: (-kv[1]["amt"], kv[0]))
+    if len(top) > TARGET_COMBO_CAP:
+        notes.append(f"combos: target's sub combos capped to the top {TARGET_COMBO_CAP} "
+                     f"by sub $ (of {len(top)})")
+        top = top[:TARGET_COMBO_CAP]
+    cand: dict[str, dict[str, Any]] = {}
+    for (naics, psc), _stats in top:
+        rows = _stream_rows(
+            config.CONTRACT_SUBAWARD_URI,
+            ["subawardee_uei", "subaward_amount"],
+            f"prime_award_naics_code = {_sql_str(naics)} AND "
+            f"prime_award_product_or_service_code = {_sql_str(psc)}",
+            LOOKALIKE_EDGE_SCAN)
+        for r in rows:
+            peer = r.get("subawardee_uei")
+            if not peer or peer == uei:
+                continue
+            entry = cand.setdefault(peer, {"uei": peer, "overlap_amt": 0.0,
+                                           "shared_combos": set()})
+            entry["overlap_amt"] += float(r.get("subaward_amount") or 0.0)
+            entry["shared_combos"].add((naics, psc))
+    ranked = sorted(cand.values(), key=lambda c: (-c["overlap_amt"], c["uei"]))
+    return ranked
+
+
+def _pick_primed_lookalikes(ranked: list[dict[str, Any]],
+                            notes: list[str]) -> list[dict[str, Any]]:
+    """Top LOOKALIKE_CT candidates that ALSO PRIME (rollup point-check on the top
+    LOOKALIKE_CANDIDATE_CHECK by overlap $), name-hydrated best-effort."""
+    if not ranked:
+        return []
+    check = ranked[:LOOKALIKE_CANDIDATE_CHECK]
+    primed: dict[str, bool] = {}
+    try:
+        rows = _scan_to_pylist(
+            config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI,
+            ["uei", "prime_award_ct_lifetime"],
+            _in_predicate("uei", [c["uei"] for c in check]))
+        primed = {r["uei"]: bool(r.get("prime_award_ct_lifetime") or 0) for r in rows}
+    except Exception as exc:  # noqa: BLE001 — degraded: nobody passes the qualifier
+        log.warning("lookalike primed-check failed (%s): zero lookalikes served", exc)
+        notes.append("lookalike primed-check unavailable — no lookalikes served")
+        return []
+    picked = [c for c in check if primed.get(c["uei"])][:LOOKALIKE_CT]
+    if not picked:
+        notes.append(f"no primed lookalike among the top {len(check)} overlap candidates")
+        return []
+    names: dict[str, Any] = {}
+    try:
+        rows = _scan_to_pylist(config.GTM_SAM_ENTITIES_URI,
+                               ["uei", "legal_business_name"],
+                               _in_predicate("uei", [c["uei"] for c in picked]))
+        names = {r["uei"]: r.get("legal_business_name") for r in rows}
+    except Exception as exc:  # noqa: BLE001 — names are hydration, never fatal
+        log.warning("lookalike name hydration failed (%s): null names", exc)
+    return [{"uei": c["uei"], "legal_business_name": names.get(c["uei"]),
+             "overlap_amt": round(c["overlap_amt"], 2),
+             "shared_combos": sorted(c["shared_combos"])} for c in picked]
+
+
+def _lookalike_expansion_combos(
+        lookalikes: list[dict[str, Any]],
+        target_combos: dict[tuple[str, str], dict[str, Any]],
+        notes: list[str]) -> dict[tuple[str, str], dict[str, Any]]:
+    """The lookalikes' OTHER sub combos (their demonstrated sub receipts, minus the
+    target's own combos), top EXPANSION_COMBO_CAP by their sub $."""
+    if not lookalikes:
+        return {}
+    rows = _scan_to_pylist(
+        config.CONTRACT_SUBAWARD_URI,
+        ["subawardee_uei", "prime_award_naics_code",
+         "prime_award_product_or_service_code", "subaward_amount"],
+        _in_predicate("subawardee_uei", [lk["uei"] for lk in lookalikes]))
+    exp: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        naics = r.get("prime_award_naics_code")
+        psc = r.get("prime_award_product_or_service_code")
+        peer = r.get("subawardee_uei")
+        if not naics or not psc or not peer:
+            continue
+        combo = (naics, psc)
+        if combo in target_combos:
+            continue
+        entry = exp.setdefault(combo, {"amt": 0.0, "lookalikes": set()})
+        entry["amt"] += float(r.get("subaward_amount") or 0.0)
+        entry["lookalikes"].add(peer)
+    if len(exp) > EXPANSION_COMBO_CAP:
+        notes.append(f"combos: lookalike expansion capped to the top "
+                     f"{EXPANSION_COMBO_CAP} combos by lookalike sub $ (of {len(exp)})")
+        kept = sorted(exp.items(), key=lambda kv: (-kv[1]["amt"], kv[0]))[:EXPANSION_COMBO_CAP]
+        exp = dict(kept)
+    return exp
+
+
+def _execute_combos(req: dict[str, Any], today: dt_date) -> dict[str, Any]:
+    """The combos-mode plan (block comment above). Same envelope discipline as the
+    relationships mode: flat obligation-sorted list, matched_via evidence per row,
+    honest empty answers, per-stage timings, POV fully disclosed in meta.pov."""
+    timings: dict[str, float] = {}
+    notes: list[str] = []
+    cache_state = "unavailable"
+    cache_build_ms: float | None = None
+    target_hq: dict[str, float] | None = None
+    pov: dict[str, Any] | None = None
+    t0 = time.monotonic()
+
+    def _mark(stage: str, since: float) -> float:
+        now = time.monotonic()
+        timings[stage] = round((now - since) * 1000.0, 1)
+        return now
+
+    def _meta(total: int, reason: str | None = None) -> dict[str, Any]:
+        timings["total"] = round((time.monotonic() - t0) * 1000.0, 1)
+        meta: dict[str, Any] = {
+            "recipeId": COMBOS_RECIPE_ID,
+            "registryVersion": market_registry.REGISTRY_VERSION,
+            "uei": req["uei"],
+            "mode": "combos",
+            "cache_state": cache_state,
+            "cache_build_ms": cache_build_ms,
+            "target_hq": target_hq,
+            "pov": pov,
+            "timings_ms": timings,
+            "total": total,
+        }
+        if reason is not None:
+            meta["reason"] = reason
+        if notes:
+            meta["notes"] = notes
+        return meta
+
+    t = time.monotonic()
+    try:
+        cache_state, caches = _ensure_caches()
+        cache_build_ms = caches.build_ms
+    except Exception as exc:  # noqa: BLE001 — degrade; next request retries
+        log.warning("subout caches unavailable (%s): serving degraded empty answer", exc)
+        cache_state = "failed"
+        notes.append("in-process cache build FAILED — no matches served; error: "
+                     f"{type(exc).__name__}: {exc}")
+        _mark("cache_ensure", t)
+        return {"meta": _meta(0), "data": {"opportunities": []}}
+    t = _mark("cache_ensure", t)
+
+    for row in _rows_for_uei(caches.geo_table, req["uei"]):
+        lat, lon = row.get("latitude"), row.get("longitude")
+        if lat is not None and lon is not None:
+            target_hq = {"latitude": float(lat), "longitude": float(lon)}
+            break
+    t = _mark("geo", t)
+
+    # POV 1: the target's demonstrated sub combos + its performance states
+    target_combos, sub_states = _target_sub_combo_profile(req["uei"])
+    t = _mark("combo_profile", t)
+    prime_states = _target_prime_pop_states(req["uei"])
+    pop_states = sorted(sub_states | prime_states)
+    t = _mark("pop_states", t)
+
+    if not target_combos:
+        pov = {"target_combos": [], "lookalikes": [], "expansion_combos": [],
+               "pop_states": pop_states,
+               "pop_state_basis": "target's historical subaward + prime-award PoP states"}
+        return {"meta": _meta(0, reason="target has no demonstrated sub combos — "
+                                        "the combos mode has nothing to expand from"),
+                "data": {"opportunities": []}}
+
+    # POV 2+3: lookalikes (share sub combos AND prime) → their other sub combos
+    ranked = _lookalike_candidates(req["uei"], target_combos, notes)
+    lookalikes = _pick_primed_lookalikes(ranked, notes)
+    t = _mark("lookalikes", t)
+    expansion = _lookalike_expansion_combos(lookalikes, target_combos, notes)
+    t = _mark("expansion", t)
+
+    lk_by_combo: dict[tuple[str, str], list[str]] = {
+        combo: sorted(stats["lookalikes"]) for combo, stats in expansion.items()}
+    pov = {
+        "target_combos": [
+            {"naics": c[0], "psc": c[1], "sub_amt": round(v["amt"], 2),
+             "edge_ct": v["edge_ct"]}
+            for c, v in sorted(target_combos.items(), key=lambda kv: -kv[1]["amt"])],
+        "lookalikes": [{**lk, "shared_combos": [
+            {"naics": n, "psc": p} for n, p in lk["shared_combos"]]}
+            for lk in lookalikes],
+        "expansion_combos": [
+            {"naics": c[0], "psc": c[1], "lookalike_sub_amt": round(v["amt"], 2),
+             "lookalikes": sorted(v["lookalikes"])}
+            for c, v in sorted(expansion.items(), key=lambda kv: -kv[1]["amt"])],
+        "pop_states": pop_states,
+        "pop_state_basis": "target's historical subaward + prime-award PoP states "
+                           "(the geography DEFAULT — awards outside these states, or "
+                           "with no PoP state, are filtered out)",
+    }
+
+    # Dots: open awards whose combo ∈ (target ∪ expansion), PoP-state-filtered
+    all_combos = set(target_combos) | set(expansion)
+    state_set = set(pop_states)
+    excluded_geo = 0
+    rows_out: list[dict[str, Any]] = []
+    for combo in sorted(all_combos):
+        for idx in caches.awards_by_combo.get(combo, []):
+            award = caches.open_awards[idx]
+            if not _is_open(award, today):
+                continue
+            if state_set and award.get(
+                    "primary_place_of_performance_state_code") not in state_set:
+                excluded_geo += 1
+                continue
+            matched_via = []
+            if combo in target_combos:
+                matched_via.append({
+                    "rule": "target_sub_combo",
+                    "combo": {"naics": combo[0], "psc": combo[1]},
+                    "target_sub_amt": round(target_combos[combo]["amt"], 2),
+                    "target_edge_ct": target_combos[combo]["edge_ct"]})
+            if combo in expansion:
+                matched_via.append({
+                    "rule": "lookalike_sub_combo",
+                    "combo": {"naics": combo[0], "psc": combo[1]},
+                    "lookalike_sub_amt": round(expansion[combo]["amt"], 2),
+                    "lookalikes": lk_by_combo.get(combo, [])})
+            distance_mi = None
+            if (target_hq is not None and award.get("latitude") is not None
+                    and award.get("longitude") is not None):
+                distance_mi = round(_haversine_mi(
+                    target_hq["latitude"], target_hq["longitude"],
+                    float(award["latitude"]), float(award["longitude"])), 1)
+            nearest_site = None
+            if (award.get("geo_precision") == "zip5"
+                    and award.get("latitude") is not None
+                    and award.get("longitude") is not None):
+                nearest_site = _nearest_federal_site(
+                    float(award["latitude"]), float(award["longitude"]), caches)
+            rows_out.append({
+                "generated_unique_award_id": award.get("generated_unique_award_id"),
+                "award_id_piid": award.get("award_id_piid"),
+                "prime_uei": award.get("recipient_uei"),
+                "prime_name": award.get("recipient_name"),
+                "naics_code": award.get("naics_code"),
+                "product_or_service_code": award.get("product_or_service_code"),
+                "awarding_agency_code": award.get("awarding_agency_code"),
+                "awarding_agency_name": award.get("awarding_agency_name"),
+                "total_obligation": award.get("total_obligation"),
+                "base_and_all_options_value": award.get("base_and_all_options_value"),
+                "subaward_count": award.get("subaward_count"),
+                "total_subaward_amount": award.get("total_subaward_amount"),
+                "subcontracting_plan_code": award.get("subcontracting_plan_code"),
+                "award_or_idv_flag": award.get("award_or_idv_flag"),
+                "idv_type_code": award.get("idv_type_code"),
+                "type_of_set_aside_code": award.get("type_of_set_aside_code"),
+                "period_of_performance_current_end_date": _map_jsonable(
+                    award.get("period_of_performance_current_end_date")),
+                "ordering_period_end_date": _map_jsonable(award.get("ordering_period_end_date")),
+                "pop_state_code": award.get("primary_place_of_performance_state_code"),
+                "pop_geo_precision": award.get("geo_precision"),
+                "latitude": award.get("latitude"),
+                "longitude": award.get("longitude"),
+                "distance_mi": distance_mi,
+                "nearest_federal_site": nearest_site,
+                "matched_via": matched_via,
+            })
+            if len(rows_out) >= AWARD_SCAN_CAP:
+                break
+        if len(rows_out) >= AWARD_SCAN_CAP:
+            notes.append(f"combos: open-award assembly capped at {AWARD_SCAN_CAP}")
+            break
+    if excluded_geo:
+        notes.append(f"geography default excluded {excluded_geo} open awards outside "
+                     f"the target's historical PoP states {pop_states}")
+    if not rows_out:
+        return {"meta": _meta(0, reason="no open awards match the combo set inside "
+                                        "the geography default"),
+                "data": {"opportunities": []}}
+    rows_out.sort(key=lambda o: (-(o.get("total_obligation") or 0.0),
+                                 o.get("generated_unique_award_id") or ""))
+    total = len(rows_out)
+    rows_out = rows_out[:req["limit"]]
+    _mark("assemble", t)
+    return {"meta": _meta(total), "data": {"opportunities": rows_out}}
+
+
 # ── The recipe executor ────────────────────────────────────────────────────────
 def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> dict[str, Any]:
     """The full v3 plan (module docstring). Returns ``{meta: {recipeId,
@@ -638,6 +1002,8 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     target with no matching relationships is a 200 with empty data + meta.reason."""
     req = validate_request(body)
     today = today or dt_date.today()
+    if req["mode"] == "combos":
+        return _execute_combos(req, today)
     timings: dict[str, float] = {}
     notes: list[str] = []
     cache_state = "unavailable"

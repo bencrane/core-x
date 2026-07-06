@@ -36,19 +36,27 @@ PEER1, PEER2 = "UEIPEER00001", "UEIPEER00002"
 # ── The target's FSRS subaward edges (rule A substrate) ────────────────────────
 TARGET_SUB_EDGES = [
     {"subawardee_uei": TARGET, "prime_awardee_uei": P1,
-     "subaward_amount": 5_000_000.0, "subaward_action_date": date(2026, 1, 15)},
+     "subaward_amount": 5_000_000.0, "subaward_action_date": date(2026, 1, 15),
+     "prime_award_naics_code": "541690", "prime_award_product_or_service_code": "R499",
+     "subaward_primary_place_of_performance_state_code": "VA"},
     {"subawardee_uei": TARGET, "prime_awardee_uei": P1,
-     "subaward_amount": 1_000_000.0, "subaward_action_date": date(2025, 6, 1)},
+     "subaward_amount": 1_000_000.0, "subaward_action_date": date(2025, 6, 1),
+     "prime_award_naics_code": "541690", "prime_award_product_or_service_code": "R499",
+     "subaward_primary_place_of_performance_state_code": None},
     {"subawardee_uei": TARGET, "prime_awardee_uei": P_DEAD,
-     "subaward_amount": 99.0, "subaward_action_date": date(2020, 1, 1)},
+     "subaward_amount": 99.0, "subaward_action_date": date(2020, 1, 1),
+     "prime_award_naics_code": "999999", "prime_award_product_or_service_code": "Z999",
+     "subaward_primary_place_of_performance_state_code": "CA"},
 ]
 
 # ── The target's OWN prime awards (rule B pair substrate) ──────────────────────
 TARGET_PRIME_AWARDS = [
     {"recipient_uei": TARGET, "awarding_agency_code": "097", "naics_code": "541690",
-     "product_or_service_code": "R499", "total_obligation": 2_000_000.0},
+     "product_or_service_code": "R499", "total_obligation": 2_000_000.0,
+     "primary_place_of_performance_state_code": "MD"},
     {"recipient_uei": TARGET, "awarding_agency_code": "047", "naics_code": None,
-     "product_or_service_code": "D302", "total_obligation": 500_000.0},
+     "product_or_service_code": "D302", "total_obligation": 500_000.0,
+     "primary_place_of_performance_state_code": None},
 ]
 # → pairs: (097, naics, 541690) $2M · (097, psc, R499) $2M · (047, psc, D302) $0.5M
 
@@ -65,6 +73,45 @@ PEER_SUB_EDGES = [
     {"subawardee_uei": PEER1, "prime_award_unique_key": "CONT_AWD_A2"},
     {"subawardee_uei": PEER1, "prime_award_unique_key": "CONT_AWD_A5_EXPIRED"},
     {"subawardee_uei": PEER2, "prime_award_unique_key": "CONT_AWD_A1"},
+]
+
+# ── Combos-mode fixtures ───────────────────────────────────────────────────────
+LOOK1, LOOK2, LOOK3 = "UEILOOK00001", "UEILOOK00002", "UEILOOK00003"
+NOPRIME = "UEINOPRIME01"                 # highest overlap but never primed — SKIPPED
+
+# candidate edges per target combo (streamed by combo predicate)
+LOOKALIKE_CANDIDATE_EDGES = {
+    ("541690", "R499"): [
+        {"subawardee_uei": LOOK1, "subaward_amount": 9_000_000.0},
+        {"subawardee_uei": NOPRIME, "subaward_amount": 8_000_000.0},
+        {"subawardee_uei": LOOK2, "subaward_amount": 4_000_000.0},
+        {"subawardee_uei": LOOK3, "subaward_amount": 2_000_000.0},
+        {"subawardee_uei": TARGET, "subaward_amount": 1_000_000.0},  # self: excluded
+    ],
+    ("999999", "Z999"): [],
+}
+# rollup primed-check (the lookalike QUALIFIER)
+LOOKALIKE_ROLLUP_ROWS = [
+    {"uei": LOOK1, "prime_award_ct_lifetime": 3},
+    {"uei": NOPRIME, "prime_award_ct_lifetime": 0},
+    {"uei": LOOK2, "prime_award_ct_lifetime": 2},
+    {"uei": LOOK3, "prime_award_ct_lifetime": 1},
+]
+LOOKALIKE_NAME_ROWS = [
+    {"uei": LOOK1, "legal_business_name": "ALPHA BOTHSIDER LLC"},
+    {"uei": LOOK2, "legal_business_name": "BRAVO BOTHSIDER INC"},
+    {"uei": LOOK3, "legal_business_name": "CHARLIE BOTHSIDER CO"},
+]
+# the lookalikes' full sub histories (the expansion scan: subawardee_uei IN)
+LOOKALIKE_SUB_HISTORY = [
+    {"subawardee_uei": LOOK1, "prime_award_naics_code": "236220",
+     "prime_award_product_or_service_code": "Y1AA", "subaward_amount": 3_000_000.0},
+    {"subawardee_uei": LOOK2, "prime_award_naics_code": "236220",
+     "prime_award_product_or_service_code": "Y1AA", "subaward_amount": 1_000_000.0},
+    {"subawardee_uei": LOOK1, "prime_award_naics_code": "541690",
+     "prime_award_product_or_service_code": "R499", "subaward_amount": 9_000_000.0},
+    {"subawardee_uei": LOOK3, "prime_award_naics_code": "541519",
+     "prime_award_product_or_service_code": "D302", "subaward_amount": 2_000_000.0},
 ]
 
 GEO_ROWS = [
@@ -121,6 +168,32 @@ OPEN_AWARD_ROWS = [
      "awarding_agency_code": "097", "awarding_agency_name": "Department of Defense",
      "primary_place_of_performance_state_code": "VA",
      "latitude": 38.9586, "longitude": -77.3570, "geo_precision": "zip5"},
+    {"generated_unique_award_id": "CONT_AWD_A6", "award_id_piid": "PIID_A6",
+     "recipient_uei": "UEIPRIME0003", "recipient_name": "PRIME THREE CO",
+     "naics_code": "541690", "product_or_service_code": "R499",
+     "total_obligation": 20_000_000.0, "base_and_all_options_value": 25_000_000.0,
+     "subaward_count": 2, "total_subaward_amount": 1_000_000.0,
+     "subcontracting_plan_code": "C",
+     "period_of_performance_current_end_date": date(2027, 3, 31),
+     "ordering_period_end_date": None,
+     "award_or_idv_flag": "AWARD", "idv_type_code": None,
+     "type_of_set_aside_code": None,
+     "awarding_agency_code": "097", "awarding_agency_name": "Department of Defense",
+     "primary_place_of_performance_state_code": "CA",
+     "latitude": 34.05, "longitude": -118.24, "geo_precision": "zip5"},
+    {"generated_unique_award_id": "CONT_AWD_A7_TX", "award_id_piid": "PIID_A7",
+     "recipient_uei": "UEIPRIME0003", "recipient_name": "PRIME THREE CO",
+     "naics_code": "236220", "product_or_service_code": "Y1AA",
+     "total_obligation": 9_000_000.0, "base_and_all_options_value": 9_000_000.0,
+     "subaward_count": 0, "total_subaward_amount": 0.0,
+     "subcontracting_plan_code": None,
+     "period_of_performance_current_end_date": date(2027, 1, 1),
+     "ordering_period_end_date": None,
+     "award_or_idv_flag": "AWARD", "idv_type_code": None,
+     "type_of_set_aside_code": None,
+     "awarding_agency_code": "097", "awarding_agency_name": "Department of Defense",
+     "primary_place_of_performance_state_code": "TX",
+     "latitude": 32.77, "longitude": -96.79, "geo_precision": "zip5"},
 ]
 
 
@@ -141,11 +214,22 @@ class Seams:
     def scan_to_pylist(self, uri, columns, predicate):
         self.scan_calls.append((uri, tuple(columns), predicate))
         if uri == config.CONTRACT_SUBAWARD_URI:
-            # the target's own edges (rule A): subawardee_uei = '<uei>'
-            rows = [r for r in TARGET_SUB_EDGES if f"'{r['subawardee_uei']}'" in predicate]
+            if "subawardee_uei IN" in predicate:
+                # combos mode: the lookalikes' sub histories (expansion scan)
+                rows = [r for r in LOOKALIKE_SUB_HISTORY
+                        if f"'{r['subawardee_uei']}'" in predicate]
+            else:
+                # the target's own edges (rule A + combo profile): subawardee_uei = '<uei>'
+                rows = [r for r in TARGET_SUB_EDGES if f"'{r['subawardee_uei']}'" in predicate]
         elif uri == config.USASPENDING_AWARD_CANONICAL_URI:
-            # the target's own prime awards (rule B pairs): recipient_uei = '<uei>'
+            # the target's own prime awards (rule B pairs + combos PoP states)
             rows = [r for r in TARGET_PRIME_AWARDS if f"'{r['recipient_uei']}'" in predicate]
+        elif uri == config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI:
+            # combos mode: the lookalike primed-check (uei IN)
+            rows = [r for r in LOOKALIKE_ROLLUP_ROWS if f"'{r['uei']}'" in predicate]
+        elif uri == config.GTM_SAM_ENTITIES_URI:
+            # combos mode: lookalike name hydration (uei IN)
+            rows = [r for r in LOOKALIKE_NAME_ROWS if f"'{r['uei']}'" in predicate]
         else:
             raise AssertionError(f"unexpected remote scan uri {uri}")
         return [{c: r.get(c) for c in columns} for r in rows]
@@ -160,6 +244,13 @@ class Seams:
                     return [{c: r.get(c) for c in columns} for r in rows][:limit]
             raise AssertionError(f"unexpected peer-scan predicate {predicate}")
         if uri == config.CONTRACT_SUBAWARD_URI:
+            if "prime_award_naics_code = '" in predicate:
+                # combos mode: lookalike-candidate edges per target combo
+                for (naics, psc), rows in LOOKALIKE_CANDIDATE_EDGES.items():
+                    if f"prime_award_naics_code = '{naics}'" in predicate and \
+                            f"prime_award_product_or_service_code = '{psc}'" in predicate:
+                        return [{c: r.get(c) for c in columns} for r in rows][:limit]
+                raise AssertionError(f"unexpected combo predicate {predicate}")
             # peers' edges: subawardee_uei IN (...)
             rows = [r for r in PEER_SUB_EDGES if f"'{r['subawardee_uei']}'" in predicate]
             return [{c: r.get(c) for c in columns} for r in rows][:limit]
@@ -207,7 +298,13 @@ def _run(body, **kw):
 # ── recipe constants (the versioned contract) ─────────────────────────────────
 def test_recipe_id_and_bounds_are_the_published_contract():
     assert subout_store.RECIPE_ID == "subout_opportunities.v3"
-    assert subout_store.ALLOWED_BODY_KEYS == {"uei", "limit"}
+    assert subout_store.ALLOWED_BODY_KEYS == {"uei", "limit", "mode"}
+    assert subout_store.MODES == ("relationships", "combos")
+    assert subout_store.COMBOS_RECIPE_ID == "subout_combos.v1"
+    # combos-mode bounds are named module parameters too
+    assert subout_store.TARGET_COMBO_CAP == 5
+    assert subout_store.LOOKALIKE_CT == 3
+    assert subout_store.EXPANSION_COMBO_CAP == 10
     # the rule B bounds are named module parameters — adjustable, never buried
     assert subout_store.PRIME_PAIR_CAP == 10
     assert subout_store.PEERS_PER_PAIR_CAP == 200
@@ -240,7 +337,8 @@ def test_validation_fail_closed():
 
 def test_validation_defaults_and_limit_cap():
     req = subout_store.validate_request({"uei": f"  {TARGET}  "})
-    assert req == {"uei": TARGET, "limit": subout_store.DEFAULT_LIMIT}
+    assert req == {"uei": TARGET, "limit": subout_store.DEFAULT_LIMIT,
+                   "mode": "relationships"}
     assert subout_store.validate_request(
         {"uei": TARGET, "limit": 10_000})["limit"] == subout_store.LIMIT_CAP
 
@@ -489,3 +587,82 @@ def test_unreachable_federal_sites_layer_degrades_to_empty(monkeypatch):
 
     monkeypatch.setattr(subout_store, "_dataset", raiser)
     assert subout_store._load_federal_sites() == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMBOS MODE (subout_combos.v1) — lookalike sub-combo expansion + PoP-state POV
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_mode_validation_and_default():
+    with pytest.raises(lance_store.MapCompileError, match="mode must be one of"):
+        subout_store.validate_request({"uei": TARGET, "mode": "scores"})
+    assert subout_store.validate_request({"uei": TARGET})["mode"] == "relationships"
+    assert subout_store.validate_request(
+        {"uei": TARGET, "mode": "combos"})["mode"] == "combos"
+
+
+def test_default_mode_still_serves_relationships(seams):
+    out = _run({"uei": TARGET})
+    assert out["meta"]["recipeId"] == "subout_opportunities.v3"
+    assert "pov" not in out["meta"]
+
+
+def test_combos_mode_end_to_end(seams):
+    out = _run({"uei": TARGET, "mode": "combos"})
+    meta, data = out["meta"], out["data"]
+    assert meta["recipeId"] == "subout_combos.v1" and meta["mode"] == "combos"
+
+    pov = meta["pov"]
+    # POV 1: the target's demonstrated sub combos, $-ranked
+    assert pov["target_combos"][0] == {"naics": "541690", "psc": "R499",
+                                       "sub_amt": 6_000_000.0, "edge_ct": 2}
+    # POV 2: lookalikes share the combos AND prime — NOPRIME ($8M overlap, never
+    # primed) is SKIPPED; ranking by overlap $ among the primed
+    lk_ueis = [lk["uei"] for lk in pov["lookalikes"]]
+    assert lk_ueis == [LOOK1, LOOK2, LOOK3]
+    assert NOPRIME not in lk_ueis
+    assert pov["lookalikes"][0]["legal_business_name"] == "ALPHA BOTHSIDER LLC"
+    assert pov["lookalikes"][0]["overlap_amt"] == 9_000_000.0
+    # POV 3: the lookalikes' OTHER sub combos (target's own combo excluded)
+    exp = {(e["naics"], e["psc"]): e for e in pov["expansion_combos"]}
+    assert ("541690", "R499") not in exp
+    assert exp[("236220", "Y1AA")]["lookalike_sub_amt"] == 4_000_000.0
+    assert exp[("236220", "Y1AA")]["lookalikes"] == [LOOK1, LOOK2]
+    assert exp[("541519", "D302")]["lookalikes"] == [LOOK3]
+    # POV 4: geography default = the target's historical PoP states, basis stated
+    assert pov["pop_states"] == ["CA", "MD", "VA"]
+    assert "geography DEFAULT" in pov["pop_state_basis"]
+
+    # Dots: combo ∈ (target ∪ expansion), open-checked, state-filtered, $-sorted.
+    # A6 (541690×R499, CA, $20M) target combo; A1 (541519×D302, VA, $12M) expansion;
+    # A2 (236220×Y1AA, state None) and A7 (TX) excluded by the geography default;
+    # A5 (expired) dropped by the open-date re-check.
+    ids = [o["generated_unique_award_id"] for o in data["opportunities"]]
+    assert ids == ["CONT_AWD_A6", "CONT_AWD_A1"]
+    assert meta["total"] == 2
+    by_id = {o["generated_unique_award_id"]: o for o in data["opportunities"]}
+    a6 = by_id["CONT_AWD_A6"]
+    assert a6["matched_via"] == [{
+        "rule": "target_sub_combo", "combo": {"naics": "541690", "psc": "R499"},
+        "target_sub_amt": 6_000_000.0, "target_edge_ct": 2}]
+    a1 = by_id["CONT_AWD_A1"]
+    assert a1["matched_via"] == [{
+        "rule": "lookalike_sub_combo", "combo": {"naics": "541519", "psc": "D302"},
+        "lookalike_sub_amt": 2_000_000.0, "lookalikes": [LOOK3]}]
+    # geography exclusions are counted on the wire, never silent
+    assert any("excluded 2 open awards" in n for n in meta["notes"])
+    # no scoring anywhere
+    for o in data["opportunities"]:
+        assert "score" not in o and "components" not in o
+    # map-ready fields ride as in every mode
+    assert a6["latitude"] == 34.05 and meta["target_hq"] is not None
+    for stage in ("cache_ensure", "geo", "combo_profile", "pop_states",
+                  "lookalikes", "expansion", "assemble", "total"):
+        assert stage in meta["timings_ms"], stage
+
+
+def test_combos_mode_no_sub_history_is_an_answer(seams):
+    out = _run({"uei": NO_SIGNAL_UEI, "mode": "combos"})
+    assert out["meta"]["total"] == 0
+    assert "no demonstrated sub combos" in out["meta"]["reason"]
+    assert out["meta"]["pov"]["target_combos"] == []
+    assert out["meta"]["target_hq"] is not None    # the anchor still rides

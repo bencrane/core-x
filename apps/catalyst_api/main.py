@@ -197,7 +197,7 @@ def _info() -> dict:
             "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
             "market_subout_opportunities": (
-                "/api/v1/market/subout-opportunities  (POST: {uei, limit?})"),
+                "/api/v1/market/subout-opportunities  (POST: {uei, limit?, mode?: relationships|combos})"),
         },
         "map_datasets": [*DECODERS, "entities", "prime_awards", "transactions"],
     }
@@ -683,8 +683,10 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
 
 @app.post("/api/v1/market/subout-opportunities", response_model=None, dependencies=[Depends(require_operator)])
 def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
-    """The subout-opportunities recipe (subout_opportunities.v3 — RELATIONSHIP
-    matching, NO scoring; operator-directed 2026-07-06). A row appears iff:
+    """The subout-opportunities recipe — TWO MODES, no scoring in either
+    (operator-directed 2026-07-06). Body: ``{uei, limit?, mode?}``.
+
+    mode="relationships" (DEFAULT — subout_opportunities.v3): a row appears iff:
     RULE A — the award's prime is one the target has received FSRS subawards from;
     or RULE B — the award has FSRS subawardees who won prime awards from the same
     awarding agency in the same NAICS/PSC as prime awards the target itself won.
@@ -697,6 +699,17 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
     ``{uei, limit?}`` ONLY — v2's lenses / codes_override / code_type /
     include_peers are unknown keys now (422, never silently ignored). A target with
     no matching relationships is a 200 with empty data + ``meta.reason``.
+
+    mode="combos" (subout_combos.v1): the lookalike sub-combo POV. Rows = OPEN
+    awards whose (NAICS, PSC) combo ∈ the target's own demonstrated sub combos ∪
+    the OTHER sub combos of its top-3 lookalikes (firms sharing its sub combos
+    that ALSO PRIME — the has-primed clause qualifies the lookalike, never sources
+    combos), filtered by the GEOGRAPHY DEFAULT: the states where the target has
+    actually performed (subaward + own-prime PoP states). The full POV — target
+    combos, named lookalikes with their overlap $, expansion combos, the state set
+    and its basis — rides ``meta.pov``; geography exclusions are counted in
+    ``meta.notes``. Rows carry ``matched_via`` (target_sub_combo |
+    lookalike_sub_combo).
 
     MAP-READY: rows carry the PoP-centroid ``latitude``/``longitude`` (honest per
     ``pop_geo_precision``), ``distance_mi`` from the target's HQ AS A FACT, and the
