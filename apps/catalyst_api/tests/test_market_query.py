@@ -1061,3 +1061,130 @@ def test_inferred_payload_contract():
     assert inf["kinds"] == ["primeable", "subbable"]
     assert inf["minSupportKey"] == "min_supporting_bothsider_firm_ct"
     assert "pre-weighting" in inf["semantics"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CYCLE-1 CROSS-GRAIN SUBSTRATE — the entities `uei` filter + recipient collapse
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_registry_v5_carries_the_uei_join_field():
+    assert market_registry.REGISTRY_VERSION == "entities.v5"
+    spec = ENTITY_FIELDS["uei"]
+    assert spec.source == "entities" and spec.column == "uei"
+    assert spec.ops == ("=", "in") and spec.index == "BTREE"
+    names = {f["name"] for f in market_registry.fields_payload()["fields"]}
+    assert "uei" in names
+
+
+def test_uei_filter_compiles_charset_validated_and_capped(monkeypatch):
+    preds, _, executed = _compile(
+        [{"field": "uei", "op": "in", "value": ["UEIA11111111", "UEIB22222222"]}])
+    assert preds["entities"] == "uei IN ('UEIA11111111', 'UEIB22222222')"
+    assert executed == [{"field": "uei", "op": "in",
+                         "value": ["UEIA11111111", "UEIB22222222"]}]
+    preds, _, _ = _compile([{"field": "uei", "op": "=", "value": "UEIA11111111"}])
+    assert preds["entities"] == "uei = 'UEIA11111111'"
+    # charset fail-closed — an escape attempt or malformed id never reaches a predicate
+    with pytest.raises(lance_store.MapCompileError, match="not a 12-char"):
+        _compile([{"field": "uei", "op": "=", "value": "x'); DROP --"}])
+    with pytest.raises(lance_store.MapCompileError, match="not a 12-char"):
+        _compile([{"field": "uei", "op": "in", "value": ["SHORT"]}])
+    # IN-list cap (one house chunk) — chunk client-side above it
+    monkeypatch.setattr(market_store, "UEI_IN_CAP", 2)
+    with pytest.raises(lance_store.MapCompileError, match="exceeds the 2 cap"):
+        _compile([{"field": "uei", "op": "in",
+                   "value": ["UEIA11111111", "UEIB22222222", "UEIC33333333"]}])
+
+
+def test_table_payload_advertises_collapse_contract():
+    payload = market_registry.table_fields_payload(market_registry.TRANSACTIONS)
+    assert payload["collapse"]["modes"] == ["recipients"]
+    assert "DISTINCT recipients" in payload["collapse"]["semantics"]
+
+
+def test_execute_table_collapse_aggregates_per_recipient(monkeypatch):
+    rows = [
+        {"recipient_uei": "UEIA11111111", "recipient_name": None,
+         "federal_action_obligation": 100.0, "action_date": date(2026, 1, 1)},
+        {"recipient_uei": "UEIA11111111", "recipient_name": "ALPHA CO",
+         "federal_action_obligation": 200.5, "action_date": date(2026, 3, 1)},
+        {"recipient_uei": "UEIB22222222", "recipient_name": "BETA LLC",
+         "federal_action_obligation": 50.0, "action_date": date(2025, 12, 1)},
+        {"recipient_uei": None, "recipient_name": "GHOST",           # null uei skipped
+         "federal_action_obligation": 999.0, "action_date": date(2026, 1, 1)},
+    ]
+    monkeypatch.setattr(market_store, "_count_rows", lambda uri, pred: 4)
+    monkeypatch.setattr(market_store, "_stream_rows",
+                        lambda uri, cols, pred, limit: [dict(r) for r in rows][:limit])
+    out = market_store.execute_table_collapse(
+        market_registry.TRANSACTIONS,
+        [{"field": "action_type_code", "op": "=", "value": "A"}], None, today=TODAY)
+    assert out["total_rows"] == 4 and out["distinct_recipients"] == 2
+    assert out["scan_capped"] is False and out["capped"] is False
+    a, b = out["rows"]                                   # Σ$ DESC
+    assert a == {"uei": "UEIA11111111", "recipient_name": "ALPHA CO",
+                 "match_ct": 2, "amt_total": 300.5, "last_action_date": "2026-03-01"}
+    assert b["uei"] == "UEIB22222222" and b["match_ct"] == 1
+    assert out["executed"]["collapse"] == "recipients"
+    # limit caps the recipients, capped flips honest
+    out2 = market_store.execute_table_collapse(
+        market_registry.TRANSACTIONS,
+        [{"field": "action_type_code", "op": "=", "value": "A"}], 1, today=TODAY)
+    assert out2["returned"] == 1 and out2["capped"] is True
+    assert out2["distinct_recipients"] == 2
+
+
+def test_collapse_requires_filters_and_respects_scan_cap(monkeypatch):
+    with pytest.raises(lance_store.MapCompileError, match="requires at least one filter"):
+        market_store.execute_table_collapse(market_registry.TRANSACTIONS, [], None,
+                                            today=TODAY)
+    monkeypatch.setattr(market_store, "COLLAPSE_SCAN_CAP", 2)
+    monkeypatch.setattr(market_store, "_count_rows", lambda uri, pred: 10)
+    monkeypatch.setattr(market_store, "_stream_rows",
+                        lambda uri, cols, pred, limit: [
+                            {"recipient_uei": f"UEIX{i:08d}", "recipient_name": "X",
+                             "federal_action_obligation": 1.0, "action_date": None}
+                            for i in range(min(limit, 2))])
+    out = market_store.execute_table_collapse(
+        market_registry.TRANSACTIONS,
+        [{"field": "action_type_code", "op": "=", "value": "A"}], None, today=TODAY)
+    assert out["scanned_rows"] == 2 and out["scan_capped"] is True
+
+
+def test_collapse_route_gates(monkeypatch):
+    from fastapi import HTTPException as HX
+
+    from apps.catalyst_api import main as api_main
+    from apps.catalyst_api.src.models import MarketQueryRequest
+
+    # entity grain refuses collapse
+    with pytest.raises(HX) as exc:
+        api_main.market_query(MarketQueryRequest(
+            grain="entity", collapse="recipients",
+            filters=[{"field": "in_dsbs", "op": "=", "value": True}]))
+    assert exc.value.status_code == 422 and "table grains" in exc.value.detail
+    # off-vocabulary mode refuses
+    with pytest.raises(HX) as exc:
+        api_main.market_query(MarketQueryRequest(
+            grain="transaction", collapse="winners", filters=[]))
+    assert exc.value.status_code == 422 and "collapse must be one of" in exc.value.detail
+    # map adapters refuse collapse outright
+    with pytest.raises(HX) as exc:
+        api_main.map_entities_query(MarketQueryRequest(
+            grain="entity", collapse="recipients", filters=[]))
+    assert exc.value.status_code == 422 and "map adapters" in exc.value.detail
+    # happy path routes to the collapse executor
+    monkeypatch.setattr(market_store, "execute_table_collapse",
+                        lambda spec, filters, limit: {
+                            "rows": [], "total_rows": 0, "distinct_recipients": 0,
+                            "returned": 0, "capped": False, "scanned_rows": 0,
+                            "scan_capped": False,
+                            "executed": {"grain": "transaction",
+                                         "collapse": "recipients",
+                                         "filters": [], "limit": 100}})
+    res = api_main.market_query(MarketQueryRequest(
+        grain="transaction", collapse="recipients",
+        filters=[{"field": "action_type_code", "op": "=", "value": "A"}]))
+    import json as _json
+    body = _json.loads(res.body)
+    assert body["meta"]["collapse"] == "recipients"
+    assert body["meta"]["distinctRecipients"] == 0

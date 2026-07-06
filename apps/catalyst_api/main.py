@@ -621,8 +621,47 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
     L2 spine datasets), 'prime_award' (one FPDS award row, topology-aware), and
     'transaction' (one raw FPDS action). The 100M-row table grains REQUIRE at least
     one filter (422 otherwise). 422 on any off-registry field/op/enum; ``meta.executed``
-    echoes the validated filter object, ``meta.total`` is exact."""
+    echoes the validated filter object, ``meta.total`` is exact.
+
+    CROSS-GRAIN COMPOSITION (Cycle-1): ``collapse: "recipients"`` on a table grain
+    returns the DISTINCT recipients behind the matching rows (uei, name, match_ct,
+    Σ$, last date — the "companies that …" shape; ``meta.distinctRecipients`` exact
+    unless ``meta.scanCapped``). The resulting UEI set pushes back into the entity
+    grain via its ``uei`` filter ('='/'in', capped at market_store.UEI_IN_CAP per
+    call) and intersects with any other entity predicates."""
     grain = body.grain
+    if body.collapse is not None:
+        # Recipient collapse (Cycle-1): table grains only, closed mode vocabulary.
+        if body.collapse not in market_store.COLLAPSE_MODES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"invalid filter: collapse must be one of {list(market_store.COLLAPSE_MODES)}")
+        spec = market_registry.TABLE_GRAINS.get(grain)
+        if spec is None:
+            raise HTTPException(
+                status_code=422,
+                detail="invalid filter: collapse applies to the table grains "
+                       "('prime_award' | 'transaction'), not 'entity'")
+        try:
+            result = market_store.execute_table_collapse(
+                spec, [c.model_dump() for c in body.filters], body.limit)
+        except lance_store.MapCompileError as exc:
+            raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+        return JSONResponse({
+            "data": {"rows": result["rows"]},
+            "meta": {
+                "grain": result["executed"]["grain"],
+                "registryVersion": spec.version,
+                "collapse": "recipients",
+                "returned": result["returned"],
+                "distinctRecipients": result["distinct_recipients"],
+                "totalRows": result["total_rows"],
+                "scannedRows": result["scanned_rows"],
+                "scanCapped": result["scan_capped"],
+                "capped": result["capped"],
+                "executed": result["executed"],
+            },
+        })
     try:
         result = _run_market_query(grain, [c.model_dump() for c in body.filters], body.limit)
     except lance_store.MapCompileError as exc:
@@ -708,6 +747,8 @@ def map_entities_query(body: MarketQueryRequest = Body(default=MarketQueryReques
     POST /api/v1/market/query."""
     if body.grain != "entity":
         raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} — v1 serves 'entity'")
+    if body.collapse is not None:
+        raise HTTPException(status_code=422, detail="collapse is not served on the map adapters — use POST /api/v1/market/query")
     try:
         result = market_store.execute_entity_query(
             [c.model_dump() for c in body.filters], body.limit
@@ -738,6 +779,8 @@ def _table_grain_adapter(spec, body: MarketQueryRequest) -> JSONResponse:
     grain_ok = body.grain in ("entity", spec.grain, spec.dataset_key)  # 'entity' = model default
     if not grain_ok:
         raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} for {spec.dataset_key}")
+    if body.collapse is not None:
+        raise HTTPException(status_code=422, detail="collapse is not served on the map adapters — use POST /api/v1/market/query")
     try:
         result = market_store.execute_table_query(
             spec, [c.model_dump() for c in body.filters], body.limit)

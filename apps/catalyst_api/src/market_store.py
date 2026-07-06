@@ -46,6 +46,7 @@ from .lance_store import (
     _map_clause_sql,
     _map_jsonable,
     _sql_str,
+    valid_uei,
 )
 
 log = logging.getLogger("catalyst_api.market_store")
@@ -59,6 +60,10 @@ IN_CHUNK = 500
 # Semi-join crossover: at most this many candidate UEIs go through chunked IN scans;
 # a larger candidate set flips to one predicate scan + in-process intersection.
 SEMI_JOIN_MAX = 10_000
+# The entities `uei` filter's IN-list bound (the cross-grain join key, registry v5):
+# one house chunk (the batched-IN trap: never hand Lance an unbounded IN list). A
+# larger set is a 422 — callers chunk client-side.
+UEI_IN_CAP = 500
 
 # A NAICS/PSC code is short alnum (NAICS 2-6 digits; PSC 1-4 alnum). Validated before
 # interpolation — defense-in-depth alongside _sql_str quote-doubling.
@@ -267,6 +272,18 @@ def compile_market_filters(
         spec = market_registry.ENTITY_FIELDS.get(field)
         if spec is None:
             raise MapCompileError(f"field {field!r} not in the entity registry")
+        if field == "uei":
+            # the cross-grain join key: charset-validated fail-closed (defense in
+            # depth alongside _sql_str escaping) and IN-list capped at one house chunk.
+            values = value if isinstance(value, list) else [value]
+            if op == "in" and isinstance(value, list) and len(value) > UEI_IN_CAP:
+                raise MapCompileError(
+                    f"uei 'in' list exceeds the {UEI_IN_CAP} cap ({len(value)} given) "
+                    "— chunk client-side")
+            for v in values:
+                if not isinstance(v, str) or not valid_uei(v.strip()):
+                    raise MapCompileError(
+                        f"uei value {v!r} is not a 12-char alphanumeric SAM UEI")
         if spec.expr is not None:
             # registry-level compiled boolean expression ('=' bool only; both branches
             # written out explicitly — see the field's description for the exact SQL).
@@ -523,6 +540,77 @@ def execute_table_query(
         "returned": len(rows),
         "capped": total > len(rows),
         "executed": {"grain": spec.grain, "filters": executed, "limit": cap},
+    }
+
+
+# ── Recipient collapse (Cycle-1: "companies that …" as ONE honest call) ────────
+# A request mode on the TABLE grains: instead of raw rows, return the DISTINCT
+# recipients behind the matching rows, each with match_ct / Σ$ / last date. The
+# aggregation streams the filtered scan up to COLLAPSE_SCAN_CAP rows (a named bound
+# — its application is explicit on the wire via scan_capped, never silent).
+COLLAPSE_MODES = ("recipients",)
+COLLAPSE_SCAN_CAP = 500_000
+# Per-grain aggregation columns: (money column, date column).
+_COLLAPSE_COLUMNS = {
+    "transactions": ("federal_action_obligation", "action_date"),
+    "prime_awards": ("life_to_date_obligated", "last_action_date"),
+}
+
+
+def execute_table_collapse(
+    spec, filters: list[dict[str, Any]], limit: int | None, today: "dt_date | None" = None
+) -> dict[str, Any]:
+    """The recipient-collapse plan: compile ONE predicate (same fail-closed rules as
+    the row query, min-one-filter enforced) → exact matching-ROW count (pushdown) →
+    stream [recipient_uei, recipient_name, $, date] up to COLLAPSE_SCAN_CAP rows,
+    aggregating per recipient in-process → recipients sorted by Σ$ DESC (uei
+    tiebreak), capped by ``limit``. Returns ``{rows, total_rows,
+    distinct_recipients, returned, capped, scanned_rows, scan_capped, executed}`` —
+    ``distinct_recipients`` is exact iff ``scan_capped`` is false."""
+    predicate, executed = compile_table_filters(spec, filters, today)
+    cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
+    money_col, date_col = _COLLAPSE_COLUMNS[spec.source]
+    uri = TABLE_GRAIN_URIS[spec.source]()
+    total_rows = _count_rows(uri, predicate)
+    agg: dict[str, dict[str, Any]] = {}
+    scanned = 0
+    if total_rows:
+        raw = _stream_rows(uri, ["recipient_uei", "recipient_name", money_col, date_col],
+                           predicate, COLLAPSE_SCAN_CAP)
+        scanned = len(raw)
+        for r in raw:
+            uei = r.get("recipient_uei")
+            if not uei:
+                continue
+            entry = agg.get(uei)
+            if entry is None:
+                entry = agg[uei] = {"uei": uei, "recipient_name": None,
+                                    "match_ct": 0, "amt_total": 0.0,
+                                    "last_action_date": None}
+            if entry["recipient_name"] is None and r.get("recipient_name"):
+                entry["recipient_name"] = r["recipient_name"]
+            entry["match_ct"] += 1
+            entry["amt_total"] += float(r.get(money_col) or 0.0)
+            d = r.get(date_col)
+            if d is not None and (entry["last_action_date"] is None
+                                  or d > entry["last_action_date"]):
+                entry["last_action_date"] = d
+    recipients = sorted(agg.values(),
+                        key=lambda e: (-e["amt_total"], e["uei"]))
+    distinct = len(recipients)
+    rows = [{**e, "amt_total": round(e["amt_total"], 2),
+             "last_action_date": _map_jsonable(e["last_action_date"])}
+            for e in recipients[:cap]]
+    return {
+        "rows": rows,
+        "total_rows": total_rows,
+        "distinct_recipients": distinct,
+        "returned": len(rows),
+        "capped": distinct > len(rows),
+        "scanned_rows": scanned,
+        "scan_capped": scanned >= COLLAPSE_SCAN_CAP and total_rows > scanned,
+        "executed": {"grain": spec.grain, "collapse": "recipients",
+                     "filters": executed, "limit": cap},
     }
 
 

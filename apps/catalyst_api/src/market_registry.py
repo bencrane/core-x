@@ -37,6 +37,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Version key surfaced as decoderVersion in the fields payload.
+# v5: cross-grain join enabler — the `uei` filter field on the entities grain ('='/'in',
+# charset-validated, list-capped at market_store.UEI_IN_CAP): a UEI set produced by any
+# other grain (e.g. a recipient-collapsed transaction query) can now be pushed back in
+# as an entity predicate. Cycle-1 substrate for deterministic cross-grain pipelines.
 # v4: capability-inference axes — inferred_primeable_*/inferred_subbable_* pseudo-fields
 # (semi-joins against the pre-weighting cooccurrence projections) + is_sub_only_lifetime
 # (registry-level compiled expression over the rollup).
@@ -44,7 +48,7 @@ from dataclasses import dataclass
 # latitude/longitude/geo_precision; the map adapter emits real Point geometry.
 # v2: state → closed enum (live-probed USPS codes); `codes` typeahead attribute on the
 # code-valued fields (naics/psc/agency); agency added to the /market/codes systems.
-REGISTRY_VERSION = "entities.v4"
+REGISTRY_VERSION = "entities.v5"
 
 # The two scalar source tables (keys into market_store's URI map). Lane predicates are
 # a third, non-scalar source compiled separately (see LANE below).
@@ -196,6 +200,14 @@ ENTITY_FIELDS: dict[str, MarketFieldSpec] = {
         expr=("(sub_ct_lifetime > 0 AND prime_award_ct_lifetime = 0)",
               "(sub_ct_lifetime = 0 OR prime_award_ct_lifetime > 0)")),
     # ── entities: SAM identity axes (universe: the full 2.03M-UEI SAM∪DSBS∪FSRS spine) ──
+    "uei": MarketFieldSpec(
+        "entities", "uei", "string", ("=", "in"),
+        "The entity's SAM UEI (exact, 12-char alphanumeric; charset-validated fail-closed"
+        "). THE cross-grain join key: push a UEI set produced by any other grain (e.g. a "
+        "recipient-collapsed transaction query) back in as an entity predicate and "
+        "intersect with any other entity filters. 'in' lists are capped (422 above the "
+        f"cap — chunk client-side).{_GRAIN}",
+        index="BTREE"),
     "state": MarketFieldSpec(
         "entities", "physical_state", "string", ("=", "in"),
         "Physical address state (2-letter USPS code) from the SAM registration. CLOSED "
@@ -727,4 +739,14 @@ def table_fields_payload(spec: TableGrainSpec) -> dict:
         "geometry": spec.geometry,
         "description": spec.description,
         "resultColumns": cols,
+        "collapse": {
+            "modes": ["recipients"],
+            "semantics": (
+                "POST /api/v1/market/query with collapse:'recipients' returns the "
+                "DISTINCT recipients behind the matching rows (uei, recipient_name, "
+                "match_ct, amt_total, last_action_date; Σ$-sorted) instead of raw "
+                "rows — the 'companies that …' shape. distinct_recipients is exact "
+                "unless meta.scanCapped flags the aggregation scan bound."
+            ),
+        },
     }
