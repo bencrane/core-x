@@ -49,6 +49,12 @@ INFERRED_ROWS = [
 GEO_ROWS = [
     {"uei": TARGET, "latitude": 38.8816, "longitude": -77.0910},
     {"uei": NO_SIGNAL_UEI, "latitude": 38.9072, "longitude": -77.0369},
+    {"uei": PEER1, "latitude": 39.0, "longitude": -77.4},   # PEER2 stays ungeocoded
+]
+# Peer-name hydration fixture (gtm_sam_entities point scan; PEER2 has no SAM row —
+# its name hydrates as null, never fabricated).
+SAM_NAME_ROWS = [
+    {"uei": PEER1, "legal_business_name": "PEER ONE LLC"},
 ]
 EVIDENCE_ROWS = [
     {"subawardee_uei": PEER1, "code": "541512"},
@@ -174,6 +180,7 @@ class Seams:
         self.sites_loads = 0
         self.loader_error: Exception | None = None
         self.evidence_error: Exception | None = None
+        self.sam_name_error: Exception | None = None
 
     @staticmethod
     def _match(rows, predicate, key, code_type_col=None):
@@ -194,6 +201,12 @@ class Seams:
         # now — a remote scan against them is a hot-path regression, fail loud.
         if uri == config.GTM_INFERRED_PRIMEABLE_URI:
             rows = self._match(INFERRED_ROWS, predicate, "uei", "code_type")
+        elif uri == config.GTM_SAM_ENTITIES_URI:
+            # the opt-in peers stage's name hydration (chunked BTREE IN point scan) —
+            # NEVER on the default hot path (the hot-path test pins that)
+            if self.sam_name_error is not None:
+                raise self.sam_name_error
+            rows = self._match(SAM_NAME_ROWS, predicate, "uei")
         else:
             raise AssertionError(f"unexpected remote scan uri {uri}")
         return [{c: r.get(c) for c in columns} for r in rows]
@@ -522,6 +535,9 @@ def test_default_all_lens_flow_end_to_end(seams):
     assert a1["awarding_agency_name"] == "Department of Defense"
     assert a1["period_of_performance_current_end_date"] == "2026-12-31"  # JSON-shaped
     assert a1["pop_state_code"] == "VA" and a1["award_or_idv_flag"] == "AWARD"
+    # map-ready: rows carry the PoP centroid; meta carries the target HQ anchor
+    assert a1["latitude"] == 38.9586 and a1["longitude"] == -77.3570
+    assert meta["target_hq"] == {"latitude": 38.8816, "longitude": -77.0910}
     # matched evidence carries BOTH sides: the target's lens + the cube marginal cell
     matched = {(m["lens"], m["code"]) for m in a1["matched"]}
     assert ("awarded_prime_contracts_in_code", "541512") in matched
@@ -537,9 +553,10 @@ def test_default_all_lens_flow_end_to_end(seams):
             assert c["weight"] == subout_store.COMPONENT_WEIGHTS[c["name"]]
         assert o["score"] == pytest.approx(
             sum(c["contribution"] for c in o["components"]), abs=1e-6)
-    # A2 carries no PoP centroid: distance null, proximity neutral
+    # A2 carries no PoP centroid: distance null, proximity neutral, coords null
     a2 = by_id["CONT_AWD_A2"]
     assert a2["distance_mi"] is None and a2["pop_geo_precision"] is None
+    assert a2["latitude"] is None and a2["longitude"] is None
     assert a2["prime_uei"] == P2 and a2["prime_name"] == "PRIME TWO INC"
     # A3 is county-precision: distance computed but proximity stays NEUTRAL
     a3 = by_id["CONT_AWD_A3"]
@@ -667,15 +684,50 @@ def test_inferred_probe_capped_at_top_supported_codes(seams, monkeypatch):
 
 def test_include_peers_true_runs_the_remote_evidence_query(seams):
     out = _run({"uei": TARGET, "include_peers": True})
-    # top matched codes by distinct_recipient_ct: 541512 (35), 238220 (12), 541511 (8)
-    assert out["data"]["peers"] == [{"uei": PEER1, "shared_code": "541512"},
-                                    {"uei": PEER2, "shared_code": "238220"}]
+    # top matched codes by distinct_recipient_ct: 541512 (35), 238220 (12), 541511 (8).
+    # Peers hydrate map-ready: name via the gtm_sam_entities point scan, HQ off the
+    # boot geo cache — both honestly null when absent (PEER2 has neither).
+    assert out["data"]["peers"] == [
+        {"uei": PEER1, "shared_code": "541512",
+         "legal_business_name": "PEER ONE LLC", "latitude": 39.0, "longitude": -77.4},
+        {"uei": PEER2, "shared_code": "238220",
+         "legal_business_name": None, "latitude": None, "longitude": None},
+    ]
+    name_calls = [c for c in seams.scan_calls if c[0] == config.GTM_SAM_ENTITIES_URI]
+    assert len(name_calls) == 1                          # ONE chunked IN scan
+    assert f"'{PEER1}'" in name_calls[0][2] and f"'{PEER2}'" in name_calls[0][2]
     assert "peers" in out["meta"]["timings_ms"]
     assert not any("peers omitted" in n for n in out["meta"].get("notes", []))
     ev_calls = [c for c in seams.stream_calls
                 if c[0] == config.GTM_SUBAWARD_RECIPIENT_CODE_EVIDENCE_URI]
     assert len(ev_calls) == 1
     assert ev_calls[0][3] == subout_store.PEER_EVIDENCE_ROW_SCAN
+
+
+def test_peer_name_hydration_failure_degrades_to_null_names(seams):
+    seams.sam_name_error = OSError("gtm_sam_entities momentarily unreachable")
+    out = _run({"uei": TARGET, "include_peers": True})
+    peers = out["data"]["peers"]
+    assert [p["uei"] for p in peers] == [PEER1, PEER2]   # peers still served
+    assert all(p["legal_business_name"] is None for p in peers)
+    assert peers[0]["latitude"] == 39.0                  # geo is cache-served, unaffected
+    assert any("peer name hydration unavailable" in n for n in out["meta"]["notes"])
+
+
+def test_map_ready_wire_target_hq_on_empty_and_failed_answers(seams):
+    # no-signal UEI: empty market, but the map anchor still rides meta
+    out = _run({"uei": NO_SIGNAL_UEI})
+    assert out["meta"]["reason"] == "uei has no code signals"
+    assert out["meta"]["target_hq"] == {"latitude": 38.9072, "longitude": -77.0369}
+    # ungeocoded UEI (valid charset, absent from the geo cache): honestly null
+    subout_store.reset_caches_for_tests()
+    out2 = _run({"uei": "UEINOGEO0001", "codes_override": ["611430"]})
+    assert out2["meta"]["target_hq"] is None
+    # failed cold build: HQ unknowable — null, never stale or fabricated
+    subout_store.reset_caches_for_tests()
+    seams.loader_error = OSError("build died")
+    out3 = _run({"uei": TARGET})
+    assert out3["meta"]["cache_state"] == "failed" and out3["meta"]["target_hq"] is None
 
 
 def test_unreachable_evidence_table_degrades_to_no_peers(seams):
@@ -769,7 +821,9 @@ def test_nearest_federal_site_bucket_lookup_hand_pinned():
     # exact hit: query point ON the Reston site → distance 0, full payload
     hit = subout_store._nearest_federal_site(38.9586, -77.3570, grid)
     assert hit == {"site_name": "RESTON FEDERAL CENTER", "site_type": "OFFICE",
-                   "site_source": "gsa_building", "distance_mi": 0.0,
+                   "site_source": "gsa_building",
+                   "latitude": 38.9586, "longitude": -77.3570,   # the map primitive
+                   "distance_mi": 0.0,
                    "lease_expiring_24mo_ct": 3,
                    "earliest_lease_expiration_date": "2027-01-15"}
     # ADJACENT-bucket win: from 39.02°N the base one bucket north (2.7 mi) beats the
