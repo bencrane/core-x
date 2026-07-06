@@ -174,6 +174,24 @@ def _ledger_state(so) -> tuple[set[str], dict[str, str]]:
     return pushed, lead_by_uei
 
 
+def _ledger_id_maps(so) -> tuple[dict[str, str], dict[str, str]]:
+    """(uei → close_lead_id, sam_person_id → close_contact_id) from the ledger."""
+    ds = _open_ledger(so)
+    if ds is None:
+        return {}, {}
+    t = ds.to_table(columns=["sam_person_id", "uei", "close_lead_id", "close_contact_id"])
+    lead_by_uei: dict[str, str] = {}
+    contact_by_person: dict[str, str] = {}
+    for pid, uei, lid, cid in zip(t.column("sam_person_id").to_pylist(), t.column("uei").to_pylist(),
+                                  t.column("close_lead_id").to_pylist(),
+                                  t.column("close_contact_id").to_pylist()):
+        if uei and lid and uei not in lead_by_uei:
+            lead_by_uei[uei] = lid
+        if pid and cid and pid not in contact_by_person:
+            contact_by_person[pid] = cid
+    return lead_by_uei, contact_by_person
+
+
 # ── Close API ──────────────────────────────────────────────────────────────────
 
 def _close_call(method: str, path: str, payload: dict | None = None) -> dict:
@@ -297,6 +315,19 @@ def resolve_cohort(cohort_sql: str, so, limit: int | None):
 
 # ── push ──────────────────────────────────────────────────────────────────────
 
+def _jval(v):
+    """JSON-safe scalar: unwrap numpy types, ISO-format dates. NaN/None → None."""
+    if v is None:
+        return None
+    if hasattr(v, "item"):
+        v = v.item()
+    if isinstance(v, float) and v != v:
+        return None
+    if isinstance(v, (dt.date, dt.datetime)):
+        return v.isoformat()
+    return v
+
+
 def run_push(cohort_path: str, live: bool, limit: int | None) -> None:
     so = _r2_storage_options()
     cohort_name = Path(cohort_path).stem
@@ -348,19 +379,20 @@ def run_push(cohort_path: str, live: bool, limit: int | None) -> None:
             lead_id = lead_by_uei.get(uei)
             if lead_id is None:
                 custom = {f"custom.{lead_cf['uei']}": uei}
-                if first["normalized_domain"] and "company_domain" in lead_cf:
-                    custom[f"custom.{lead_cf['company_domain']}"] = first["normalized_domain"]
+                domain = _jval(first["normalized_domain"])
+                if domain and "company_domain" in lead_cf:
+                    custom[f"custom.{lead_cf['company_domain']}"] = domain
                 for name, col in (("physical_state", "physical_state"), ("primary_naics", "primary_naics")):
-                    v = first[col]
-                    if name in lead_cf and v is not None and v == v:
+                    v = _jval(first[col])
+                    if name in lead_cf and v is not None:
                         custom[f"custom.{lead_cf[name]}"] = v
                 for c in known_lead_x:
-                    v = first[f"x_{c}"]
-                    if v is not None and v == v:
+                    v = _jval(first[f"x_{c}"])
+                    if v is not None:
                         custom[f"custom.{lead_cf[c]}"] = v
-                payload = {"name": first["legal_business_name"] or uei, **custom}
-                if first["normalized_domain"] and isinstance(first["normalized_domain"], str):
-                    payload["url"] = f"https://{first['normalized_domain']}"
+                payload = {"name": _jval(first["legal_business_name"]) or uei, **custom}
+                if domain and isinstance(domain, str):
+                    payload["url"] = f"https://{domain}"
                 lead = _close_call("POST", "/lead/", payload)
                 lead_id = lead["id"]
                 lead_by_uei[uei] = lead_id
@@ -371,14 +403,14 @@ def run_push(cohort_path: str, live: bool, limit: int | None) -> None:
                                   ("dm_status", "dm_class"), ("linkedin_url", "li_norm"),
                                   ("email_mv_result", "mv_result"), ("email_mv_quality", "mv_quality"),
                                   ("phone_vendor", "phone_vendor")):
-                    v = r[col]
-                    if name in contact_cf and v is not None and v == v:
+                    v = _jval(r[col])
+                    if name in contact_cf and v is not None:
                         cc[f"custom.{contact_cf[name]}"] = v
                 for c in known_contact_x:
-                    v = r[f"x_{c}"]
-                    if v is not None and v == v:
+                    v = _jval(r[f"x_{c}"])
+                    if v is not None:
                         cc[f"custom.{contact_cf[c]}"] = v
-                payload = {"lead_id": lead_id, "name": r["display_name"], **cc}
+                payload = {"lead_id": lead_id, "name": _jval(r["display_name"]) or "", **cc}
                 if r["title"] and r["title"] == r["title"]:
                     payload["title"] = r["title"]
                 if r["phone"] and r["phone"] == r["phone"]:
@@ -390,10 +422,9 @@ def run_push(cohort_path: str, live: bool, limit: int | None) -> None:
                 ledger_rows.append({
                     "sam_person_id": r["sam_person_id"], "uei": uei,
                     "close_lead_id": lead_id, "close_contact_id": contact["id"],
-                    "normalized_domain": r["normalized_domain"], "row_type": "contact",
+                    "normalized_domain": _jval(r["normalized_domain"]), "row_type": "contact",
                     "cohort_name": cohort_name, "batch_label": batch_label,
-                    "email": r["email"] if r["email"] == r["email"] else None,
-                    "phone": r["phone"] if r["phone"] == r["phone"] else None,
+                    "email": _jval(r["email"]), "phone": _jval(r["phone"]),
                     "pushed_at": now,
                 })
     finally:
@@ -465,6 +496,69 @@ def seed_from_close() -> None:
 
 # ── verify ────────────────────────────────────────────────────────────────────
 
+def run_enrich(enrich_path: str, live: bool, limit: int | None) -> None:
+    """Update custom fields on already-pushed Close objects (ledger-mapped).
+
+    The enrich SQL runs over MART_VIEWS and must return exactly one identity column —
+    `uei` (lead enrich) or `sam_person_id` (contact enrich) — plus value columns whose
+    names match Close custom-field names. Only those fields are PUT; everything else on
+    the object is untouched. NULL values are skipped (never used to clear a field).
+    Dry-run by default; idempotent under re-runs.
+    """
+    so = _r2_storage_options()
+    sql = Path(enrich_path).read_text()
+    con = _duck(so)
+    df = con.execute(sql).df()
+    if limit:
+        df = df.head(int(limit))
+    cols = list(df.columns)
+    has_uei, has_pid = "uei" in cols, "sam_person_id" in cols
+    if has_uei == has_pid:
+        raise RuntimeError(f"enrich SQL must return exactly one of uei | sam_person_id; got {cols}")
+    target = "lead" if has_uei else "contact"
+    id_col = "uei" if has_uei else "sam_person_id"
+    value_cols = [c for c in cols if c != id_col]
+
+    lead_cf, contact_cf = _custom_field_maps()
+    cf = lead_cf if target == "lead" else contact_cf
+    known = [c for c in value_cols if c in cf]
+    unknown = [c for c in value_cols if c not in cf]
+    if unknown:
+        print(f"  → IGNORED (no matching Close {target} custom field): {unknown}")
+    if not known:
+        raise RuntimeError(f"no returned column matches a Close {target} custom field")
+
+    lead_by_uei, contact_by_person = _ledger_id_maps(so)
+    id_map = lead_by_uei if target == "lead" else contact_by_person
+    df["_close_id"] = df[id_col].map(id_map)
+    missing = df["_close_id"].isna().sum()
+    todo = df[df["_close_id"].notna()]
+    print(f"enrich={Path(enrich_path).stem}  target={target}  rows={len(df):,}  "
+          f"ledger_mapped={len(todo):,}  not_in_ledger={missing:,}")
+    print(f"  → fields: {known}")
+
+    if not live:
+        print("\n=== DRY RUN (no writes) — sample ===")
+        print(todo[[id_col, *known]].head(8).to_string(index=False))
+        print(f"\nre-run with --live to update {len(todo):,} {target}s")
+        return
+
+    n = 0
+    for _, r in todo.iterrows():
+        payload = {}
+        for c in known:
+            v = _jval(r[c])
+            if v is not None:
+                payload[f"custom.{cf[c]}"] = v
+        if not payload:
+            continue
+        _close_call("PUT", f"/{target}/{r['_close_id']}/", payload)
+        n += 1
+        if n % 50 == 0:
+            print(f"  updated {n:,}/{len(todo):,} …", flush=True)
+    print(f"ENRICHED {target}s updated={n:,}")
+
+
 def verify() -> None:
     import duckdb
     so = _r2_storage_options()
@@ -489,13 +583,17 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, help="cap resolved cohort size")
     ap.add_argument("--seed-from-close", action="store_true",
                     help="backfill ledger from Close custom fields (uei / sam_person_id)")
+    ap.add_argument("--enrich", help="path to enrich SQL (returns uei|sam_person_id + "
+                                     "custom-field-named value columns); PUTs to Close")
     ap.add_argument("--verify", action="store_true")
     args = ap.parse_args()
     if args.verify:
         verify()
     elif args.seed_from_close:
         seed_from_close()
+    elif args.enrich:
+        run_enrich(args.enrich, live=args.live, limit=args.limit)
     elif args.cohort:
         run_push(args.cohort, live=args.live, limit=args.limit)
     else:
-        ap.error("one of --cohort / --seed-from-close / --verify required")
+        ap.error("one of --cohort / --enrich / --seed-from-close / --verify required")
