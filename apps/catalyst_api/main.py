@@ -136,6 +136,13 @@ async def lifespan(_app: FastAPI):
         log.info("catalyst_api: dossier prewarm seconds=%s", warm)
     except Exception as exc:  # noqa: BLE001
         log.warning("catalyst_api: dossier prewarm failed: %s", exc)
+    # Prewarm the subout-opportunities in-process caches (gtm_open_awards + the cube
+    # marginal) on a daemon thread — the build is tens of seconds of R2 streaming, so
+    # it must never delay boot; the first request either finds it warm or builds cold.
+    import threading as _threading
+
+    _threading.Thread(target=subout_store.prewarm_caches, daemon=True,
+                      name="subout-cache-prewarm").start()
     yield
 
 
@@ -600,7 +607,13 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
     fail-closed against the recipe contract in ``subout_store.validate_request`` —
     an unknown key is a 422, never silently ignored. A UEI with no code signals is a
     200 with empty data + ``meta.reason`` (an empty market is an answer, not an
-    error); per-stage wall times ride ``meta.timings_ms``."""
+    error); per-stage wall times ride ``meta.timings_ms``.
+
+    HOT PATH IS IN-PROCESS: the open-award table + the sub-out cube marginal are
+    process-memory caches (lazy, TTL-refreshed in the background; ``meta.cache_state``
+    = cold | warm | unavailable, ``meta.cache_build_ms`` alongside). Per-request
+    remote reads are BTREE uei point-lookups only. ``include_peers`` defaults FALSE —
+    the peers lookup is the one remote non-point query (opt-in; adds latency)."""
     try:
         result = subout_store.execute_subout_opportunities(body)
     except lance_store.MapCompileError as exc:

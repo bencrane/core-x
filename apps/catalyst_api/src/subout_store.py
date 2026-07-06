@@ -8,43 +8,56 @@ WITH its components on the wire: (name, raw_value, weight, contribution) per com
 score = Σ contributions. Fail-closed like the market compiler: any unknown body key,
 off-vocabulary lens, or malformed value raises ``MapCompileError`` (→ 422 at the route).
 
-EXECUTION PLAN (every hop an indexed lookup — no full scans):
-  1. probe_codes    — the target's codes BY LENS (how the code is known):
-       awarded_prime_contracts_in_code   gtm_entity_code_lanes side='prime' (BTREE uei)
+HOT PATH = IN-PROCESS MEMORY (the latency rework). The first cut ran the cube probe,
+the 30.7M-row award-spine fetch, and the centroid join as per-request R2 scans and
+timed 20-120s cold on Railway. Now two caches load ONCE per process (lazy, thread-safe,
+TTL-refreshed in a background thread — a request never blocks on a refresh):
+  • gtm_open_awards   — every OPEN prime award (~150-250K rows), pre-joined with the
+                        PoP centroid geo + agency names; indexed in-process by
+                        recipient_uei / naics_code / product_or_service_code.
+  • the cube marginal — gtm_prime_subout_by_recipient_code (11.8M cells) streamed
+                        through a column-projected batch reader ONCE and grouped to
+                        (recipient_code_type, recipient_code, prime_awardee_uei):
+                        Σ subaward_amt_total, Σ subaward_edge_ct,
+                        max distinct_recipient_ct, max last_subaward_action_date.
+Cache build stats (row counts, build ms, ru_maxrss delta) are logged LOUD at build.
+
+PER-REQUEST REMOTE HOPS (all BTREE uei point-lookups — nothing else leaves process):
+  1. probe_codes — the target's codes BY LENS (how the code is known):
+       awarded_prime_contracts_in_code   gtm_entity_code_lanes side='prime'
        delivered_subawards_under_code    gtm_entity_code_lanes side='sub' — the PRIME
                                          award's code on subawards the firm delivered
                                          under, never a claim of the firm's own work
        sam_registered_naics              gtm_sam_entities primary_naics + naics_codes
-       inferred_primeable                gtm_entity_inferred_primeable_codes — both-sider
-                                         cooccurrence evidence, NOT a demonstration
+       inferred_primeable                gtm_entity_inferred_primeable_codes, capped at
+                                         the top INFERRED_PROBE_CAP codes by support
+                                         (both-sider cooccurrence, NOT a demonstration)
        caller_declared                   codes_override (prospect-declared probe codes)
-  2. prime_subout_cube — gtm_prime_subout_by_recipient_code probed on recipient_code IN
-     (target codes): the primes whose sub-out history hits firms with the target's code
-     profile. Recipients' inferred codes are deliberately absent from the cube (past
-     dollar flows are characterized by demonstration; inference rides the PROBE side).
-  3. active_awards  — usaspending_award_canonical: recipient_uei IN (matched primes,
-     chunked) AND (pop current end >= today OR ordering period end >= today). Date
-     pushdown always rides the IN list — the 30.7M-row spine is never scanned bare.
-  4. geo            — usaspending_award_pop_centroids per award (BTREE
-     generated_unique_award_id) × gtm_entity_geo target HQ → haversine distance_mi.
-  5. score          — COMPONENT_WEIGHTS applied per award, components explicit.
-  6. peers          — top distinct_recipient-heavy matched cube cells → their codes →
-     gtm_subaward_recipient_code_evidence (BTREE code): recipients sharing them.
+  2. target HQ  — gtm_entity_geo point-lookup (1.45M rows stay on R2 by design).
+  3. peers      — OPTIONAL (include_peers defaults FALSE: the evidence-table query is
+                  a remote indexed scan measured ~14.5s live — strictly opt-in).
+
+IN-PROCESS STAGES: cube_match (dict lookups per probe code) → open_awards (index hits
+per matched prime, open-date re-checked against TODAY — the cache may be hours old) →
+distance_mi = haversine(target HQ, the award row's own PoP centroid) → score.
 
 A UEI with no code signals is a 200 with empty data + meta.reason — an empty market is
-an answer, not an error. Per-stage wall times ride meta.timings_ms.
+an answer, not an error. Per-stage wall times ride meta.timings_ms; cache_state
+(cold | warm | unavailable) + cache_build_ms ride meta.
 """
 from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
+from dataclasses import dataclass
 from datetime import date as dt_date
 from typing import Any
 
 from . import config, market_registry
 from .lance_store import MapCompileError, _dataset, _map_jsonable, _sql_str, valid_uei
-from .market_store import _CODE_OK, _chunks, _in_predicate
+from .market_store import _CODE_OK, _in_predicate
 
 log = logging.getLogger("catalyst_api.subout_store")
 
@@ -76,13 +89,15 @@ ALLOWED_BODY_KEYS = frozenset(
 
 DEFAULT_LIMIT = 50
 LIMIT_CAP = 200
-# Bounded fan-out: at most this many matched primes probe the award spine (ranked by
-# matched sub-out $ so the cut keeps the strongest history), and at most this many
-# active awards are scored before the limit cut.
+# Bounded fan-out: the inferred lens can carry ~400 codes per UEI (the all-lens smoke
+# TIMED OUT on it live) — the probe keeps only the strongest-supported codes. Matched
+# primes and scored awards stay bounded too.
+INFERRED_PROBE_CAP = 100
 PRIME_PROBE_CAP = 500
 AWARD_SCAN_CAP = 2_000
 # Peers: how many top matched codes probe the evidence table, how many evidence rows
-# stream before the cut, and the peer cap itself.
+# stream before the cut, and the peer cap itself. The peers stage is the ONLY remote
+# non-point query left (measured ~14.5s live) — hence include_peers defaults FALSE.
 PEER_CODE_PROBE = 3
 PEER_EVIDENCE_ROW_SCAN = 2_000
 PEER_CAP = 10
@@ -96,11 +111,59 @@ PROXIMITY_ZERO_MI = 500.0           # linear decay: 0 mi → 1.0, ≥500 mi → 
 EXPIRING_HORIZON_DAYS = 1_080       # ~3y: ends today → 1.0, ≥horizon → 0.0
 PLAN_REQUIRED_CODES = frozenset({"C", "D", "E", "F", "G", "H"})  # FAR 19.7 plan attached
 
+# ── Cache contract ─────────────────────────────────────────────────────────────
+CACHE_TTL_S = 6 * 3600              # staleness bound; refresh runs in the BACKGROUND
+
+# The full projection loaded from gtm_open_awards (every column the wire row serves).
+OPEN_AWARD_COLUMNS = [
+    "generated_unique_award_id", "award_id_piid", "recipient_uei", "recipient_name",
+    "naics_code", "product_or_service_code", "total_obligation",
+    "base_and_all_options_value", "subaward_count", "total_subaward_amount",
+    "subcontracting_plan_code", "period_of_performance_current_end_date",
+    "ordering_period_end_date", "award_or_idv_flag", "idv_type_code",
+    "type_of_set_aside_code", "awarding_agency_code", "awarding_agency_name",
+    "primary_place_of_performance_state_code", "latitude", "longitude", "geo_precision",
+]
+# The cube columns the marginal needs (NEVER the full grain — recipient_code_source /
+# context_code are aggregated away at load; every source value present in the cube is
+# demonstrated/declared by construction, so the marginal sums them all).
+CUBE_MARGINAL_COLUMNS = [
+    "prime_awardee_uei", "recipient_code_type", "recipient_code",
+    "subaward_amt_total", "subaward_edge_ct", "distinct_recipient_ct",
+    "last_subaward_action_date",
+]
+
+
+@dataclass(frozen=True)
+class SuboutCaches:
+    """The two in-process read models behind the hot path. ``open_awards`` is the row
+    list; the ``awards_by_*`` dicts map key → row indexes into it. ``cube`` maps
+    (recipient_code_type, recipient_code) → a COLUMNAR cell block
+    ``(primes: tuple[str], amt_totals: array('d'), edge_cts: array('q'),
+    distinct_cts: array('q'), last_dates: tuple[date|None])`` — parallel arrays
+    instead of 1.7M per-cell dict entries, for RSS (measured: the dict-shaped cube
+    blew the ~1GB budget)."""
+
+    open_awards: list[dict[str, Any]]
+    awards_by_prime: dict[str, list[int]]
+    awards_by_naics: dict[str, list[int]]
+    awards_by_psc: dict[str, list[int]]
+    cube: dict[tuple[str | None, str], tuple]
+    cube_cell_count: int
+    build_ms: float
+
+
+_cache_lock = threading.Lock()
+_build_lock = threading.Lock()
+_caches: SuboutCaches | None = None
+_caches_built_at: float | None = None
+_cache_refreshing = False
+
 
 # ── I/O seams (monkeypatch targets for the hermetic tests) ─────────────────────
 def _scan_to_pylist(uri: str, columns: list[str], predicate: str | None) -> list[dict[str, Any]]:
-    """One fresh scanner (one-shot by contract) → rows. Every caller passes an indexed
-    point/IN predicate — never an unfiltered projection."""
+    """One fresh scanner (one-shot by contract) → rows. Every per-request caller
+    passes a BTREE point predicate — never an unfiltered projection."""
     return _dataset(uri).scanner(columns=columns, filter=predicate).to_table().to_pylist()
 
 
@@ -114,6 +177,206 @@ def _stream_rows(uri: str, columns: list[str], predicate: str | None, limit: int
         if len(out) >= limit:
             break
     return out[:limit]
+
+
+def _load_open_awards() -> list[dict[str, Any]]:
+    """The full gtm_open_awards table (~150-250K rows, tens of MB) as row dicts —
+    the one full-table load the recipe makes, ONCE per cache build."""
+    scanner = _dataset(config.GTM_OPEN_AWARDS_URI).scanner(columns=OPEN_AWARD_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for batch in scanner.to_batches():
+        rows.extend(batch.to_pylist())
+    return rows
+
+
+def _load_cube_marginal() -> dict[tuple[str, str, str], tuple[float, int, int, Any]]:
+    """The (recipient_code_type, recipient_code, prime_awardee_uei) marginal of the
+    11.8M-cell cube: one column-projected streamed pass over the Lance batches,
+    aggregated in-process (Σ$, Σ edges, max distinct_recipient_ct, max last date) —
+    no extra engine dependency. MEMORY-COMPACT by construction: value cells are
+    tuples (never per-cell dicts), key strings are ``sys.intern``-ed (primes/codes
+    repeat across millions of cells), and the full grain is never materialized —
+    measured live, this keeps the retained marginal (~1.7M cells) inside the RSS
+    budget where dict-shaped cells blew past it."""
+    from sys import intern
+
+    agg: dict[tuple[str, str, str], list[Any]] = {}
+    date_memo: dict[Any, Any] = {}       # dedupe date objects (1.7M cells, few thousand dates)
+    scanner = _dataset(config.GTM_PRIME_SUBOUT_BY_RECIPIENT_CODE_URI).scanner(
+        columns=CUBE_MARGINAL_COLUMNS)
+    for batch in scanner.to_batches():
+        cols = [batch.column(c).to_pylist() for c in CUBE_MARGINAL_COLUMNS]
+        for prime, ct, code, amt, edges, distinct, last in zip(*cols):
+            if not prime or not code:
+                continue
+            if last is not None:
+                last = date_memo.setdefault(last, last)
+            key = (intern(ct) if ct else ct, intern(code), intern(prime))
+            cur = agg.get(key)
+            if cur is None:
+                agg[key] = [float(amt or 0.0), int(edges or 0), int(distinct or 0), last]
+            else:
+                cur[0] += float(amt or 0.0)
+                cur[1] += int(edges or 0)
+                if (distinct or 0) > cur[2]:
+                    cur[2] = int(distinct)
+                if last is not None and (cur[3] is None or last > cur[3]):
+                    cur[3] = last
+    for k in agg:                        # list → tuple IN PLACE (no duplicate dict)
+        agg[k] = tuple(agg[k])           # type: ignore[assignment]
+    return agg                           # type: ignore[return-value]
+
+
+# ── Cache build (pure indexers over the loader seams) ─────────────────────────
+def _index_open_awards(rows: list[dict[str, Any]]) -> tuple[
+        dict[str, list[int]], dict[str, list[int]], dict[str, list[int]]]:
+    by_prime: dict[str, list[int]] = {}
+    by_naics: dict[str, list[int]] = {}
+    by_psc: dict[str, list[int]] = {}
+    for i, row in enumerate(rows):
+        uei = row.get("recipient_uei")
+        if uei:
+            by_prime.setdefault(uei, []).append(i)
+        naics = row.get("naics_code")
+        if naics:
+            by_naics.setdefault(naics, []).append(i)
+        psc = row.get("product_or_service_code")
+        if psc:
+            by_psc.setdefault(psc, []).append(i)
+    return by_prime, by_naics, by_psc
+
+
+def _index_cube(marginal: dict[tuple[str, str, str], tuple[float, int, int, Any]]) -> tuple[
+        dict[tuple[str | None, str], tuple], int]:
+    """(ct, code, prime) → cell tuple, regrouped to (ct, code) → COLUMNAR block
+    ``(primes, amt_totals, edge_cts, distinct_cts, last_dates)`` (parallel sequences;
+    array('d')/array('q') for the numbers). Columnar cells cost ~40B where per-cell
+    dict entries cost ~300B — the difference is the RSS budget at 1.7M cells.
+    CONSUMES the marginal destructively (popitem) so the flat and grouped forms are
+    never both fully resident."""
+    from array import array
+
+    grouped: dict[tuple[str | None, str], tuple[list, list, list, list, list]] = {}
+    n = 0
+    while marginal:
+        (ct, code, prime), cell = marginal.popitem()
+        if not code or not prime:
+            continue
+        block = grouped.get((ct, code))
+        if block is None:
+            block = ([], [], [], [], [])
+            grouped[(ct, code)] = block
+        block[0].append(prime)
+        block[1].append(cell[0])
+        block[2].append(cell[1])
+        block[3].append(cell[2])
+        block[4].append(cell[3])
+        n += 1
+    cube: dict[tuple[str | None, str], tuple] = {
+        key: (tuple(b[0]), array("d", b[1]), array("q", b[2]),
+              array("q", b[3]), tuple(b[4]))
+        for key, b in grouped.items()
+    }
+    return cube, n
+
+
+def _rss() -> int | None:
+    """Best-effort process max-RSS reading (platform units: bytes on macOS, KB on
+    Linux — logged as observability, never a decision input)."""
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:  # noqa: BLE001 — non-POSIX platforms
+        return None
+
+
+def _build_caches() -> SuboutCaches:
+    """Build both in-process read models, LOUDLY (row counts / build ms / RSS delta
+    in the log). Called cold (first request / prewarm) and by the background TTL
+    refresh — never on the hot path of a warm request."""
+    t0 = time.monotonic()
+    rss_before = _rss()
+    # Cube FIRST: its streaming aggregation is the RSS peak of the build — running it
+    # before the open-award table is resident keeps the two from stacking.
+    cube, cube_cells = _index_cube(_load_cube_marginal())
+    open_awards = _load_open_awards()
+    by_prime, by_naics, by_psc = _index_open_awards(open_awards)
+    build_ms = round((time.monotonic() - t0) * 1000.0, 1)
+    rss_after = _rss()
+    rss_delta = ((rss_after - rss_before)
+                 if (rss_before is not None and rss_after is not None) else "n/a")
+    log.info(
+        "subout caches built: open_awards=%d rows (primes=%d naics=%d psc=%d), "
+        "cube_marginal=%d cells over %d (code_type, code) keys; build_ms=%s "
+        "ru_maxrss_delta=%s (platform units)",
+        len(open_awards), len(by_prime), len(by_naics), len(by_psc),
+        cube_cells, len(cube), build_ms, rss_delta)
+    return SuboutCaches(open_awards=open_awards, awards_by_prime=by_prime,
+                        awards_by_naics=by_naics, awards_by_psc=by_psc,
+                        cube=cube, cube_cell_count=cube_cells, build_ms=build_ms)
+
+
+def _refresh_caches() -> None:
+    """Background TTL refresh: build fresh, swap under the lock. Failure keeps the
+    old (stale-but-serving) cache — a refresh NEVER degrades a working process."""
+    global _caches, _caches_built_at, _cache_refreshing
+    try:
+        fresh = _build_caches()
+        with _cache_lock:
+            _caches = fresh
+            _caches_built_at = time.monotonic()
+    except Exception as exc:  # noqa: BLE001 — keep serving the stale cache
+        log.warning("subout cache refresh failed (stale cache stays live): %s", exc)
+    finally:
+        with _cache_lock:
+            _cache_refreshing = False
+
+
+def _ensure_caches() -> tuple[str, SuboutCaches]:
+    """(cache_state, caches). 'warm' serves the in-memory build (kicking a BACKGROUND
+    refresh when past TTL — the request itself never waits on a rebuild); 'cold'
+    means THIS call built it (first request or post-failure retry). Raises when a
+    cold build fails — the executor degrades to an empty answer with a note, and the
+    NEXT request retries (a failed build is never cached)."""
+    global _caches, _caches_built_at, _cache_refreshing
+    with _cache_lock:
+        if _caches is not None:
+            stale = (_caches_built_at is None
+                     or (time.monotonic() - _caches_built_at) > CACHE_TTL_S)
+            if stale and not _cache_refreshing:
+                _cache_refreshing = True
+                threading.Thread(target=_refresh_caches, daemon=True,
+                                 name="subout-cache-refresh").start()
+            return "warm", _caches
+    with _build_lock:                    # serialize concurrent cold builds
+        with _cache_lock:
+            if _caches is not None:
+                return "warm", _caches
+        built = _build_caches()
+        with _cache_lock:
+            _caches = built
+            _caches_built_at = time.monotonic()
+        return "cold", built
+
+
+def prewarm_caches() -> None:
+    """Boot-time best-effort warm (called from a daemon thread in main.lifespan) so
+    the FIRST request after a deploy is already in-memory. Never raises."""
+    try:
+        state, caches = _ensure_caches()
+        log.info("subout cache prewarm: state=%s build_ms=%s", state, caches.build_ms)
+    except Exception as exc:  # noqa: BLE001 — prewarm must never brick boot
+        log.warning("subout cache prewarm failed (first request will retry): %s", exc)
+
+
+def reset_caches_for_tests() -> None:
+    """Test hook: drop the module cache state (hermetic tests build via the stubbed
+    loader seams)."""
+    global _caches, _caches_built_at, _cache_refreshing
+    with _cache_lock:
+        _caches = None
+        _caches_built_at = None
+        _cache_refreshing = False
 
 
 # ── Request validation (fail-closed — MapCompileError → 422 at the route) ─────
@@ -167,14 +430,18 @@ def validate_request(body: Any) -> dict[str, Any]:
         raise MapCompileError("limit must be a positive whole number")
     limit = min(limit, LIMIT_CAP)
 
+    # include_peers defaults FALSE: the peers stage is the one remote non-point query
+    # left (evidence-table indexed scan, ~14.5s measured live) — strictly opt-in.
     include_peers = body.get("include_peers")
-    if include_peers is None:
-        include_peers = True
+    peers_defaulted = include_peers is None
+    if peers_defaulted:
+        include_peers = False
     elif not isinstance(include_peers, bool):
         raise MapCompileError("include_peers must be a boolean")
 
     return {"uei": uei, "lenses": lenses, "codes_override": codes_override,
-            "code_type": code_type, "limit": limit, "include_peers": include_peers}
+            "code_type": code_type, "limit": limit, "include_peers": include_peers,
+            "peers_defaulted": peers_defaulted}
 
 
 # ── Normalizations (pure — component-math determinism is pinned by tests) ─────
@@ -235,12 +502,14 @@ def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 3958.8 * 2.0 * math.asin(min(1.0, math.sqrt(a)))
 
 
-# ── Stage 1: the target's probe codes, by lens ─────────────────────────────────
+# ── Stage 1 (remote point-lookups): the target's probe codes, by lens ──────────
 def _probe_codes(uei: str, lenses: list[str], code_type: str | None,
-                 codes_override: list[str]) -> list[dict[str, Any]]:
+                 codes_override: list[str], notes: list[str]) -> list[dict[str, Any]]:
     """The target's code signals as lens entries
     ``{lens, code_type, code, evidence, strength}`` — deduped on (lens, code_type,
-    code). Every scan is a BTREE uei point-lookup."""
+    code). Every scan is a BTREE uei point-lookup. The inferred lens is capped at the
+    top INFERRED_PROBE_CAP codes by supporting_bothsider_firm_ct (a ~400-code inferred
+    profile exploded the fan-out live — the cap is noted on the wire when applied)."""
     entries: dict[tuple[str, str | None, str], dict[str, Any]] = {}
 
     def add(lens: str, ct: str | None, code: Any, evidence: dict[str, Any]) -> None:
@@ -280,56 +549,53 @@ def _probe_codes(uei: str, lenses: list[str], code_type: str | None,
         pred = uei_pred
         if code_type is not None:
             pred += f" AND code_type = {_sql_str(code_type)}"
-        for row in _scan_to_pylist(config.GTM_INFERRED_PRIMEABLE_URI,
+        inferred = _scan_to_pylist(config.GTM_INFERRED_PRIMEABLE_URI,
                                    ["uei", "code_type", "code",
-                                    "supporting_bothsider_firm_ct"], pred):
+                                    "supporting_bothsider_firm_ct"], pred)
+        if len(inferred) > INFERRED_PROBE_CAP:
+            inferred.sort(key=lambda r: (-(r.get("supporting_bothsider_firm_ct") or 0),
+                                         r.get("code") or ""))
+            inferred = inferred[:INFERRED_PROBE_CAP]
+            notes.append(
+                f"inferred_primeable probe capped to the top {INFERRED_PROBE_CAP} "
+                "codes by supporting_bothsider_firm_ct")
+        for row in inferred:
             add(LENS_INFERRED_PRIMEABLE, row.get("code_type"), row.get("code"),
                 {"supporting_bothsider_firm_ct": row.get("supporting_bothsider_firm_ct")})
 
     for c in codes_override:
         # caller-declared probe codes carry the request's code_type restriction when
-        # set, else no type claim (the cube probe matches on recipient_code alone).
+        # set, else no type claim (the cube lookup then probes both code systems).
         add(LENS_CALLER_DECLARED, code_type, c, {"declared_by_caller": True})
 
     return list(entries.values())
 
 
-# ── Stage 2: primes that sub out into the target's codes (the cube probe) ─────
-def _match_primes(lens_entries: list[dict[str, Any]], code_type: str | None,
-                  notes: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """gtm_prime_subout_by_recipient_code probed on recipient_code IN (probe codes) →
-    matched cells grouped by prime, capped at PRIME_PROBE_CAP primes ranked by matched
-    sub-out $. Every recipient_code_source present in the cube is demonstrated/declared
-    by construction (recipients' inferred codes are deliberately absent), so no source
-    restriction applies. Defensive: an unreachable cube (still building) degrades to
-    zero matches with a meta note, never a 500."""
-    codes = sorted({e["code"] for e in lens_entries})
-    if not codes:
-        return {}
-    columns = ["prime_awardee_uei", "context_code_type", "context_code",
-               "recipient_code_source", "recipient_code_type", "recipient_code",
-               "subaward_edge_ct", "subaward_amt_total", "distinct_recipient_ct",
-               "last_subaward_action_date"]
-    cells: list[dict[str, Any]] = []
-    try:
-        for chunk in _chunks(codes):
-            pred = _in_predicate("recipient_code", chunk)
-            if code_type is not None:
-                pred += f" AND recipient_code_type = {_sql_str(code_type)}"
-            cells.extend(_scan_to_pylist(
-                config.GTM_PRIME_SUBOUT_BY_RECIPIENT_CODE_URI, columns, pred))
-    except MapCompileError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — the cube may not be materialized yet
-        log.warning("subout cube unreachable (%s): serving zero prime matches", exc)
-        notes.append("gtm_prime_subout_by_recipient_code unreachable — no prime matches served")
-        return {}
+# ── Stage 2 (in-process): primes that sub out into the target's codes ─────────
+def _match_primes_cached(lens_entries: list[dict[str, Any]],
+                         caches: SuboutCaches) -> dict[str, list[dict[str, Any]]]:
+    """Dict lookups against the in-process cube marginal → matched cells grouped by
+    prime, capped at PRIME_PROBE_CAP primes ranked by matched sub-out $. A probe code
+    with no type claim (caller_declared without code_type) probes both systems."""
+    probe_keys: set[tuple[str | None, str]] = set()
+    for entry in lens_entries:
+        if entry["code_type"] is not None:
+            probe_keys.add((entry["code_type"], entry["code"]))
+        else:
+            for ct in CODE_TYPES:
+                probe_keys.add((ct, entry["code"]))
 
     by_prime: dict[str, list[dict[str, Any]]] = {}
-    for cell in cells:
-        prime = cell.get("prime_awardee_uei")
-        if prime:
-            by_prime.setdefault(prime, []).append(cell)
+    for key in sorted(probe_keys, key=lambda k: (k[0] or "", k[1])):
+        block = caches.cube.get(key)
+        if block is None:
+            continue
+        primes, amts, edges, distincts, lasts = block
+        for prime, amt, edge_ct, distinct, last in zip(primes, amts, edges, distincts, lasts):
+            by_prime.setdefault(prime, []).append(
+                {"recipient_code_type": key[0], "recipient_code": key[1],
+                 "subaward_amt_total": amt, "subaward_edge_ct": edge_ct,
+                 "distinct_recipient_ct": distinct, "last_subaward_action_date": last})
     if len(by_prime) > PRIME_PROBE_CAP:
         ranked = sorted(
             by_prime,
@@ -339,49 +605,40 @@ def _match_primes(lens_entries: list[dict[str, Any]], code_type: str | None,
     return by_prime
 
 
-# ── Stage 3: those primes' ACTIVE awards ───────────────────────────────────────
-AWARD_COLUMNS = [
-    "generated_unique_award_id", "award_id_piid", "recipient_uei", "naics_code",
-    "product_or_service_code", "total_obligation", "base_and_all_options_value",
-    "subaward_count", "total_subaward_amount", "subcontracting_plan_code",
-    "period_of_performance_current_end_date", "ordering_period_end_date",
-    "awarding_agency_code", "awarding_agency_name",
-]
+# ── Stage 3 (in-process): those primes' OPEN awards ────────────────────────────
+def _is_open(row: dict[str, Any], today: dt_date) -> bool:
+    """Open-date re-check at request time (the cache may be hours old within TTL):
+    keep when either end date is >= today; a row with NEITHER date trusts the
+    builder's open-at-as_of guarantee."""
+    pop_end = row.get("period_of_performance_current_end_date")
+    ord_end = row.get("ordering_period_end_date")
+    if pop_end is None and ord_end is None:
+        return True
+    for d in (pop_end, ord_end):
+        if isinstance(d, dt_date) and d >= today:
+            return True
+    return False
 
 
-def _active_awards(prime_ueis: list[str], today: dt_date) -> list[dict[str, Any]]:
-    """Chunked ``recipient_uei IN (...)`` + open-end-date pushdown over the 30.7M-row
-    award spine (BTREE recipient_uei; the date predicate always rides the IN list —
-    never a bare scan). Bounded at AWARD_SCAN_CAP rows."""
-    date_lit = f"DATE '{today.isoformat()}'"
-    active_pred = (f"(period_of_performance_current_end_date >= {date_lit}"
-                   f" OR ordering_period_end_date >= {date_lit})")
+def _open_awards_for(primes: list[str], caches: SuboutCaches,
+                     today: dt_date) -> list[dict[str, Any]]:
+    """In-process index hits: awards_by_prime rows for the matched primes, open-date
+    re-checked, bounded at AWARD_SCAN_CAP."""
     out: list[dict[str, Any]] = []
-    for chunk in _chunks(sorted(prime_ueis)):
-        remaining = AWARD_SCAN_CAP - len(out)
-        if remaining <= 0:
-            break
-        pred = f"{_in_predicate('recipient_uei', chunk)} AND {active_pred}"
-        out.extend(_stream_rows(config.USASPENDING_AWARD_CANONICAL_URI,
-                                AWARD_COLUMNS, pred, remaining))
+    for prime in sorted(primes):
+        for idx in caches.awards_by_prime.get(prime, []):
+            row = caches.open_awards[idx]
+            if _is_open(row, today):
+                out.append(row)
+                if len(out) >= AWARD_SCAN_CAP:
+                    return out
     return out
 
 
-# ── Stage 4: geo (award PoP centroid × target HQ → distance_mi) ────────────────
-def _award_geo(award_ids: list[str]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for chunk in _chunks(sorted(award_ids)):
-        for row in _scan_to_pylist(
-                config.USASPENDING_AWARD_POP_CENTROIDS_URI,
-                ["generated_unique_award_id", "latitude", "longitude", "geo_precision"],
-                _in_predicate("generated_unique_award_id", chunk)):
-            key = row.get("generated_unique_award_id")
-            if key:
-                out[key] = row
-    return out
-
-
+# ── Stage 4 (remote point-lookup): the target's HQ ─────────────────────────────
 def _target_hq(uei: str) -> tuple[float, float] | None:
+    """gtm_entity_geo BTREE uei point-lookup → (lat, lon) or None. The 1.45M-row HQ
+    sidecar deliberately stays on R2 — one indexed point read per request."""
     rows = _scan_to_pylist(config.GTM_ENTITY_GEO_URI,
                            ["uei", "latitude", "longitude"], f"uei = {_sql_str(uei)}")
     for row in rows:
@@ -391,13 +648,14 @@ def _target_hq(uei: str) -> tuple[float, float] | None:
     return None
 
 
-# ── Stage 5: score (components EXPLICIT on the wire) ───────────────────────────
+# ── Stage 5 (in-process): score — components EXPLICIT on the wire ──────────────
 def _matched_evidence(cells: list[dict[str, Any]],
                       entries_by_code: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """The (lens, code) hits connecting the target to one prime, each carrying BOTH
     sides of the evidence: how the TARGET knows the code (lens evidence) and how the
-    PRIME's sub-out history hits it (the cube cell measures). Deduped on (lens, code),
-    keeping the largest-$ cell."""
+    PRIME's sub-out history hits it (the cube marginal measures — Σ across the
+    aggregated source/context dims). Deduped on (lens, code), keeping the largest-$
+    cell."""
     best: dict[tuple[str, str], dict[str, Any]] = {}
     for cell in cells:
         code = cell.get("recipient_code")
@@ -412,9 +670,7 @@ def _matched_evidence(cells: list[dict[str, Any]],
                 "code": code,
                 "evidence": {
                     **entry["evidence"],
-                    "recipient_code_source": cell.get("recipient_code_source"),
-                    "context_code_type": cell.get("context_code_type"),
-                    "context_code": cell.get("context_code"),
+                    "recipient_code_type": cell.get("recipient_code_type"),
                     "subaward_edge_ct": cell.get("subaward_edge_ct"),
                     "subaward_amt_total": cell.get("subaward_amt_total"),
                     "distinct_recipient_ct": cell.get("distinct_recipient_ct"),
@@ -463,14 +719,15 @@ def _components(award: dict[str, Any], cells: list[dict[str, Any]],
     ]
 
 
-# ── Stage 6: peers ─────────────────────────────────────────────────────────────
+# ── Stage 6 (remote, OPT-IN): peers ────────────────────────────────────────────
 def _peers(cells_by_prime: dict[str, list[dict[str, Any]]], target_uei: str,
            notes: list[str]) -> list[dict[str, Any]]:
     """Recipients sharing the target's top matched codes — the "companies like yours"
     the primes already sub to. Top codes = the matched cube cells heaviest in
     distinct_recipient_ct; peer UEIs stream off gtm_subaward_recipient_code_evidence
-    (BTREE code), deduped, target excluded, capped at PEER_CAP. Defensive like the
-    cube probe."""
+    (BTREE code), deduped, target excluded, capped at PEER_CAP. The one remote
+    non-point query in the recipe (~14.5s measured live) — opt-in via include_peers.
+    Defensive: an unreachable evidence table degrades to zero peers with a note."""
     all_cells = [c for cells in cells_by_prime.values() for c in cells]
     if not all_cells:
         return []
@@ -510,13 +767,17 @@ def _peers(cells_by_prime: dict[str, list[dict[str, Any]]], target_uei: str,
 # ── The recipe executor ────────────────────────────────────────────────────────
 def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> dict[str, Any]:
     """The full plan (module docstring). Returns the wire envelope
-    ``{meta: {recipeId, componentWeights, timings_ms, total, ...}, data:
-    {opportunities, peers}}``. Raises ``MapCompileError`` (→ 422) on any off-contract
-    body; a UEI with no code signals is a 200 with empty data + meta.reason."""
+    ``{meta: {recipeId, registryVersion, componentWeights, cache_state,
+    cache_build_ms, timings_ms, total, ...}, data: {opportunities, peers}}``. Raises
+    ``MapCompileError`` (→ 422) on any off-contract body; a UEI with no code signals
+    is a 200 with empty data + meta.reason; an unavailable cache degrades to an empty
+    answer with a note (the next request retries the build)."""
     req = validate_request(body)
     today = today or dt_date.today()
     timings: dict[str, float] = {}
     notes: list[str] = []
+    cache_state = "unavailable"
+    cache_build_ms: float | None = None
     t0 = time.monotonic()
 
     def _mark(stage: str, since: float) -> float:
@@ -532,6 +793,8 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             "componentWeights": dict(COMPONENT_WEIGHTS),
             "uei": req["uei"],
             "lenses": req["lenses"],
+            "cache_state": cache_state,
+            "cache_build_ms": cache_build_ms,
             "timings_ms": timings,
             "total": total,
         }
@@ -541,10 +804,14 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             meta["notes"] = notes
         return meta
 
-    # 1. probe codes by lens
+    if req["peers_defaulted"]:
+        notes.append("peers omitted by default — pass include_peers: true to fetch "
+                     "(a remote indexed query; adds latency)")
+
+    # 1. probe codes by lens (remote BTREE uei point-lookups)
     t = time.monotonic()
     lens_entries = _probe_codes(req["uei"], req["lenses"], req["code_type"],
-                                req["codes_override"])
+                                req["codes_override"], notes)
     t = _mark("probe_codes", t)
     if not lens_entries:
         return {"meta": _meta(0, reason="uei has no code signals"),
@@ -554,42 +821,54 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     for e in lens_entries:
         entries_by_code.setdefault(e["code"], []).append(e)
 
-    # 2. primes whose sub-out history hits those codes
-    cells_by_prime = _match_primes(lens_entries, req["code_type"], notes)
-    t = _mark("prime_subout_cube", t)
+    # 2. the in-process caches (cold path builds; warm path is a dict handoff)
+    try:
+        cache_state, caches = _ensure_caches()
+        cache_build_ms = caches.build_ms
+    except Exception as exc:  # noqa: BLE001 — a failed build degrades; next request retries
+        log.warning("subout caches unavailable (%s): serving degraded empty answer", exc)
+        notes.append("in-process caches unavailable (build failed) — no matches served")
+        _mark("cache_ensure", t)
+        return {"meta": _meta(0), "data": {"opportunities": [], "peers": []}}
+    t = _mark("cache_ensure", t)
 
-    # 3. their ACTIVE awards
-    awards = _active_awards(list(cells_by_prime), today) if cells_by_prime else []
-    t = _mark("active_awards", t)
+    # 3. primes whose sub-out history hits those codes (in-process dict lookups)
+    cells_by_prime = _match_primes_cached(lens_entries, caches)
+    t = _mark("cube_match", t)
 
-    # 4. geo: award PoP centroid × target HQ
-    geo = _award_geo([a["generated_unique_award_id"] for a in awards
-                      if a.get("generated_unique_award_id")]) if awards else {}
+    # 4. their OPEN awards (in-process index hits, open-date re-checked)
+    awards = _open_awards_for(list(cells_by_prime), caches, today) if cells_by_prime else []
+    t = _mark("open_awards", t)
+
+    # 5. geo: target HQ point-lookup; award PoP geo rides each cached row
     hq = _target_hq(req["uei"]) if awards else None
     t = _mark("geo", t)
 
-    # 5. score — every component explicit on the wire
+    # 6. score — every component explicit on the wire. The display-only ``matched``
+    # evidence list is built AFTER the sort for the returned rows only (it is the
+    # single per-award cost that scales with the matched-cell fan-out; scoring needs
+    # just the aggregate strength + $ sum).
     opportunities: list[dict[str, Any]] = []
     for award in awards:
         prime = award.get("recipient_uei")
         cells = cells_by_prime.get(prime, [])
-        matched = _matched_evidence(cells, entries_by_code)
         matched_codes = {c.get("recipient_code") for c in cells}
         matched_strength = max(
             (e["strength"] for code in matched_codes for e in entries_by_code.get(code, [])),
             default=0.0)
-        g = geo.get(award.get("generated_unique_award_id")) or {}
         distance_mi = None
-        if hq is not None and g.get("latitude") is not None and g.get("longitude") is not None:
-            distance_mi = round(_haversine_mi(hq[0], hq[1],
-                                              float(g["latitude"]), float(g["longitude"])), 1)
+        if (hq is not None and award.get("latitude") is not None
+                and award.get("longitude") is not None):
+            distance_mi = round(_haversine_mi(hq[0], hq[1], float(award["latitude"]),
+                                              float(award["longitude"])), 1)
         components = _components(award, cells, matched_strength, distance_mi,
-                                 g.get("geo_precision"), today)
+                                 award.get("geo_precision"), today)
         score = round(sum(c["contribution"] for c in components), 6)
         opportunities.append({
             "generated_unique_award_id": award.get("generated_unique_award_id"),
             "award_id_piid": award.get("award_id_piid"),
-            "prime_awardee_uei": prime,
+            "prime_uei": prime,
+            "prime_name": award.get("recipient_name"),
             "naics_code": award.get("naics_code"),
             "product_or_service_code": award.get("product_or_service_code"),
             "awarding_agency_code": award.get("awarding_agency_code"),
@@ -599,21 +878,27 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             "subaward_count": award.get("subaward_count"),
             "total_subaward_amount": award.get("total_subaward_amount"),
             "subcontracting_plan_code": award.get("subcontracting_plan_code"),
+            "award_or_idv_flag": award.get("award_or_idv_flag"),
+            "idv_type_code": award.get("idv_type_code"),
+            "type_of_set_aside_code": award.get("type_of_set_aside_code"),
             "period_of_performance_current_end_date": _map_jsonable(
                 award.get("period_of_performance_current_end_date")),
             "ordering_period_end_date": _map_jsonable(award.get("ordering_period_end_date")),
-            "pop_geo_precision": g.get("geo_precision"),
+            "pop_state_code": award.get("primary_place_of_performance_state_code"),
+            "pop_geo_precision": award.get("geo_precision"),
             "distance_mi": distance_mi,
-            "matched": matched,
+            "matched": cells,               # placeholder — swapped for evidence below
             "score": score,
             "components": components,
         })
     opportunities.sort(key=lambda o: (-o["score"], o["generated_unique_award_id"] or ""))
     total = len(opportunities)
     opportunities = opportunities[:req["limit"]]
+    for opp in opportunities:               # evidence for the RETURNED rows only
+        opp["matched"] = _matched_evidence(opp["matched"], entries_by_code)
     t = _mark("score", t)
 
-    # 6. peers
+    # 7. peers (remote, opt-in)
     peers: list[dict[str, Any]] = []
     if req["include_peers"]:
         peers = _peers(cells_by_prime, req["uei"], notes)
