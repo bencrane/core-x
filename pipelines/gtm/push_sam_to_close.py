@@ -91,6 +91,8 @@ MART_VIEWS = {
     "gtm_audience_entities":          f"{ACTIVE}/gtm_audience_entities/",
     "gtm_audience_people":            f"{ACTIVE}/gtm_audience_people/",
     "gtm_entity_nearby_bases":        f"{ACTIVE}/gtm_entity_nearby_bases/",
+    "sba_dsbs_certified_firms":       f"{ACTIVE}/sba_dsbs_certified_firms/",
+    "web_homepage_meta":              f"{ACTIVE}/web_homepage_meta/",
 }
 
 # House slug canon (match_sam_person_identity.py): both sides normalize to
@@ -520,14 +522,17 @@ def run_enrich(enrich_path: str, live: bool, limit: int | None) -> None:
     id_col = "uei" if has_uei else "sam_person_id"
     value_cols = [c for c in cols if c != id_col]
 
+    # native (non-custom) object attributes an enrich SQL may set by column name
+    NATIVE = {"lead": ("description", "url"), "contact": ("title",)}[target]
     lead_cf, contact_cf = _custom_field_maps()
     cf = lead_cf if target == "lead" else contact_cf
     known = [c for c in value_cols if c in cf]
-    unknown = [c for c in value_cols if c not in cf]
+    native = [c for c in value_cols if c in NATIVE]
+    unknown = [c for c in value_cols if c not in cf and c not in NATIVE]
     if unknown:
         print(f"  → IGNORED (no matching Close {target} custom field): {unknown}")
-    if not known:
-        raise RuntimeError(f"no returned column matches a Close {target} custom field")
+    if not known and not native:
+        raise RuntimeError(f"no returned column matches a Close {target} custom or native field")
 
     lead_by_uei, contact_by_person = _ledger_id_maps(so)
     id_map = lead_by_uei if target == "lead" else contact_by_person
@@ -536,11 +541,11 @@ def run_enrich(enrich_path: str, live: bool, limit: int | None) -> None:
     todo = df[df["_close_id"].notna()]
     print(f"enrich={Path(enrich_path).stem}  target={target}  rows={len(df):,}  "
           f"ledger_mapped={len(todo):,}  not_in_ledger={missing:,}")
-    print(f"  → fields: {known}")
+    print(f"  → fields: {known}" + (f"  native: {native}" if native else ""))
 
     if not live:
         print("\n=== DRY RUN (no writes) — sample ===")
-        print(todo[[id_col, *known]].head(8).to_string(index=False))
+        print(todo[[id_col, *known, *native]].head(8).to_string(index=False))
         print(f"\nre-run with --live to update {len(todo):,} {target}s")
         return
 
@@ -551,6 +556,10 @@ def run_enrich(enrich_path: str, live: bool, limit: int | None) -> None:
             v = _jval(r[c])
             if v is not None:
                 payload[f"custom.{cf[c]}"] = v
+        for c in native:
+            v = _jval(r[c])
+            if v is not None:
+                payload[c] = v
         if not payload:
             continue
         _close_call("PUT", f"/{target}/{r['_close_id']}/", payload)
