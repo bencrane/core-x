@@ -598,9 +598,13 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
 
 @app.post("/api/v1/market/subout-opportunities", response_model=None, dependencies=[Depends(require_operator)])
 def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
-    """The subout-opportunities recipe (subout_opportunities.v1): given a target UEI,
-    the open prime awards most likely to be subbed out to companies with its code
-    profile. Probe lenses (all four by default): awarded_prime_contracts_in_code /
+    """The subout-opportunities recipe (subout_opportunities.v2 — v1 semantics PLUS
+    federal-site proximity: each opportunity carries ``nearest_federal_site`` off the
+    federal_sites_lance boot grid and a small ``federal_site_proximity`` component;
+    an award without zip5 geo, or with no site inside 50 mi, carries null and is
+    never penalized): given a target UEI, the open prime awards most likely to be
+    subbed out to companies with its code profile. Probe lenses (all four by
+    default): awarded_prime_contracts_in_code /
     delivered_subawards_under_code / sam_registered_naics / inferred_primeable, plus
     caller_declared via ``codes_override``. Every score rides with its explicit
     components (name, raw_value, weight, contribution). The body is validated
