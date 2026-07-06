@@ -257,6 +257,14 @@ USASPENDING_AWARD_POP_CENTROIDS_URI = os.environ.get(
     "USASPENDING_AWARD_POP_CENTROIDS_LANCE_URI",
     "s3://data-sink/active/usaspending_award_pop_centroids/",
 )
+# gtm_open_awards — 1 row per OPEN prime award (active PoP or open IDV ordering window,
+# ~150-250K rows), pre-joined with the PoP centroid geo (latitude/longitude/geo_precision)
+# and agency names. BTREE naics_code / product_or_service_code / recipient_uei. The
+# subout-opportunities hot path loads this table INTO PROCESS MEMORY (lazy, TTL-refreshed)
+# — per-request R2 scans of the 30.7M-row award spine are retired from the recipe.
+GTM_OPEN_AWARDS_URI = os.environ.get(
+    "GTM_OPEN_AWARDS_LANCE_URI", "s3://data-sink/active/gtm_open_awards/"
+)
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
