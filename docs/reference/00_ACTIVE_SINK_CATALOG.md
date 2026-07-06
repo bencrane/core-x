@@ -111,6 +111,22 @@
 > [`COMPANY_DEDUP_MAP.md`](../plans/COMPANY_DEDUP_MAP.md). Headline/marquee totals above are NOT
 > recomputed — a full re-probe refreshes those.
 
+> **Update 2026-07-06 — federal real-property geo layers → `gsa_buildings_lance` + `frpp_civilian_real_property`.**
+> Two point reference layers, the government-building analogue of `military_bases_lance` (NTAD
+> installations) — points instead of polygons, POINT WKT for `ST_GeomFromText` proximity.
+> (1) **`gsa_buildings_lance`** — GSA Inventory of Owned and Leased Properties (IOLP ArcGIS
+> FeatureServer layer 0 `FC_IOLP_BLDG`, self-download via
+> `pipelines/serving/ingest_gsa_iolp_buildings.py`): **8,133 rows · 37 cols · 9 indices**
+> (100% rooftop lat/lon; 6,648 leased · 1,485 owned; 359.5M rentable SF). (2)
+> **`frpp_civilian_real_property`** — the wider net: FY2024 FRPP public dataset, all federal
+> civilian agencies (`pipelines/serving/ingest_frpp_civilian_real_property.py`, streamed from
+> the 139 MB GSA XLSX): **307,919 rows · 121 cols · 10 indices**, 291,177 distinct RPUID (grain
+> is per-reported-asset-record — RPUID is non-unique), 298,221 (96.8%) with point geometry. The
+> public civilian release is NOT coordinate-redacted — `latitude`/`longitude` are typed in place,
+> every other source column carried verbatim (money/measure stay source strings for read-time
+> casting). Added to **§Places/Geo**, live-verified 2026-07-06. Headline/marquee totals above are
+> NOT recomputed — a full re-probe refreshes those.
+
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
 system of record ([`ARCHITECTURE.md` §4](../../ARCHITECTURE.md)); this file is the
@@ -634,7 +650,9 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 
 | Dataset (`active/…`) | Rows | Cols | Indices |
 |---|--:|--:|---|
+| `frpp_civilian_real_property` | 307,919 | 121 | BTree(real_property_unique_identifier); BTree(installation_id); Bitmap(reporting_agency_code); Bitmap(using_agency_code); Bitmap(state_code); Bitmap(real_property_type_code); Bitmap(real_property_use_code); Bitmap(legal_interest_code); Bitmap(asset_status_code); Bitmap(us_foreign) |
 | `geocode_xwalk` | 369,218 | 11 | BTree(addr_hash) |
+| `gsa_buildings_lance` | 8,133 | 37 | BTree(location_code); BTree(objectid); BTree(real_property_asset_name); Bitmap(state_cd); Bitmap(owned_or_leased_indicator); Bitmap(occupancy_right_desc); Bitmap(region_code); Bitmap(building_status); Bitmap(real_property_asset_type) |
 | `military_bases_lance` | 824 | 19 | BTree(objectid); BTree(site_name); BTree(feature_name); Bitmap(country); Bitmap(state_name_code); Bitmap(operational_status); Bitmap(site_reporting_component_code); Bitmap(is_firrma_site); Bitmap(is_joint_base) |
 | `overture_places` | 16,273,123 | 14 | BTree(id); BTree(name); BTree(postcode); BTree(locality); BTree(hilbert); BTree(domain); BTree(phone); Bitmap(region); Bitmap(category) |
 | `overture_places__bak_2026-05-20.0_20260606T192125Z` | 16,273,123 | 13 | BTree(id); BTree(longitude); BTree(latitude); BTree(name); BTree(postcode); BTree(locality); Bitmap(region) |
