@@ -64,6 +64,13 @@ caller_declared (codes_override).
 A UEI with no code signals is a 200 with empty data + meta.reason — an empty market is
 an answer, not an error. Per-stage wall times ride meta.timings_ms; cache_state
 (cold | warm | failed) + cache_build_ms ride meta.
+
+MAP-READY WIRE (coordinates are the primitive; distances are derived and ALSO served):
+every opportunity row carries its PoP centroid (latitude/longitude, honest per
+pop_geo_precision — null when ungeocoded); meta.target_hq carries the target's HQ point
+(computed up front so empty answers still anchor the map); nearest_federal_site carries
+the site's own point; opt-in peers hydrate legal_business_name (one chunked BTREE IN
+scan on gtm_sam_entities) + HQ coordinates (boot geo cache).
 """
 from __future__ import annotations
 
@@ -426,6 +433,9 @@ def _nearest_federal_site(lat: float, lon: float,
         "site_name": best[2],
         "site_type": best[3],
         "site_source": best[4],
+        # the site's own point — the map primitive (distance_mi is the derived value)
+        "latitude": best[0],
+        "longitude": best[1],
         "distance_mi": round(best_d, 1),
         "lease_expiring_24mo_ct": best[5],
         "earliest_lease_expiration_date": _map_jsonable(best[6]),
@@ -1019,13 +1029,18 @@ def _components(award: dict[str, Any], cells: list[dict[str, Any]],
 
 # ── Stage 6 (remote, OPT-IN): peers ────────────────────────────────────────────
 def _peers(cells_by_prime: dict[str, list[dict[str, Any]]], target_uei: str,
-           notes: list[str]) -> list[dict[str, Any]]:
+           notes: list[str], caches: SuboutCaches) -> list[dict[str, Any]]:
     """Recipients sharing the target's top matched codes — the "companies like yours"
     the primes already sub to. Top codes = the matched cube cells heaviest in
     distinct_recipient_ct; peer UEIs stream off gtm_subaward_recipient_code_evidence
-    (BTREE code), deduped, target excluded, capped at PEER_CAP. The one remote
-    non-point query in the recipe (~14.5s measured live) — opt-in via include_peers.
-    Defensive: an unreachable evidence table degrades to zero peers with a note."""
+    (BTREE code), deduped, target excluded, capped at PEER_CAP. Each peer is then
+    hydrated map-ready: legal_business_name via ONE chunked BTREE IN point-scan on
+    gtm_sam_entities (≤PEER_CAP ueis — invisible next to the evidence scan), HQ
+    coordinates off the boot geo cache (binary search, no I/O; null when ungeocoded —
+    never a fake centroid). The one remote non-point query in the recipe (~14.5s
+    measured live) — opt-in via include_peers. Defensive: an unreachable evidence
+    table degrades to zero peers with a note; a failed name scan degrades to null
+    names with a note."""
     all_cells = [c for cells in cells_by_prime.values() for c in cells]
     if not all_cells:
         return []
@@ -1059,6 +1074,21 @@ def _peers(cells_by_prime: dict[str, list[dict[str, Any]]], target_uei: str,
         peers.append({"uei": peer, "shared_code": row.get("code")})
         if len(peers) >= PEER_CAP:
             break
+    if peers:
+        names: dict[str, Any] = {}
+        try:
+            name_rows = _scan_to_pylist(
+                config.GTM_SAM_ENTITIES_URI, ["uei", "legal_business_name"],
+                _in_predicate("uei", [p["uei"] for p in peers]))
+            names = {r["uei"]: r.get("legal_business_name") for r in name_rows}
+        except Exception as exc:  # noqa: BLE001 — hydration is enrichment, never fatal
+            log.warning("peer name hydration failed (%s): peers carry null names", exc)
+            notes.append("peer name hydration unavailable — peers carry uei only")
+        for p in peers:
+            p["legal_business_name"] = names.get(p["uei"])
+            geo = _target_hq(p["uei"], caches)
+            p["latitude"] = geo[0] if geo else None
+            p["longitude"] = geo[1] if geo else None
     return peers
 
 
@@ -1076,6 +1106,7 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     notes: list[str] = []
     cache_state = "unavailable"
     cache_build_ms: float | None = None
+    target_hq: dict[str, float] | None = None
     t0 = time.monotonic()
 
     def _mark(stage: str, since: float) -> float:
@@ -1093,6 +1124,7 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             "lenses": req["lenses"],
             "cache_state": cache_state,
             "cache_build_ms": cache_build_ms,
+            "target_hq": target_hq,
             "timings_ms": timings,
             "total": total,
         }
@@ -1122,6 +1154,14 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
         return {"meta": _meta(0), "data": {"opportunities": [], "peers": []}}
     t = _mark("cache_ensure", t)
 
+    # 2. target HQ off the boot geo cache (binary search — no I/O). A fact about the
+    # TARGET, not about the matches: computed before any matching so the empty-market
+    # and no-signal answers still carry the map's anchor pin in meta.target_hq.
+    hq = _target_hq(req["uei"], caches)
+    if hq is not None:
+        target_hq = {"latitude": hq[0], "longitude": hq[1]}
+    t = _mark("geo", t)
+
     # 2a. cached lens probes (lanes/SAM dict hits + caller_declared — no I/O)
     entries: dict[tuple[str, str | None, str], dict[str, Any]] = {}
     _probe_cached(req["uei"], req["lenses"], req["code_type"],
@@ -1148,12 +1188,10 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     awards = _open_awards_for(list(cells_by_prime), caches, today) if cells_by_prime else []
     t = _mark("open_awards", t)
 
-    # 5. geo: target HQ off the boot cache; award PoP geo rides each cached row
-    hq = _target_hq(req["uei"], caches) if awards else None
-    t = _mark("geo", t)
-
-    # 6. score — every component explicit on the wire. The display-only ``matched``
-    # evidence list is built AFTER the sort for the returned rows only (it is the
+    # 5. score — every component explicit on the wire (award PoP geo rides each
+    # cached row; the target HQ was resolved up front, after the cache ensure).
+    # The display-only ``matched`` evidence list is built AFTER the sort for the
+    # returned rows only (it is the
     # single per-award cost that scales with the matched-cell fan-out; scoring needs
     # just the aggregate strength + $ sum). Nearest-site searches memoize on the
     # exact centroid — zip5 centroids repeat heavily across awards (measured: the
@@ -1210,6 +1248,10 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             "ordering_period_end_date": _map_jsonable(award.get("ordering_period_end_date")),
             "pop_state_code": award.get("primary_place_of_performance_state_code"),
             "pop_geo_precision": award.get("geo_precision"),
+            # the award's PoP centroid — the map primitive (distance_mi is derived);
+            # null when the award has no zip5 geocode, honest per pop_geo_precision
+            "latitude": award.get("latitude"),
+            "longitude": award.get("longitude"),
             "distance_mi": distance_mi,
             "nearest_federal_site": nearest_site,
             "matched": cells,               # placeholder — swapped for evidence below
@@ -1226,7 +1268,7 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     # 7. peers (remote, opt-in)
     peers: list[dict[str, Any]] = []
     if req["include_peers"]:
-        peers = _peers(cells_by_prime, req["uei"], notes)
+        peers = _peers(cells_by_prime, req["uei"], notes, caches)
         _mark("peers", t)
 
     return {"meta": _meta(total), "data": {"opportunities": opportunities, "peers": peers}}

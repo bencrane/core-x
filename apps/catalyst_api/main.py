@@ -613,6 +613,12 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
     200 with empty data + ``meta.reason`` (an empty market is an answer, not an
     error); per-stage wall times ride ``meta.timings_ms``.
 
+    MAP-READY: every opportunity row carries its PoP-centroid ``latitude``/
+    ``longitude`` (null when ungeocoded — honest per ``pop_geo_precision``);
+    ``meta.target_hq`` carries the target's HQ point (present even on empty answers);
+    ``nearest_federal_site`` carries the site's own coordinates; opt-in peers are
+    hydrated with ``legal_business_name`` + HQ coordinates.
+
     HOT PATH IS IN-PROCESS: the open-award table, the sub-out cube marginal, and the
     three probe tables (lanes / SAM NAICS / entity HQ geo) are process-memory caches
     (lazy, TTL-refreshed in the background; ``meta.cache_state`` = cold | warm |
