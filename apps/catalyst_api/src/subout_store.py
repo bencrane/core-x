@@ -28,6 +28,12 @@ blocks on a refresh):
                         probes measured 0.7-5.8s live are now ~21 comparisons, and
                         arrow's raw columnar bytes are ~10x smaller than the
                         dict-of-python-objects shape at these row counts.
+  • federal sites v2  — federal_sites_lance point rows (~294K; GSA-reported FRPP
+                        shadows excluded — see FRPP_GSA_REPORTING_AGENCY_CODE) on a
+                        0.1° grid: the nearest_federal_site enrichment + the
+                        federal_site_proximity component. Best-effort load: an
+                        unreachable site layer degrades to null enrichment, never
+                        a bricked recipe cache.
   • inferred warmup   — gtm_entity_inferred_primeable_codes (263M rows) is the ONE
                         uncacheable table: its dataset handle + BTREE index pages
                         are warmed at build with a dummy probe (the FIRST cold probe
@@ -76,16 +82,20 @@ from .market_store import _CODE_OK, _in_predicate
 log = logging.getLogger("catalyst_api.subout_store")
 
 # ── The recipe (id + weights live together — bump the id on ANY weight change) ─
-RECIPE_ID = "subout_opportunities.v1"
+# v2: + federal_site_proximity (nearest federal site to the award's PoP centroid,
+# off the federal_sites_lance boot grid) at 0.05; the v1 weights renormalized ×0.95
+# so Σ stays exactly 1.0. All v1 semantics otherwise unchanged.
+RECIPE_ID = "subout_opportunities.v2"
 # Component weights, normalized (Σ = 1.0). Each component contributes
 # weight × normalized_value (normalized_value ∈ [0, 1]); score = Σ contributions.
 COMPONENT_WEIGHTS: dict[str, float] = {
-    "prime_subout_history": 0.30,   # log-scaled Σ subaward_amt_total over matched cells
-    "award_already_subbing": 0.15,  # the award ALREADY reports subaward activity
-    "subcontracting_plan": 0.10,    # a subcontracting plan attached to the award
-    "lens_strength": 0.15,          # how strongly the target carries the matched codes
-    "proximity": 0.10,              # HQ → place-of-performance distance decay
-    "expiring_window": 0.20,        # nearer PoP end = nearer recompete/backfill window
+    "prime_subout_history": 0.285,   # log-scaled Σ subaward_amt_total over matched cells
+    "award_already_subbing": 0.1425,  # the award ALREADY reports subaward activity
+    "subcontracting_plan": 0.095,    # a subcontracting plan attached to the award
+    "lens_strength": 0.1425,         # how strongly the target carries the matched codes
+    "proximity": 0.095,              # HQ → place-of-performance distance decay
+    "expiring_window": 0.19,         # nearer PoP end = nearer recompete/backfill window
+    "federal_site_proximity": 0.05,  # a federal site near the work site (v2)
 }
 
 # ── Lens vocabulary (self-describing: each name states HOW the code is known) ──
@@ -124,6 +134,25 @@ PROXIMITY_NEUTRAL = 0.5             # geo_precision != 'zip5' or distance unknow
 PROXIMITY_ZERO_MI = 500.0           # linear decay: 0 mi → 1.0, ≥500 mi → 0.0
 EXPIRING_HORIZON_DAYS = 1_080       # ~3y: ends today → 1.0, ≥horizon → 0.0
 PLAN_REQUIRED_CODES = frozenset({"C", "D", "E", "F", "G", "H"})  # FAR 19.7 plan attached
+
+# ── Federal-site proximity (recipe v2) ─────────────────────────────────────────
+# Nearest federal site beyond this is not an opportunity signal → the enrichment
+# field is null and the component contributes 0.0 (an absent site never penalizes).
+NEAREST_SITE_MAX_MI = 50.0
+FEDERAL_SITE_DECAY_ZERO_MI = 25.0   # linear decay: at the site → 1.0, ≥25 mi → 0.0
+# FRPP rows whose reporting agency is GSA are SHADOWS of the gsa_building rows (the
+# same buildings reported twice) — excluded from the site grid. '47' = the value AS
+# OBSERVED LIVE in federal_sites_lance.reporting_agency_code (v4, 8,620 shadow rows;
+# FRPP strips the toptier code's leading zero — NOT '047'). The builder prints the
+# value at build; re-verify on any FRPP reload.
+FRPP_GSA_REPORTING_AGENCY_CODE = "47"
+# Grid buckets: 0.1° ≈ 6.9 mi of latitude (longitude shrinks by cos(lat) — ~4 mi/bucket
+# at the CONUS/Alaska extreme, the conservative ring-pruning floor). The nearest-site
+# search expands ring by ring until no closer site is geometrically possible, bounded
+# by the ring that could still hold a site inside NEAREST_SITE_MAX_MI.
+SITE_BUCKET_DEG = 0.1
+_SITE_BUCKET_MIN_MI = 4.0
+_SITE_MAX_RING = math.ceil(NEAREST_SITE_MAX_MI / _SITE_BUCKET_MIN_MI) + 1
 
 # ── Cache contract ─────────────────────────────────────────────────────────────
 CACHE_TTL_S = 6 * 3600              # staleness bound; refresh runs in the BACKGROUND
@@ -169,7 +198,14 @@ class SuboutCaches:
     comparisons — nanoseconds against the 0.7-5.8s remote probes they replace).
     With these resident, the only remote hop left on the hot path is the inferred
     probe (a 263M-row projection — uncacheable; its dataset HANDLE + index pages
-    are warmed at build instead)."""
+    are warmed at build instead).
+
+    FEDERAL SITES (recipe v2): ``federal_sites`` is the point-site tuple list
+    ``(latitude, longitude, site_name, site_type, site_source,
+    lease_expiring_24mo_ct, earliest_lease_expiration_date)`` (GSA-reported FRPP
+    shadows excluded); ``federal_site_buckets`` maps the 0.1° grid cell
+    ``(round(lat/0.1), round(lon/0.1))`` → site indexes, for the expanding-ring
+    nearest-site search."""
 
     open_awards: list[dict[str, Any]]
     awards_by_prime: dict[str, list[int]]
@@ -180,6 +216,8 @@ class SuboutCaches:
     lanes_table: Any                     # pyarrow.Table, sorted by uei, single chunk
     sam_table: Any                       # pyarrow.Table, sorted by uei, single chunk
     geo_table: Any                       # pyarrow.Table, sorted by uei, single chunk
+    federal_sites: list[tuple]
+    federal_site_buckets: dict[tuple[int, int], list[int]]
     inferred_warm_ms: float
     build_ms: float
 
@@ -295,6 +333,105 @@ def _rows_for_uei(tbl, uei: str) -> list[dict[str, Any]]:
     return tbl.slice(start, lo - start).to_pylist()
 
 
+# ── Federal sites (recipe v2): point grid for nearest-site enrichment ──────────
+FEDERAL_SITE_COLUMNS = [
+    "site_source", "reporting_agency_code", "site_name", "site_type",
+    "latitude", "longitude", "lease_expiring_24mo_ct",
+    "earliest_lease_expiration_date",
+]
+
+
+def _site_rows_to_points(rows) -> list[tuple]:
+    """Raw federal_sites_lance row dicts → point tuples
+    ``(lat, lon, site_name, site_type, site_source, lease_expiring_24mo_ct,
+    earliest_lease_expiration_date)``. PURE (unit-tested): keeps point rows only
+    (both coordinates present) and EXCLUDES GSA-reported FRPP rows — those are
+    shadows of the gsa_building rows (the same buildings reported twice; keeping
+    both would double-count nearest-site hits)."""
+    out: list[tuple] = []
+    for row in rows:
+        lat, lon = row.get("latitude"), row.get("longitude")
+        if lat is None or lon is None:
+            continue
+        if (row.get("site_source") == "frpp_asset"
+                and row.get("reporting_agency_code") == FRPP_GSA_REPORTING_AGENCY_CODE):
+            continue
+        out.append((float(lat), float(lon), row.get("site_name"),
+                    row.get("site_type"), row.get("site_source"),
+                    row.get("lease_expiring_24mo_ct"),
+                    row.get("earliest_lease_expiration_date")))
+    return out
+
+
+def _load_federal_sites() -> list[tuple]:
+    """federal_sites_lance (~316K rows) → point tuples via _site_rows_to_points.
+    Coordinate presence rides the scan predicate (point rows only); the GSA-shadow
+    exclusion is in-process. BEST-EFFORT: the site layer is an ENRICHMENT — if the
+    dataset is unreachable the build proceeds with zero sites (nearest is null,
+    the component contributes 0.0) and logs LOUD, rather than bricking the whole
+    recipe cache."""
+    try:
+        rows: list[dict[str, Any]] = []
+        scanner = _dataset(config.FEDERAL_SITES_URI).scanner(
+            columns=FEDERAL_SITE_COLUMNS,
+            filter="latitude IS NOT NULL AND longitude IS NOT NULL")
+        for batch in scanner.to_batches():
+            rows.extend(batch.to_pylist())
+        return _site_rows_to_points(rows)
+    except Exception as exc:  # noqa: BLE001 — enrichment layer, never brick the build
+        log.warning("federal_sites_lance unreachable (%s): serving zero federal "
+                    "sites — nearest_federal_site will be null", exc)
+        return []
+
+
+def _site_bucket(lat: float, lon: float) -> tuple[int, int]:
+    return int(round(lat / SITE_BUCKET_DEG)), int(round(lon / SITE_BUCKET_DEG))
+
+
+def _index_federal_sites(sites: list[tuple]) -> dict[tuple[int, int], list[int]]:
+    """Point tuples → 0.1° grid buckets (cell → site indexes). Pure."""
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for i, site in enumerate(sites):
+        buckets.setdefault(_site_bucket(site[0], site[1]), []).append(i)
+    return buckets
+
+
+def _nearest_federal_site(lat: float, lon: float,
+                          caches: SuboutCaches) -> dict[str, Any] | None:
+    """The nearest federal site to a point, via expanding-ring search over the grid
+    (ring r cells are ≥ (r-1)×_SITE_BUCKET_MIN_MI away — once the best hit beats
+    that bound the search stops; bounded by the ring that could still hold a site
+    inside NEAREST_SITE_MAX_MI). None beyond the cap or when no sites are loaded —
+    the enrichment is honestly absent, never a far-away pretend match."""
+    if not caches.federal_site_buckets:
+        return None
+    bi, bj = _site_bucket(lat, lon)
+    best: tuple | None = None
+    best_d: float | None = None
+    for ring in range(_SITE_MAX_RING + 1):
+        if best_d is not None and (ring - 1) * _SITE_BUCKET_MIN_MI > best_d:
+            break
+        for di in range(-ring, ring + 1):
+            for dj in range(-ring, ring + 1):
+                if max(abs(di), abs(dj)) != ring:       # perimeter cells only
+                    continue
+                for idx in caches.federal_site_buckets.get((bi + di, bj + dj), ()):
+                    site = caches.federal_sites[idx]
+                    d = _haversine_mi(lat, lon, site[0], site[1])
+                    if best_d is None or d < best_d:
+                        best, best_d = site, d
+    if best is None or best_d is None or best_d > NEAREST_SITE_MAX_MI:
+        return None
+    return {
+        "site_name": best[2],
+        "site_type": best[3],
+        "site_source": best[4],
+        "distance_mi": round(best_d, 1),
+        "lease_expiring_24mo_ct": best[5],
+        "earliest_lease_expiration_date": _map_jsonable(best[6]),
+    }
+
+
 # ── Cache build (pure indexers over the loader seams) ─────────────────────────
 def _index_open_awards(rows: list[dict[str, Any]]) -> tuple[
         dict[str, list[int]], dict[str, list[int]], dict[str, list[int]]]:
@@ -397,6 +534,8 @@ def _build_caches() -> SuboutCaches:
     lanes_table = _load_entity_code_lanes()
     sam_table = _load_sam_registrations()
     geo_table = _load_entity_geo()
+    federal_sites = _load_federal_sites()
+    federal_site_buckets = _index_federal_sites(federal_sites)
     inferred_warm_ms = _warm_inferred_handle()
     try:
         # Hand the sort/load transients back to the OS — the arrow pool otherwise
@@ -413,19 +552,22 @@ def _build_caches() -> SuboutCaches:
         "subout caches built in %.1fs: open_awards=%d rows (primes=%d naics=%d "
         "psc=%d), marginal=%d cells over %d (code_type, code) keys, "
         "lanes=%d rows/%.0fMB sam=%d rows/%.0fMB geo=%d rows/%.0fMB (arrow), "
+        "federal_sites=%d points over %d grid cells, "
         "inferred_handle_warm_ms=%s; ru_maxrss_delta=%s (platform units)",
         build_ms / 1000.0, len(open_awards), len(by_prime), len(by_naics),
         len(by_psc), cube_cells, len(cube),
         lanes_table.num_rows, lanes_table.nbytes / 1e6,
         sam_table.num_rows, sam_table.nbytes / 1e6,
         geo_table.num_rows, geo_table.nbytes / 1e6,
+        len(federal_sites), len(federal_site_buckets),
         inferred_warm_ms, rss_delta)
     return SuboutCaches(open_awards=open_awards, awards_by_prime=by_prime,
                         awards_by_naics=by_naics, awards_by_psc=by_psc,
                         cube=cube, cube_cell_count=cube_cells,
                         lanes_table=lanes_table, sam_table=sam_table,
-                        geo_table=geo_table, inferred_warm_ms=inferred_warm_ms,
-                        build_ms=build_ms)
+                        geo_table=geo_table, federal_sites=federal_sites,
+                        federal_site_buckets=federal_site_buckets,
+                        inferred_warm_ms=inferred_warm_ms, build_ms=build_ms)
 
 
 def _refresh_caches() -> None:
@@ -628,6 +770,17 @@ def _expiring_norm(days_to_end: int | None) -> float:
     return max(0.0, 1.0 - days_to_end / EXPIRING_HORIZON_DAYS)
 
 
+def _federal_site_norm(distance_mi: float | None) -> float:
+    """Nearest-federal-site distance → [0, 1]: at the site → 1.0, decaying linearly
+    to 0.0 at FEDERAL_SITE_DECAY_ZERO_MI. None (no zip5 award geo, or nothing inside
+    NEAREST_SITE_MAX_MI) → 0.0 — an absent site contributes NOTHING, it never
+    penalizes (unlike ``proximity``'s 0.5 neutral: proximity is about an unknown,
+    this is about a genuine absence of the bonus signal)."""
+    if distance_mi is None:
+        return 0.0
+    return max(0.0, 1.0 - distance_mi / FEDERAL_SITE_DECAY_ZERO_MI)
+
+
 def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in statute miles (R = 3958.8 mi)."""
     rlat1, rlon1, rlat2, rlon2 = map(math.radians, (lat1, lon1, lat2, lon2))
@@ -828,9 +981,11 @@ def _matched_evidence(cells: list[dict[str, Any]],
 
 def _components(award: dict[str, Any], cells: list[dict[str, Any]],
                 matched_strength: float, distance_mi: float | None,
-                pop_geo_precision: Any, today: dt_date) -> list[dict[str, Any]]:
-    """The six scored components for one award: (name, raw_value, weight, contribution)
-    each — contribution = weight × normalized raw signal. Deterministic and pure."""
+                pop_geo_precision: Any, today: dt_date,
+                nearest_site_distance_mi: float | None) -> list[dict[str, Any]]:
+    """The seven scored components for one award: (name, raw_value, weight,
+    contribution) each — contribution = weight × normalized raw signal.
+    Deterministic and pure."""
     subout_total = sum(float(c.get("subaward_amt_total") or 0.0) for c in cells)
 
     sub_ct = award.get("subaward_count") or 0
@@ -851,6 +1006,8 @@ def _components(award: dict[str, Any], cells: list[dict[str, Any]],
         "lens_strength": (round(matched_strength, 6), matched_strength),
         "proximity": (distance_mi, _proximity_norm(distance_mi, pop_geo_precision)),
         "expiring_window": (days_to_end, _expiring_norm(days_to_end)),
+        "federal_site_proximity": (nearest_site_distance_mi,
+                                   _federal_site_norm(nearest_site_distance_mi)),
     }
     return [
         {"name": name, "raw_value": raw, "weight": weight,
@@ -998,7 +1155,10 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     # 6. score — every component explicit on the wire. The display-only ``matched``
     # evidence list is built AFTER the sort for the returned rows only (it is the
     # single per-award cost that scales with the matched-cell fan-out; scoring needs
-    # just the aggregate strength + $ sum).
+    # just the aggregate strength + $ sum). Nearest-site searches memoize on the
+    # exact centroid — zip5 centroids repeat heavily across awards (measured: the
+    # unmemoized per-award ring search alone cost ~400ms at 2,000 awards).
+    site_memo: dict[tuple[float, float], dict[str, Any] | None] = {}
     opportunities: list[dict[str, Any]] = []
     for award in awards:
         prime = award.get("recipient_uei")
@@ -1012,8 +1172,21 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
                 and award.get("longitude") is not None):
             distance_mi = round(_haversine_mi(hq[0], hq[1], float(award["latitude"]),
                                               float(award["longitude"])), 1)
+        # v2: nearest federal site to the award's PoP centroid — zip5-precision dots
+        # only (a county centroid would fabricate proximity to sites it isn't near)
+        nearest_site = None
+        if (award.get("geo_precision") == "zip5"
+                and award.get("latitude") is not None
+                and award.get("longitude") is not None):
+            pt = (float(award["latitude"]), float(award["longitude"]))
+            if pt in site_memo:
+                nearest_site = site_memo[pt]
+            else:
+                nearest_site = _nearest_federal_site(pt[0], pt[1], caches)
+                site_memo[pt] = nearest_site
         components = _components(award, cells, matched_strength, distance_mi,
-                                 award.get("geo_precision"), today)
+                                 award.get("geo_precision"), today,
+                                 nearest_site["distance_mi"] if nearest_site else None)
         score = round(sum(c["contribution"] for c in components), 6)
         opportunities.append({
             "generated_unique_award_id": award.get("generated_unique_award_id"),
@@ -1038,6 +1211,7 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
             "pop_state_code": award.get("primary_place_of_performance_state_code"),
             "pop_geo_precision": award.get("geo_precision"),
             "distance_mi": distance_mi,
+            "nearest_federal_site": nearest_site,
             "matched": cells,               # placeholder — swapped for evidence below
             "score": score,
             "components": components,

@@ -275,6 +275,15 @@ GTM_PRIMES_BY_RECIPIENT_CODE_URI = os.environ.get(
     "GTM_PRIMES_BY_RECIPIENT_CODE_LANCE_URI",
     "s3://data-sink/active/gtm_primes_by_recipient_code/",
 )
+# federal_sites_lance — the unified federal-site point/polygon layer (~316K rows,
+# 1 row / (site_source, source_id); sources military_base | gsa_building | gsa_lease |
+# frpp_asset). Carries coordinates, square footage, lease activity + expirations
+# (gsa rows), and reporting_agency_code (frpp rows). The subout recipe (v2) caches
+# the POINT rows into a 0.1° grid for nearest-federal-site enrichment; FRPP rows
+# reported by GSA are excluded there (shadows of the gsa_building rows).
+FEDERAL_SITES_URI = os.environ.get(
+    "FEDERAL_SITES_LANCE_URI", "s3://data-sink/active/federal_sites_lance/"
+)
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────

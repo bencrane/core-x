@@ -57,6 +57,19 @@ EVIDENCE_ROWS = [
     {"subawardee_uei": PEER2, "code": "238220"},
 ]
 
+# Federal-site point tuples (the _load_federal_sites contract):
+# (lat, lon, site_name, site_type, site_source, lease_expiring_24mo_ct,
+#  earliest_lease_expiration_date).
+# S1 sits EXACTLY on A1's zip5 centroid (distance 0); S2 is one grid bucket north of
+# S1 (~6.9 mi); S3 is ~34 mi north of A4's LA centroid (found only by ring expansion
+# beyond the 9 neighboring buckets, and past the 25 mi decay floor → contribution 0).
+FEDERAL_SITE_POINTS = [
+    (38.9586, -77.3570, "RESTON FEDERAL CENTER", "OFFICE", "gsa_building",
+     3, date(2027, 1, 15)),
+    (39.0586, -77.3570, "FORT NEARBY", "BASE", "military_base", None, None),
+    (34.5522, -118.2437, "LA DEPOT", "WAREHOUSE", "frpp_asset", None, None),
+]
+
 # ── In-process cache fixtures (loader seams) ───────────────────────────────────
 # The row tuples _iter_marginal_rows yields off the PRE-AGGREGATED
 # gtm_primes_by_recipient_code table (MARGINAL_COLUMNS order):
@@ -158,6 +171,7 @@ class Seams:
         self.lanes_loads = 0
         self.sam_loads = 0
         self.geo_loads = 0
+        self.sites_loads = 0
         self.loader_error: Exception | None = None
         self.evidence_error: Exception | None = None
 
@@ -232,6 +246,12 @@ class Seams:
         self.geo_loads += 1
         return self._uei_table(GEO_ROWS, ["uei", "latitude", "longitude"])
 
+    def load_federal_sites(self):
+        if self.loader_error is not None:
+            raise self.loader_error
+        self.sites_loads += 1
+        return [tuple(s) for s in FEDERAL_SITE_POINTS]
+
 
 @pytest.fixture()
 def seams(monkeypatch):
@@ -243,6 +263,7 @@ def seams(monkeypatch):
     monkeypatch.setattr(subout_store, "_load_entity_code_lanes", s.load_entity_code_lanes)
     monkeypatch.setattr(subout_store, "_load_sam_registrations", s.load_sam_registrations)
     monkeypatch.setattr(subout_store, "_load_entity_geo", s.load_entity_geo)
+    monkeypatch.setattr(subout_store, "_load_federal_sites", s.load_federal_sites)
     subout_store.reset_caches_for_tests()
     yield s
     subout_store.reset_caches_for_tests()
@@ -254,12 +275,14 @@ def _run(body, **kw):
 
 # ── recipe constants (the versioned contract) ─────────────────────────────────
 def test_recipe_id_and_weights_are_the_published_contract():
-    assert subout_store.RECIPE_ID == "subout_opportunities.v1"
+    # v2 = v1 semantics + federal_site_proximity; weights renormalized so Σ = 1.0
+    assert subout_store.RECIPE_ID == "subout_opportunities.v2"
     assert set(subout_store.COMPONENT_WEIGHTS) == {
         "prime_subout_history", "award_already_subbing", "subcontracting_plan",
-        "lens_strength", "proximity", "expiring_window"}
+        "lens_strength", "proximity", "expiring_window", "federal_site_proximity"}
     assert sum(subout_store.COMPONENT_WEIGHTS.values()) == pytest.approx(1.0)
     assert all(w > 0 for w in subout_store.COMPONENT_WEIGHTS.values())
+    assert subout_store.COMPONENT_WEIGHTS["federal_site_proximity"] == 0.05
     # every lens name is self-describing vocabulary, caller_declared never selectable
     assert subout_store.SELECTABLE_LENSES == (
         "awarded_prime_contracts_in_code", "delivered_subawards_under_code",
@@ -323,7 +346,7 @@ def test_uei_with_no_code_signals_serves_empty_with_reason(seams):
     assert out["data"] == {"opportunities": [], "peers": []}
     assert out["meta"]["total"] == 0
     assert out["meta"]["reason"] == "uei has no code signals"
-    assert out["meta"]["recipeId"] == "subout_opportunities.v1"
+    assert out["meta"]["recipeId"] == "subout_opportunities.v2"
     # the caches load (probes read them) but nothing downstream runs: no streams
     assert seams.open_award_loads == 1 and seams.cube_loads == 1
     assert seams.stream_calls == []
@@ -471,7 +494,7 @@ def test_index_builders_are_pure_and_complete():
 def test_default_all_lens_flow_end_to_end(seams):
     out = _run({"uei": TARGET})
     meta, data = out["meta"], out["data"]
-    assert meta["recipeId"] == "subout_opportunities.v1"
+    assert meta["recipeId"] == "subout_opportunities.v2"
     assert meta["registryVersion"]
     assert meta["lenses"] == list(subout_store.SELECTABLE_LENSES)
     # probe timing is SPLIT on the wire: cached dict hits vs the remote inferred hop
@@ -556,6 +579,14 @@ def test_component_math_is_deterministic_on_the_wire(seams):
     assert comps["expiring_window"]["raw_value"] == 178
     assert comps["expiring_window"]["contribution"] == pytest.approx(
         w["expiring_window"] * (1 - 178 / 1080), abs=1e-6)
+    # federal_site_proximity (v2): S1 sits ON A1's centroid → distance 0, full weight
+    assert a1["nearest_federal_site"]["site_name"] == "RESTON FEDERAL CENTER"
+    assert a1["nearest_federal_site"]["distance_mi"] == 0.0
+    assert a1["nearest_federal_site"]["lease_expiring_24mo_ct"] == 3
+    assert a1["nearest_federal_site"]["earliest_lease_expiration_date"] == "2027-01-15"
+    assert comps["federal_site_proximity"]["raw_value"] == 0.0
+    assert comps["federal_site_proximity"]["contribution"] == pytest.approx(
+        w["federal_site_proximity"])
     assert a1["score"] == pytest.approx(sum(c["contribution"] for c in a1["components"]))
 
 
@@ -594,6 +625,13 @@ def test_codes_override_probes_as_caller_declared_lens(seams):
     # A4 is zip5 far away (DC-area HQ → LA): proximity decays to 0 beyond 500 mi
     assert a4["distance_mi"] > 2_000
     assert comps["proximity"]["contribution"] == 0.0
+    # LA DEPOT is ~34 mi north of A4's centroid — found by RING EXPANSION well past
+    # the 9 neighboring buckets, inside the 50 mi cap, past the 25 mi decay floor:
+    # the enrichment is served, the component contributes nothing
+    site = a4["nearest_federal_site"]
+    assert site["site_name"] == "LA DEPOT" and site["site_source"] == "frpp_asset"
+    assert 30 < site["distance_mi"] < 40
+    assert comps["federal_site_proximity"]["contribution"] == 0.0
 
 
 def test_code_type_restriction_filters_probe_and_cube(seams):
@@ -715,3 +753,96 @@ def test_haversine_mi():
     # Arlington HQ ↔ Reston PoP is a NONZERO short hop (the live dist=None bug pin)
     d2 = subout_store._haversine_mi(38.8816, -77.0910, 38.9586, -77.3570)
     assert 5 < d2 < 25
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEDERAL SITES (recipe v2) — grid lookup, shadow exclusion, null neutrality
+# ═══════════════════════════════════════════════════════════════════════════════
+def _site_grid(sites):
+    from types import SimpleNamespace
+    return SimpleNamespace(federal_sites=list(sites),
+                           federal_site_buckets=subout_store._index_federal_sites(list(sites)))
+
+
+def test_nearest_federal_site_bucket_lookup_hand_pinned():
+    grid = _site_grid(FEDERAL_SITE_POINTS)
+    # exact hit: query point ON the Reston site → distance 0, full payload
+    hit = subout_store._nearest_federal_site(38.9586, -77.3570, grid)
+    assert hit == {"site_name": "RESTON FEDERAL CENTER", "site_type": "OFFICE",
+                   "site_source": "gsa_building", "distance_mi": 0.0,
+                   "lease_expiring_24mo_ct": 3,
+                   "earliest_lease_expiration_date": "2027-01-15"}
+    # ADJACENT-bucket win: from 39.02°N the base one bucket north (2.7 mi) beats the
+    # same-bucket Reston site (4.2 mi) — nearest is geometric, never bucket-local
+    hit2 = subout_store._nearest_federal_site(39.02, -77.3570, grid)
+    assert hit2["site_name"] == "FORT NEARBY"
+    assert 2.0 < hit2["distance_mi"] < 3.5
+    # RING EXPANSION: LA DEPOT is ~34.5 mi out — far beyond the 9 neighboring
+    # buckets, still inside the 50 mi cap
+    hit3 = subout_store._nearest_federal_site(34.0522, -118.2437, grid)
+    assert hit3["site_name"] == "LA DEPOT"
+    assert 30 < hit3["distance_mi"] < 40
+    # beyond NEAREST_SITE_MAX_MI → honestly null (never a far-away pretend match)
+    assert subout_store._nearest_federal_site(45.0, -100.0, grid) is None
+    # empty grid (site layer unavailable) → null
+    assert subout_store._nearest_federal_site(38.9586, -77.3570, _site_grid([])) is None
+
+
+def test_site_rows_to_points_excludes_gsa_frpp_shadows_and_unlocated_rows():
+    assert subout_store.FRPP_GSA_REPORTING_AGENCY_CODE == "47"  # live-probed, no leading 0
+    rows = [
+        # GSA-reported FRPP row = a SHADOW of the gsa_building row → excluded
+        {"site_source": "frpp_asset", "reporting_agency_code": "47",
+         "site_name": "SHADOW OF A GSA BUILDING", "site_type": "OFFICE",
+         "latitude": 38.9, "longitude": -77.0,
+         "lease_expiring_24mo_ct": None, "earliest_lease_expiration_date": None},
+        # FRPP reported by another agency → kept
+        {"site_source": "frpp_asset", "reporting_agency_code": "97",
+         "site_name": "DOD DEPOT", "site_type": "WAREHOUSE",
+         "latitude": 38.9, "longitude": -77.0,
+         "lease_expiring_24mo_ct": None, "earliest_lease_expiration_date": None},
+        # the gsa_building row itself → kept (reporting_agency_code is frpp-only)
+        {"site_source": "gsa_building", "reporting_agency_code": None,
+         "site_name": "GSA BUILDING", "site_type": "OFFICE",
+         "latitude": 38.9, "longitude": -77.0,
+         "lease_expiring_24mo_ct": 1, "earliest_lease_expiration_date": date(2027, 3, 1)},
+        # no coordinates → not a point, excluded
+        {"site_source": "military_base", "reporting_agency_code": None,
+         "site_name": "UNLOCATED BASE", "site_type": "BASE",
+         "latitude": None, "longitude": None,
+         "lease_expiring_24mo_ct": None, "earliest_lease_expiration_date": None},
+    ]
+    points = subout_store._site_rows_to_points(rows)
+    assert [p[2] for p in points] == ["DOD DEPOT", "GSA BUILDING"]
+    assert all(p[0] is not None and p[1] is not None for p in points)
+
+
+def test_federal_site_norm_null_is_neutral_zero_never_a_penalty():
+    assert subout_store._federal_site_norm(None) == 0.0      # absent ≠ penalized
+    assert subout_store._federal_site_norm(0.0) == 1.0
+    assert subout_store._federal_site_norm(12.5) == pytest.approx(0.5)
+    assert subout_store._federal_site_norm(25.0) == 0.0
+    assert subout_store._federal_site_norm(40.0) == 0.0      # inside cap, past decay
+
+
+def test_awards_without_zip5_geo_carry_null_site_and_zero_contribution(seams):
+    out = _run({"uei": TARGET})
+    by_id = {o["generated_unique_award_id"]: o for o in out["data"]["opportunities"]}
+    # A2 has no PoP geo at all; A3 is county-precision — a county centroid must not
+    # fabricate proximity to sites it isn't actually near
+    for award_id in ("CONT_AWD_A2", "CONT_AWD_A3"):
+        opp = by_id[award_id]
+        assert opp["nearest_federal_site"] is None
+        comp = {c["name"]: c for c in opp["components"]}["federal_site_proximity"]
+        assert comp["raw_value"] is None and comp["contribution"] == 0.0
+    # sanity: the zip5 award DOES carry the enrichment off the same cache build
+    assert by_id["CONT_AWD_A1"]["nearest_federal_site"] is not None
+    assert seams.sites_loads == 1                        # loaded once, at the build
+
+
+def test_unreachable_federal_sites_layer_degrades_to_empty(monkeypatch):
+    def raiser(uri):
+        raise OSError("federal_sites_lance not materialized yet")
+
+    monkeypatch.setattr(subout_store, "_dataset", raiser)
+    assert subout_store._load_federal_sites() == []      # LOUD log, never a brick
