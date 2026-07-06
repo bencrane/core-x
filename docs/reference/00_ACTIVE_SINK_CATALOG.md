@@ -127,6 +127,15 @@
 > casting). Added to **§Places/Geo**, live-verified 2026-07-06. Headline/marquee totals above are
 > NOT recomputed — a full re-probe refreshes those.
 
+> **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
+> of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
+> `pipelines/serving/ingest_gsa_leases_lance.py`) — a distinct grain (1 row / lease, a building can
+> back multiple leases), kept separate rather than folded into the buildings layer. **7,395 rows ·
+> 38 cols · 9 indices**, 7,349 distinct `lease_num`, 100% point geometry. Carries
+> `lease_effective_date`/`lease_expiration_date` (DATE, from Esri epoch-ms) + derived
+> `is_active_lease` (expiration ≥ today): 7,105 active · 290 expired · 1,680 expiring within 24
+> months (the recompete window). Added to **§Places/Geo**, live-verified 2026-07-06.
+
 governed by [`02_lancedb_storage.md`](02_lancedb_storage.md). LanceDB written
 directly to Cloudflare R2 under `s3://data-sink/active/<dataset>/` is the absolute
 system of record ([`ARCHITECTURE.md` §4](../../ARCHITECTURE.md)); this file is the
@@ -653,6 +662,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `frpp_civilian_real_property` | 307,919 | 121 | BTree(real_property_unique_identifier); BTree(installation_id); Bitmap(reporting_agency_code); Bitmap(using_agency_code); Bitmap(state_code); Bitmap(real_property_type_code); Bitmap(real_property_use_code); Bitmap(legal_interest_code); Bitmap(asset_status_code); Bitmap(us_foreign) |
 | `geocode_xwalk` | 369,218 | 11 | BTree(addr_hash) |
 | `gsa_buildings_lance` | 8,133 | 37 | BTree(location_code); BTree(objectid); BTree(real_property_asset_name); Bitmap(state_cd); Bitmap(owned_or_leased_indicator); Bitmap(occupancy_right_desc); Bitmap(region_code); Bitmap(building_status); Bitmap(real_property_asset_type) |
+| `gsa_leases_lance` | 7,395 | 38 | BTree(lease_num); BTree(location_code); BTree(objectid); BTree(real_property_asset_name); Bitmap(state_cd); Bitmap(region_code); Bitmap(real_property_asset_type); Bitmap(occupancy_right_desc); Bitmap(is_active_lease) |
 | `military_bases_lance` | 824 | 19 | BTree(objectid); BTree(site_name); BTree(feature_name); Bitmap(country); Bitmap(state_name_code); Bitmap(operational_status); Bitmap(site_reporting_component_code); Bitmap(is_firrma_site); Bitmap(is_joint_base) |
 | `overture_places` | 16,273,123 | 14 | BTree(id); BTree(name); BTree(postcode); BTree(locality); BTree(hilbert); BTree(domain); BTree(phone); Bitmap(region); Bitmap(category) |
 | `overture_places__bak_2026-05-20.0_20260606T192125Z` | 16,273,123 | 13 | BTree(id); BTree(longitude); BTree(latitude); BTree(name); BTree(postcode); BTree(locality); Bitmap(region) |
