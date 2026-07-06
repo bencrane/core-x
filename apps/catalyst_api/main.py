@@ -609,11 +609,18 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
     200 with empty data + ``meta.reason`` (an empty market is an answer, not an
     error); per-stage wall times ride ``meta.timings_ms``.
 
-    HOT PATH IS IN-PROCESS: the open-award table + the sub-out cube marginal are
-    process-memory caches (lazy, TTL-refreshed in the background; ``meta.cache_state``
-    = cold | warm | unavailable, ``meta.cache_build_ms`` alongside). Per-request
-    remote reads are BTREE uei point-lookups only. ``include_peers`` defaults FALSE —
-    the peers lookup is the one remote non-point query (opt-in; adds latency)."""
+    HOT PATH IS IN-PROCESS: the open-award table, the sub-out cube marginal, and the
+    three probe tables (lanes / SAM NAICS / entity HQ geo) are process-memory caches
+    (lazy, TTL-refreshed in the background; ``meta.cache_state`` = cold | warm |
+    failed, ``meta.cache_build_ms`` alongside). The ONE remote read per request is
+    the inferred-lens probe (263M-row projection; handle + index pages warmed at
+    boot) — ``meta.timings_ms`` splits ``probe_cached`` vs ``probe_inferred`` so the
+    wire shows exactly what the remote floor costs. ``include_peers`` defaults FALSE
+    — the peers lookup is the one remote non-point query (opt-in; adds latency).
+
+    LATENCY NOTE for consuming BFFs: the server-side floor is the inferred probe
+    (hundreds of ms). For millisecond demo paths, cache per-UEI response bodies at
+    the BFF (known-target prewarm) — the response is deterministic per cache epoch."""
     try:
         result = subout_store.execute_subout_opportunities(body)
     except lance_store.MapCompileError as exc:
