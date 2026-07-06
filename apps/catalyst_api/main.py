@@ -589,9 +589,11 @@ def market_codes(
 def map_entities_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) -> JSONResponse:
     """Workbench adapter over the market query engine: accepts the SAME body the map
     datasets take (``{filters, limit}`` — lane objects also pass) and returns the SAME
-    envelope the workbench parses (``data`` = a FeatureCollection whose features carry
-    ``geometry: null`` + the entity row as ``properties``; ``meta`` = dataset/
-    decoderVersion/returned/plottable/total/capped). The clean row-shaped surface is
+    envelope the workbench parses. Features carry REAL ``Point [lon, lat]`` geometry
+    when the entity has a row in the gtm_entity_geo HQ sidecar (hydrated LEFT-join;
+    ``properties.geo_precision`` = 'address' | 'county') and ``geometry: null``
+    otherwise — the table stays complete, the dot layer skips the nulls, and
+    ``meta.plottable`` counts the dots honestly. The clean row-shaped surface is
     POST /api/v1/market/query."""
     if body.grain != "entity":
         raise HTTPException(status_code=422, detail=f"unknown grain {body.grain!r} — v1 serves 'entity'")
@@ -601,16 +603,14 @@ def map_entities_query(body: MarketQueryRequest = Body(default=MarketQueryReques
         )
     except lance_store.MapCompileError as exc:
         raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
-    features = [
-        {"type": "Feature", "geometry": None, "properties": row} for row in result["rows"]
-    ]
+    features, plottable = market_store.to_entity_features(result["rows"])
     return JSONResponse({
         "data": {"type": "FeatureCollection", "features": features},
         "meta": {
             "dataset": "entities",
             "decoderVersion": market_registry.REGISTRY_VERSION,
             "returned": result["returned"],
-            "plottable": 0,
+            "plottable": plottable,
             "total": result["total"],
             "capped": result["capped"],
             "executed": result["executed"],

@@ -178,6 +178,13 @@ GTM_ENTITY_CODE_LANES_URI = os.environ.get(
 GTM_SAM_ENTITIES_URI = os.environ.get(
     "GTM_SAM_ENTITIES_LANCE_URI", "s3://data-sink/active/gtm_sam_entities/"
 )
+# gtm_entity_geo — 1 row/uei HQ geo sidecar (~1.45M; BTREE uei, BITMAP geo_precision),
+# built by scripts/build_gtm_entity_geo.py: best-available coordinates per entity
+# ('address' rooftop via geocode_xwalk, else 'county' dominant-ZCTA centroid; unmatched
+# entities have NO row). LEFT-joined at market hydration for real map geometry.
+GTM_ENTITY_GEO_URI = os.environ.get(
+    "GTM_ENTITY_GEO_LANCE_URI", "s3://data-sink/active/gtm_entity_geo/"
+)
 
 # ── Code reference dimensions (the /market/codes typeahead) ──────────────────
 # naics_reference — 1 row per NAICS code (2-6 digit, ~2,125): naics_code + naics_title.

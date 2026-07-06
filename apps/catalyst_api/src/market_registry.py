@@ -37,9 +37,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Version key surfaced as decoderVersion in the fields payload.
+# v3: HQ geo sidecar (gtm_entity_geo) LEFT-joined at hydration — result rows carry
+# latitude/longitude/geo_precision; the map adapter emits real Point geometry.
 # v2: state → closed enum (live-probed USPS codes); `codes` typeahead attribute on the
 # code-valued fields (naics/psc/agency); agency added to the /market/codes systems.
-REGISTRY_VERSION = "entities.v2"
+REGISTRY_VERSION = "entities.v3"
 
 # The two scalar source tables (keys into market_store's URI map). Lane predicates are
 # a third, non-scalar source compiled separately (see LANE below).
@@ -266,6 +268,11 @@ RESULT_COLUMNS_ENTITIES = ("uei", "legal_business_name", "physical_state",
 RESULT_COLUMNS_ROLLUP = ("uei", "prime_obl_24mo", "prime_obl_60mo", "prime_obl_lifetime",
                          "sub_amt_lifetime", "last_action_date", "top_naics",
                          "top_agency_code", "is_prime_24mo", "is_sub_60mo", "prime_and_sub")
+# HQ geo sidecar (gtm_entity_geo, 1 row/uei, built by scripts/build_gtm_entity_geo.py).
+# LEFT-joined at hydration: an entity absent from the sidecar carries NULL coordinates
+# (the map adapter emits geometry:null — never a fake centroid). geo_precision is
+# 'address' (geocode_xwalk rooftop) or 'county' (dominant-ZCTA county centroid).
+RESULT_COLUMNS_GEO = ("uei", "latitude", "longitude", "geo_precision")
 # The wire row = this exact key order. legal_business_name is display-only by design
 # (v1: not filterable — name matching belongs to a resolution surface, not a filter).
 RESULT_ROW_ORDER = (
@@ -273,6 +280,7 @@ RESULT_ROW_ORDER = (
     "prime_obl_24mo", "prime_obl_60mo", "prime_obl_lifetime", "sub_amt_lifetime",
     "last_action_date", "top_naics", "top_agency_code",
     "is_prime_24mo", "is_sub_60mo", "prime_and_sub",
+    "latitude", "longitude", "geo_precision",
 )
 
 

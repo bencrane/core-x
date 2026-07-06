@@ -68,6 +68,7 @@ _SOURCE_URIS = {
     "rollup": lambda: config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI,
     "entities": lambda: config.GTM_SAM_ENTITIES_URI,
     "lanes": lambda: config.GTM_ENTITY_CODE_LANES_URI,
+    "geo": lambda: config.GTM_ENTITY_GEO_URI,
 }
 
 
@@ -246,21 +247,45 @@ def _rows_by_uei(uri: str, ueis: list[str], columns: list[str]) -> dict[str, dic
 
 
 def _hydrate(ueis: list[str]) -> list[dict[str, Any]]:
-    """Join gtm_sam_entities + gtm_entity_behavior_rollup on the surviving UEIs. A UEI
-    absent from a table hydrates that table's columns as NULLs (honest absence — e.g.
-    a SAM-registered entity with no contract behavior has no rollup row). Values are
-    JSON-shaped (date32 → ISO) and keyed in RESULT_ROW_ORDER."""
+    """Join gtm_sam_entities + gtm_entity_behavior_rollup + the gtm_entity_geo HQ geo
+    sidecar (LEFT) on the surviving UEIs. A UEI absent from a table hydrates that
+    table's columns as NULLs (honest absence — e.g. a SAM-registered entity with no
+    contract behavior has no rollup row; an ungeocodable entity has no geo row, so the
+    map adapter emits geometry:null, never a fake centroid). Values are JSON-shaped
+    (date32 → ISO) and keyed in RESULT_ROW_ORDER."""
     if not ueis:
         return []
     ent = _rows_by_uei(_SOURCE_URIS["entities"](), ueis,
                        list(market_registry.RESULT_COLUMNS_ENTITIES))
     rol = _rows_by_uei(_SOURCE_URIS["rollup"](), ueis,
                        list(market_registry.RESULT_COLUMNS_ROLLUP))
+    geo = _rows_by_uei(_SOURCE_URIS["geo"](), ueis,
+                       list(market_registry.RESULT_COLUMNS_GEO))
     rows: list[dict[str, Any]] = []
     for u in ueis:
-        merged = {"uei": u, **(ent.get(u) or {}), **(rol.get(u) or {})}
+        merged = {"uei": u, **(ent.get(u) or {}), **(rol.get(u) or {}), **(geo.get(u) or {})}
         rows.append({k: _map_jsonable(merged.get(k)) for k in market_registry.RESULT_ROW_ORDER})
     return rows
+
+
+def to_entity_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Result rows → GeoJSON features for the /api/v1/map/entities/query adapter.
+    latitude/longitude LEAVE the properties and become Point geometry as ``[lon, lat]``
+    (GeoJSON axis order) when both are present; a row without coordinates is served with
+    ``geometry: null`` (valid per RFC 7946 §3.2) so the TABLE view stays complete while
+    the dot layer skips it. geo_precision STAYS in properties ('address' | 'county' |
+    None). Returns ``(features, plottable)``."""
+    features: list[dict[str, Any]] = []
+    plottable = 0
+    for row in rows:
+        props = dict(row)
+        lat, lon = props.pop("latitude", None), props.pop("longitude", None)
+        geometry = None
+        if lat is not None and lon is not None:
+            geometry = {"type": "Point", "coordinates": [lon, lat]}
+            plottable += 1
+        features.append({"type": "Feature", "geometry": geometry, "properties": props})
+    return features, plottable
 
 
 def execute_entity_query(
