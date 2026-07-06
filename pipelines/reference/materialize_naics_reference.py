@@ -3,10 +3,15 @@ as canonical Lance lookups, mirroring psc_reference. The system of record for
 naics_code -> title / description / hierarchy, plus the Census keyword index.
 
 TABLES
-  s3://data-sink/active/naics_reference/   1 row per NAICS code (2-6 digit), ~2,125 codes.
+  s3://data-sink/active/naics_reference/   1 row per NAICS code (2-6 digit), ~2,129 codes.
       naics_code, naics_title, description, level, code_len, sector_code, parent_code,
       is_trilateral, change_indicator, source_vintage, ingested_at.
       BTREE: naics_code, parent_code | BITMAP: level, code_len, sector_code, is_trilateral.
+      HIERARCHY CLOSED: the 3 Census range sectors (31-33/44-45/48-49) are expanded to their
+      constituent 2-digit codes (31,32,33,44,45,48,49) so every parent_code and sector_code
+      resolves to a real row — a full 6->5->4->3->2 recursive rollup has zero orphans. 24 two-digit
+      sector rows (20 official sectors; manufacturing/retail/transport each span multiple 2-digit
+      codes). build() hard-asserts closure; verify() reports orphan_parent_code / orphan_sector_code.
   s3://data-sink/active/naics_index/       1 row per Census index phrase (~20,398), 6-digit keyed.
       naics_code, index_item, index_item_lc, source_vintage, ingested_at.   BTREE: naics_code.
 
@@ -77,6 +82,16 @@ def _clean(v):
     return s or None
 
 
+def _expand_range(code):
+    """Census encodes 3 sectors as 2-digit RANGES: "31-33"/"44-45"/"48-49". Expand into the
+    constituent 2-digit codes ("31-33" -> ["31","32","33"]) so descendants' code[:2] prefix
+    (sector_code / 3-digit parent_code) resolves to a real row. None if not a 2-digit range."""
+    m = re.fullmatch(r"(\d{2})-(\d{2})", code or "")
+    if not m:
+        return None
+    return [f"{n:02d}" for n in range(int(m.group(1)), int(m.group(2)) + 1)]
+
+
 def _resolve_sources(source_dir: str | None) -> dict[str, str]:
     if source_dir:
         return {k: os.path.join(source_dir, f"{k}.xlsx") for k in URLS}
@@ -123,17 +138,12 @@ def _assemble_reference(desc_path: str, struct_path: str):
     ingested = dt.datetime.now(dt.timezone.utc).isoformat()
 
     cols = defaultdict(list)
-    for _, r in df.iterrows():
-        code = _clean(r[code_c])
-        if not code:
-            continue
-        traw = (_clean(r[title_c]) or "")
-        is_tri = traw.endswith("T")
-        title = traw[:-1].strip() if is_tri else traw
+
+    def emit(code, title, desc, is_tri):
         L = len(code)
         cols["naics_code"].append(code)
         cols["naics_title"].append(title or None)
-        cols["description"].append(_clean(r[desc_c]))
+        cols["description"].append(desc)
         cols["level"].append(LEVELS.get(L, f"len{L}"))
         cols["code_len"].append(L)
         cols["sector_code"].append(code[:2])
@@ -142,6 +152,19 @@ def _assemble_reference(desc_path: str, struct_path: str):
         cols["change_indicator"].append(chg.get(code))
         cols["source_vintage"].append(SOURCE_VINTAGE)
         cols["ingested_at"].append(ingested)
+
+    for _, r in df.iterrows():
+        code = _clean(r[code_c])
+        if not code:
+            continue
+        traw = (_clean(r[title_c]) or "")
+        is_tri = traw.endswith("T")
+        title = traw[:-1].strip() if is_tri else traw
+        desc = _clean(r[desc_c])
+        # Range sectors ("31-33"/"44-45"/"48-49") expand to their 2-digit constituents so the
+        # code[:2] sector_code / 3-digit parent_code hierarchy closes; all other codes pass through.
+        for c in (_expand_range(code) or [code]):
+            emit(c, title, desc, is_tri)
 
     schema = pa.schema([
         ("naics_code", pa.string()), ("naics_title", pa.string()), ("description", pa.string()),
@@ -191,11 +214,26 @@ def _write(tbl, uri, btree, bitmap, so):
     log(f"DONE → {uri} rows={tbl.num_rows:,}")
 
 
+def _assert_hierarchy_closed(ref):
+    """Fail the build if any code_len>2 parent_code or any sector_code fails to resolve to a real
+    row — the guard that catches the range-sector class of bug on every future rebuild."""
+    codes = set(ref.column("naics_code").to_pylist())
+    rows = ref.to_pylist()
+    bad_parent = [r["naics_code"] for r in rows if r["code_len"] > 2 and r["parent_code"] not in codes]
+    bad_sector = [r["naics_code"] for r in rows if r["sector_code"] not in codes]
+    if bad_parent or bad_sector:
+        raise AssertionError(
+            f"NAICS hierarchy not closed: {len(bad_parent)} orphan parent_code, "
+            f"{len(bad_sector)} orphan sector_code (e.g. {(bad_parent or bad_sector)[:6]})")
+    log(f"hierarchy closed: 0 orphan parent_code / 0 orphan sector_code across {len(codes):,} codes")
+
+
 def build(source_dir: str | None = None):
     so = _r2_so()
     src = _resolve_sources(source_dir)
     ref = _assemble_reference(src["descriptions"], src["structure"])
     log(f"assembled naics_reference: {ref.num_rows:,} rows")
+    _assert_hierarchy_closed(ref)
     _write(ref, NAICS_REF_URI, REF_BTREE, REF_BITMAP, so)
     idx = _assemble_index(src["index"])
     log(f"assembled naics_index: {idx.num_rows:,} rows")
@@ -208,11 +246,15 @@ def verify():
     so = _r2_so()
     out = {}
     ref = lance.dataset(NAICS_REF_URI, storage_options=so)
+    _codes = set(ref.scanner(columns=["naics_code"]).to_table().column("naics_code").to_pylist())
+    _rows = ref.scanner(columns=["naics_code", "code_len", "parent_code", "sector_code"]).to_table().to_pylist()
     out["naics_reference"] = {
         "rows": ref.count_rows(),
         "by_level": {lv: ref.count_rows(filter=f"level = '{lv}'") for lv in LEVELS.values()},
         "with_description": ref.count_rows(filter="description IS NOT NULL"),
         "trilateral": ref.count_rows(filter="is_trilateral = true"),
+        "orphan_parent_code": sum(1 for r in _rows if r["code_len"] > 2 and r["parent_code"] not in _codes),
+        "orphan_sector_code": sum(1 for r in _rows if r["sector_code"] not in _codes),
         "indices": [getattr(i, "name", i.get("name") if isinstance(i, dict) else str(i)) for i in ref.list_indices()],
         "spot_check": ref.scanner(
             columns=["naics_code", "naics_title", "level", "parent_code"],
