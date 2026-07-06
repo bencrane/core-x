@@ -4,10 +4,13 @@
 SoR  s3://data-sink/active/gtm_award_site_proximity/     (prime award grain; BTREE uei, award key)
      s3://data-sink/active/gtm_subaward_site_proximity/  (subaward grain;   BTREE uei, subaward key)
 
-The centroid↔site join (operator-authorized build 2026-07-06): each award/subaward
-place-of-performance centroid matched to its NEAREST federal site, with the awarding
-office code/name carried verbatim. No scoring, no tiers — raw facts; entity rollups
-compose at query time.
+The centroid↔site join (operator-authorized build 2026-07-06; v2 additions same day):
+each award/subaward place-of-performance centroid matched to its NEAREST federal site —
+any-source AND per-source (nearest GSA building/lease, nearest military base) — with
+the awarding office code/name carried verbatim. The subaward lane additionally carries
+the PRIME award's PoP nearest sites (join via prime_award_unique_key; FPDS contracts
+only — grant primes have no FPDS row). No scoring, no tiers — raw facts; entity
+rollups compose at query time.
 
 SITES: federal_sites_lance restricted to military_base + gsa_building + gsa_lease
 (9,237 sites). FRPP's 291K civilian assets are deliberately excluded (they'd make
@@ -85,7 +88,11 @@ def _nearest(con, cent_table: str, key_col: str) -> None:
                arg_min(site_name, dist_mi) AS nearest_site_name,
                arg_min(site_source, dist_mi) AS nearest_site_source,
                arg_min(state_code, dist_mi) AS nearest_site_state,
-               ROUND(MIN(dist_mi), 1) AS nearest_site_miles
+               ROUND(MIN(dist_mi), 1) AS nearest_site_miles,
+               arg_min(site_name, dist_mi) FILTER (site_source LIKE 'gsa%') AS nearest_gsa_name,
+               ROUND(MIN(dist_mi) FILTER (site_source LIKE 'gsa%'), 1) AS nearest_gsa_miles,
+               arg_min(site_name, dist_mi) FILTER (site_source = 'military_base') AS nearest_base_name,
+               ROUND(MIN(dist_mi) FILTER (site_source = 'military_base'), 1) AS nearest_base_miles
         FROM (
             SELECT c.{key_col}, s.site_name, s.site_source, s.state_code,
                    {HAVERSINE} AS dist_mi
@@ -102,39 +109,7 @@ def build() -> int:
     n_sites = _load_sites(con, opt)
     print(f"sites: {n_sites:,} (military_base + gsa_building + gsa_lease)", flush=True)
 
-    # ── subaward side ─────────────────────────────────────────────────────────
-    sc = lance.dataset(f"{A}/usaspending_subaward_pop_centroids/", storage_options=opt)
-    con.register("_sc", sc.scanner(
-        columns=["subaward_unique_key", "latitude", "longitude", "geo_precision", "country_code"],
-        filter="latitude IS NOT NULL").to_reader())
-    con.execute("""CREATE TABLE cent_sub AS
-        SELECT subaward_unique_key, latitude AS lat, longitude AS lon, geo_precision
-        FROM _sc WHERE country_code IN ('USA', 'US', 'UNITED STATES')""")
-    se = lance.dataset(f"{A}/usaspending_subaward_canonical/", storage_options=opt)
-    con.register("_se", se.scanner(
-        columns=["subaward_unique_key", "subawardee_uei", "subaward_amount",
-                 "subaward_action_date", "prime_award_awarding_office_code",
-                 "prime_award_awarding_office_name"],
-        filter="subawardee_uei IS NOT NULL").to_reader())
-    con.execute("CREATE TABLE sub_meta AS SELECT * FROM _se")
-    _nearest(con, "cent_sub", "subaward_unique_key")
-    con.execute("""CREATE TABLE out_sub AS
-        SELECT m.subaward_unique_key, m.subawardee_uei AS uei, m.subaward_amount,
-               m.subaward_action_date,
-               m.prime_award_awarding_office_code AS awarding_office_code,
-               m.prime_award_awarding_office_name AS awarding_office_name,
-               c.geo_precision,
-               n.nearest_site_name, n.nearest_site_source, n.nearest_site_state,
-               n.nearest_site_miles
-        FROM sub_meta m
-        JOIN cent_sub c USING (subaward_unique_key)
-        LEFT JOIN nearest n USING (subaward_unique_key)""")
-    con.execute("DROP TABLE nearest"); con.execute("DROP TABLE cent_sub"); con.execute("DROP TABLE sub_meta")
-    ns, nsm = con.execute(
-        "SELECT COUNT(*), COUNT(nearest_site_name) FROM out_sub").fetchone()
-    print(f"subawards: {ns:,} rows, {nsm:,} with a site in window", flush=True)
-
-    # ── prime side ────────────────────────────────────────────────────────────
+    # ── prime side (first: the sub lane joins its nearest results) ────────────
     ac = lance.dataset(f"{A}/usaspending_award_pop_centroids/", storage_options=opt)
     con.register("_ac", ac.scanner(
         columns=["generated_unique_award_id", "latitude", "longitude",
@@ -160,20 +135,71 @@ def build() -> int:
                any_value(awarding_office_name) AS awarding_office_name
         FROM _tx GROUP BY 1""")
     _nearest(con, "cent_pr", "generated_unique_award_id")
+    con.execute("ALTER TABLE nearest RENAME TO nearest_pr")
     con.execute("""CREATE TABLE out_pr AS
         SELECT m.contract_award_unique_key, m.recipient_uei AS uei,
                m.life_to_date_obligated, m.last_action_date,
                o.awarding_office_code, o.awarding_office_name,
                c.geo_precision,
                n.nearest_site_name, n.nearest_site_source, n.nearest_site_state,
-               n.nearest_site_miles
+               n.nearest_site_miles,
+               n.nearest_gsa_name, n.nearest_gsa_miles,
+               n.nearest_base_name, n.nearest_base_miles
         FROM pr_meta m
         JOIN cent_pr c ON c.generated_unique_award_id = m.contract_award_unique_key
         LEFT JOIN office o USING (contract_award_unique_key)
-        LEFT JOIN nearest n ON n.generated_unique_award_id = m.contract_award_unique_key""")
+        LEFT JOIN nearest_pr n ON n.generated_unique_award_id = m.contract_award_unique_key""")
+    for t in ("cent_pr", "pr_meta", "office"):
+        con.execute(f"DROP TABLE {t}")
     np_, npm = con.execute(
         "SELECT COUNT(*), COUNT(nearest_site_name) FROM out_pr").fetchone()
     print(f"prime awards: {np_:,} rows, {npm:,} with a site in window", flush=True)
+
+    # ── subaward side ─────────────────────────────────────────────────────────
+    sc = lance.dataset(f"{A}/usaspending_subaward_pop_centroids/", storage_options=opt)
+    con.register("_sc", sc.scanner(
+        columns=["subaward_unique_key", "latitude", "longitude", "geo_precision", "country_code"],
+        filter="latitude IS NOT NULL").to_reader())
+    con.execute("""CREATE TABLE cent_sub AS
+        SELECT subaward_unique_key, latitude AS lat, longitude AS lon, geo_precision
+        FROM _sc WHERE country_code IN ('USA', 'US', 'UNITED STATES')""")
+    se = lance.dataset(f"{A}/usaspending_subaward_canonical/", storage_options=opt)
+    con.register("_se", se.scanner(
+        columns=["subaward_unique_key", "subawardee_uei", "subaward_amount",
+                 "subaward_action_date", "prime_award_unique_key",
+                 "prime_award_awarding_office_code",
+                 "prime_award_awarding_office_name"],
+        filter="subawardee_uei IS NOT NULL").to_reader())
+    con.execute("CREATE TABLE sub_meta AS SELECT * FROM _se")
+    _nearest(con, "cent_sub", "subaward_unique_key")
+    con.execute("""CREATE TABLE out_sub AS
+        SELECT m.subaward_unique_key, m.subawardee_uei AS uei, m.subaward_amount,
+               m.subaward_action_date, m.prime_award_unique_key,
+               m.prime_award_awarding_office_code AS awarding_office_code,
+               m.prime_award_awarding_office_name AS awarding_office_name,
+               c.geo_precision,
+               n.nearest_site_name, n.nearest_site_source, n.nearest_site_state,
+               n.nearest_site_miles,
+               n.nearest_gsa_name, n.nearest_gsa_miles,
+               n.nearest_base_name, n.nearest_base_miles,
+               p.nearest_site_name AS prime_pop_nearest_site_name,
+               p.nearest_site_source AS prime_pop_nearest_site_source,
+               p.nearest_site_miles AS prime_pop_nearest_site_miles,
+               p.nearest_gsa_name AS prime_pop_nearest_gsa_name,
+               p.nearest_gsa_miles AS prime_pop_nearest_gsa_miles,
+               p.nearest_base_name AS prime_pop_nearest_base_name,
+               p.nearest_base_miles AS prime_pop_nearest_base_miles
+        FROM sub_meta m
+        JOIN cent_sub c USING (subaward_unique_key)
+        LEFT JOIN nearest n USING (subaward_unique_key)
+        LEFT JOIN nearest_pr p ON p.generated_unique_award_id = m.prime_award_unique_key""")
+    for t in ("nearest", "cent_sub", "sub_meta", "nearest_pr"):
+        con.execute(f"DROP TABLE {t}")
+    ns, nsm, npp = con.execute(
+        "SELECT COUNT(*), COUNT(nearest_site_name), COUNT(prime_pop_nearest_site_name) "
+        "FROM out_sub").fetchone()
+    print(f"subawards: {ns:,} rows, {nsm:,} with a site in window, "
+          f"{npp:,} with prime-PoP site", flush=True)
 
     # ── publish ───────────────────────────────────────────────────────────────
     fs_v = lance.dataset(f"{A}/federal_sites_lance/", storage_options=opt).version
