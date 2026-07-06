@@ -1142,6 +1142,7 @@ _SURFACE_DATASETS = {
     "gtm_entity_behavior_rollup": lambda: config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI,
     "gtm_entity_code_lanes": lambda: config.GTM_ENTITY_CODE_LANES_URI,
     "gtm_sam_entities": lambda: config.GTM_SAM_ENTITIES_URI,
+    "gtm_entity_geo": lambda: config.GTM_ENTITY_GEO_URI,
 }
 
 

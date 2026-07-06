@@ -35,6 +35,11 @@ LANES_SCHEMA = {
     "uei", "side", "code_type", "code", "obl_12mo", "obl_24mo", "obl_60mo",
     "obl_lifetime", "action_ct", "last_action_date",
 }
+# gtm_entity_geo — written by scripts/build_gtm_entity_geo.py (same PR), built 2026-07-05.
+GEO_SCHEMA = {
+    "uei", "latitude", "longitude", "geo_precision", "geo_source",
+    "as_of", "built_from_version", "param_set_id",
+}
 ENTITIES_SCHEMA = {
     "uei", "cage_code", "legal_business_name", "normalized_legal_name", "legal_name_base",
     "dba_name", "in_sam", "sam_is_active", "in_dsbs", "is_subawardee", "is_prime_recipient",
@@ -68,7 +73,10 @@ def test_lane_contract_columns_exist_in_lanes_schema():
 def test_result_columns_exist_and_row_order_is_their_union():
     assert set(market_registry.RESULT_COLUMNS_ENTITIES) <= ENTITIES_SCHEMA
     assert set(market_registry.RESULT_COLUMNS_ROLLUP) <= ROLLUP_SCHEMA
-    union = set(market_registry.RESULT_COLUMNS_ENTITIES) | set(market_registry.RESULT_COLUMNS_ROLLUP)
+    assert set(market_registry.RESULT_COLUMNS_GEO) <= GEO_SCHEMA
+    union = (set(market_registry.RESULT_COLUMNS_ENTITIES)
+             | set(market_registry.RESULT_COLUMNS_ROLLUP)
+             | set(market_registry.RESULT_COLUMNS_GEO))
     assert set(market_registry.RESULT_ROW_ORDER) == union
     assert market_registry.RESULT_ROW_ORDER[0] == "uei"
 
@@ -282,6 +290,14 @@ ENTITY_ROWS = {
     "UEICCCCCCCC3": {"uei": "UEICCCCCCCC3", "legal_business_name": "CHARLIE CO",
                      "physical_state": "TX", "normalized_domain": None, "in_dsbs": False},
 }
+# HQ geo sidecar: ACME rooftop-geocoded, BRAVO county-centroid, CHARLIE has NO geo row
+# (ungeocodable — absence, never a fake centroid).
+GEO_ROWS = {
+    "UEIAAAAAAAA1": {"uei": "UEIAAAAAAAA1", "latitude": 38.8816, "longitude": -77.0910,
+                     "geo_precision": "address"},
+    "UEIBBBBBBBB2": {"uei": "UEIBBBBBBBB2", "latitude": 37.5407, "longitude": -77.4360,
+                     "geo_precision": "county"},
+}
 
 
 class Seams:
@@ -322,7 +338,9 @@ class Seams:
 
     def scan_to_pylist(self, uri, columns, predicate):
         self.scan_calls.append((uri, tuple(columns), predicate))
-        table = ENTITY_ROWS if uri == config.GTM_SAM_ENTITIES_URI else ROLLUP_ROWS
+        table = {config.GTM_SAM_ENTITIES_URI: ENTITY_ROWS,
+                 config.GTM_ENTITY_BEHAVIOR_ROLLUP_URI: ROLLUP_ROWS,
+                 config.GTM_ENTITY_GEO_URI: GEO_ROWS}[uri]
         return [{c: row.get(c) for c in columns}
                 for u, row in table.items() if f"'{u}'" in (predicate or "")]
 
@@ -430,6 +448,51 @@ def test_hydration_nulls_for_uei_missing_from_rollup(seams):
     row = out["rows"][0]
     assert row["uei"] == "UEICCCCCCCC3" and row["legal_business_name"] == "CHARLIE CO"
     assert row["prime_obl_24mo"] is None and row["is_prime_24mo"] is None
+
+
+def test_hydration_left_joins_geo_sidecar(seams):
+    # ACME rooftop, BRAVO county centroid, CHARLIE absent from the sidecar → NULLs.
+    out = market_store.execute_entity_query(
+        [{"field": "state", "op": "in", "value": ["VA", "TX"]}], limit=10, today=TODAY)
+    rows = {r["uei"]: r for r in out["rows"]}
+    assert rows["UEIAAAAAAAA1"]["latitude"] == 38.8816
+    assert rows["UEIAAAAAAAA1"]["longitude"] == -77.0910
+    assert rows["UEIAAAAAAAA1"]["geo_precision"] == "address"
+    assert rows["UEIBBBBBBBB2"]["geo_precision"] == "county"
+    assert rows["UEICCCCCCCC3"]["latitude"] is None
+    assert rows["UEICCCCCCCC3"]["longitude"] is None
+    assert rows["UEICCCCCCCC3"]["geo_precision"] is None
+    # the geo sidecar was hydrated via chunked IN point scans like the other two tables
+    assert any(u == config.GTM_ENTITY_GEO_URI for u, _, _ in seams.scan_calls)
+
+
+def test_to_entity_features_geometry_precision_and_null_preservation(seams):
+    out = market_store.execute_entity_query(
+        [{"field": "state", "op": "in", "value": ["VA", "TX"]}], limit=10, today=TODAY)
+    features, plottable = market_store.to_entity_features(out["rows"])
+    assert len(features) == 3 and plottable == 2
+    by_uei = {f["properties"]["uei"]: f for f in features}
+    # Point geometry in GeoJSON [lon, lat] axis order; geo_precision stays in properties
+    acme = by_uei["UEIAAAAAAAA1"]
+    assert acme["geometry"] == {"type": "Point", "coordinates": [-77.0910, 38.8816]}
+    assert acme["properties"]["geo_precision"] == "address"
+    assert by_uei["UEIBBBBBBBB2"]["geometry"] == {"type": "Point",
+                                                  "coordinates": [-77.4360, 37.5407]}
+    # no geo row → geometry null, row PRESERVED (table view stays complete)
+    charlie = by_uei["UEICCCCCCCC3"]
+    assert charlie["geometry"] is None
+    assert charlie["properties"]["legal_business_name"] == "CHARLIE CO"
+    assert charlie["properties"]["geo_precision"] is None
+    # latitude/longitude move INTO geometry — never duplicated in properties
+    for f in features:
+        assert "latitude" not in f["properties"] and "longitude" not in f["properties"]
+
+
+def test_to_entity_features_partial_coordinates_are_not_plottable():
+    # A row with only one coordinate (defensive) must not emit a broken Point.
+    rows = [{"uei": "X", "latitude": 31.0, "longitude": None, "geo_precision": "county"}]
+    features, plottable = market_store.to_entity_features(rows)
+    assert plottable == 0 and features[0]["geometry"] is None
 
 
 def test_limit_clamped_to_hard_cap(seams):
