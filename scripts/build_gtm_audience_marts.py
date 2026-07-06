@@ -56,11 +56,28 @@ OUT_SUB_LANES = f"{A}/gtm_sub_combo_lanes/"
 OUT_PRIME_LANES = f"{A}/gtm_prime_combo_lanes/"
 OUT_ENTITIES = f"{A}/gtm_audience_entities/"
 OUT_PEOPLE = f"{A}/gtm_audience_people/"
-PARAM_SET_ID = "v1"
+PARAM_SET_ID = "v2"  # v2: lane code titles; entity 12/60mo windows + $ text bands,
+                     # primary PoP state/county, FFATA flag, DSBS + FSRS designation
+                     # flags, NAICS 2-6 rollup strings; people exec-officer fields
 
 LANE_BTREE = ["uei", "naics_code", "psc_code"]
 ENTITY_BTREE = ["uei", "normalized_domain"]
 PEOPLE_BTREE = ["sam_person_id", "uei"]
+
+
+def _band(col: str) -> str:
+    """At-a-glance text range for a $ column (Close-friendly; sorts by magnitude prefix)."""
+    return f"""CASE
+        WHEN {col} IS NULL THEN NULL
+        WHEN {col} <= 0 THEN '<=$0'
+        WHEN {col} < 250e3 THEN '<$250K'
+        WHEN {col} < 1e6   THEN '$250K-$1M'
+        WHEN {col} < 5e6   THEN '$1M-$5M'
+        WHEN {col} < 10e6  THEN '$5M-$10M'
+        WHEN {col} < 25e6  THEN '$10M-$25M'
+        WHEN {col} < 100e6 THEN '$25M-$100M'
+        WHEN {col} < 500e6 THEN '$100M-$500M'
+        ELSE '$500M+' END"""
 
 
 def so() -> dict:
@@ -98,6 +115,18 @@ def build() -> int:
     w60 = (today - timedelta(days=1826)).isoformat()
     con = _cx()
 
+    # ── code references (titles for lanes + entity rollups) ───────────────────
+    nref = lance.dataset(f"{A}/naics_reference/", storage_options=opt)
+    con.register("_nref", nref.scanner(columns=["naics_code", "naics_title"]).to_reader())
+    con.execute("""CREATE TABLE nref AS
+        SELECT naics_code, any_value(naics_title) AS naics_title FROM _nref GROUP BY 1""")
+    pref = lance.dataset(f"{A}/psc_reference/", storage_options=opt)
+    con.register("_pref", pref.scanner(
+        columns=["psc_code", "psc_name", "is_active"]).to_reader())
+    con.execute("""CREATE TABLE pref AS
+        SELECT psc_code, arg_max(psc_name, is_active::INT) AS psc_title
+        FROM _pref WHERE psc_name IS NOT NULL GROUP BY 1""")
+
     # ── gtm_sub_combo_lanes ───────────────────────────────────────────────────
     se = lance.dataset(f"{A}/usaspending_subaward_canonical/", storage_options=opt)
     con.register("_se", se.scanner(
@@ -119,8 +148,27 @@ def build() -> int:
                MIN(subaward_action_date) AS first_action_date,
                MAX(subaward_action_date) AS last_action_date
         FROM _se GROUP BY 1, 2, 3""")
+    con.execute("""CREATE TABLE sub_lanes_t AS
+        SELECT l.*, n.naics_title, p.psc_title
+        FROM sub_lanes l
+        LEFT JOIN nref n USING (naics_code)
+        LEFT JOIN pref p USING (psc_code)""")
+    con.execute("DROP TABLE sub_lanes"); con.execute("ALTER TABLE sub_lanes_t RENAME TO sub_lanes")
     n = con.execute("SELECT COUNT(*) FROM sub_lanes").fetchone()[0]
     print(f"sub_lanes: {n:,} rows", flush=True)
+
+    # second single-pass reader: subaward PoP for entity-level primary state/county
+    con.register("_se_pop", se.scanner(
+        columns=["subawardee_uei", "subaward_amount",
+                 "subaward_primary_place_of_performance_state_code",
+                 "sub_place_of_perform_county_name"],
+        filter="subawardee_uei IS NOT NULL").to_reader())
+    con.execute("""CREATE TABLE sub_pop AS
+        SELECT subawardee_uei AS uei,
+               subaward_primary_place_of_performance_state_code AS pop_state,
+               sub_place_of_perform_county_name AS pop_county,
+               SUM(subaward_amount) AS amt
+        FROM _se_pop GROUP BY 1, 2, 3""")
 
     # ── gtm_prime_combo_lanes ─────────────────────────────────────────────────
     tx = lance.dataset(f"{A}/usaspending_fpds_canonical_txn/", storage_options=opt)
@@ -141,15 +189,48 @@ def build() -> int:
                MIN(action_date) AS first_action_date,
                MAX(action_date) AS last_action_date
         FROM _tx GROUP BY 1, 2, 3""")
+    con.execute("""CREATE TABLE prime_lanes_t AS
+        SELECT l.*, n.naics_title, p.psc_title
+        FROM prime_lanes l
+        LEFT JOIN nref n USING (naics_code)
+        LEFT JOIN pref p USING (psc_code)""")
+    con.execute("DROP TABLE prime_lanes"); con.execute("ALTER TABLE prime_lanes_t RENAME TO prime_lanes")
     n = con.execute("SELECT COUNT(*) FROM prime_lanes").fetchone()[0]
     print(f"prime_lanes: {n:,} rows", flush=True)
+
+    # second single-pass reader: prime PoP for entity-level primary state/county
+    con.register("_tx_pop", tx.scanner(
+        columns=["recipient_uei", "federal_action_obligation",
+                 "primary_place_of_performance_state_code", "pop_county_name"],
+        filter="recipient_uei IS NOT NULL").to_reader())
+    con.execute("""CREATE TABLE prime_pop AS
+        SELECT recipient_uei AS uei,
+               primary_place_of_performance_state_code AS pop_state,
+               pop_county_name AS pop_county,
+               SUM(federal_action_obligation) AS amt
+        FROM _tx_pop GROUP BY 1, 2, 3""")
+
+    # primary PoP per entity: modal by lifetime $ across prime + sub activity
+    con.execute("""CREATE TABLE pop_primary AS
+        WITH u AS (SELECT * FROM prime_pop UNION ALL SELECT * FROM sub_pop),
+        st AS (
+            SELECT uei, arg_max(pop_state, amt) AS primary_pop_state FROM (
+                SELECT uei, pop_state, SUM(amt) AS amt FROM u
+                WHERE pop_state IS NOT NULL GROUP BY 1, 2) GROUP BY 1),
+        co AS (
+            SELECT uei, arg_max(pop_county, amt) AS primary_pop_county FROM (
+                SELECT uei, pop_county, SUM(amt) AS amt FROM u
+                WHERE pop_county IS NOT NULL GROUP BY 1, 2) GROUP BY 1)
+        SELECT coalesce(st.uei, co.uei) AS uei, st.primary_pop_state, co.primary_pop_county
+        FROM st FULL JOIN co ON st.uei = co.uei""")
 
     # ── gtm_audience_people ───────────────────────────────────────────────────
     ppl = lance.dataset(f"{A}/gtm_sam_people/", storage_options=opt)
     con.register("_ppl", ppl.scanner(columns=[
         "sam_person_id", "uei", "display_name", "first_name", "last_name",
         "best_title", "is_govt_poc", "is_ebiz_poc", "is_dsbs_contact",
-        "is_dsbs_principal", "n_sources"]).to_reader())
+        "is_dsbs_principal", "is_exec_officer_prime", "is_exec_officer_sub",
+        "max_officer_amount", "n_sources"]).to_reader())
     con.execute("CREATE TABLE ppl AS SELECT * FROM _ppl")
 
     titles = lance.dataset(f"{A}/gtm_sam_person_titles/", storage_options=opt)
@@ -179,6 +260,7 @@ def build() -> int:
                coalesce(t.title_verbatim, p.best_title) AS title,
                t.dm_class,
                p.is_govt_poc, p.is_ebiz_poc, p.is_dsbs_contact, p.is_dsbs_principal,
+               p.is_exec_officer_prime, p.is_exec_officer_sub, p.max_officer_amount,
                p.n_sources,
                i.person_linkedin_url_norm,
                c.phone, c.phone_status, c.phone_type, c.phone_source_vendor,
@@ -227,15 +309,64 @@ def build() -> int:
                any_value(employees_on_linkedin) AS employees_on_linkedin
         FROM _fb WHERE domain_norm IS NOT NULL GROUP BY 1""")
 
-    con.execute("""CREATE TABLE entities_out AS
+    ffata = lance.dataset(f"{A}/ffata_exec_comp/", storage_options=opt)
+    con.register("_ff", ffata.scanner(columns=["recipient_uei"]).to_reader())
+    con.execute("CREATE TABLE ff AS SELECT DISTINCT recipient_uei AS uei FROM _ff")
+
+    dsbs = lance.dataset(f"{A}/sba_dsbs_certified_firms/", storage_options=opt)
+    con.register("_ds", dsbs.scanner(columns=[
+        "uei", "active_8a_boolean", "active_hz_boolean", "active_wosb_boolean",
+        "active_edwosb_boolean", "active_sdvosb_boolean", "active_vosb_boolean"]).to_reader())
+    con.execute("""CREATE TABLE dsbs_flags AS
+        SELECT uei, bool_or(active_8a_boolean) AS dsbs_8a,
+               bool_or(active_hz_boolean) AS dsbs_hubzone,
+               bool_or(active_wosb_boolean) AS dsbs_wosb,
+               bool_or(active_edwosb_boolean) AS dsbs_edwosb,
+               bool_or(active_sdvosb_boolean) AS dsbs_sdvosb,
+               bool_or(active_vosb_boolean) AS dsbs_vosb
+        FROM _ds WHERE uei IS NOT NULL GROUP BY 1""")
+
+    desg = lance.dataset(f"{A}/govcon_subawardee_designations/", storage_options=opt)
+    con.register("_dg", desg.scanner(columns=[
+        "subawardee_uei", "service_disabled_veteran_owned_business", "veteran_owned_business",
+        "women_owned_small_business", "economically_disadvantaged_women_owned_small_business",
+        "woman_owned_business", "historically_underutilized_business_zone_hubzone_firm",
+        "c8a_program_participant", "small_disadvantaged_business",
+        "self_certified_small_disadvantaged_business", "minority_owned_business",
+        "any_socioeconomic_designation", "designation_count"]).to_reader())
+    con.execute("""CREATE TABLE fsrs_flags AS
+        SELECT subawardee_uei AS uei,
+               bool_or(service_disabled_veteran_owned_business) AS fsrs_sdvosb,
+               bool_or(veteran_owned_business) AS fsrs_vosb,
+               bool_or(women_owned_small_business) AS fsrs_wosb,
+               bool_or(economically_disadvantaged_women_owned_small_business) AS fsrs_edwosb,
+               bool_or(woman_owned_business) AS fsrs_woman_owned,
+               bool_or(historically_underutilized_business_zone_hubzone_firm) AS fsrs_hubzone,
+               bool_or(c8a_program_participant) AS fsrs_8a,
+               bool_or(small_disadvantaged_business) AS fsrs_sdb,
+               bool_or(self_certified_small_disadvantaged_business) AS fsrs_self_sdb,
+               bool_or(minority_owned_business) AS fsrs_minority,
+               bool_or(any_socioeconomic_designation) AS fsrs_any_designation,
+               MAX(designation_count) AS fsrs_designation_count
+        FROM _dg WHERE subawardee_uei IS NOT NULL GROUP BY 1""")
+
+    band_cols = ",\n               ".join(
+        f"{_band(c)} AS {c}_band"
+        for c in ("sub_amt_12mo", "sub_amt_24mo", "sub_amt_60mo", "sub_amt_lifetime",
+                  "prime_obl_12mo", "prime_obl_24mo", "prime_obl_60mo", "prime_obl_lifetime"))
+    con.execute(f"""CREATE TABLE entities_out AS
         WITH sub_tot AS (
-            SELECT uei, SUM(sub_amt_24mo) AS sub_amt_24mo,
+            SELECT uei, SUM(sub_amt_12mo) AS sub_amt_12mo,
+                   SUM(sub_amt_24mo) AS sub_amt_24mo,
+                   SUM(sub_amt_60mo) AS sub_amt_60mo,
                    SUM(sub_amt_lifetime) AS sub_amt_lifetime,
                    SUM(n_subawards_24mo) AS n_subawards_24mo,
                    MAX(last_action_date) AS sub_last_action_date
             FROM sub_lanes GROUP BY 1),
         prime_tot AS (
-            SELECT uei, SUM(prime_obl_24mo) AS prime_obl_24mo,
+            SELECT uei, SUM(prime_obl_12mo) AS prime_obl_12mo,
+                   SUM(prime_obl_24mo) AS prime_obl_24mo,
+                   SUM(prime_obl_60mo) AS prime_obl_60mo,
                    SUM(prime_obl_lifetime) AS prime_obl_lifetime,
                    SUM(n_txns_24mo) AS n_prime_txns_24mo,
                    MAX(last_action_date) AS prime_last_action_date
@@ -249,12 +380,21 @@ def build() -> int:
                    COUNT(*) FILTER (enrichment_state = 'unbridged') AS n_unbridged,
                    COUNT(*) FILTER (email_verification_status = 'verified') AS n_email_verified,
                    COUNT(*) FILTER (dm_class = 'dm') AS n_dm
-            FROM people_out GROUP BY 1)
+            FROM people_out GROUP BY 1),
+        base AS (
         SELECT g.*, fb.employee_size_band, fb.employees_on_linkedin,
-               st.sub_amt_24mo, st.sub_amt_lifetime, st.n_subawards_24mo,
-               st.sub_last_action_date,
-               pt.prime_obl_24mo, pt.prime_obl_lifetime, pt.n_prime_txns_24mo,
-               pt.prime_last_action_date,
+               st.sub_amt_12mo, st.sub_amt_24mo, st.sub_amt_60mo, st.sub_amt_lifetime,
+               st.n_subawards_24mo, st.sub_last_action_date,
+               pt.prime_obl_12mo, pt.prime_obl_24mo, pt.prime_obl_60mo,
+               pt.prime_obl_lifetime, pt.n_prime_txns_24mo, pt.prime_last_action_date,
+               po.primary_pop_state, po.primary_pop_county,
+               (ff.uei IS NOT NULL) AS is_ffata_disclosing,
+               df.dsbs_8a, df.dsbs_hubzone, df.dsbs_wosb, df.dsbs_edwosb,
+               df.dsbs_sdvosb, df.dsbs_vosb,
+               fs.fsrs_sdvosb, fs.fsrs_vosb, fs.fsrs_wosb, fs.fsrs_edwosb,
+               fs.fsrs_woman_owned, fs.fsrs_hubzone, fs.fsrs_8a, fs.fsrs_sdb,
+               fs.fsrs_self_sdb, fs.fsrs_minority, fs.fsrs_any_designation,
+               fs.fsrs_designation_count,
                coalesce(pp.n_sam_people, 0) AS n_sam_people,
                coalesce(pp.n_bridged, 0) AS n_bridged,
                coalesce(pp.n_dialable, 0) AS n_dialable,
@@ -267,7 +407,29 @@ def build() -> int:
         LEFT JOIN fb ON fb.domain_norm = g.normalized_domain
         LEFT JOIN sub_tot st USING (uei)
         LEFT JOIN prime_tot pt USING (uei)
-        LEFT JOIN ppl_tot pp USING (uei)""")
+        LEFT JOIN pop_primary po USING (uei)
+        LEFT JOIN ff USING (uei)
+        LEFT JOIN dsbs_flags df USING (uei)
+        LEFT JOIN fsrs_flags fs USING (uei)
+        LEFT JOIN ppl_tot pp USING (uei))
+        SELECT b.*,
+               {band_cols},
+               CASE WHEN n2.naics_title IS NOT NULL
+                    THEN n2.naics_code || ' - ' || n2.naics_title END AS naics_2,
+               CASE WHEN n3.naics_title IS NOT NULL
+                    THEN n3.naics_code || ' - ' || n3.naics_title END AS naics_3,
+               CASE WHEN n4.naics_title IS NOT NULL
+                    THEN n4.naics_code || ' - ' || n4.naics_title END AS naics_4,
+               CASE WHEN n5.naics_title IS NOT NULL
+                    THEN n5.naics_code || ' - ' || n5.naics_title END AS naics_5,
+               CASE WHEN n6.naics_title IS NOT NULL
+                    THEN n6.naics_code || ' - ' || n6.naics_title END AS naics_6
+        FROM base b
+        LEFT JOIN nref n2 ON n2.naics_code = substr(b.primary_naics, 1, 2)
+        LEFT JOIN nref n3 ON n3.naics_code = substr(b.primary_naics, 1, 3)
+        LEFT JOIN nref n4 ON n4.naics_code = substr(b.primary_naics, 1, 4)
+        LEFT JOIN nref n5 ON n5.naics_code = substr(b.primary_naics, 1, 5)
+        LEFT JOIN nref n6 ON n6.naics_code = substr(b.primary_naics, 1, 6)""")
     n = con.execute("SELECT COUNT(*) FROM entities_out").fetchone()[0]
     dup = con.execute("""SELECT COUNT(*) FROM (
         SELECT uei FROM entities_out GROUP BY 1 HAVING COUNT(*) > 1)""").fetchone()[0]
@@ -277,10 +439,11 @@ def build() -> int:
     print(f"entities_out: {n:,} rows  banded={banded:,}", flush=True)
 
     # ── publish (order: lanes → people → entities) ────────────────────────────
+    refs = f"naics_reference:v{nref.version}|psc_reference:v{pref.version}"
     _publish(con, "sub_lanes", OUT_SUB_LANES, LANE_BTREE,
-             f"usaspending_subaward_canonical:v{se.version}", as_of, opt)
+             f"usaspending_subaward_canonical:v{se.version}|{refs}", as_of, opt)
     _publish(con, "prime_lanes", OUT_PRIME_LANES, LANE_BTREE,
-             f"usaspending_fpds_canonical_txn:v{tx.version}", as_of, opt)
+             f"usaspending_fpds_canonical_txn:v{tx.version}|{refs}", as_of, opt)
     _publish(con, "people_out", OUT_PEOPLE, PEOPLE_BTREE,
              f"gtm_sam_people:v{ppl.version}|gtm_sam_person_titles:v{titles.version}|"
              f"gtm_sam_person_identity:v{ident.version}|gtm_sam_person_contactability:v{ct.version}",
@@ -288,7 +451,9 @@ def build() -> int:
     _publish(con, "entities_out", OUT_ENTITIES, ENTITY_BTREE,
              f"gtm_sam_entities:v{ents.version}|firmographics_blitz:v{fb.version}|"
              f"usaspending_subaward_canonical:v{se.version}|usaspending_fpds_canonical_txn:v{tx.version}|"
-             f"gtm_sam_people:v{ppl.version}", as_of, opt)
+             f"gtm_sam_people:v{ppl.version}|ffata_exec_comp:v{ffata.version}|"
+             f"sba_dsbs_certified_firms:v{dsbs.version}|govcon_subawardee_designations:v{desg.version}|{refs}",
+             as_of, opt)
     return 0
 
 
