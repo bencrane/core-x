@@ -229,9 +229,12 @@ COLUMN_SPEC: list[dict] = [
     {"canonical": 'highly_compensated_officer_4_name', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'officer_4_name', "feed_expr": 's(highly_compensated_officer_4_name)'},
     {"canonical": 'highly_compensated_officer_5_amount', "duck_type": 'DOUBLE', "group": 'core', "bulk_expr": 'CASE WHEN abs(officer_5_amount) <= 1e12 THEN officer_5_amount END', "feed_expr": 'CASE WHEN abs(TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE)) <= 1e12 THEN TRY_CAST(s(highly_compensated_officer_5_amount) AS DOUBLE) END'},
     {"canonical": 'highly_compensated_officer_5_name', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'officer_5_name', "feed_expr": 's(highly_compensated_officer_5_name)'},
-    {"canonical": 'ordering_period_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN ordering_period_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN ordering_period_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(ordering_period_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(ordering_period_end_date) AS DATE) END"},
-    {"canonical": 'period_of_performance_current_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_current_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN period_of_performance_current_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) END"},
-    {"canonical": 'period_of_performance_start_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_start_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN period_of_performance_start_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_start_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE THEN TRY_CAST(s(period_of_performance_start_date) AS DATE) END"},
+    # Forward-looking dates: ordering windows and periods of performance legitimately run years
+    # into the future — the upper bound only scrubs entry garbage (year-8201 class), it must NOT
+    # clamp to CURRENT_DATE (that nulls every live contract's future end date).
+    {"canonical": 'ordering_period_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN ordering_period_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN ordering_period_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(ordering_period_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN TRY_CAST(s(ordering_period_end_date) AS DATE) END"},
+    {"canonical": 'period_of_performance_current_end_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_current_end_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN period_of_performance_current_end_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN TRY_CAST(s(period_of_performance_current_end_date) AS DATE) END"},
+    {"canonical": 'period_of_performance_start_date', "duck_type": 'DATE', "group": 'core', "bulk_expr": "CASE WHEN period_of_performance_start_date BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN period_of_performance_start_date END", "feed_expr": "CASE WHEN TRY_CAST(s(period_of_performance_start_date) AS DATE) BETWEEN DATE '1776-01-01' AND CURRENT_DATE + INTERVAL 100 YEAR THEN TRY_CAST(s(period_of_performance_start_date) AS DATE) END"},
     {"canonical": 'award_id_piid', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'piid', "feed_expr": 's(award_id_piid)'},
     {"canonical": 'product_or_service_code', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'product_or_service_code', "feed_expr": 's(product_or_service_code)'},
     {"canonical": 'recipient_uei', "duck_type": 'VARCHAR', "group": 'core', "bulk_expr": 'recipient_uei', "feed_expr": 's(recipient_uei)'},
@@ -1058,7 +1061,8 @@ def _record_run(*, include_fresh, rows_in_bulk, rows_in_fresh, rows_in_parent_aw
     if status != "success" and not error:
         error = "unknown terminal failure (no exception captured)"
     try:
-        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        # connect_timeout: a saturated pooler must fail the audit write, not hang the finally.
+        with psycopg.connect(dsn, connect_timeout=30) as conn, conn.cursor() as cur:
             cur.execute(f"SELECT to_regclass('{OPS_TABLE}')")
             if cur.fetchone()[0] is None:
                 cur.execute(Path(__file__).parent.joinpath(OPS_SQL_FILE).read_text())
@@ -1083,7 +1087,7 @@ def _record_run(*, include_fresh, rows_in_bulk, rows_in_fresh, rows_in_parent_aw
 def init_ops() -> None:
     import psycopg
     sql = Path(__file__).parent.joinpath(OPS_SQL_FILE).read_text()
-    with psycopg.connect(os.environ["HQX_DB_URL_POOLED"]) as conn, conn.cursor() as cur:
+    with psycopg.connect(os.environ["HQX_DB_URL_POOLED"], connect_timeout=30) as conn, conn.cursor() as cur:
         cur.execute(sql)
         conn.commit()
     log("ops DDL applied")
