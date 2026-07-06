@@ -69,6 +69,10 @@ class MarketQueryRequest(_Model):
     title: str | None = None          # echo-through label (unused by EXECUTE)
     filters: list[MarketFilterClause] = []
     limit: int | None = None          # clamped to market_store.MARKET_HARD_ROW_CAP
+    # Recipient collapse (table grains only): "recipients" returns the DISTINCT
+    # recipients behind the matching rows instead of the raw rows. Off-vocabulary
+    # values / entity grain / the map adapters reject it (422).
+    collapse: str | None = None
 
 
 class AggregateIntent(_Model):
