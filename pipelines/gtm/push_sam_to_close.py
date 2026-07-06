@@ -90,6 +90,7 @@ MART_VIEWS = {
     "gtm_prime_combo_lanes":          f"{ACTIVE}/gtm_prime_combo_lanes/",
     "gtm_audience_entities":          f"{ACTIVE}/gtm_audience_entities/",
     "gtm_audience_people":            f"{ACTIVE}/gtm_audience_people/",
+    "gtm_entity_nearby_bases":        f"{ACTIVE}/gtm_entity_nearby_bases/",
 }
 
 # House slug canon (match_sam_person_identity.py): both sides normalize to
