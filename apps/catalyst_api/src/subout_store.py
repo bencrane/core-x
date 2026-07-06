@@ -8,10 +8,10 @@ WITH its components on the wire: (name, raw_value, weight, contribution) per com
 score = Σ contributions. Fail-closed like the market compiler: any unknown body key,
 off-vocabulary lens, or malformed value raises ``MapCompileError`` (→ 422 at the route).
 
-HOT PATH = IN-PROCESS MEMORY (the latency rework). The first cut ran the cube probe,
-the 30.7M-row award-spine fetch, and the centroid join as per-request R2 scans and
-timed 20-120s cold on Railway. Now two caches load ONCE per process (lazy, thread-safe,
-TTL-refreshed in a background thread — a request never blocks on a refresh):
+HOT PATH = IN-PROCESS MEMORY (the latency rework). The first cut ran everything as
+per-request R2 scans and timed 20-120s cold on Railway. Now the caches load ONCE per
+process (lazy, thread-safe, TTL-refreshed in a background thread — a request never
+blocks on a refresh):
   • gtm_open_awards   — every OPEN prime award (~150-250K rows), pre-joined with the
                         PoP centroid geo + agency names; indexed in-process by
                         recipient_uei / naics_code / product_or_service_code.
@@ -22,32 +22,42 @@ TTL-refreshed in a background thread — a request never blocks on a refresh):
                         per-(code_type, code) blocks. Boot NEVER aggregates the
                         cube — the in-process aggregation was 10-20x slower on
                         Railway's throttled CPU than locally and starved the prewarm.
-Cache build stats (row counts, build seconds, ru_maxrss delta) are logged LOUD at
-build; a FAILED build stores its error (last_build_error) and rides the wire as
-cache_state='failed' + a meta note — never a silent 'unavailable'.
+  • probe caches      — gtm_entity_code_lanes, the gtm_sam_entities NAICS slice,
+                        and gtm_entity_geo as uei-sorted single-chunk ARROW tables
+                        served by in-process binary search: the per-request remote
+                        probes measured 0.7-5.8s live are now ~21 comparisons, and
+                        arrow's raw columnar bytes are ~10x smaller than the
+                        dict-of-python-objects shape at these row counts.
+  • inferred warmup   — gtm_entity_inferred_primeable_codes (263M rows) is the ONE
+                        uncacheable table: its dataset handle + BTREE index pages
+                        are warmed at build with a dummy probe (the FIRST cold probe
+                        measured 516 SECONDS live — the storm is paid once, at boot).
+Cache build stats (row counts, build seconds, inferred warm ms, ru_maxrss delta) are
+logged LOUD at build; a FAILED build stores its error (last_build_error) and rides the
+wire as cache_state='failed' + a meta note — never a silent 'unavailable'.
 
-PER-REQUEST REMOTE HOPS (all BTREE uei point-lookups — nothing else leaves process):
-  1. probe_codes — the target's codes BY LENS (how the code is known):
-       awarded_prime_contracts_in_code   gtm_entity_code_lanes side='prime'
-       delivered_subawards_under_code    gtm_entity_code_lanes side='sub' — the PRIME
-                                         award's code on subawards the firm delivered
-                                         under, never a claim of the firm's own work
-       sam_registered_naics              gtm_sam_entities primary_naics + naics_codes
-       inferred_primeable                gtm_entity_inferred_primeable_codes, capped at
-                                         the top INFERRED_PROBE_CAP codes by support
-                                         (both-sider cooccurrence, NOT a demonstration)
-       caller_declared                   codes_override (prospect-declared probe codes)
-  2. target HQ  — gtm_entity_geo point-lookup (1.45M rows stay on R2 by design).
-  3. peers      — OPTIONAL (include_peers defaults FALSE: the evidence-table query is
-                  a remote indexed scan measured ~14.5s live — strictly opt-in).
+PER-REQUEST REMOTE HOPS (the wire shows exactly what is left):
+  1. probe_inferred — the inferred lens (BTREE uei point-lookup on the 263M-row
+                      projection, capped at the top INFERRED_PROBE_CAP codes by
+                      support; cooccurrence evidence, NOT a demonstration). This is
+                      the server-side latency floor.
+  2. peers          — OPTIONAL (include_peers defaults FALSE: the evidence-table
+                      query is a remote indexed scan measured ~14.5s live — opt-in).
 
-IN-PROCESS STAGES: cube_match (dict lookups per probe code) → open_awards (index hits
-per matched prime, open-date re-checked against TODAY — the cache may be hours old) →
-distance_mi = haversine(target HQ, the award row's own PoP centroid) → score.
+IN-PROCESS STAGES: probe_cached (lanes/SAM dict hits + caller_declared) → cube_match
+(dict lookups per probe code) → open_awards (index hits per matched prime, open-date
+re-checked against TODAY — the cache may be hours old) → geo (target HQ dict hit;
+distance_mi = haversine(HQ, the award row's own PoP centroid)) → score.
+
+LENS VOCABULARY (how a code is known): awarded_prime_contracts_in_code (lanes
+side='prime'); delivered_subawards_under_code (lanes side='sub' — the PRIME award's
+code on subawards the firm delivered under, never a claim of the firm's own work);
+sam_registered_naics (primary_naics + naics_codes); inferred_primeable;
+caller_declared (codes_override).
 
 A UEI with no code signals is a 200 with empty data + meta.reason — an empty market is
 an answer, not an error. Per-stage wall times ride meta.timings_ms; cache_state
-(cold | warm | unavailable) + cache_build_ms ride meta.
+(cold | warm | failed) + cache_build_ms ride meta.
 """
 from __future__ import annotations
 
@@ -143,13 +153,23 @@ MARGINAL_COLUMNS = [
 
 @dataclass(frozen=True)
 class SuboutCaches:
-    """The two in-process read models behind the hot path. ``open_awards`` is the row
+    """The in-process read models behind the hot path. ``open_awards`` is the row
     list; the ``awards_by_*`` dicts map key → row indexes into it. ``cube`` maps
     (recipient_code_type, recipient_code) → a COLUMNAR cell block
     ``(primes: tuple[str], amt_totals: array('d'), edge_cts: array('q'),
     distinct_cts: array('q'), last_dates: tuple[date|None])`` — parallel arrays
     instead of 1.7M per-cell dict entries, for RSS (measured: the dict-shaped cube
-    blew the ~1GB budget)."""
+    blew the ~1GB budget).
+
+    PROBE CACHES (the per-request remote-latency kill): ``lanes_table`` /
+    ``sam_table`` / ``geo_table`` are pyarrow Tables SORTED BY uei and combined to a
+    single chunk — served by in-process binary search (``_rows_for_uei``). Arrow
+    keeps them as raw columnar bytes: measured, the dict-of-python-objects shape
+    cost ~950MB across the three; the arrow shape is ~10x smaller (a lookup is ~21
+    comparisons — nanoseconds against the 0.7-5.8s remote probes they replace).
+    With these resident, the only remote hop left on the hot path is the inferred
+    probe (a 263M-row projection — uncacheable; its dataset HANDLE + index pages
+    are warmed at build instead)."""
 
     open_awards: list[dict[str, Any]]
     awards_by_prime: dict[str, list[int]]
@@ -157,6 +177,10 @@ class SuboutCaches:
     awards_by_psc: dict[str, list[int]]
     cube: dict[tuple[str | None, str], tuple]
     cube_cell_count: int
+    lanes_table: Any                     # pyarrow.Table, sorted by uei, single chunk
+    sam_table: Any                       # pyarrow.Table, sorted by uei, single chunk
+    geo_table: Any                       # pyarrow.Table, sorted by uei, single chunk
+    inferred_warm_ms: float
     build_ms: float
 
 
@@ -212,6 +236,63 @@ def _iter_marginal_rows():
     for batch in scanner.to_batches():
         cols = [batch.column(c).to_pylist() for c in MARGINAL_COLUMNS]
         yield from zip(*cols)
+
+
+def _load_sorted_uei_table(uri: str, columns: list[str]):
+    """One column-projected load → pyarrow Table SORTED BY uei, single chunk — the
+    shape ``_rows_for_uei`` binary-searches. Arrow keeps the rows as raw columnar
+    bytes (~10x smaller than dict-of-python-objects at these row counts)."""
+    tbl = _dataset(uri).scanner(columns=columns).to_table()
+    return tbl.sort_by("uei").combine_chunks()
+
+
+def _load_entity_code_lanes():
+    """gtm_entity_code_lanes (1.67M rows; uei, side, code_type, code, obl_lifetime)
+    as a uei-sorted arrow table. Kills the per-request lanes probe."""
+    return _load_sorted_uei_table(
+        config.GTM_ENTITY_CODE_LANES_URI,
+        ["uei", "side", "code_type", "code", "obl_lifetime"])
+
+
+def _load_sam_registrations():
+    """gtm_sam_entities NAICS slice (~2M rows; uei, primary_naics, naics_codes) as a
+    uei-sorted arrow table. Kills the per-request SAM probe."""
+    return _load_sorted_uei_table(
+        config.GTM_SAM_ENTITIES_URI, ["uei", "primary_naics", "naics_codes"])
+
+
+def _load_entity_geo():
+    """gtm_entity_geo (1.45M rows; uei, latitude, longitude) as a uei-sorted arrow
+    table. Kills the per-request target-HQ remote hop."""
+    return _load_sorted_uei_table(
+        config.GTM_ENTITY_GEO_URI, ["uei", "latitude", "longitude"])
+
+
+def _rows_for_uei(tbl, uei: str) -> list[dict[str, Any]]:
+    """All rows for one uei off a uei-sorted single-chunk arrow table, via binary
+    search (equal-range: two bisects + one slice; ~21 comparisons at 1.45M rows).
+    [] when the uei is absent — same contract as a filtered point scan."""
+    col = tbl.column("uei")
+    if col.num_chunks == 0:
+        return []
+    arr = col.chunk(0)
+    lo, hi = 0, len(arr)
+    while lo < hi:                       # left bound
+        mid = (lo + hi) // 2
+        if arr[mid].as_py() < uei:
+            lo = mid + 1
+        else:
+            hi = mid
+    start, hi = lo, len(arr)
+    while lo < hi:                       # right bound
+        mid = (lo + hi) // 2
+        if arr[mid].as_py() <= uei:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo == start:
+        return []
+    return tbl.slice(start, lo - start).to_pylist()
 
 
 # ── Cache build (pure indexers over the loader seams) ─────────────────────────
@@ -279,29 +360,72 @@ def _rss() -> int | None:
         return None
 
 
+# The dummy probe that warms the inferred projection's dataset handle + BTREE index
+# pages at build time. The projection is 263M rows and uncacheable — but the FIRST
+# filtered scan against a cold handle measured 516 SECONDS live (index page fetch
+# storm), so the storm is paid ONCE at build, never by a request. Valid UEI charset,
+# guaranteed-no-match.
+_INFERRED_WARM_UEI = "ZZZZZZZZZZZZ"
+
+
+def _warm_inferred_handle() -> float:
+    """Open (and module-cache, via lance_store._dataset) the inferred projection's
+    handle and run one dummy BTREE uei probe to page in the index. Returns the wall
+    ms. Best-effort: a warm failure logs + stores the error string but never fails
+    the build (the probe caches still serve; the first real inferred probe pays)."""
+    t0 = time.monotonic()
+    try:
+        _scan_to_pylist(config.GTM_INFERRED_PRIMEABLE_URI,
+                        ["uei", "code_type", "code", "supporting_bothsider_firm_ct"],
+                        f"uei = {_sql_str(_INFERRED_WARM_UEI)}")
+    except Exception as exc:  # noqa: BLE001 — warmup is best-effort
+        log.warning("inferred-handle warmup failed (first real probe pays the cold "
+                    "cost): %s", exc)
+    return round((time.monotonic() - t0) * 1000.0, 1)
+
+
 def _build_caches() -> SuboutCaches:
-    """Build both in-process read models, LOUDLY (row counts / build seconds / RSS
+    """Build every in-process read model, LOUDLY (row counts / build seconds / RSS
     delta in the log — the numbers that diagnose a starved prewarm). Called cold
     (first request / prewarm) and by the background TTL refresh — never on the hot
-    path of a warm request. Both loads are plain columnar streams; NO aggregation."""
+    path of a warm request. All loads are plain columnar streams; NO aggregation."""
     t0 = time.monotonic()
     rss_before = _rss()
     cube, cube_cells = _group_marginal(_iter_marginal_rows())
     open_awards = _load_open_awards()
     by_prime, by_naics, by_psc = _index_open_awards(open_awards)
+    lanes_table = _load_entity_code_lanes()
+    sam_table = _load_sam_registrations()
+    geo_table = _load_entity_geo()
+    inferred_warm_ms = _warm_inferred_handle()
+    try:
+        # Hand the sort/load transients back to the OS — the arrow pool otherwise
+        # retains them as slack (measured: ~250MB of phantom RSS post-build).
+        import pyarrow as pa
+        pa.default_memory_pool().release_unused()
+    except Exception:  # noqa: BLE001 — pool release is best-effort observability
+        pass
     build_ms = round((time.monotonic() - t0) * 1000.0, 1)
     rss_after = _rss()
     rss_delta = ((rss_after - rss_before)
                  if (rss_before is not None and rss_after is not None) else "n/a")
     log.info(
         "subout caches built in %.1fs: open_awards=%d rows (primes=%d naics=%d "
-        "psc=%d), marginal=%d cells over %d (code_type, code) keys; "
-        "ru_maxrss_delta=%s (platform units)",
+        "psc=%d), marginal=%d cells over %d (code_type, code) keys, "
+        "lanes=%d rows/%.0fMB sam=%d rows/%.0fMB geo=%d rows/%.0fMB (arrow), "
+        "inferred_handle_warm_ms=%s; ru_maxrss_delta=%s (platform units)",
         build_ms / 1000.0, len(open_awards), len(by_prime), len(by_naics),
-        len(by_psc), cube_cells, len(cube), rss_delta)
+        len(by_psc), cube_cells, len(cube),
+        lanes_table.num_rows, lanes_table.nbytes / 1e6,
+        sam_table.num_rows, sam_table.nbytes / 1e6,
+        geo_table.num_rows, geo_table.nbytes / 1e6,
+        inferred_warm_ms, rss_delta)
     return SuboutCaches(open_awards=open_awards, awards_by_prime=by_prime,
                         awards_by_naics=by_naics, awards_by_psc=by_psc,
-                        cube=cube, cube_cell_count=cube_cells, build_ms=build_ms)
+                        cube=cube, cube_cell_count=cube_cells,
+                        lanes_table=lanes_table, sam_table=sam_table,
+                        geo_table=geo_table, inferred_warm_ms=inferred_warm_ms,
+                        build_ms=build_ms)
 
 
 def _refresh_caches() -> None:
@@ -512,73 +636,81 @@ def _haversine_mi(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 3958.8 * 2.0 * math.asin(min(1.0, math.sqrt(a)))
 
 
-# ── Stage 1 (remote point-lookups): the target's probe codes, by lens ──────────
-def _probe_codes(uei: str, lenses: list[str], code_type: str | None,
-                 codes_override: list[str], notes: list[str]) -> list[dict[str, Any]]:
-    """The target's code signals as lens entries
-    ``{lens, code_type, code, evidence, strength}`` — deduped on (lens, code_type,
-    code). Every scan is a BTREE uei point-lookup. The inferred lens is capped at the
-    top INFERRED_PROBE_CAP codes by supporting_bothsider_firm_ct (a ~400-code inferred
-    profile exploded the fan-out live — the cap is noted on the wire when applied)."""
-    entries: dict[tuple[str, str | None, str], dict[str, Any]] = {}
+# ── Stage 1: the target's probe codes, by lens ─────────────────────────────────
+# Split in two on the wire (meta.timings_ms): probe_cached = the lanes/SAM dict hits
+# + caller_declared (pure in-process); probe_inferred = the ONE remote hop left on
+# the hot path (the 263M-row inferred projection — uncacheable).
+def _entry_add(entries: dict, code_type: str | None, lens: str, ct: str | None,
+               code: Any, evidence: dict[str, Any]) -> None:
+    """Shared lens-entry accumulator: charset-validated, request-code_type-filtered,
+    deduped on (lens, code_type, code) keeping the strongest evidence."""
+    code = (code or "").strip() if isinstance(code, str) else code
+    if not code or not isinstance(code, str) or not _CODE_OK.match(code):
+        return
+    if code_type is not None and ct is not None and ct != code_type:
+        return
+    key = (lens, ct, code)
+    entry = {"lens": lens, "code_type": ct, "code": code, "evidence": evidence,
+             "strength": _lens_strength(lens, evidence)}
+    prior = entries.get(key)
+    if prior is None or entry["strength"] > prior["strength"]:
+        entries[key] = entry
 
-    def add(lens: str, ct: str | None, code: Any, evidence: dict[str, Any]) -> None:
-        code = (code or "").strip() if isinstance(code, str) else code
-        if not code or not isinstance(code, str) or not _CODE_OK.match(code):
-            return
-        if code_type is not None and ct is not None and ct != code_type:
-            return
-        key = (lens, ct, code)
-        entry = {"lens": lens, "code_type": ct, "code": code, "evidence": evidence,
-                 "strength": _lens_strength(lens, evidence)}
-        prior = entries.get(key)
-        if prior is None or entry["strength"] > prior["strength"]:
-            entries[key] = entry
 
-    uei_pred = f"uei = {_sql_str(uei)}"
+def _probe_cached(uei: str, lenses: list[str], code_type: str | None,
+                  codes_override: list[str], caches: SuboutCaches,
+                  entries: dict) -> None:
+    """The in-process lens probes: demonstrated lanes + SAM registrations off the
+    boot arrow tables (binary search — no I/O), plus caller_declared."""
     if LENS_AWARDED_PRIME in lenses or LENS_DELIVERED_SUB in lenses:
-        pred = uei_pred
-        if code_type is not None:
-            pred += f" AND code_type = {_sql_str(code_type)}"
-        for row in _scan_to_pylist(config.GTM_ENTITY_CODE_LANES_URI,
-                                   ["uei", "side", "code_type", "code", "obl_lifetime"], pred):
-            lens = LENS_AWARDED_PRIME if row.get("side") == "prime" else LENS_DELIVERED_SUB
+        for row in _rows_for_uei(caches.lanes_table, uei):
+            lens = (LENS_AWARDED_PRIME if row.get("side") == "prime"
+                    else LENS_DELIVERED_SUB)
             if lens in lenses:
-                add(lens, row.get("code_type"), row.get("code"),
-                    {"obl_lifetime": row.get("obl_lifetime")})
+                _entry_add(entries, code_type, lens, row.get("code_type"),
+                           row.get("code"), {"obl_lifetime": row.get("obl_lifetime")})
 
     if LENS_SAM_NAICS in lenses and code_type in (None, "naics"):
-        for row in _scan_to_pylist(config.GTM_SAM_ENTITIES_URI,
-                                   ["uei", "primary_naics", "naics_codes"], uei_pred):
-            add(LENS_SAM_NAICS, "naics", row.get("primary_naics"),
-                {"registration": "primary_naics"})
+        for row in _rows_for_uei(caches.sam_table, uei):
+            _entry_add(entries, code_type, LENS_SAM_NAICS, "naics",
+                       row.get("primary_naics"), {"registration": "primary_naics"})
             for c in (row.get("naics_codes") or []):
-                add(LENS_SAM_NAICS, "naics", c, {"registration": "naics_codes"})
-
-    if LENS_INFERRED_PRIMEABLE in lenses:
-        pred = uei_pred
-        if code_type is not None:
-            pred += f" AND code_type = {_sql_str(code_type)}"
-        inferred = _scan_to_pylist(config.GTM_INFERRED_PRIMEABLE_URI,
-                                   ["uei", "code_type", "code",
-                                    "supporting_bothsider_firm_ct"], pred)
-        if len(inferred) > INFERRED_PROBE_CAP:
-            inferred.sort(key=lambda r: (-(r.get("supporting_bothsider_firm_ct") or 0),
-                                         r.get("code") or ""))
-            inferred = inferred[:INFERRED_PROBE_CAP]
-            notes.append(
-                f"inferred_primeable probe capped to the top {INFERRED_PROBE_CAP} "
-                "codes by supporting_bothsider_firm_ct")
-        for row in inferred:
-            add(LENS_INFERRED_PRIMEABLE, row.get("code_type"), row.get("code"),
-                {"supporting_bothsider_firm_ct": row.get("supporting_bothsider_firm_ct")})
+                _entry_add(entries, code_type, LENS_SAM_NAICS, "naics", c,
+                           {"registration": "naics_codes"})
 
     for c in codes_override:
         # caller-declared probe codes carry the request's code_type restriction when
         # set, else no type claim (the cube lookup then probes both code systems).
-        add(LENS_CALLER_DECLARED, code_type, c, {"declared_by_caller": True})
+        _entry_add(entries, code_type, LENS_CALLER_DECLARED, code_type, c,
+                   {"declared_by_caller": True})
 
-    return list(entries.values())
+
+def _probe_inferred(uei: str, lenses: list[str], code_type: str | None,
+                    notes: list[str], entries: dict) -> None:
+    """The inferred lens probe — the one REMOTE hop left on the hot path (BTREE uei
+    point-lookup on the 263M-row projection; its handle + index pages are warmed at
+    cache build). Capped at the top INFERRED_PROBE_CAP codes by
+    supporting_bothsider_firm_ct (a ~400-code inferred profile exploded the fan-out
+    live — the cap is noted on the wire when applied)."""
+    if LENS_INFERRED_PRIMEABLE not in lenses:
+        return
+    pred = f"uei = {_sql_str(uei)}"
+    if code_type is not None:
+        pred += f" AND code_type = {_sql_str(code_type)}"
+    inferred = _scan_to_pylist(config.GTM_INFERRED_PRIMEABLE_URI,
+                               ["uei", "code_type", "code",
+                                "supporting_bothsider_firm_ct"], pred)
+    if len(inferred) > INFERRED_PROBE_CAP:
+        inferred.sort(key=lambda r: (-(r.get("supporting_bothsider_firm_ct") or 0),
+                                     r.get("code") or ""))
+        inferred = inferred[:INFERRED_PROBE_CAP]
+        notes.append(
+            f"inferred_primeable probe capped to the top {INFERRED_PROBE_CAP} "
+            "codes by supporting_bothsider_firm_ct")
+    for row in inferred:
+        _entry_add(entries, code_type, LENS_INFERRED_PRIMEABLE, row.get("code_type"),
+                   row.get("code"),
+                   {"supporting_bothsider_firm_ct": row.get("supporting_bothsider_firm_ct")})
 
 
 # ── Stage 2 (in-process): primes that sub out into the target's codes ─────────
@@ -645,13 +777,12 @@ def _open_awards_for(primes: list[str], caches: SuboutCaches,
     return out
 
 
-# ── Stage 4 (remote point-lookup): the target's HQ ─────────────────────────────
-def _target_hq(uei: str) -> tuple[float, float] | None:
-    """gtm_entity_geo BTREE uei point-lookup → (lat, lon) or None. The 1.45M-row HQ
-    sidecar deliberately stays on R2 — one indexed point read per request."""
-    rows = _scan_to_pylist(config.GTM_ENTITY_GEO_URI,
-                           ["uei", "latitude", "longitude"], f"uei = {_sql_str(uei)}")
-    for row in rows:
+# ── Stage 4 (in-process): the target's HQ off the boot geo cache ───────────────
+def _target_hq(uei: str, caches: SuboutCaches) -> tuple[float, float] | None:
+    """uei → (lat, lon) off the in-process gtm_entity_geo arrow table (None when
+    the entity has no coordinates — no fake centroids). The former per-request
+    remote point-lookup measured 0.1-1.0s live; this is a binary search."""
+    for row in _rows_for_uei(caches.geo_table, uei):
         lat, lon = row.get("latitude"), row.get("longitude")
         if lat is not None and lon is not None:
             return float(lat), float(lon)
@@ -818,22 +949,10 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
         notes.append("peers omitted by default — pass include_peers: true to fetch "
                      "(a remote indexed query; adds latency)")
 
-    # 1. probe codes by lens (remote BTREE uei point-lookups)
+    # 1. the in-process caches FIRST (the lens probes read them). A failed build is
+    # NEVER silent: cache_state='failed' + the error string ride the wire on every
+    # affected response (the 'silent unavailable' incident fix).
     t = time.monotonic()
-    lens_entries = _probe_codes(req["uei"], req["lenses"], req["code_type"],
-                                req["codes_override"], notes)
-    t = _mark("probe_codes", t)
-    if not lens_entries:
-        return {"meta": _meta(0, reason="uei has no code signals"),
-                "data": {"opportunities": [], "peers": []}}
-
-    entries_by_code: dict[str, list[dict[str, Any]]] = {}
-    for e in lens_entries:
-        entries_by_code.setdefault(e["code"], []).append(e)
-
-    # 2. the in-process caches (cold path builds; warm path is a dict handoff). A
-    # failed build is NEVER silent: cache_state='failed' + the error string ride the
-    # wire on every affected response (the 'silent unavailable' incident fix).
     try:
         cache_state, caches = _ensure_caches()
         cache_build_ms = caches.build_ms
@@ -846,6 +965,24 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
         return {"meta": _meta(0), "data": {"opportunities": [], "peers": []}}
     t = _mark("cache_ensure", t)
 
+    # 2a. cached lens probes (lanes/SAM dict hits + caller_declared — no I/O)
+    entries: dict[tuple[str, str | None, str], dict[str, Any]] = {}
+    _probe_cached(req["uei"], req["lenses"], req["code_type"],
+                  req["codes_override"], caches, entries)
+    t = _mark("probe_cached", t)
+    # 2b. inferred lens probe — the ONE remote hop on the hot path (handle warmed
+    # at build; the wire now shows exactly what the remote floor costs)
+    _probe_inferred(req["uei"], req["lenses"], req["code_type"], notes, entries)
+    t = _mark("probe_inferred", t)
+    lens_entries = list(entries.values())
+    if not lens_entries:
+        return {"meta": _meta(0, reason="uei has no code signals"),
+                "data": {"opportunities": [], "peers": []}}
+
+    entries_by_code: dict[str, list[dict[str, Any]]] = {}
+    for e in lens_entries:
+        entries_by_code.setdefault(e["code"], []).append(e)
+
     # 3. primes whose sub-out history hits those codes (in-process dict lookups)
     cells_by_prime = _match_primes_cached(lens_entries, caches)
     t = _mark("cube_match", t)
@@ -854,8 +991,8 @@ def execute_subout_opportunities(body: Any, today: "dt_date | None" = None) -> d
     awards = _open_awards_for(list(cells_by_prime), caches, today) if cells_by_prime else []
     t = _mark("open_awards", t)
 
-    # 5. geo: target HQ point-lookup; award PoP geo rides each cached row
-    hq = _target_hq(req["uei"]) if awards else None
+    # 5. geo: target HQ off the boot cache; award PoP geo rides each cached row
+    hq = _target_hq(req["uei"], caches) if awards else None
     t = _mark("geo", t)
 
     # 6. score — every component explicit on the wire. The display-only ``matched``

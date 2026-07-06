@@ -155,6 +155,9 @@ class Seams:
         self.stream_calls: list[tuple[str, tuple[str, ...], str | None, int]] = []
         self.open_award_loads = 0
         self.cube_loads = 0
+        self.lanes_loads = 0
+        self.sam_loads = 0
+        self.geo_loads = 0
         self.loader_error: Exception | None = None
         self.evidence_error: Exception | None = None
 
@@ -172,14 +175,11 @@ class Seams:
 
     def scan_to_pylist(self, uri, columns, predicate):
         self.scan_calls.append((uri, tuple(columns), predicate))
-        if uri == config.GTM_ENTITY_CODE_LANES_URI:
-            rows = self._match(LANE_ROWS, predicate, "uei", "code_type")
-        elif uri == config.GTM_SAM_ENTITIES_URI:
-            rows = self._match(SAM_ROWS, predicate, "uei")
-        elif uri == config.GTM_INFERRED_PRIMEABLE_URI:
+        # The inferred projection is the ONLY remote scan target left (real probes +
+        # the build-time handle-warmup dummy probe). Lanes/SAM/geo are boot caches
+        # now — a remote scan against them is a hot-path regression, fail loud.
+        if uri == config.GTM_INFERRED_PRIMEABLE_URI:
             rows = self._match(INFERRED_ROWS, predicate, "uei", "code_type")
-        elif uri == config.GTM_ENTITY_GEO_URI:
-            rows = self._match(GEO_ROWS, predicate, "uei")
         else:
             raise AssertionError(f"unexpected remote scan uri {uri}")
         return [{c: r.get(c) for c in columns} for r in rows]
@@ -206,6 +206,32 @@ class Seams:
         self.cube_loads += 1
         return iter(MARGINAL_ROWS)
 
+    # ── probe-cache loader seams (uei-sorted arrow tables, the live contract) ──
+    @staticmethod
+    def _uei_table(rows, columns):
+        import pyarrow as pa
+        return pa.table({c: [r[c] for r in rows] for c in columns}) \
+            .sort_by("uei").combine_chunks()
+
+    def load_entity_code_lanes(self):
+        if self.loader_error is not None:
+            raise self.loader_error
+        self.lanes_loads += 1
+        return self._uei_table(
+            LANE_ROWS, ["uei", "side", "code_type", "code", "obl_lifetime"])
+
+    def load_sam_registrations(self):
+        if self.loader_error is not None:
+            raise self.loader_error
+        self.sam_loads += 1
+        return self._uei_table(SAM_ROWS, ["uei", "primary_naics", "naics_codes"])
+
+    def load_entity_geo(self):
+        if self.loader_error is not None:
+            raise self.loader_error
+        self.geo_loads += 1
+        return self._uei_table(GEO_ROWS, ["uei", "latitude", "longitude"])
+
 
 @pytest.fixture()
 def seams(monkeypatch):
@@ -214,6 +240,9 @@ def seams(monkeypatch):
     monkeypatch.setattr(subout_store, "_stream_rows", s.stream_rows)
     monkeypatch.setattr(subout_store, "_load_open_awards", s.load_open_awards)
     monkeypatch.setattr(subout_store, "_iter_marginal_rows", s.iter_marginal_rows)
+    monkeypatch.setattr(subout_store, "_load_entity_code_lanes", s.load_entity_code_lanes)
+    monkeypatch.setattr(subout_store, "_load_sam_registrations", s.load_sam_registrations)
+    monkeypatch.setattr(subout_store, "_load_entity_geo", s.load_entity_geo)
     subout_store.reset_caches_for_tests()
     yield s
     subout_store.reset_caches_for_tests()
@@ -295,11 +324,11 @@ def test_uei_with_no_code_signals_serves_empty_with_reason(seams):
     assert out["meta"]["total"] == 0
     assert out["meta"]["reason"] == "uei has no code signals"
     assert out["meta"]["recipeId"] == "subout_opportunities.v1"
-    # short-circuits BEFORE the caches: no loads, no streams
-    assert seams.open_award_loads == 0 and seams.cube_loads == 0
+    # the caches load (probes read them) but nothing downstream runs: no streams
+    assert seams.open_award_loads == 1 and seams.cube_loads == 1
     assert seams.stream_calls == []
-    assert "probe_codes" in out["meta"]["timings_ms"]
-    assert "total" in out["meta"]["timings_ms"]
+    for stage in ("cache_ensure", "probe_cached", "probe_inferred", "total"):
+        assert stage in out["meta"]["timings_ms"], stage
 
 
 # ── the in-process cache architecture ──────────────────────────────────────────
@@ -316,16 +345,62 @@ def test_cold_then_warm_cache_states_and_single_load(seams):
         [o["generated_unique_award_id"] for o in out2["data"]["opportunities"]]
 
 
-def test_hot_path_makes_no_remote_scans_beyond_point_lookups(seams):
+def test_hot_path_single_remote_scan_is_the_inferred_probe(seams):
     _run({"uei": TARGET})
-    # per-request remote reads are the lens probes + the HQ geo point-lookup ONLY —
+    # THE only remote reads: the build-time inferred handle-warmup dummy probe and
+    # the per-request inferred probe. Lanes/SAM/geo probes are boot-cache dict hits;
     # the award spine, the cube, and the centroids are never scanned per request.
-    allowed = {config.GTM_ENTITY_CODE_LANES_URI, config.GTM_SAM_ENTITIES_URI,
-               config.GTM_INFERRED_PRIMEABLE_URI, config.GTM_ENTITY_GEO_URI}
-    assert {u for u, _, _ in seams.scan_calls} <= allowed
+    assert {u for u, _, _ in seams.scan_calls} == {config.GTM_INFERRED_PRIMEABLE_URI}
+    preds = [p for _, _, p in seams.scan_calls]
+    assert f"uei = '{subout_store._INFERRED_WARM_UEI}'" in preds  # build warmup ran
+    assert f"uei = '{TARGET}'" in preds                            # the real probe
     assert seams.stream_calls == []                     # peers off by default
-    for _, _, pred in seams.scan_calls:
-        assert f"uei = '{TARGET}'" in pred              # every remote read is a uei probe
+    # exactly ONE remote scan per subsequent warm request
+    n_before = len(seams.scan_calls)
+    _run({"uei": TARGET})
+    assert len(seams.scan_calls) == n_before + 1
+
+
+def test_inferred_handle_warmup_runs_at_build_and_is_timed(seams):
+    out = _run({"uei": TARGET})
+    assert out["meta"]["cache_state"] == "cold"
+    with subout_store._cache_lock:
+        caches = subout_store._caches
+    assert caches is not None and caches.inferred_warm_ms >= 0.0
+    warm_preds = [p for u, _, p in seams.scan_calls
+                  if u == config.GTM_INFERRED_PRIMEABLE_URI
+                  and subout_store._INFERRED_WARM_UEI in (p or "")]
+    assert len(warm_preds) == 1                         # once per build, not per request
+
+
+def test_rows_for_uei_binary_search_equal_range():
+    import pyarrow as pa
+    tbl = pa.table({
+        "uei": ["UEIPRIME0001", "UEITARGET001", "UEITARGET001", "UEIZZZZZZZZ9"],
+        "code": ["111110", "541511", "541512", "999999"],
+    }).sort_by("uei").combine_chunks()
+    # multi-row uei → ALL its rows, in table order
+    rows = subout_store._rows_for_uei(tbl, TARGET)
+    assert [r["code"] for r in rows] == ["541511", "541512"]
+    # single-row / boundary ueis
+    assert [r["code"] for r in subout_store._rows_for_uei(tbl, "UEIPRIME0001")] == ["111110"]
+    assert [r["code"] for r in subout_store._rows_for_uei(tbl, "UEIZZZZZZZZ9")] == ["999999"]
+    # absent uei → [] (same contract as a filtered point scan); empty table → []
+    assert subout_store._rows_for_uei(tbl, "UEIABSENT001") == []
+    empty = pa.table({"uei": pa.array([], type=pa.string())})
+    assert subout_store._rows_for_uei(empty, TARGET) == []
+
+
+def test_probe_caches_serve_lanes_sam_geo_without_io(seams):
+    out = _run({"uei": TARGET})
+    # each probe-cache loader ran exactly once (at the cold build)
+    assert seams.lanes_loads == 1 and seams.sam_loads == 1 and seams.geo_loads == 1
+    # lanes + SAM lenses matched from cache; geo distance computed from cached HQ
+    a1 = {o["generated_unique_award_id"]: o for o in out["data"]["opportunities"]}["CONT_AWD_A1"]
+    lenses_hit = {m["lens"] for m in a1["matched"]}
+    assert "awarded_prime_contracts_in_code" in lenses_hit
+    assert "sam_registered_naics" in lenses_hit
+    assert a1["distance_mi"] is not None and a1["distance_mi"] > 0
 
 
 def test_failed_cold_build_is_never_silent_and_next_request_retries(seams):
@@ -399,9 +474,11 @@ def test_default_all_lens_flow_end_to_end(seams):
     assert meta["recipeId"] == "subout_opportunities.v1"
     assert meta["registryVersion"]
     assert meta["lenses"] == list(subout_store.SELECTABLE_LENSES)
-    for stage in ("probe_codes", "cache_ensure", "cube_match", "open_awards",
-                  "geo", "score", "total"):
+    # probe timing is SPLIT on the wire: cached dict hits vs the remote inferred hop
+    for stage in ("cache_ensure", "probe_cached", "probe_inferred", "cube_match",
+                  "open_awards", "geo", "score", "total"):
         assert stage in meta["timings_ms"], stage
+    assert "probe_codes" not in meta["timings_ms"]      # replaced by the split
     assert "peers" not in meta["timings_ms"]            # opt-in stage did not run
     # P1/P2/P3 matched (P4's 611430 is nobody's probe code without an override);
     # P1's EXPIRED second award is dropped by the request-time open-date re-check.
@@ -521,12 +598,15 @@ def test_codes_override_probes_as_caller_declared_lens(seams):
 
 def test_code_type_restriction_filters_probe_and_cube(seams):
     out = _run({"uei": TARGET, "code_type": "psc"})
-    # the target's only PSC signal is the R425 sub lane — no cube cell carries it
+    # the target's only PSC signal is the R425 sub lane (cache-filtered in-process);
+    # no cube cell carries it, so the market is honestly empty
     assert out["data"]["opportunities"] == []
     assert out["meta"]["total"] == 0
-    lane_preds = [p for u, _, p in seams.scan_calls
-                  if u == config.GTM_ENTITY_CODE_LANES_URI]
-    assert lane_preds == [f"uei = '{TARGET}' AND code_type = 'psc'"]
+    # the remote inferred probe carried the code_type restriction in its predicate
+    inferred_preds = [p for u, _, p in seams.scan_calls
+                      if u == config.GTM_INFERRED_PRIMEABLE_URI
+                      and f"'{TARGET}'" in (p or "")]
+    assert inferred_preds == [f"uei = '{TARGET}' AND code_type = 'psc'"]
 
 
 def test_inferred_probe_capped_at_top_supported_codes(seams, monkeypatch):
@@ -541,8 +621,9 @@ def test_inferred_probe_capped_at_top_supported_codes(seams, monkeypatch):
               "supporting_bothsider_firm_ct": 2}]
             if uri == config.GTM_INFERRED_PRIMEABLE_URI else []))
     notes: list[str] = []
-    entries = subout_store._probe_codes(TARGET, ["inferred_primeable"], None, [], notes)
-    assert [e["code"] for e in entries] == ["562910"]   # top-by-support kept
+    entries: dict = {}
+    subout_store._probe_inferred(TARGET, ["inferred_primeable"], None, notes, entries)
+    assert [e["code"] for e in entries.values()] == ["562910"]  # top-by-support kept
     assert any("capped to the top 1" in n for n in notes)
 
 
