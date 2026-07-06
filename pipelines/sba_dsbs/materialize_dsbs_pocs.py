@@ -24,7 +24,8 @@ GRAIN / SCHEMA. 1 row per (uei × POC entry):
 
 PARSE. current_principals: split on ';'; each segment split on the first " - " into name / title.
     Names handle "First [M.] Last" and "Last, First". Suffixes (Jr/Sr/II…) dropped from first/last
-    derivation and name_key. Nothing normalized destructively — raw_entry preserves the source.
+    derivation and name_key. Honorific-only titles ("JANE SMITH - Mrs.") scrub to NULL — an
+    honorific is not a role. Nothing normalized destructively — raw_entry preserves the source.
 
 INDEXES: BTREE uei, name_key ; BITMAP poc_type.
 
@@ -87,6 +88,11 @@ import unicodedata  # noqa: E402
 
 _DASH = re.compile(r"\s[-–—]\s")
 _SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v", "md", "phd", "cpa", "esq", "pe", "mba", "jd", "dds"}
+# DSBS principal segments sometimes carry a bare honorific in the title slot
+# ("JANE SMITH - Mrs."). An honorific-only title is no title: scrub to NULL; raw_entry
+# keeps the verbatim. Set mirrors resolve_dsbs_poc_linkedin._HONOR (name-side precedent).
+_HONOR = {"dr", "mr", "mrs", "ms", "miss", "mx", "prof", "professor", "sir", "madam", "rev",
+          "hon", "capt", "col", "sgt", "lt", "maj", "gen", "cmdr", "messrs", "mstr"}
 
 
 def _clean(s):
@@ -96,9 +102,17 @@ def _clean(s):
     return s or None
 
 
+def _scrub_title(t):
+    t = _clean(t)
+    if t is None:
+        return None
+    toks = [x.lower() for x in re.split(r"[^A-Za-z]+", t) if x]
+    return None if toks and all(x in _HONOR for x in toks) else t
+
+
 def _split_principal(seg: str):
     parts = _DASH.split(seg.strip(), maxsplit=1)
-    return _clean(parts[0]), (_clean(parts[1]) if len(parts) > 1 else None)
+    return _clean(parts[0]), (_scrub_title(parts[1]) if len(parts) > 1 else None)
 
 
 def _name_parts(name):
