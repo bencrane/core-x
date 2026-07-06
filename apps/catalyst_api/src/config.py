@@ -265,6 +265,16 @@ USASPENDING_AWARD_POP_CENTROIDS_URI = os.environ.get(
 GTM_OPEN_AWARDS_URI = os.environ.get(
     "GTM_OPEN_AWARDS_LANCE_URI", "s3://data-sink/active/gtm_open_awards/"
 )
+# gtm_primes_by_recipient_code — the PRE-AGGREGATED sub-out cube marginal (~1.7M rows,
+# 1 row / (recipient_code_type, recipient_code, prime_awardee_uei); BTREE
+# recipient_code + prime_awardee_uei): Σ subaward_edge_ct / Σ subaward_amt_total /
+# MAX distinct_recipient_ct / MAX last_subaward_action_date. The subout cache loads
+# THIS table at boot — never the 11.8M-cell cube (aggregating the cube in-process was
+# 10-20x slower on Railway's throttled CPU than locally and starved the prewarm).
+GTM_PRIMES_BY_RECIPIENT_CODE_URI = os.environ.get(
+    "GTM_PRIMES_BY_RECIPIENT_CODE_LANCE_URI",
+    "s3://data-sink/active/gtm_primes_by_recipient_code/",
+)
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
