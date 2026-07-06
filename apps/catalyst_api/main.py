@@ -144,9 +144,9 @@ async def lifespan(_app: FastAPI):
         log.info("catalyst_api: dossier prewarm seconds=%s", warm)
     except Exception as exc:  # noqa: BLE001
         log.warning("catalyst_api: dossier prewarm failed: %s", exc)
-    # Prewarm the subout-opportunities in-process caches (gtm_open_awards + the cube
-    # marginal) on a daemon thread — the build is tens of seconds of R2 streaming, so
-    # it must never delay boot; the first request either finds it warm or builds cold.
+    # Prewarm the subout-opportunities in-process caches (gtm_open_awards + entity
+    # geo + federal sites) on a daemon thread — the build streams from R2, so it must
+    # never delay boot; the first request either finds it warm or builds cold.
     import threading as _threading
 
     _threading.Thread(target=subout_store.prewarm_caches, daemon=True,
@@ -187,8 +187,8 @@ def _info() -> dict:
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
             "capability_profile": "/api/v1/entities/{uei}/capability-profile",
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
-            "entity_profile_assembly": "/api/v1/entities/{uei}/profile?peers=0|1",
-            "operator_profile_html": "/profile/{uei}?token=...&peers=0|1",
+            "entity_profile_assembly": "/api/v1/entities/{uei}/profile",
+            "operator_profile_html": "/profile/{uei}?token=...",
             "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
             "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
             "person_by_linkedin": "/api/v1/people/by-linkedin  (POST: {url})",
@@ -197,8 +197,7 @@ def _info() -> dict:
             "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
             "market_subout_opportunities": (
-                "/api/v1/market/subout-opportunities  (POST: {uei, lenses?, "
-                "codes_override?, code_type?, limit?, include_peers?})"),
+                "/api/v1/market/subout-opportunities  (POST: {uei, limit?})"),
         },
         "map_datasets": [*DECODERS, "entities", "prime_awards", "transactions"],
     }
@@ -253,7 +252,6 @@ def healthz(request: Request) -> JSONResponse:
 def operator_profile(
     uei: str = Path(..., description="12-char SAM.gov UEI"),
     token: str | None = Query(default=None, description="Operator token (browser access)"),
-    peers: int = Query(default=0, ge=0, le=1, description="1 = include the remote peers stage"),
     authorization: str | None = Header(default=None),
 ) -> HTMLResponse:
     """The MAXIMAL operator profile page — every per-entity read on one self-contained
@@ -271,21 +269,20 @@ def operator_profile(
     u = (uei or "").strip()
     if not lance_store.valid_uei(u):
         raise HTTPException(status_code=400, detail="invalid uei")
-    profile = profile_html.compose_profile(u, include_peers=bool(peers))
+    profile = profile_html.compose_profile(u)
     return HTMLResponse(profile_html.render_profile(profile))
 
 
 @app.get("/api/v1/entities/{uei}/profile", response_model=None, dependencies=[Depends(require_operator)])
 def entity_profile_assembly(
     uei: str = Path(..., description="12-char SAM.gov UEI"),
-    peers: int = Query(default=0, ge=0, le=1, description="1 = include the remote peers stage"),
 ) -> JSONResponse:
     """The JSON twin of GET /profile/{uei}: the full per-entity assembly (every section
     labeled with source + caveats + best-effort errors). This is the object the
     operator call screen and the slimmed prospect page PROJECT from — field-level
     allowlists over one composition, never parallel pipelines."""
     uei = _require_uei(uei)
-    return JSONResponse({"data": profile_html.compose_profile(uei, include_peers=bool(peers))})
+    return JSONResponse({"data": profile_html.compose_profile(uei)})
 
 
 @app.get("/card/{uei}", response_class=HTMLResponse)
@@ -647,39 +644,28 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
 
 @app.post("/api/v1/market/subout-opportunities", response_model=None, dependencies=[Depends(require_operator)])
 def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
-    """The subout-opportunities recipe (subout_opportunities.v2 — v1 semantics PLUS
-    federal-site proximity: each opportunity carries ``nearest_federal_site`` off the
-    federal_sites_lance boot grid and a small ``federal_site_proximity`` component;
-    an award without zip5 geo, or with no site inside 50 mi, carries null and is
-    never penalized): given a target UEI, the open prime awards most likely to be
-    subbed out to companies with its code profile. Probe lenses (all four by
-    default): awarded_prime_contracts_in_code /
-    delivered_subawards_under_code / sam_registered_naics / inferred_primeable, plus
-    caller_declared via ``codes_override``. Every score rides with its explicit
-    components (name, raw_value, weight, contribution). The body is validated
-    fail-closed against the recipe contract in ``subout_store.validate_request`` —
-    an unknown key is a 422, never silently ignored. A UEI with no code signals is a
-    200 with empty data + ``meta.reason`` (an empty market is an answer, not an
-    error); per-stage wall times ride ``meta.timings_ms``.
+    """The subout-opportunities recipe (subout_opportunities.v3 — RELATIONSHIP
+    matching, NO scoring; operator-directed 2026-07-06). A row appears iff:
+    RULE A — the award's prime is one the target has received FSRS subawards from;
+    or RULE B — the award has FSRS subawardees who won prime awards from the same
+    awarding agency in the same NAICS/PSC as prime awards the target itself won.
+    Nothing else matches (no SAM claims, no inferred codes, no code similarity).
 
-    MAP-READY: every opportunity row carries its PoP-centroid ``latitude``/
-    ``longitude`` (null when ungeocoded — honest per ``pop_geo_precision``);
-    ``meta.target_hq`` carries the target's HQ point (present even on empty answers);
-    ``nearest_federal_site`` carries the site's own coordinates; opt-in peers are
-    hydrated with ``legal_business_name`` + HQ coordinates.
+    The list is FLAT: sorted by total_obligation DESC, honest ``meta.total``,
+    capped by ``limit``. Each row carries ``matched_via`` — the demonstrated
+    relationship(s) that admitted it (rule A: the prime + the $ the target received
+    from it; rule B: the peer firms + the shared (agency, code) pairs). The body is
+    ``{uei, limit?}`` ONLY — v2's lenses / codes_override / code_type /
+    include_peers are unknown keys now (422, never silently ignored). A target with
+    no matching relationships is a 200 with empty data + ``meta.reason``.
 
-    HOT PATH IS IN-PROCESS: the open-award table, the sub-out cube marginal, and the
-    three probe tables (lanes / SAM NAICS / entity HQ geo) are process-memory caches
-    (lazy, TTL-refreshed in the background; ``meta.cache_state`` = cold | warm |
-    failed, ``meta.cache_build_ms`` alongside). The ONE remote read per request is
-    the inferred-lens probe (263M-row projection; handle + index pages warmed at
-    boot) — ``meta.timings_ms`` splits ``probe_cached`` vs ``probe_inferred`` so the
-    wire shows exactly what the remote floor costs. ``include_peers`` defaults FALSE
-    — the peers lookup is the one remote non-point query (opt-in; adds latency).
-
-    LATENCY NOTE for consuming BFFs: the server-side floor is the inferred probe
-    (hundreds of ms). For millisecond demo paths, cache per-UEI response bodies at
-    the BFF (known-target prewarm) — the response is deterministic per cache epoch."""
+    MAP-READY: rows carry the PoP-centroid ``latitude``/``longitude`` (honest per
+    ``pop_geo_precision``), ``distance_mi`` from the target's HQ AS A FACT, and the
+    ``nearest_federal_site`` ENRICHMENT (informational — there is no score);
+    ``meta.target_hq`` anchors the map even on empty answers. Per-stage wall times
+    ride ``meta.timings_ms``; ``meta.cache_state`` = cold | warm | failed with
+    ``meta.cache_build_ms`` (open awards + entity geo + federal sites are the boot
+    caches; the four relationship reads are BTREE-indexed remote scans)."""
     try:
         result = subout_store.execute_subout_opportunities(body)
     except lance_store.MapCompileError as exc:

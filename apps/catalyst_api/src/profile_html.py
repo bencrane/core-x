@@ -155,9 +155,9 @@ def _load_firmographics(sam_entity: dict[str, Any] | None) -> dict[str, Any] | N
     return rows[0] if rows else None
 
 
-def _load_subout(uei: str, include_peers: bool) -> dict[str, Any]:
+def _load_subout(uei: str) -> dict[str, Any]:
     return subout_store.execute_subout_opportunities(
-        {"uei": uei, "limit": SUBOUT_LIMIT, "include_peers": include_peers})
+        {"uei": uei, "limit": SUBOUT_LIMIT})
 
 
 def _enrich_titles(sections: dict[str, Any], titles: dict[str, dict[str, str]]) -> None:
@@ -172,12 +172,14 @@ def _enrich_titles(sections: dict[str, Any], titles: dict[str, dict[str, str]]) 
     for opp in ((subout.get("data") or {}).get("opportunities") or []):
         opp["naics_title"] = _title_for(titles, "naics", opp.get("naics_code"))
         opp["psc_title"] = _title_for(titles, "psc", opp.get("product_or_service_code"))
-        for m in (opp.get("matched") or []):
-            ct = (m.get("evidence") or {}).get("recipient_code_type")
-            m["code_title"] = _title_for(titles, ct, m.get("code"))
+        for ev in (opp.get("matched_via") or []):
+            for peer in (ev.get("peers") or []):
+                for pair in (peer.get("shared_pairs") or []):
+                    pair["code_title"] = _title_for(
+                        titles, pair.get("code_type"), pair.get("code"))
 
 
-def compose_profile(uei: str, include_peers: bool = False) -> dict[str, Any]:
+def compose_profile(uei: str) -> dict[str, Any]:
     """The full assembly — every per-entity read, fanned out, best-effort per section,
     code rows title-enriched."""
     pool = _PROFILE_POOL
@@ -190,7 +192,7 @@ def compose_profile(uei: str, include_peers: bool = False) -> dict[str, Any]:
     f_inf_s = pool.submit(_load_inferred, config.GTM_INFERRED_SUBBABLE_URI, uei)
     f_card = pool.submit(_one_row, config.CAPABILITY_PROFILE_URI, "uei", uei)
     f_gold = pool.submit(_one_row, config.ENTITY_PROFILE_GOLD_URI, "uei", uei)
-    f_subout = pool.submit(_load_subout, uei, include_peers)
+    f_subout = pool.submit(_load_subout, uei)
     f_titles = pool.submit(_load_code_titles)
 
     sam_section = _section("gtm_sam_entities", None, f_sam.result)
@@ -225,7 +227,7 @@ def compose_profile(uei: str, include_peers: bool = False) -> dict[str, Any]:
             f_inf_s.result),
         "subout_opportunities": _section(
             f"recipe {subout_store.RECIPE_ID} (in-process)",
-            "live scored open awards — components + evidence verbatim from the recipe",
+            "relationship-matched open awards (rules A/B), flat obligation-sorted — no scoring; matched_via evidence verbatim",
             f_subout.result),
         "legacy_capability_card": _section(
             "capability_profile",
@@ -244,7 +246,6 @@ def compose_profile(uei: str, include_peers: bool = False) -> dict[str, Any]:
     return {
         "uei": uei,
         "generated_at": dt_date.today().isoformat(),
-        "include_peers": include_peers,
         "sections": sections,
     }
 
@@ -369,46 +370,33 @@ def _inferred_list(data: dict[str, Any] | None) -> str:
     return f"<table><tr><th>Code</th><th>Support</th></tr>{rows}</table>{more}"
 
 
-_LENS_ORDER = ("awarded_prime_contracts_in_code", "delivered_subawards_under_code",
-               "sam_registered_naics", "caller_declared", "inferred_primeable")
-_LENS_SHORT = {
-    "awarded_prime_contracts_in_code": "Primed in",
-    "delivered_subawards_under_code": "Delivered subs under",
-    "sam_registered_naics": "SAM-registered",
-    "caller_declared": "Declared",
-    "inferred_primeable": "Inferred primeable",
-}
-
-
-def _matched_summary(matched: list[dict[str, Any]]) -> str:
-    """The compact WHY: strongest lenses spelled out with titled codes, the inferred
-    wall reduced to a count. The exhaustive list stays in the section's raw block."""
-    by_lens: dict[str, list[dict[str, Any]]] = {}
-    for m in matched or []:
-        by_lens.setdefault(m.get("lens") or "?", []).append(m)
+def _matched_via_lines(matched_via: list[dict[str, Any]]) -> str:
+    """The relationship evidence that admitted the row — rendered verbatim:
+    rule A as the prime relationship ($ the target received, edges, recency);
+    rule B as the peer firms with their shared (agency, code) pairs (titled)."""
     lines = []
-    for lens in _LENS_ORDER:
-        entries = by_lens.pop(lens, None)
-        if not entries:
-            continue
-        label = _LENS_SHORT.get(lens, lens)
-        if lens == "inferred_primeable":
-            lines.append(f"<div class='why'><b>{label}:</b> {len(entries)} codes</div>")
-            continue
-        shown = entries[:MATCHED_CODES_SHOWN]
-        codes = ", ".join(_code_cell(m.get("code"), m.get("code_title")) for m in shown)
-        extra = f" <span class='ct'>+{len(entries) - len(shown)} more</span>" \
-            if len(entries) > len(shown) else ""
-        lines.append(f"<div class='why'><b>{label}:</b> {codes}{extra}</div>")
-    for lens, entries in by_lens.items():   # future lenses never dropped silently
-        lines.append(f"<div class='why'><b>{_esc(lens)}:</b> {len(entries)} codes</div>")
+    for ev in matched_via or []:
+        if ev.get("rule") == "worked_under_prime":
+            amt = ev.get("subaward_amt_from_prime")
+            lines.append(
+                "<div class='why'><b>Worked under this prime:</b> "
+                f"{_usd(amt)} received across {_esc(ev.get('edge_ct'))} subawards"
+                f" · last {_esc(ev.get('last_action_date'))}</div>")
+        elif ev.get("rule") == "peer_subawardee":
+            bits = []
+            for peer in ev.get("peers") or []:
+                pairs = ", ".join(
+                    f"{_esc(p.get('agency_code'))}/{_code_cell(p.get('code'), p.get('code_title'))}"
+                    for p in (peer.get("shared_pairs") or []))
+                bits.append(f"{_esc(peer.get('uei'))} ({pairs})")
+            extra = ev.get("peer_ct", 0) - len(ev.get("peers") or [])
+            more = f" <span class='ct'>+{extra} more peers</span>" if extra > 0 else ""
+            lines.append(
+                "<div class='why'><b>Peers subbing on this award:</b> "
+                f"{'; '.join(bits)}{more}</div>")
+        else:
+            lines.append(f"<div class='why'><b>{_esc(ev.get('rule'))}</b></div>")
     return "".join(lines)
-
-
-def _score_badge(score: Any) -> str:
-    s = float(score or 0.0)
-    tier = "hi" if s >= 0.7 else ("mid" if s >= 0.45 else "lo")
-    return f"<div class='score {tier}'>{s:.3f}</div>"
 
 
 def _opportunity_cards(data: dict[str, Any] | None) -> str:
@@ -417,8 +405,11 @@ def _opportunity_cards(data: dict[str, Any] | None) -> str:
     if not opps:
         return f"<div class='empty'>no opportunities · {_esc(meta.get('reason'))}</div>"
     total = meta.get("total")
-    head = (f"<div class='more'>top {len(opps)} of {total} scored open awards</div>"
-            if total and total > len(opps) else "")
+    head = (f"<div class='more'>top {len(opps)} of {total} relationship-matched open "
+            "awards, by obligated $ (flat — no scoring)</div>"
+            if total and total > len(opps) else
+            "<div class='more'>relationship-matched open awards, by obligated $ "
+            "(flat — no scoring)</div>")
     cards = []
     for o in opps:
         end = o.get("period_of_performance_current_end_date") or o.get("ordering_period_end_date")
@@ -442,14 +433,13 @@ def _opportunity_cards(data: dict[str, Any] | None) -> str:
             codes.append(f"PSC {_code_cell(o.get('product_or_service_code'), o.get('psc_title'))}")
         cards.append(
             "<div class='opp'>"
-            f"{_score_badge(o.get('score'))}"
             "<div class='opp-body'>"
             f"<div class='opp-title'>{_esc(o.get('prime_name'))}"
             f" <span class='ct'>· {_esc(o.get('award_id_piid'))} · "
             f"{_esc(o.get('awarding_agency_name'))}</span></div>"
             f"<div class='facts'>{fact_line}</div>"
             f"<div class='facts'>{' · '.join(codes)}</div>"
-            f"{_matched_summary(o.get('matched') or [])}"
+            f"{_matched_via_lines(o.get('matched_via') or [])}"
             "</div></div>")
     return head + "".join(cards)
 
@@ -482,7 +472,7 @@ def _header(profile: dict[str, Any]) -> str:
         _stat("Prime $ lifetime", _usd(rollup.get("prime_obl_lifetime"))),
         _stat("Last action", _esc(rollup.get("last_action_date"))),
         _stat("People", _esc(ppl.get("total_people"))),
-        _stat("Open opportunities", _esc(subout_meta.get("total"))),
+        _stat("Matched open awards", _esc(subout_meta.get("total"))),
     ])
     return ("<header>"
             f"<h1>{_esc(name)}</h1>"
@@ -544,11 +534,6 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .contact{white-space:nowrap}
 .opp{display:flex;gap:14px;border:1px solid var(--line);border-radius:10px;
      padding:12px 14px;margin:10px 0;background:#fcfcfe}
-.score{min-width:58px;height:fit-content;text-align:center;border-radius:8px;
-       padding:7px 0;font-weight:750;font-size:15px;font-variant-numeric:tabular-nums}
-.score.hi{background:#e5f4ea;color:#1c7c3c}
-.score.mid{background:#fdf3e0;color:#9a6b15}
-.score.lo{background:#f0f1f4;color:var(--muted)}
 .opp-body{min-width:0;flex:1}
 .opp-title{font-weight:650;font-size:14.5px}
 .facts{color:var(--muted);font-size:12.5px;margin:3px 0}
