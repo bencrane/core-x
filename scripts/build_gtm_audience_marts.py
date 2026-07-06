@@ -56,13 +56,48 @@ OUT_SUB_LANES = f"{A}/gtm_sub_combo_lanes/"
 OUT_PRIME_LANES = f"{A}/gtm_prime_combo_lanes/"
 OUT_ENTITIES = f"{A}/gtm_audience_entities/"
 OUT_PEOPLE = f"{A}/gtm_audience_people/"
-PARAM_SET_ID = "v2"  # v2: lane code titles; entity 12/60mo windows + $ text bands,
+PARAM_SET_ID = "v3"  # v2: lane code titles; entity 12/60mo windows + $ text bands,
                      # primary PoP state/county, FFATA flag, DSBS + FSRS designation
                      # flags, NAICS 2-6 rollup strings; people exec-officer fields
+                     # v3: people dm_class_v2 (deterministic DM-title upgrade)
 
 LANE_BTREE = ["uei", "naics_code", "psc_code"]
 ENTITY_BTREE = ["uei", "normalized_domain"]
 PEOPLE_BTREE = ["sam_person_id", "uei"]
+
+# dm_class_v2 (operator-directed 2026-07-06): provider-verbatim dm_class has a
+# ~25% false-negative rate on decision makers at subawardees (titles literally
+# 'Chief Executive Officer', 'President & CEO', 'Founder' marked not_dm, plus
+# VPs excluded by policy). dm_class_v2 upgrades to 'dm' on a deterministic
+# title match — never downgrades; dm_class passes through verbatim.
+DM_TITLE_REGEXES = [
+    r"\bc\.?e\.?o\.?\b|chief\s+exec",
+    r"\bowner\b",
+    r"\bfounder\b",
+    r"managing\s+(partner|member|principal|director)",
+    r"\bprincipal\b",
+    r"\bpartner\b",
+    (r"\bc\.?o\.?o\.?\b|\bc\.?f\.?o\.?\b|\bc\.?t\.?o\.?\b|\bc\.?i\.?o\.?\b"
+     r"|\bc\.?a\.?o\.?\b|\bc\.?r\.?o\.?\b|chief\s+\w+\s+officer"),
+    r"executive\s+director",
+    r"\bv\.?p\.?\b|vice\s+president|\bs\.?v\.?p\.?\b|\ba\.?v\.?p\.?\b|\be\.?v\.?p\.?\b",
+    r"general\s+manager|\bg\.?m\.?\b",
+]
+
+
+def dm_title_hit_sql(col: str) -> str:
+    """DuckDB predicate: does `col` carry a decision-maker title?
+
+    President is matched by stripping vice/assistant/deputy-president phrases
+    first and requiring a surviving standalone 'president' — VP-only titles
+    can't land here (they are matched deliberately by the vp regex above).
+    """
+    ors = " OR ".join(
+        f"regexp_matches(lower({col}), '{p}')" for p in DM_TITLE_REGEXES)
+    pres = (f"regexp_matches(regexp_replace(lower({col}), "
+            f"'(vice|assistant|asst\\.?|deputy)[\\s-]*president', '', 'g'), "
+            f"'\\bpresident\\b')")
+    return f"({col} IS NOT NULL AND ({ors} OR {pres}))"
 
 
 def _band(col: str) -> str:
@@ -255,10 +290,13 @@ def build() -> int:
         "email_source_vendor", "mv_result", "mv_quality"]).to_reader())
     con.execute("CREATE TABLE ct AS SELECT * FROM _ct")
 
-    con.execute("""CREATE TABLE people_out AS
+    dm_hit = dm_title_hit_sql("coalesce(t.title_verbatim, p.best_title)")
+    con.execute(f"""CREATE TABLE people_out AS
         SELECT p.sam_person_id, p.uei, p.display_name, p.first_name, p.last_name,
                coalesce(t.title_verbatim, p.best_title) AS title,
                t.dm_class,
+               CASE WHEN t.dm_class = 'dm' OR {dm_hit} THEN 'dm'
+                    ELSE t.dm_class END AS dm_class_v2,
                p.is_govt_poc, p.is_ebiz_poc, p.is_dsbs_contact, p.is_dsbs_principal,
                p.is_exec_officer_prime, p.is_exec_officer_sub, p.max_officer_amount,
                p.n_sources,
