@@ -127,6 +127,19 @@
 > casting). Added to **§Places/Geo**, live-verified 2026-07-06. Headline/marquee totals above are
 > NOT recomputed — a full re-probe refreshes those.
 
+> **Update 2026-07-06 — SAM audience → Close.com loader + ledger → `close_sam_leads`.** The canonical
+> cohort-driven Close loader (`pipelines/gtm/push_sam_to_close.py`; supersedes the SFNet prototype).
+> WHO gets pushed lives in cohort SQL files (`pipelines/gtm/close_cohorts/`) that must return
+> `sam_person_id` — extra columns matching Close custom-field names ride onto the push automatically;
+> the engine (enrichment chain people→titles→identity→LI-slug→phones/emails→entities, dry-run default,
+> `--live` to send) never changes per-cohort. Anchors (operator-decided): Lead.custom.uei ★ entity,
+> Contact.custom.sam_person_id ★ person; `normalized_domain` secondary. Ledger `close_sam_leads`
+> (**6,810 rows · 11 cols · 4 BTREE**, 1 row/pushed contact, 0 dup sam_person_id): seeded via
+> `--seed-from-close` from the 5,152 live Close leads (4,987 with `uei`; 165 uei-less sfnet-prototype
+> leads skipped) — Close contact custom fields arrive as FLAT `custom.cf_<id>` keys, unlike the
+> nested name-keyed lead form. Idempotency: ledgered `sam_person_id` never re-pushes; ledgered `uei`
+> reuses its `close_lead_id`.
+
 > **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
 > of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
 > `pipelines/serving/ingest_gsa_leases_lance.py`) — a distinct grain (1 row / lease, a building can
@@ -510,6 +523,7 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `clay_find_companies` | 201,550 | 36 | BTree(record_id); BTree(domain_norm); BTree(linkedin_slug); BTree(linkedin_company_id); Bitmap(is_generic_domain); Bitmap(domain_is_live); Bitmap(hq_country_iso); Bitmap(hq_state); Bitmap(hq_region) |
 | `clay_find_people` | 988,932 | 28 | BTree(record_id); BTree(person_id); BTree(linkedin_url_norm); BTree(domain_norm); Bitmap(loc_country_iso); Bitmap(loc_state); Bitmap(loc_region) |
 | `close_sfnet_leads` | 168 | 7 | BTree(sfnet_company_id); BTree(normalized_domain); BTree(close_lead_id) |
+| `close_sam_leads` | 6,810 | 11 | BTree(sam_person_id); BTree(uei); BTree(close_lead_id); BTree(close_contact_id) |
 | `companies` | 49,803 | 21 | Bitmap(industry); Bitmap(employee_size_band); Bitmap(company_type); Bitmap(hq_region); BTree(company_id); BTree(normalized_domain) |
 | `company_addresses` | 1,584,946 | 53 | BTree(entity_key); BTree(uei); BTree(domain_norm); BTree(company_linkedin_url); BTree(primary_naics); BTree(legal_business_name); Bitmap(address_source); Bitmap(winner_state); Bitmap(winner_country_code); Bitmap(had_sam_physical); Bitmap(had_sam_mailing); Bitmap(had_prospeo); Bitmap(had_overture); Bitmap(had_blitz) |
 | `company_target_industries` | 2,050 | 6 | BTree(company_id); BTree(normalized_domain); Bitmap(target_industry) |
