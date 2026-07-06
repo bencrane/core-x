@@ -157,7 +157,13 @@
 > sam_person_id/uei) carries provider-verbatim contact state + derived `enrichment_state`
 > (dialable 11,610 / emailable 2,911 / bridged_no_contacts 108,688 / unbridged 2,129,176) for
 > enrichment prioritization. Acid test: subs $1–100M 24mo × primed 541330×R425 ≥$1M 24mo → 347
-> entities in 15.1s off the marts alone.
+> entities in 15.1s off the marts alone. **v2 (same day, `param_set_id=v2`):** lanes gain
+> `naics_title`/`psc_title`; entities gain 12/60mo $ windows, at-a-glance `*_band` text ranges for
+> all 8 $ columns, `primary_pop_state`/`primary_pop_county` (modal by lifetime $ across prime+sub
+> PoP), `is_ffata_disclosing`, DSBS cert flags (`dsbs_8a/hubzone/wosb/edwosb/sdvosb/vosb`), FSRS
+> subawardee designation flags (`fsrs_*` + `fsrs_any_designation`/`fsrs_designation_count`), and
+> NAICS 2–6 rollup strings (`naics_2`…`naics_6`, "code - title"); people gain
+> `is_exec_officer_prime/sub` + `max_officer_amount` (FFATA comp).
 
 > **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
 > of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
