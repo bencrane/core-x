@@ -33,7 +33,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, 
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
-from .src import config, dossier, lance_store, market_registry, market_store
+from .src import config, dossier, lance_store, market_registry, market_store, subout_store
 from .src.map_decoders import DECODERS
 from .src.card_html import render_card, render_not_found
 from .src.models import (
@@ -179,6 +179,9 @@ def _info() -> dict:
             "market_fields": "/api/v1/market/fields",
             "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
+            "market_subout_opportunities": (
+                "/api/v1/market/subout-opportunities  (POST: {uei, lenses?, "
+                "codes_override?, code_type?, limit?, include_peers?})"),
         },
         "map_datasets": [*DECODERS, "entities", "prime_awards", "transactions"],
     }
@@ -584,6 +587,25 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
             "executed": result["executed"],
         },
     })
+
+
+@app.post("/api/v1/market/subout-opportunities", response_model=None, dependencies=[Depends(require_operator)])
+def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
+    """The subout-opportunities recipe (subout_opportunities.v1): given a target UEI,
+    the open prime awards most likely to be subbed out to companies with its code
+    profile. Probe lenses (all four by default): awarded_prime_contracts_in_code /
+    delivered_subawards_under_code / sam_registered_naics / inferred_primeable, plus
+    caller_declared via ``codes_override``. Every score rides with its explicit
+    components (name, raw_value, weight, contribution). The body is validated
+    fail-closed against the recipe contract in ``subout_store.validate_request`` —
+    an unknown key is a 422, never silently ignored. A UEI with no code signals is a
+    200 with empty data + ``meta.reason`` (an empty market is an answer, not an
+    error); per-stage wall times ride ``meta.timings_ms``."""
+    try:
+        result = subout_store.execute_subout_opportunities(body)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    return JSONResponse(result)
 
 
 @app.get("/api/v1/market/codes", response_model=None, dependencies=[Depends(require_operator)])

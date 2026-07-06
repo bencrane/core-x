@@ -232,6 +232,32 @@ USASPENDING_AWARD_CANONICAL_URI = os.environ.get(
     "USASPENDING_AWARD_CANONICAL_LANCE_URI", "s3://data-sink/active/usaspending_award_canonical/"
 )
 
+# ── Subout-opportunities recipe substrate (subout_store.py) ───────────────────
+# gtm_prime_subout_by_recipient_code — the two-sided sub-out history cube
+# (1 row / (prime_awardee_uei, context_code_type, context_code, recipient_code_source,
+# recipient_code_type, recipient_code); BTREE prime_awardee_uei / recipient_code /
+# context_code). Built by scripts/build_gtm_prime_subout_by_recipient_code.py — raw
+# history only (counts, sums, dates): read-time recipes own weights/thresholds.
+GTM_PRIME_SUBOUT_BY_RECIPIENT_CODE_URI = os.environ.get(
+    "GTM_PRIME_SUBOUT_BY_RECIPIENT_CODE_LANCE_URI",
+    "s3://data-sink/active/gtm_prime_subout_by_recipient_code/",
+)
+# gtm_subaward_recipient_code_evidence — un-allocated sub-out destination evidence
+# (1 row / (subaward_unique_key, code_source, code_type, code); BTREE prime_awardee_uei /
+# subawardee_uei / code / subaward_unique_key). Serves the peers lookup: recipients
+# sharing a code, via the BTREE on code.
+GTM_SUBAWARD_RECIPIENT_CODE_EVIDENCE_URI = os.environ.get(
+    "GTM_SUBAWARD_RECIPIENT_CODE_EVIDENCE_LANCE_URI",
+    "s3://data-sink/active/gtm_subaward_recipient_code_evidence/",
+)
+# usaspending_award_pop_centroids — 1 row / generated_unique_award_id (BTREE), built by
+# pipelines/serving/materialize_pop_centroids.py: place-of-performance latitude/longitude
+# + geo_precision ('zip5' | coarser). LEFT-joined per opportunity for distance_mi.
+USASPENDING_AWARD_POP_CENTROIDS_URI = os.environ.get(
+    "USASPENDING_AWARD_POP_CENTROIDS_LANCE_URI",
+    "s3://data-sink/active/usaspending_award_pop_centroids/",
+)
+
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
 def operator_token() -> str | None:
