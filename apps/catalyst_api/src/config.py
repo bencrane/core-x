@@ -189,6 +189,12 @@ NAICS_REFERENCE_URI = os.environ.get(
 PSC_REFERENCE_URI = os.environ.get(
     "PSC_REFERENCE_LANCE_URI", "s3://data-sink/active/psc_reference/"
 )
+# usaspending_award_canonical — the canonical prime-award fact (30.7M rows). The agency
+# typeahead streams a DISTINCT over (awarding_agency_code, awarding_agency_name) from it
+# (~136 pairs; no dedicated agency reference dimension exists yet) — lazy, once/process.
+USASPENDING_AWARD_CANONICAL_URI = os.environ.get(
+    "USASPENDING_AWARD_CANONICAL_LANCE_URI", "s3://data-sink/active/usaspending_award_canonical/"
+)
 
 
 # ── Operator service token (BFF → catalyst_api) ──────────────────────────────
