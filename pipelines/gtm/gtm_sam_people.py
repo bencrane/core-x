@@ -14,6 +14,8 @@ Strategy: docs/plans/GTM_SAM_AUDIENCE_MART_STRATEGY.md (v2, aligned).
                             Role flags OR'd; display name / best title selected
                             by source-priority (dsbs_principal > dsbs_contact >
                             sam_poc > officer), longest verbatim wins within a tier.
+                            Honorific-only titles (Mr./Mrs./Dr. …) never qualify
+                            for best_title — a person with only those gets NULL.
                             No cross-entity fusion; no denormalized entity attrs.
 
 name_key convention (the mart's single person-matching key — replicates
@@ -85,6 +87,20 @@ def name_key_sql(col: str) -> str:
         f"string_split_regex(lower(strip_accents(coalesce({col}, ''))), '[^a-z]+'),"
         f" t -> len(t) >= 2 AND NOT list_contains({_SUFFIX_SQL}, t))), ' '), '')"
     )
+
+
+# Honorific-only "titles" ride in from DSBS principal segments ("JANE SMITH - Mrs.") and can
+# appear in SAM POC title slots. An honorific is not a role: such values never win best_title.
+# Set mirrors materialize_dsbs_pocs / resolve_dsbs_poc_linkedin _HONOR.
+_HONORIFIC_RX = ("(dr|mr|mrs|ms|miss|mx|prof|professor|sir|madam|rev|hon|capt|col|sgt|lt|maj"
+                 "|gen|cmdr|messrs|mstr)")
+
+
+def usable_title_sql(col: str) -> str:
+    """TRUE when col is a non-empty title that is not honorific-only (evidence keeps verbatim;
+    this gates selection only)."""
+    return (f"({col} IS NOT NULL AND trim({col}) <> '' AND NOT regexp_full_match("
+            f"lower(trim({col})), '({_HONORIFIC_RX}\\.?[\\s.,&/-]*)+'))")
 
 
 OPS_DDL = """
@@ -295,7 +311,7 @@ def _materialize(con, so: dict, build_id: str, built_at: dt.datetime):
                                                    AS src_first_name,
         max_by(last_name,  CASE WHEN last_name  IS NOT NULL THEN pref ELSE -1 END)
                                                    AS src_last_name,
-        max_by(title, CASE WHEN title IS NOT NULL AND title <> '' THEN pref ELSE -1 END)
+        max_by(title, CASE WHEN {usable_title_sql('title')} THEN pref END)
                                                    AS best_title,
         bool_or(source_role IN ('government_business','government_business_alt'))
                                                    AS is_govt_poc,

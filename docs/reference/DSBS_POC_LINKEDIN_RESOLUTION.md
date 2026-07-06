@@ -317,6 +317,10 @@ Applied in `build_worklist` / `_derive_names`. Order matters.
    professor, sir, madam, rev, hon, capt, col, sgt, lt, maj, gen, cmdr, messrs, mstr}`. If fewer than
    2 real name tokens remain, **drop the row** rather than spend a credit on a non-name. A valid pair
    also requires `first != last` and neither token being an honorific or an org token.
+   *Titles get the same treatment upstream:* `materialize_dsbs_pocs._scrub_title` NULLs an
+   `_HONOR`-only parsed title at emit ("JANE SMITH - Mrs." → title NULL, `raw_entry` verbatim), and
+   `gtm_sam_people.usable_title_sql` bars honorific-only values from winning `best_title` from any
+   source.
 3. **Org-in-person guard.** Drop when **both** name tokens are already tokens of the firm name — the
    "person" is the company name repeated (e.g. **"UIC Government"** sitting in the person field at
    **"UIC Government Services"**). Checked against the union of company-term / SAM / DSBS legal-name
