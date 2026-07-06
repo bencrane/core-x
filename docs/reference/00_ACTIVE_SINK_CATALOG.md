@@ -140,6 +140,25 @@
 > nested name-keyed lead form. Idempotency: ledgered `sam_person_id` never re-pushes; ledgered `uei`
 > reuses its `close_lead_id`.
 
+> **Update 2026-07-06 — audience-building marts → `gtm_sub_combo_lanes` / `gtm_prime_combo_lanes` /
+> `gtm_audience_entities` / `gtm_audience_people`.** Four derived marts
+> (`scripts/build_gtm_audience_marts.py`, snapshot-overwrite, `as_of`-stamped rolling windows
+> 12/24/60mo+lifetime) so audience cuts of the form code-combo × $ window × firmographics ×
+> contactability are seconds-fast WHERE clauses instead of per-question raw scans. Demonstrated
+> behavior only (the inferred layer stays in `gtm_entity_inferred_*_codes`). `gtm_sub_combo_lanes`
+> (**339,485 · uei × prime-award naics × psc**, windowed sub $; BTREE uei/naics_code/psc_code) and
+> `gtm_prime_combo_lanes` (**5,116,397 · uei × own-award naics × psc**, windowed prime obl from
+> `usaspending_fpds_canonical_txn`; same BTREEs) hold codes verbatim at native grain — any NAICS
+> level (2–6 digit) or PSC level is a prefix/`naics_reference` filter, no rebuild.
+> `gtm_audience_entities` (**2,025,707 · uei grain**; BTREE uei/normalized_domain) is the filter
+> spine: band + `employees_on_linkedin` (firmographics_blitz via domain), `in_dsbs`, 24mo/lifetime
+> sub-$ and prime-obl totals, people/contactability counts (n_dialable/n_emailable/…).
+> `gtm_audience_people` (**2,252,385 · full `gtm_sam_people` universe, 1 row/sam_person_id**; BTREE
+> sam_person_id/uei) carries provider-verbatim contact state + derived `enrichment_state`
+> (dialable 11,610 / emailable 2,911 / bridged_no_contacts 108,688 / unbridged 2,129,176) for
+> enrichment prioritization. Acid test: subs $1–100M 24mo × primed 541330×R425 ≥$1M 24mo → 347
+> entities in 15.1s off the marts alone.
+
 > **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
 > of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
 > `pipelines/serving/ingest_gsa_leases_lance.py`) — a distinct grain (1 row / lease, a building can
