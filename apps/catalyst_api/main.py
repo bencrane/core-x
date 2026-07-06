@@ -39,6 +39,7 @@ from .src import (
     lance_store,
     market_registry,
     market_store,
+    phrase_compiler,
     profile_html,
     subout_store,
 )
@@ -196,6 +197,7 @@ def _info() -> dict:
             "market_fields": "/api/v1/market/fields",
             "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
+            "market_phrase": "/api/v1/market/phrase  (POST: {phrase})",
             "market_subout_opportunities": (
                 "/api/v1/market/subout-opportunities  (POST: {uei, limit?, mode?: relationships|combos})"),
         },
@@ -722,6 +724,24 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
         result = subout_store.execute_subout_opportunities(body)
     except lance_store.MapCompileError as exc:
         raise HTTPException(status_code=422, detail=f"invalid filter: {exc}")
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/market/phrase", response_model=None, dependencies=[Depends(require_operator)])
+def market_phrase(body: dict = Body(...)) -> JSONResponse:
+    """The deterministic phrase compiler (phrase.v1 — plan approved 2026-07-06).
+    ``{"phrase": "..."}`` → the compiled plan (exact market-query bodies), every
+    token→filter binding disclosed in ``meta.bindings``, and the terminal step's
+    rows. CLOSED grammar over CLOSED vocabularies — zero LLM: any token that binds
+    to nothing refuses the WHOLE phrase naming the token (422); reserved booleans
+    (or/not/excluding…) refuse rather than silently AND (same-axis 'or' compiles
+    to an in-list); a subject word (companies|awards|vehicles|orders|actions) is
+    REQUIRED. Cross-grain phrases emit the Cycle-1 pipeline (transaction collapse
+    → entity uei-in chunks); ``meta.plan`` carries the RESOLVED bodies."""
+    try:
+        result = phrase_compiler.compile_and_execute(body)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return JSONResponse(result)
 
 
