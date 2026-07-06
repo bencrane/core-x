@@ -33,7 +33,15 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, 
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
-from .src import config, dossier, lance_store, market_registry, market_store, subout_store
+from .src import (
+    config,
+    dossier,
+    lance_store,
+    market_registry,
+    market_store,
+    profile_html,
+    subout_store,
+)
 from .src.map_decoders import DECODERS
 from .src.card_html import render_card, render_not_found
 from .src.models import (
@@ -179,6 +187,8 @@ def _info() -> dict:
             "past_performance": "/api/v1/entities/{uei}/past-performance?limit=N",
             "capability_profile": "/api/v1/entities/{uei}/capability-profile",
             "dossier": "/api/v1/entities/{uei}/dossier?actions=N",
+            "entity_profile_assembly": "/api/v1/entities/{uei}/profile?peers=0|1",
+            "operator_profile_html": "/profile/{uei}?token=...&peers=0|1",
             "dossiers_batch": "/api/v1/entities/dossiers  (POST: {ueis:[...], actions:N})",
             "subaward_profile": "/api/v1/entities/{uei}/subaward-profile?history=N",
             "person_by_linkedin": "/api/v1/people/by-linkedin  (POST: {url})",
@@ -237,6 +247,45 @@ def healthz(request: Request) -> JSONResponse:
         },
     }
     return JSONResponse(body, status_code=200 if (ok and contract_ok) else 503)
+
+
+@app.get("/profile/{uei}", response_class=HTMLResponse)
+def operator_profile(
+    uei: str = Path(..., description="12-char SAM.gov UEI"),
+    token: str | None = Query(default=None, description="Operator token (browser access)"),
+    peers: int = Query(default=0, ge=0, le=1, description="1 = include the remote peers stage"),
+    authorization: str | None = Header(default=None),
+) -> HTMLResponse:
+    """The MAXIMAL operator profile page — every per-entity read on one self-contained
+    HTML document (the curation substrate; see profile_html module docstring). NOT open:
+    it carries person contact assets, so it requires the operator token — as a Bearer
+    header OR ``?token=`` for plain browser access. Constant-time compare; unset token
+    (local dev) allows, matching the /api/v1 gate posture."""
+    expected = config.operator_token()
+    if expected is not None:
+        provided = (token or "").strip()
+        if not provided and authorization and authorization.lower().startswith("bearer "):
+            provided = authorization[len("bearer "):].strip()
+        if not hmac.compare_digest(provided, expected):
+            raise HTTPException(status_code=401, detail="unauthorized")
+    u = (uei or "").strip()
+    if not lance_store.valid_uei(u):
+        raise HTTPException(status_code=400, detail="invalid uei")
+    profile = profile_html.compose_profile(u, include_peers=bool(peers))
+    return HTMLResponse(profile_html.render_profile(profile))
+
+
+@app.get("/api/v1/entities/{uei}/profile", response_model=None, dependencies=[Depends(require_operator)])
+def entity_profile_assembly(
+    uei: str = Path(..., description="12-char SAM.gov UEI"),
+    peers: int = Query(default=0, ge=0, le=1, description="1 = include the remote peers stage"),
+) -> JSONResponse:
+    """The JSON twin of GET /profile/{uei}: the full per-entity assembly (every section
+    labeled with source + caveats + best-effort errors). This is the object the
+    operator call screen and the slimmed prospect page PROJECT from — field-level
+    allowlists over one composition, never parallel pipelines."""
+    uei = _require_uei(uei)
+    return JSONResponse({"data": profile_html.compose_profile(uei, include_peers=bool(peers))})
 
 
 @app.get("/card/{uei}", response_class=HTMLResponse)
