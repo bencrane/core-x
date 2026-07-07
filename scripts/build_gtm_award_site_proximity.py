@@ -67,11 +67,16 @@ def _cx():
 def _load_sites(con, opt) -> int:
     fs = lance.dataset(f"{A}/federal_sites_lance/", storage_options=opt)
     con.register("_fs", fs.scanner(
-        columns=["site_name", "site_source", "state_code", "latitude", "longitude"],
+        columns=["site_name", "site_source", "state_code", "latitude", "longitude",
+                 "owned_or_leased"],
         filter=f"site_source IN {SITE_SOURCES} AND latitude IS NOT NULL").to_reader())
-    # expand each site into its 3x3 neighborhood of 1-degree cells
+    # expand each site into its 3x3 neighborhood of 1-degree cells.
+    # is_owned_fed_bldg: IOLP 'F' = federally owned (courthouses/federal centers,
+    # the name-droppable kind) vs 'L' = leased commercial space.
     con.execute("""CREATE TABLE sites AS
         SELECT f.site_name, f.site_source, f.state_code,
+               (f.site_source = 'gsa_building' AND f.owned_or_leased = 'F')
+                   AS is_owned_fed_bldg,
                f.latitude AS slat, f.longitude AS slon,
                CAST(floor(f.latitude) AS INT) + dy AS cell_lat,
                CAST(floor(f.longitude) AS INT) + dx AS cell_lon
@@ -92,9 +97,11 @@ def _nearest(con, cent_table: str, key_col: str) -> None:
                arg_min(site_name, dist_mi) FILTER (site_source LIKE 'gsa%') AS nearest_gsa_name,
                ROUND(MIN(dist_mi) FILTER (site_source LIKE 'gsa%'), 1) AS nearest_gsa_miles,
                arg_min(site_name, dist_mi) FILTER (site_source = 'military_base') AS nearest_base_name,
-               ROUND(MIN(dist_mi) FILTER (site_source = 'military_base'), 1) AS nearest_base_miles
+               ROUND(MIN(dist_mi) FILTER (site_source = 'military_base'), 1) AS nearest_base_miles,
+               arg_min(site_name, dist_mi) FILTER (is_owned_fed_bldg) AS nearest_fed_bldg_name,
+               ROUND(MIN(dist_mi) FILTER (is_owned_fed_bldg), 1) AS nearest_fed_bldg_miles
         FROM (
-            SELECT c.{key_col}, s.site_name, s.site_source, s.state_code,
+            SELECT c.{key_col}, s.site_name, s.site_source, s.state_code, s.is_owned_fed_bldg,
                    {HAVERSINE} AS dist_mi
             FROM {cent_table} c
             JOIN sites s ON s.cell_lat = CAST(floor(c.lat) AS INT)
@@ -144,7 +151,8 @@ def build() -> int:
                n.nearest_site_name, n.nearest_site_source, n.nearest_site_state,
                n.nearest_site_miles,
                n.nearest_gsa_name, n.nearest_gsa_miles,
-               n.nearest_base_name, n.nearest_base_miles
+               n.nearest_base_name, n.nearest_base_miles,
+               n.nearest_fed_bldg_name, n.nearest_fed_bldg_miles
         FROM pr_meta m
         JOIN cent_pr c ON c.generated_unique_award_id = m.contract_award_unique_key
         LEFT JOIN office o USING (contract_award_unique_key)
@@ -182,13 +190,16 @@ def build() -> int:
                n.nearest_site_miles,
                n.nearest_gsa_name, n.nearest_gsa_miles,
                n.nearest_base_name, n.nearest_base_miles,
+               n.nearest_fed_bldg_name, n.nearest_fed_bldg_miles,
                p.nearest_site_name AS prime_pop_nearest_site_name,
                p.nearest_site_source AS prime_pop_nearest_site_source,
                p.nearest_site_miles AS prime_pop_nearest_site_miles,
                p.nearest_gsa_name AS prime_pop_nearest_gsa_name,
                p.nearest_gsa_miles AS prime_pop_nearest_gsa_miles,
                p.nearest_base_name AS prime_pop_nearest_base_name,
-               p.nearest_base_miles AS prime_pop_nearest_base_miles
+               p.nearest_base_miles AS prime_pop_nearest_base_miles,
+               p.nearest_fed_bldg_name AS prime_pop_nearest_fed_bldg_name,
+               p.nearest_fed_bldg_miles AS prime_pop_nearest_fed_bldg_miles
         FROM sub_meta m
         JOIN cent_sub c USING (subaward_unique_key)
         LEFT JOIN nearest n USING (subaward_unique_key)
