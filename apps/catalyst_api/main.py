@@ -686,15 +686,29 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
 
 @app.post("/api/v1/market/sub-universe", response_model=None, dependencies=[Depends(require_operator)])
 def market_sub_universe(body: dict = Body(...)) -> JSONResponse:
-    """The sub-universe recipe (sub_universe.v1) — the per-sub eligible-buyer map
+    """The sub-universe recipe (sub_universe.v2) — the per-sub eligible-buyer map
     payload. Body: ``{uei, limit?}``. One call returns the target's ground truth
     (anchors, demonstrated combos, PoP states, vehicles, own prime combos, form
-    DEFAULTS from their history) + every eligible buyer node with its gate facts
-    (per-combo farm-out medians, teaming repeat depth, vehicles, HQ geo,
-    matched_via evidence, prime_backed stamps). Form parameters are CLIENT-SIDE
+    DEFAULTS from their history) + every eligible buyer node with its gate facts.
+
+    UNIVERSE = the FULL lookalike-winner set: every prime with prime_obl_60mo > 0
+    in ≥1 anchor-portfolio combo (gtm_prime_combo_lanes), target + anchors
+    excluded. Farm-out lanes are LEFT-joined — ``disclosed_sub_buyer`` marks
+    nodes with disclosed sub-buying in a matched combo; undisclosed winners are
+    carried (dimmed by absent facts), never deleted. NULL SEMANTICS: unknown ≠
+    zero — undisclosed nodes carry ``matched_farmout_60mo: null`` (never 0),
+    per-combo farm-out fields ride null with ``candidate_prime_obl_60mo`` always
+    present, and nodes without pair-mart rows carry null teaming fields. Nodes
+    also carry ``gate_facts`` over the FULL matched-combo set (``matched_via``
+    display list caps at 25, ``matched_via_truncated`` disclosed) and the ~24mo
+    demand-event pulse. Ordering (``meta.display_order``): disclosed sub-buyers
+    by matched farm-out $ desc, then undisclosed winners by matched prime obl
+    desc — presentation, not scoring. ``target.defaults`` carries ``mvs_n``;
+    below 5 combo-bearing edges the default MVS floor is null with
+    ``mvs_reason`` disclosing the basis. Form parameters are CLIENT-SIDE
     predicates over these facts — no re-query on a slider move; culls dim with
-    disclosed reasons, never delete. NO SCORING. A target with no FSRS edges is a
-    200 with empty data + ``meta.reason``."""
+    disclosed reasons, never delete. NO SCORING. A target with no FSRS edges is
+    a 200 with empty data + ``meta.reason``."""
     try:
         result = sub_universe_store.execute_sub_universe(body)
     except lance_store.MapCompileError as exc:

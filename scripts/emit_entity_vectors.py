@@ -80,12 +80,17 @@ def _ds(name: str):
     return lance.dataset(f"{A}/{name}/", storage_options=S)
 
 
-def market_median(naics: str, psc: str) -> float | None:
+def market_median(naics: str, psc: str) -> tuple[float, int | None] | None:
+    """(median_subaward_amt, n_subaward_lines) for the combo — LIFETIME grain
+    (subaward_combo_nodes has no windowed cut). n rides alongside so low-n
+    medians never masquerade as typical."""
     global _NODES
     if _NODES is None:
-        _NODES = {(r["naics"], r["psc"]): float(r["median_subaward_amt"])
+        _NODES = {(r["naics"], r["psc"]): (float(r["median_subaward_amt"]),
+                                           int(r["n_subaward_lines"]) if r["n_subaward_lines"] is not None else None)
                   for r in _ds("subaward_combo_nodes")
-                  .scanner(columns=["naics", "psc", "median_subaward_amt"]).to_table().to_pylist()
+                  .scanner(columns=["naics", "psc", "median_subaward_amt",
+                                    "n_subaward_lines"]).to_table().to_pylist()
                   if r["median_subaward_amt"] is not None}
     return _NODES.get((naics, psc))
 
@@ -130,11 +135,14 @@ def vectors_for(rows: list[dict], window: str) -> dict:
     v2 = []
     for k, amts in sorted(by_combo.items(), key=lambda kv: (-len(kv[1]), -sum(kv[1]))):
         mkt = market_median(k[0], k[1])
+        mkt_med, mkt_n = mkt if mkt else (None, None)
         med = statistics.median(amts)
         v2.append({"combo": f"{k[0]}x{k[1]}", "n_edges": len(amts),
                    "target_median_usd": _r(med), "target_total_usd": _r(sum(amts)),
-                   "market_median_usd": mkt,
-                   "chunk_delta": _r(med / mkt) if mkt else None})
+                   "market_median_usd": mkt_med,
+                   "market_median_grain": "lifetime",
+                   "market_n": mkt_n,
+                   "chunk_delta": _r(med / mkt_med) if mkt_med else None})
 
     by_veh: dict = {}
     for r in rows:
@@ -389,6 +397,13 @@ def emit(uei: str) -> dict:
             "generated_at": dt.date.today().isoformat(),
             "meta": {"source": "usaspending_subaward_canonical",
                      "market_median_source": "subaward_combo_nodes (lifetime market grain)",
+                     "market_median_grain_note":
+                         "GRAIN MISMATCH DISCLOSED: market medians are LIFETIME grain "
+                         "(subaward_combo_nodes carries no windowed cut) while target "
+                         "medians in windows.trailing_60mo are 60mo grain — chunk_delta "
+                         "in the 60mo window compares a windowed target median to a "
+                         "lifetime market median. Each v2 entry carries "
+                         "market_median_grain + market_n alongside the number.",
                      "prime_posture_source": "gtm_prime_combo_lanes",
                      "labor_sources": ["naics_psc_labor_profile_categories",
                                        "sca_wd_county_rollup", "olms_cba_crosswalk",
