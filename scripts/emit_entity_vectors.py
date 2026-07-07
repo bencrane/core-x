@@ -12,6 +12,15 @@ For each UEI, emits one JSON document of raw form variables for the diagnostic c
     OR >30-point share delta) → the frontend triggers the pivot question instead of
     quoting stale concentration.
 
+  v5_prime_posture — the sub's OWN prime-side book (gtm_prime_combo_lanes point
+    lookup; operator-directed 2026-07-06: prime activity is qualification evidence
+    for sub work in the same combo, not separate scope):
+    per window: prime obl totals/txns, top prime combos; dual_side_combos = combos
+    subbed under AND primed in ($ both sides) → map stamps them prime_backed;
+    sub:prime mix per window. flags.graduation_signal fires on a >20-point shift
+    in prime share of the total book (lifetime vs 60mo) — rising = graduating
+    prime, falling = re-subbing.
+
   labor — the execution-mechanics assertions (operator-directed 2026-07-06),
   point-lookups only, facts only:
     staffing_identity   per demonstrated combo → SOC roles (rank/class/median wage/
@@ -51,6 +60,7 @@ import lance
 
 A = "s3://data-sink/active"
 ROTATION_PCT_POINTS = 30.0
+GRADUATION_PCT_POINTS = 20.0
 LOAD_FACTOR = 1.5          # loaded-cost multiplier over OEWS median salary (disclosed)
 TOP_COMBOS_FOR_LABOR = 5   # labor lookups run for the top-N combos by lifetime sub $
 
@@ -262,6 +272,73 @@ def labor_block(uei: str, rows: list[dict], life: dict, entity: dict | None) -> 
             "chunk_capacity": capacity, "oews_annotation": oews}
 
 
+# ── V5: prime posture (the sub's own prime-side book) ─────────────────────────
+def prime_posture(uei: str, sub_rows: list[dict], cutoff: str) -> tuple[dict, dict]:
+    """Returns (v5 block, graduation flag block). gtm_prime_combo_lanes point lookup —
+    windowed columns come pre-materialized, no spine scan."""
+    lanes = _ds("gtm_prime_combo_lanes").scanner(
+        filter=f"uei = '{uei}'",
+        columns=["naics_code", "psc_code", "naics_title", "psc_title",
+                 "prime_obl_60mo", "prime_obl_lifetime", "n_txns_24mo",
+                 "n_txns_lifetime", "last_action_date"]).to_table().to_pylist()
+    sub_combos_life: dict = {}
+    sub_combos_60: dict = {}
+    for r in sub_rows:
+        if r["naics"] and r["psc"]:
+            k = (r["naics"], r["psc"])
+            sub_combos_life[k] = sub_combos_life.get(k, 0.0) + r["amt"]
+            if r["date"] >= cutoff:
+                sub_combos_60[k] = sub_combos_60.get(k, 0.0) + r["amt"]
+
+    def win(key_obl: str, sub_combos: dict) -> dict:
+        active = [r for r in lanes if (r[key_obl] or 0) != 0]
+        total = sum(float(r[key_obl] or 0) for r in active)
+        top = sorted(active, key=lambda r: -(r[key_obl] or 0))[:5]
+        dual = []
+        for r in lanes:
+            k = (r["naics_code"], r["psc_code"])
+            if k in sub_combos and (float(r[key_obl] or 0) != 0 or float(r["prime_obl_lifetime"] or 0) != 0):
+                dual.append({"combo": f"{k[0]}x{k[1]}",
+                             "sub_usd": _r(sub_combos[k]),
+                             "prime_obl": _r(float(r[key_obl] or 0)),
+                             "prime_obl_lifetime": _r(float(r["prime_obl_lifetime"] or 0)),
+                             "last_prime_action": str(r["last_action_date"] or "")[:10]})
+        dual.sort(key=lambda d: -(d["sub_usd"] + max(d["prime_obl"], 0)))
+        return {"n_prime_combos": len(active), "prime_obl_total": _r(total),
+                "top_prime_combos": [{"combo": f"{r['naics_code']}x{r['psc_code']}",
+                                      "obl": _r(float(r[key_obl] or 0)),
+                                      "n_txns_lifetime": r["n_txns_lifetime"],
+                                      "last_action": str(r["last_action_date"] or "")[:10]}
+                                     for r in top],
+                "dual_side_combos": dual}
+
+    life = win("prime_obl_lifetime", sub_combos_life)
+    w60 = win("prime_obl_60mo", sub_combos_60)
+
+    def prime_share(prime_obl: float, sub_usd: float) -> float | None:
+        p, sN = max(prime_obl, 0.0), max(sub_usd, 0.0)
+        return _r(100 * p / (p + sN), 1) if (p + sN) > 0 else None
+
+    sub_life = sum(r["amt"] for r in sub_rows)
+    sub_60 = sum(r["amt"] for r in sub_rows if r["date"] >= cutoff)
+    share_life = prime_share(life["prime_obl_total"], sub_life)
+    share_60 = prime_share(w60["prime_obl_total"], sub_60)
+    grad = False
+    evidence = None
+    if share_life is not None and share_60 is not None:
+        delta = share_60 - share_life
+        grad = abs(delta) > GRADUATION_PCT_POINTS
+        evidence = {"prime_share_of_book_lifetime_pct": share_life,
+                    "prime_share_of_book_60mo_pct": share_60,
+                    "delta_points": _r(delta, 1),
+                    "direction": "graduating_prime" if delta > 0 else "re_subbing"}
+    v5 = {"assertion_key": "v5.prime_posture",
+          "share_basis": "positive components only (de-obligated windows treated as 0)",
+          "windows": {"lifetime": {**life, "prime_share_of_book_pct": share_life},
+                      "trailing_60mo": {**w60, "prime_share_of_book_pct": share_60}}}
+    return v5, {"graduation_signal": grad, "graduation_evidence": evidence}
+
+
 # ── Emit ───────────────────────────────────────────────────────────────────────
 def emit(uei: str) -> dict:
     raw = _ds("usaspending_subaward_canonical").scanner(
@@ -305,22 +382,28 @@ def emit(uei: str) -> dict:
         evidence = {"lifetime_top1": {"prime_name": l1["prime_name"], "pct": l1["pct_of_total"]},
                     "trailing60_top1": None, "note": "no sub edges in trailing 60mo"}
 
+    v5, grad_flags = prime_posture(uei, rows, cutoff)
+
     return {"uei": uei,
             "entity_name": (entity or {}).get("legal_business_name"),
             "generated_at": dt.date.today().isoformat(),
             "meta": {"source": "usaspending_subaward_canonical",
                      "market_median_source": "subaward_combo_nodes (lifetime market grain)",
+                     "prime_posture_source": "gtm_prime_combo_lanes",
                      "labor_sources": ["naics_psc_labor_profile_categories",
                                        "sca_wd_county_rollup", "olms_cba_crosswalk",
                                        "bls_oews_2025", "gtm_audience_entities"],
                      "trailing_window_cutoff": cutoff,
                      "rotation_rule": f"top1 identity change OR |top1 pct delta| > {ROTATION_PCT_POINTS} points",
+                     "graduation_rule": f"|prime share of book, 60mo vs lifetime| > {GRADUATION_PCT_POINTS} points",
                      "corrections_routing":
                          "on correction: scripts/sub_corrections.py add UEI ASSERTION_KEY "
                          "DISCLOSED CORRECTED SOURCE (disclosed = this document's value at that key)"},
             "flags": {"concentration_rotation": rotation,
-                      "concentration_rotation_evidence": evidence},
+                      "concentration_rotation_evidence": evidence,
+                      **grad_flags},
             "windows": {"lifetime": life, "trailing_60mo": w60},
+            "v5_prime_posture": v5,
             "labor": labor_block(uei, rows, life, entity)}
 
 
@@ -345,6 +428,8 @@ def main() -> None:
         print(f"{uei} ({doc['entity_name']}): edges life={doc['windows']['lifetime']['n_edges']} "
               f"60mo={doc['windows']['trailing_60mo']['n_edges']} · "
               f"rotation={doc['flags']['concentration_rotation']} · "
+              f"grad={doc['flags']['graduation_signal']} · "
+              f"dual_combos={len(doc['v5_prime_posture']['windows']['trailing_60mo']['dual_side_combos'])} · "
               f"socs={len(lab['staffing_identity']['distinct_soc_codes'])} · "
               f"cba_hits={len(lab['compliance_corridor']['cba_hits'])} · "
               f"oews_rows={len(lab['oews_annotation']['rows'])} · {path}")
