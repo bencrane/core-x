@@ -46,7 +46,9 @@ from pipelines._shared.lance_local_publish import write_indexed_dataset  # noqa:
 
 A = "s3://data-sink/active"
 OUT = f"{A}/gtm_prime_farmout_combo_lanes/"
-PARAM_SET_ID = "v1"
+PARAM_SET_ID = "v2"  # v2: median/p25/p75 chunk columns (60mo + lifetime) — the MVS
+                     # floor-filter comparator (operator-directed 2026-07-06); means
+                     # lie under skew, gates compare against per-combo medians.
 BTREE = ["uei", "naics_code", "psc_code"]
 
 
@@ -103,6 +105,12 @@ def build() -> int:
                COUNT(*) AS n_subawards_lifetime,
                COUNT(DISTINCT subawardee_uei) FILTER (subaward_action_date >= DATE '{w60}') AS n_distinct_subs_60mo,
                COUNT(DISTINCT subawardee_uei) AS n_distinct_subs_lifetime,
+               MEDIAN(subaward_amount) FILTER (subaward_action_date >= DATE '{w60}') AS median_chunk_60mo,
+               QUANTILE_CONT(subaward_amount, 0.25) FILTER (subaward_action_date >= DATE '{w60}') AS p25_chunk_60mo,
+               QUANTILE_CONT(subaward_amount, 0.75) FILTER (subaward_action_date >= DATE '{w60}') AS p75_chunk_60mo,
+               MEDIAN(subaward_amount) AS median_chunk_lifetime,
+               QUANTILE_CONT(subaward_amount, 0.25) AS p25_chunk_lifetime,
+               QUANTILE_CONT(subaward_amount, 0.75) AS p75_chunk_lifetime,
                MIN(subaward_action_date) AS first_action_date,
                MAX(subaward_action_date) AS last_action_date
         FROM _se GROUP BY 1, 2, 3""")
@@ -140,6 +148,7 @@ def verify() -> int:
         k = (r["prime_award_naics_code"], r["prime_award_product_or_service_code"])
         agg[k] = agg.get(k, 0.0) + float(r["subaward_amount"] or 0)
     mart_map = {(r["naics_code"], r["psc_code"]): float(r["farmout_amt_lifetime"] or 0) for r in mart}
+    med_map = {(r["naics_code"], r["psc_code"]): r["median_chunk_lifetime"] for r in mart}
     if set(agg) != set(mart_map):
         print(f"FAIL combo sets differ: raw={len(agg)} mart={len(mart_map)}")
         return 1
@@ -147,7 +156,17 @@ def verify() -> int:
         if abs(v - mart_map[k]) > 0.01:
             print(f"FAIL $ mismatch {k}: raw {v:,.2f} vs mart {mart_map[k]:,.2f}")
             return 1
-    print(f"verify OK: {probe} {len(agg)} combos, lifetime $ exact match")
+    import statistics
+    med_raw: dict = {}
+    for r in raw:
+        k = (r["prime_award_naics_code"], r["prime_award_product_or_service_code"])
+        med_raw.setdefault(k, []).append(float(r["subaward_amount"] or 0))
+    for k, vals in med_raw.items():
+        m = med_map.get(k)
+        if m is None or abs(statistics.median(vals) - float(m)) > 0.01:
+            print(f"FAIL median mismatch {k}: raw {statistics.median(vals):,.2f} vs mart {m}")
+            return 1
+    print(f"verify OK: {probe} {len(agg)} combos, lifetime $ + medians exact match")
     return 0
 
 
