@@ -27,6 +27,10 @@ and weighting are expressed at query time.
 WINDOWS are rolling, anchored at build-time as_of (12/24/60mo + lifetime) — same
 staleness model as gtm_audience_marts; rerun to refresh.
 
+DOLLARS. Farm-out amounts are NET obligated — subaward_amount lines are summed
+verbatim, de-obligations/corrections (negative lines) included — NOT gross.
+Chunk medians/quantiles likewise run over the raw signed line amounts.
+
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=8' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' --with boto3 \
       python3 scripts/build_gtm_prime_farmout_combo_lanes.py [--verify]

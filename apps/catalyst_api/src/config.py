@@ -187,10 +187,11 @@ GTM_ENTITY_GEO_URI = os.environ.get(
 )
 
 # ── Sub-universe recipe reads (POST /api/v1/market/sub-universe) ─────────────
-# govcon_teaming_edges — 1 row per (prime_uei, sub_uei) FSRS pair (~89K):
-# edge_dollars_5y, edge_count_5y, names, dates. Anchors + repeat-depth facts.
-GOVCON_TEAMING_EDGES_URI = os.environ.get(
-    "GOVCON_TEAMING_EDGES_LANCE_URI", "s3://data-sink/active/govcon_teaming_edges/"
+# gtm_prime_sub_pairs — 1 row per (prime_uei, sub_uei) pair over the FULL FSRS
+# canonical spine (pair-complete, unlike the retired govcon_teaming_edges read):
+# edge $/counts 5y + lifetime, names, first/last dates. Buyer teaming stats.
+GTM_PRIME_SUB_PAIRS_URI = os.environ.get(
+    "GTM_PRIME_SUB_PAIRS_LANCE_URI", "s3://data-sink/active/gtm_prime_sub_pairs/"
 )
 # gtm_prime_farmout_combo_lanes — (prime uei × naics × psc, ~37.5K): windowed subaward
 # $ ISSUED + median/p25/p75 chunk. The demand universe + MVS floor facts.
@@ -202,6 +203,13 @@ GTM_PRIME_FARMOUT_COMBO_LANES_URI = os.environ.get(
 # master vehicle. The vehicle-gate facts.
 GTM_PRIME_VEHICLE_LANES_URI = os.environ.get(
     "GTM_PRIME_VEHICLE_LANES_LANCE_URI", "s3://data-sink/active/gtm_prime_vehicle_lanes/"
+)
+# gtm_prime_demand_events — one row per FPDS action (~24mo), ALL primes with a
+# non-null recipient_uei (v2 — unconstrained scope, ~15-25M rows): action/award/
+# plan/set-aside codes + spine descriptions verbatim, is_first_action,
+# has_disclosed_subs. The award-event pulse layer; obligation_delta is NET.
+GTM_PRIME_DEMAND_EVENTS_URI = os.environ.get(
+    "GTM_PRIME_DEMAND_EVENTS_LANCE_URI", "s3://data-sink/active/gtm_prime_demand_events/"
 )
 # gtm_prime_combo_lanes — (uei × naics × psc, ~5.1M): windowed prime obligations.
 # Anchor portfolios + the target's own prime posture (prime_backed stamps).
