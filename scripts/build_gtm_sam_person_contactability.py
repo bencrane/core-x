@@ -5,10 +5,11 @@ SoR  s3://data-sink/active/gtm_sam_person_contactability/
      (Lance; derived, snapshot-overwrite; BTREE sam_person_id / uei)
 
 WHAT THIS IS
-One row per bridged SAM person (gtm_sam_person_identity population) answering: do we
-already hold a mobile and/or a work email for this person, from which vendor, linked how.
-Serving rollup for the Close loader and enrichment-queue logic — fully derivable from the
-SoRs, rebuild anytime, never written to directly.
+One row per SAM person that carries a contact asset: the gtm_sam_person_identity (LinkedIn-
+bridged) population, PLUS any non-bridged sam_person that holds a direct-stamped work email
+(see LINKAGE). Answers: do we already hold a mobile and/or a work email for this person,
+from which vendor, linked how. Serving rollup for the Close loader and enrichment-queue
+logic — fully derivable from the SoRs, rebuild anytime, never written to directly.
 
 PROVIDER VALUES ARE VERBATIM. phone / email / statuses / MillionVerifier fields
 (mv_resultcode, mv_result, mv_quality, mv_subresult) pass through untouched — no
@@ -16,11 +17,13 @@ normalization, no casing, no filtering. Audience-level filtering (e.g. verified-
 exclude risky) is a COMPOSE-TIME decision made by the reader, never baked here.
 The LinkedIn slug used to reconcile is a derived JOIN KEY only; it overwrites nothing.
 
-LINKAGE (labeled per asset):
+LINKAGE (labeled per asset, in email_linkage_basis / phone_linkage_basis):
   linkedin_slug_direct       resolution row carried the person's LinkedIn URL
   linkedin_slug_via_people   resolution row reached via people-spine person_id → LinkedIn
-Future enrichment runs stamped with subject sam_person_id at request time join as
-'direct_stamped' when those columns land on the contact SoRs.
+  direct_stamped             work_emails row keyed to the subject sam_person_id itself
+                             (contact_id==sam_person_id rails); no LinkedIn bridge needed.
+Email precedence when a person has BOTH: slug-linked wins on tie (established value kept
+verbatim), direct_stamped fills every non-bridged / slug-email-less person.
 
 BEST-PICK (deterministic, alternatives never hidden): phones prefer phone_status='found'
 then latest resolved_at; emails prefer verification_status 'verified' > 'risky' > other,
@@ -49,8 +52,11 @@ IDENTITY_URI = f"{A}/gtm_sam_person_identity/"
 PHONES_URI = f"{A}/phone_resolutions/"
 EMAILS_URI = f"{A}/work_emails/"
 PEOPLE_URI = f"{A}/people/"
+SAM_PEOPLE_URI = f"{A}/gtm_sam_people/"
 OUT = f"{A}/gtm_sam_person_contactability/"
-PARAM_SET_ID = "v1"
+PARAM_SET_ID = "v2"  # v2: direct_stamped email linkage — work_emails keyed to the subject
+                     # sam_person_id (contact_id==sam_person_id rails) join without a LinkedIn
+                     # bridge; population expands to non-bridged sam-people carrying such assets.
 BTREE_COLS = ["sam_person_id", "uei"]
 # join-key derivation only — provider values are never rewritten with this
 SLUG = "lower(regexp_extract({col}, 'in/([^/?#]+)', 1))"
@@ -78,6 +84,13 @@ def build() -> int:
     con.execute(f"""CREATE TABLE bridge AS
         SELECT *, {SLUG.format(col='person_linkedin_url_norm')} AS slug FROM _i""")
 
+    # Full SAM-person spine (1 row/sam_person_id) — supplies uei for direct-stamped people
+    # who carry a contact asset but never bridged to LinkedIn (absent from `bridge`).
+    sam = lance.dataset(SAM_PEOPLE_URI, storage_options=opt)
+    con.register("_sp", sam.scanner(columns=["sam_person_id", "uei"]).to_reader())
+    con.execute("""CREATE TABLE sam_people AS
+        SELECT sam_person_id, any_value(uei) AS uei FROM _sp GROUP BY 1""")
+
     people = lance.dataset(PEOPLE_URI, storage_options=opt)
     con.register("_p", people.scanner(columns=["person_id", "person_linkedin_url"]).to_reader())
     con.execute(f"""CREATE TABLE spine AS
@@ -104,12 +117,25 @@ def build() -> int:
     con.register("_em", emails.scanner(columns=[
         "person_id", "email", "verification_status", "source_vendor",
         "mv_resultcode", "mv_result", "mv_quality", "mv_subresult"]).to_reader())
+    con.execute("CREATE TABLE we_all AS SELECT * FROM _em")
     con.execute("""CREATE TABLE em_linked AS
         SELECT e.email, e.verification_status, e.source_vendor,
                e.mv_resultcode, e.mv_result, e.mv_quality, e.mv_subresult,
                s.slug, 'linkedin_slug_via_people' AS linkage
-        FROM _em e JOIN spine s USING (person_id)
+        FROM we_all e JOIN spine s USING (person_id)
         WHERE e.email IS NOT NULL AND s.slug != ''""")
+    # Direct-stamped: work_emails whose person_id IS the subject sam_person_id (contact_id==
+    # sam_person_id rails — icypeas name+domain, DMU, DSBS principals). No LinkedIn bridge
+    # needed; the exact person key joins straight through. This is the linkage this build's
+    # header anticipated; before it, ~27K emails (20K verified) for non-bridged sam-people
+    # had no read-path into the marts.
+    con.execute("""CREATE TABLE em_direct AS
+        SELECT e.person_id AS sam_person_id, e.email, e.verification_status, e.source_vendor,
+               e.mv_resultcode, e.mv_result, e.mv_quality, e.mv_subresult,
+               'direct_stamped' AS linkage
+        FROM we_all e
+        WHERE e.email IS NOT NULL
+          AND e.person_id IN (SELECT sam_person_id FROM sam_people)""")
 
     con.execute("""CREATE TABLE best_phone AS
         SELECT slug, phone, phone_status, phone_type, source_vendor, batch_label,
@@ -118,7 +144,7 @@ def build() -> int:
                  ROW_NUMBER() OVER (PARTITION BY slug ORDER BY
                    (phone_status = 'found') DESC, resolved_at DESC NULLS LAST, phone) AS rn
           FROM ph_linked) WHERE rn = 1""")
-    con.execute("""CREATE TABLE best_email AS
+    con.execute("""CREATE TABLE best_email_slug AS
         SELECT slug, email, verification_status, source_vendor,
                mv_resultcode, mv_result, mv_quality, mv_subresult, linkage, n FROM (
           SELECT *, COUNT(*) OVER (PARTITION BY slug) AS n,
@@ -126,12 +152,56 @@ def build() -> int:
                    CASE verification_status WHEN 'verified' THEN 0 WHEN 'risky' THEN 1
                         ELSE 2 END, email) AS rn
           FROM em_linked) WHERE rn = 1""")
+    con.execute("""CREATE TABLE best_email_direct AS
+        SELECT sam_person_id, email, verification_status, source_vendor,
+               mv_resultcode, mv_result, mv_quality, mv_subresult, linkage, n FROM (
+          SELECT *, COUNT(*) OVER (PARTITION BY sam_person_id) AS n,
+                 ROW_NUMBER() OVER (PARTITION BY sam_person_id ORDER BY
+                   CASE verification_status WHEN 'verified' THEN 0 WHEN 'risky' THEN 1
+                        ELSE 2 END, email) AS rn
+          FROM em_direct) WHERE rn = 1""")
+
+    # Per-sam_person_id best email across BOTH linkages. Slug-linked wins on tie (src_rank 0)
+    # so already-bridged people keep their established value verbatim; direct_stamped fills
+    # every non-bridged (or slug-email-less) person — the net-new coverage.
+    con.execute("""CREATE TABLE best_email AS
+        SELECT sam_person_id, email, verification_status, source_vendor,
+               mv_resultcode, mv_result, mv_quality, mv_subresult, linkage, n FROM (
+          SELECT u.*, ROW_NUMBER() OVER (PARTITION BY sam_person_id ORDER BY src_rank) AS rn2
+          FROM (
+            SELECT b.sam_person_id, be.email, be.verification_status, be.source_vendor,
+                   be.mv_resultcode, be.mv_result, be.mv_quality, be.mv_subresult,
+                   be.linkage, be.n, 0 AS src_rank
+            FROM bridge b JOIN best_email_slug be USING (slug)
+            UNION ALL
+            SELECT sam_person_id, email, verification_status, source_vendor,
+                   mv_resultcode, mv_result, mv_quality, mv_subresult,
+                   linkage, n, 1 AS src_rank
+            FROM best_email_direct
+          ) u) WHERE rn2 = 1""")
+
+    # Population = LinkedIn-bridged spine ⊎ non-bridged sam-people that carry a direct-stamped
+    # asset. The latter get NULL LinkedIn/slug fields (no bridge) but a real email below.
+    con.execute("""CREATE TABLE pop AS
+        SELECT sam_person_id, uei, person_linkedin_url_norm,
+               match_source, match_method, match_score, slug
+        FROM bridge
+        UNION ALL
+        SELECT d.sam_person_id, sp.uei,
+               CAST(NULL AS VARCHAR) AS person_linkedin_url_norm,
+               CAST(NULL AS VARCHAR) AS match_source,
+               CAST(NULL AS VARCHAR) AS match_method,
+               CAST(NULL AS DOUBLE)  AS match_score,
+               CAST(NULL AS VARCHAR) AS slug
+        FROM best_email_direct d
+        JOIN sam_people sp USING (sam_person_id)
+        WHERE d.sam_person_id NOT IN (SELECT sam_person_id FROM bridge)""")
 
     con.execute("""CREATE TABLE out AS
-        SELECT b.sam_person_id, b.uei, b.person_linkedin_url_norm,
-               b.match_source AS linkedin_match_source,
-               b.match_method AS linkedin_match_method,
-               b.match_score  AS linkedin_match_score,
+        SELECT p.sam_person_id, p.uei, p.person_linkedin_url_norm,
+               p.match_source AS linkedin_match_source,
+               p.match_method AS linkedin_match_method,
+               p.match_score  AS linkedin_match_score,
                bp.phone, bp.phone_status, bp.phone_type,
                bp.source_vendor AS phone_source_vendor,
                bp.batch_label   AS phone_batch_label,
@@ -143,9 +213,9 @@ def build() -> int:
                be.mv_resultcode, be.mv_result, be.mv_quality, be.mv_subresult,
                be.linkage       AS email_linkage_basis,
                COALESCE(be.n, 0) AS n_emails_matched
-        FROM bridge b
+        FROM pop p
         LEFT JOIN best_phone bp USING (slug)
-        LEFT JOIN best_email be USING (slug)""")
+        LEFT JOIN best_email be USING (sam_person_id)""")
 
     n = con.execute("SELECT COUNT(*) FROM out").fetchone()[0]
     dup = con.execute("""SELECT COUNT(*) FROM (
@@ -160,7 +230,8 @@ def build() -> int:
           f"email_verified: {stats[2]:,}", flush=True)
 
     built_from = (f"gtm_sam_person_identity:v{ident.version}|phone_resolutions:v{phones.version}|"
-                  f"work_emails:v{emails.version}|people:v{people.version}")
+                  f"work_emails:v{emails.version}|people:v{people.version}|"
+                  f"gtm_sam_people:v{sam.version}")
     res = con.execute(f"""
         SELECT *, DATE '{as_of}' AS as_of, '{built_from}' AS built_from_version,
                '{PARAM_SET_ID}' AS param_set_id FROM out""")

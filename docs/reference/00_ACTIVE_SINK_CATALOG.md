@@ -155,8 +155,9 @@
 > sub-$ and prime-obl totals, people/contactability counts (n_dialable/n_emailable/…).
 > `gtm_audience_people` (**2,252,385 · full `gtm_sam_people` universe, 1 row/sam_person_id**; BTREE
 > sam_person_id/uei) carries provider-verbatim contact state + derived `enrichment_state`
-> (dialable 11,610 / emailable 2,911 / bridged_no_contacts 108,688 / unbridged 2,129,176) for
-> enrichment prioritization. Acid test: subs $1–100M 24mo × primed 541330×R425 ≥$1M 24mo → 347
+> (dialable 11,610 / emailable 41,602 / bridged_no_contacts 97,836 / unbridged 2,101,337 — as of the
+> 2026-07-06 `direct_stamped` rebuild; pre-fix: emailable 2,911 / bridged 108,688 / unbridged
+> 2,129,176) for enrichment prioritization. Acid test: subs $1–100M 24mo × primed 541330×R425 ≥$1M 24mo → 347
 > entities in 15.1s off the marts alone. **v2 (same day, `param_set_id=v2`):** lanes gain
 > `naics_title`/`psc_title`; entities gain 12/60mo $ windows, at-a-glance `*_band` text ranges for
 > all 8 $ columns, `primary_pop_state`/`primary_pop_county` (modal by lifetime $ across prime+sub
@@ -173,7 +174,21 @@
 > Upgrades only — never downgrades; `dm_class` stays verbatim; NULL dm_class rows have no title
 > and stay NULL. Post-backfill: dm 769,788 (541,559 verbatim + 228,229 upgraded) / not_dm 618,796
 > / NULL 863,801. Live column backfilled in-session 2026-07-06 (`ds.merge` on sam_person_id);
-> next full rebuild stamps `param_set_id=v3`.
+> next full rebuild stamps `param_set_id=v3` (now shipped).
+
+> **Update 2026-07-06 — `gtm_sam_person_contactability` `direct_stamped` email linkage (`param_set_id=v2`).**
+> The contactability rollup linked work emails to people ONLY by LinkedIn slug and gated its rows to
+> the LinkedIn-bridged `gtm_sam_person_identity` population — so ~27K emails (20K verified) that
+> `work_emails` holds keyed to a bare `sam_person_id` (the `contact_id==sam_person_id` rails: icypeas
+> name+domain email-search, DMU, DSBS principals) had **no read-path into the marts**. Added the
+> `direct_stamped` linkage the build header had long specified: `work_emails.person_id ∈ gtm_sam_people`
+> joins straight on the exact person key, no bridge needed; the row population now unions in non-bridged
+> sam-people carrying such an asset. Email precedence when both exist: slug-linked wins on tie (bridged
+> values unchanged verbatim), `direct_stamped` fills every non-bridged / slug-email-less person. Result:
+> contactability 124,608→**152,447 rows**, emails 9,707→**48,914** (verified **36,208**); downstream
+> `gtm_audience_people` emailable 2,911→**41,602**. Rebuild chain (all snapshot-overwrite):
+> `materialize_vendor_responses`→`materialize_work_emails`→`build_gtm_sam_person_contactability`→
+> `build_gtm_audience_marts`.
 
 > **Update 2026-07-06 — GSA lease instruments → `gsa_leases_lance`.** The lease-instrument sibling
 > of `gsa_buildings_lance` (IOLP FeatureServer layer 1 `FC_IOLP_LEASE`, self-download via
