@@ -1,4 +1,4 @@
-"""Acceptance tests for the deterministic phrase compiler (phrase.v1) — pure, no
+"""Acceptance tests for the deterministic phrase compiler (phrase.v2) — pure, no
 R2 / network. THE FIXTURE SET IS THE PLAN'S CSV
 (~/Desktop/hq/plans/2026-07-06-phrase-compiler-examples.csv): every runnable row's
 canonical phrase is pinned here to its EXACT emitted plan (verbatim wire bodies),
@@ -6,7 +6,12 @@ plus the v1.1 amendment behaviors — reserved booleans refuse (same-axis 'or'
 carve-out compiles to an in-list), bounded time (calendar year / FFY / since)
 emits days-ago between-clauses against the injectable today, subject-less phrases
 refuse, sub-tier agency names refuse with the Cycle-3 pointer, and EVERY token is
-accounted for in meta.bindings (nothing is ever silently dropped)."""
+accounted for in meta.bindings (nothing is ever silently dropped).
+
+phrase.v2 (the active-axis unlock, EX15+): active / expiring-within-N / won-by
+vocabulary, the prime_award companies lane, TWO-LANE intersection plans, and the
+money-topology honesty filter. The 14 v1 fixtures above are pinned byte-identical
+across the bump."""
 
 from __future__ import annotations
 
@@ -284,6 +289,185 @@ def test_bare_code_on_companies_needs_capability_context():
         phrase_compiler.compile_phrase("companies in naics 541690", today=TODAY)
 
 
+# ── phrase.v2: the active-axis unlock (EX15–EX19 + designed refusals) ──────────
+MONEY_TOPO = {"field": "award_topology", "op": "in",
+              "value": ["standalone", "vehicle_order"]}
+
+
+def test_ex15_companies_awards_expiring_is_the_award_lane():
+    compiled = _tokens_accounted("companies with awards expiring within 90 days")
+    assert compiled["grain"] == "entity"
+    assert compiled["plan"] == [
+        {"grain": "prime_award", "collapse": "recipients",
+         "filters": [MONEY_TOPO,
+                     {"field": "current_end_date", "op": "<=", "value": 90}],
+         "limit": 1000},
+        {"grain": "entity",
+         "filters": [{"field": "uei", "op": "in",
+                      "value": ["<step1 ueis, chunks of <=500>"]}],
+         "limit": 1000},
+    ]
+
+
+def test_ex16_two_lane_event_and_expiry_intersect():
+    compiled = _tokens_accounted(
+        "construction companies with awards expiring within 180 days that "
+        "received a code G mod in the last 90 days")
+    assert compiled["plan"] == [
+        {"grain": "transaction", "collapse": "recipients",
+         "filters": [
+             {"field": "action_type_code", "op": "=", "value": "G"},
+             {"field": "naics_code", "op": "in", "value": CONSTR},
+             {"field": "action_date", "op": "<=", "value": 90}],
+         "limit": 1000},
+        {"grain": "prime_award", "collapse": "recipients",
+         "filters": [
+             MONEY_TOPO,
+             {"field": "naics_code", "op": "in", "value": CONSTR},
+             {"field": "current_end_date", "op": "<=", "value": 180}],
+         "limit": 1000},
+        {"grain": "entity",
+         "filters": [{"field": "uei", "op": "in",
+                      "value": ["<step1 ueis, chunks of <=500>"]}],
+         "limit": 1000},
+    ]
+
+
+def test_ex17_active_companies_bind_the_rollup_posture():
+    compiled = _tokens_accounted("active dsbs companies in VA")
+    assert compiled["plan"] == [
+        {"grain": "entity",
+         "filters": [
+             {"field": "in_dsbs", "op": "=", "value": True},
+             {"field": "active_award_ct", "op": ">=", "value": 1},
+             {"field": "state", "op": "=", "value": "VA"}],
+         "limit": 1000}]
+
+
+def test_ex18_active_awards_won_by_uei():
+    compiled = _tokens_accounted("active awards won by YSQMHRS4HSC5")
+    assert compiled["plan"] == [
+        {"grain": "prime_award",
+         "filters": [
+             {"field": "recipient_uei", "op": "=", "value": "YSQMHRS4HSC5"},
+             {"field": "current_end_date", "op": ">=", "value": 0}],
+         "limit": 1000}]
+
+
+def test_ex19_money_on_bare_awards_adds_topology_honesty():
+    plan = _plan("awards over $5m expiring within 365 days")
+    assert plan == [
+        {"grain": "prime_award",
+         "filters": [
+             MONEY_TOPO,
+             {"field": "life_to_date_obligated", "op": ">=", "value": 5_000_000.0},
+             {"field": "current_end_date", "op": "<=", "value": 365}],
+         "limit": 1000}]
+    # …and stays OFF money-less award phrases (EX14 is pinned above without it).
+
+
+def test_orders_expiring_keeps_the_subject_topology():
+    plan = _plan("orders expiring within 60 days")
+    assert plan[0]["filters"] == [
+        {"field": "award_topology", "op": "=", "value": "vehicle_order"},
+        {"field": "current_end_date", "op": "<=", "value": 60}]
+
+
+def test_vehicle_money_and_expiry_refuse_as_future_cycle():
+    for phrase in ("vehicles over $55m", "vehicles expiring within 90 days",
+                   "active vehicles carrying naics 541512"):
+        with pytest.raises(MapCompileError, match="vehicle channel semantics"):
+            phrase_compiler.compile_phrase(phrase, today=TODAY)
+
+
+def test_active_expiring_on_actions_refuse():
+    with pytest.raises(MapCompileError, match="award grain"):
+        phrase_compiler.compile_phrase("actions expiring within 90 days",
+                                       today=TODAY)
+
+
+def test_money_across_two_lanes_refuses_as_ambiguous():
+    with pytest.raises(MapCompileError, match="ambiguous"):
+        phrase_compiler.compile_phrase(
+            "construction companies over $5m with awards expiring within 90 "
+            "days that received a code G mod in the last 90 days", today=TODAY)
+
+
+def test_won_by_needs_a_uei_and_never_a_companies_subject():
+    with pytest.raises(MapCompileError, match="12-char SAM UEI"):
+        phrase_compiler.compile_phrase("awards won by kbr", today=TODAY)
+    with pytest.raises(MapCompileError, match="filter entities by uei"):
+        phrase_compiler.compile_phrase("companies won by YSQMHRS4HSC5",
+                                       today=TODAY)
+
+
+def test_expiring_without_a_day_count_refuses():
+    with pytest.raises(MapCompileError, match="expiring within"):
+        phrase_compiler.compile_phrase("companies with awards expiring soon",
+                                       today=TODAY)
+
+
+def test_sam_active_still_wins_over_the_active_axis():
+    plan = _plan("sam active companies in VA")
+    assert plan == [
+        {"grain": "entity",
+         "filters": [
+             {"field": "sam_is_active", "op": "=", "value": True},
+             {"field": "state", "op": "=", "value": "VA"}],
+         "limit": 1000}]
+
+
+def test_execute_plan_two_lanes_intersect_in_lane1_order(monkeypatch):
+    compiled = phrase_compiler.compile_phrase(
+        "construction companies with awards expiring within 180 days that "
+        "received a code G mod in the last 90 days", today=TODAY)
+    assert len(compiled["plan"]) == 3
+    lane_rows = {
+        "transaction": [{"uei": u} for u in
+                        ("UEIC00000003", "UEIA00000001", "UEIB00000002")],
+        "prime_award": [{"uei": u} for u in
+                        ("UEIB00000002", "UEID00000004", "UEIC00000003")],
+    }
+
+    def fake_collapse(spec, filters, limit, today=None):
+        return {"rows": lane_rows[spec.grain], "total_rows": 3,
+                "distinct_recipients": 3, "returned": 3, "capped": False,
+                "scanned_rows": 3, "scan_capped": False, "executed": {}}
+
+    monkeypatch.setattr(market_store, "execute_table_collapse", fake_collapse)
+    monkeypatch.setattr(market_store, "execute_entity_query",
+                        lambda filters, limit, today=None: {
+                            "rows": [{"uei": u} for u in filters[0]["value"]],
+                            "total": len(filters[0]["value"]),
+                            "returned": len(filters[0]["value"]),
+                            "capped": False, "executed": {}})
+    out = phrase_compiler.execute_plan(compiled["plan"], today=TODAY)
+    # ∩ of the lanes, ordered by lane 1's Σ$-sorted collapse order
+    assert out["resolved_ueis"] == ["UEIC00000003", "UEIB00000002"]
+    assert [r["uei"] for r in out["result"]["rows"]] == [
+        "UEIC00000003", "UEIB00000002"]
+
+
+def test_compile_and_execute_discloses_both_lane_summaries(monkeypatch):
+    monkeypatch.setattr(market_store, "execute_table_collapse",
+                        lambda spec, filters, limit, today=None: {
+                            "rows": [{"uei": "UEIA00000001"}], "total_rows": 1,
+                            "distinct_recipients": 1, "returned": 1,
+                            "capped": False, "scanned_rows": 1,
+                            "scan_capped": False, "executed": {}})
+    monkeypatch.setattr(market_store, "execute_entity_query",
+                        lambda filters, limit, today=None: {
+                            "rows": [{"uei": "UEIA00000001"}], "total": 1,
+                            "returned": 1, "capped": False, "executed": {}})
+    out = phrase_compiler.compile_and_execute(
+        {"phrase": "construction companies with awards expiring within 180 days "
+                   "that received a code G mod in the last 90 days"}, today=TODAY)
+    assert out["meta"]["step1"] == {"total_rows": 1, "distinct_recipients": 1,
+                                    "scan_capped": False}
+    assert out["meta"]["step2"] == out["meta"]["step1"]
+    assert out["meta"]["plan"][2]["filters"][0]["value"] == ["UEIA00000001"]
+
+
 # ── Vocabulary integrity ───────────────────────────────────────────────────────
 def test_vocabulary_letters_exist_in_the_registry_enums():
     for letter in phrase_compiler.EVENTS.values():
@@ -333,7 +517,7 @@ def test_compile_and_execute_envelope(monkeypatch):
     out = phrase_compiler.compile_and_execute(
         {"phrase": "sub-only companies with inferred primeable 541330"},
         today=TODAY)
-    assert out["meta"]["compilerVersion"] == "phrase.v1"
+    assert out["meta"]["compilerVersion"] == "phrase.v2"
     assert out["meta"]["refused"] is None
     assert out["meta"]["grain"] == "entity"
     assert out["data"]["rows"] == [{"uei": "UEIA11111111"}]

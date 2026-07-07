@@ -28,8 +28,10 @@ ROLLUP_SCHEMA = {
     "prime_award_ct_lifetime", "sub_amt_24mo", "sub_amt_60mo", "sub_amt_lifetime",
     "sub_ct_lifetime", "first_action_date", "last_action_date", "days_since_last_action",
     "distinct_naics_ct", "distinct_psc_ct", "distinct_agency_ct", "top_naics",
-    "top_agency_code", "is_prime_24mo", "is_sub_60mo", "prime_and_sub", "as_of",
-    "built_from_version", "param_set_id",
+    "top_agency_code", "is_prime_24mo", "is_sub_60mo", "prime_and_sub",
+    # v2 param set (active posture; live-probed via the operator profile)
+    "active_award_ct", "active_obl", "earliest_pop_end", "pop_expiring_180d_ct",
+    "as_of", "built_from_version", "param_set_id",
 }
 LANES_SCHEMA = {
     "uei", "side", "code_type", "code", "obl_12mo", "obl_24mo", "obl_60mo",
@@ -725,7 +727,8 @@ def test_table_grain_registry_integrity():
         schema = _TABLE_SCHEMAS[spec.dataset_key]
         for name, f in spec.fields.items():
             assert f.column in schema, f"{spec.dataset_key}.{name}: column {f.column!r} not in schema"
-            assert f.type in ("string", "int", "float", "bool", "days_ago"), name
+            assert f.type in ("string", "int", "float", "bool", "days_ago",
+                              "days_ahead"), name
             assert set(f.ops) <= set(market_registry.OPS), name
             if f.codes is not None:
                 assert f.codes in market_registry.CODE_SYSTEMS, name
@@ -928,7 +931,8 @@ def test_table_fields_payloads_and_map_fields_carry_new_datasets():
             (market_registry.PRIME_AWARD_FIELDS if payload is pa
              else market_registry.TRANSACTION_FIELDS))
         for f in payload["fields"]:
-            assert f["type"] in ("string", "int", "float", "bool", "days_ago", "list")
+            assert f["type"] in ("string", "int", "float", "bool", "days_ago",
+                                 "days_ahead", "list")
             if f["name"] in ("naics_code", "psc_code", "awarding_agency_code"):
                 assert f["codes"] in market_registry.CODE_SYSTEMS
     # geometry contract: prime_awards hydrates recipient-HQ geo columns; txn does not
@@ -936,7 +940,7 @@ def test_table_fields_payloads_and_map_fields_carry_new_datasets():
     assert pa["resultColumns"][-3:] == ["latitude", "longitude", "geo_precision"]
     assert "latitude" not in tx["resultColumns"]
     body = json.loads(bytes(map_fields().body))["data"]["datasets"]
-    assert body["prime_awards"]["decoderVersion"] == "prime_awards.v1"
+    assert body["prime_awards"]["decoderVersion"] == "prime_awards.v2"
     assert body["transactions"]["decoderVersion"] == "transactions.v1"
     market = json.loads(bytes(market_fields().body))["data"]["datasets"]
     assert set(market) == {"entities", "prime_awards", "transactions"}
@@ -1067,7 +1071,7 @@ def test_inferred_payload_contract():
 # CYCLE-1 CROSS-GRAIN SUBSTRATE — the entities `uei` filter + recipient collapse
 # ═══════════════════════════════════════════════════════════════════════════════
 def test_registry_v5_carries_the_uei_join_field():
-    assert market_registry.REGISTRY_VERSION == "entities.v5"
+    assert market_registry.REGISTRY_VERSION == "entities.v6"
     spec = ENTITY_FIELDS["uei"]
     assert spec.source == "entities" and spec.column == "uei"
     assert spec.ops == ("=", "in") and spec.index == "BTREE"

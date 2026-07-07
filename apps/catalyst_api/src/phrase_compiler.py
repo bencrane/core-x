@@ -1,4 +1,4 @@
-"""Deterministic phrase compiler — phrase.v1 (POST /api/v1/market/phrase).
+"""Deterministic phrase compiler — phrase.v2 (POST /api/v1/market/phrase).
 
 A CLOSED GRAMMAR over CLOSED VOCABULARIES, zero LLM, zero fuzz: the phrase is
 lexed, every token span is longest-matched against the vocabulary tables below,
@@ -14,7 +14,24 @@ The emitted plan steps are EXACTLY ``POST /api/v1/market/query`` bodies — this
 layer adds no query capability, only compilation. Cross-grain phrases
 ("companies that <event>…") emit the Cycle-1 pipeline: a table-grain step with
 ``collapse: "recipients"`` then an entity step with chunked ``uei in`` (≤
-market_store.UEI_IN_CAP per chunk).
+market_store.UEI_IN_CAP per chunk). phrase.v2 adds the TWO-LANE form: a phrase
+carrying both an event clause (transaction lane) and an award-state clause
+(prime_award lane — "expiring within N days") emits BOTH collapse steps; their
+recipient UEI sets INTERSECT (AND semantics) before the entity step.
+
+v2 VOCABULARY (the active-axis unlock, operator-authorized 2026-07-06):
+  • ``active`` / ``still active`` — award-family subjects → ``current_end_date
+    >= 0`` (request-time); companies → ``active_award_ct >= 1`` (the rollup's
+    as_of-materialized posture — disclosed, never a second collapse).
+  • ``expiring within <N> days`` — award-family subjects → ``current_end_date
+    <= N``; companies → the prime_award lane (request-time, any N).
+  • ``won by <12-char UEI>`` — recipient_uei on the table grains. Company NAMES
+    are not vocabulary; name→UEI resolution is a different surface.
+  • MONEY-TOPOLOGY HONESTY: a ``$`` clause on the bare ``awards`` subject
+    auto-adds ``award_topology in [standalone, vehicle_order]`` (disclosed) so
+    vehicle wrappers never double-count a money answer. ``vehicles`` + money/
+    active/expiring REFUSES — vehicle channel semantics (rollup money, channel
+    expiry) are a future reviewed vocabulary cycle.
 
 GRAMMAR RULES (the deterministic edge cases, per the v1.1 amendments):
   • SUBJECT REQUIRED: a phrase with no subject token (companies/awards/vehicles/
@@ -55,7 +72,7 @@ from typing import Any, Callable
 from . import market_registry, market_store
 from .lance_store import MapCompileError
 
-COMPILER_VERSION = "phrase.v1"
+COMPILER_VERSION = "phrase.v2"
 
 PHRASE_MAX_CHARS = 400
 DEFAULT_STEP_LIMIT = 1_000            # emitted bodies use the engine's hard row cap
@@ -158,6 +175,14 @@ QUALIFIERS: dict[str, dict[str, Any]] = {
     "both sides": {"field": "prime_and_sub", "op": "=", "value": True},
 }
 
+# The ACTIVE axis (phrase.v2). 'sam active' is claimed by QUALIFIERS above by
+# fixed precedence (longest match at the qualifier site, which runs first).
+ACTIVE_PHRASES = ("still active", "active")
+
+# Money-topology honesty (v2): the auto-filter a $ clause adds on the bare
+# 'awards' subject — vehicle wrappers never pollute a money answer.
+MONEY_TOPOLOGIES = ["standalone", "vehicle_order"]
+
 # Capability-context phrases: the NEXT code literal binds to these entity fields
 # (naics → first name, psc → second).
 CAPABILITY_CONTEXTS: dict[str, tuple[str, str]] = {
@@ -186,6 +211,7 @@ RECENCY_DEFAULT_DAYS = 90
 CODE_CONTEXT_WORDS = {"mod", "mods", "modification", "modifications",
                       "action", "actions", "received"}
 
+_UEI_RE = re.compile(r"^[A-Z0-9]{12}$")
 _MONEY_RE = re.compile(r"^\$?(\d+(?:\.\d+)?)([kmb])?$")
 _MONEY_MULT = {"k": 1e3, "m": 1e6, "b": 1e9, None: 1.0}
 _PIID_RE = re.compile(r"^[A-Z0-9]{6,20}$")
@@ -348,6 +374,37 @@ def _bind(tokens: list[str], today: dt_date) -> list[dict[str, Any]]:
             _add(span.split(), "entity_qualifier", spec["op"],
                  {"field": spec["field"], "value": spec["value"]})
             i += len(span.split())
+            continue
+
+        # ACTIVE axis (v2). Reached only when the QUALIFIERS block above did not
+        # claim the span ('sam active' wins there by fixed precedence).
+        hit = _multiword({p: True for p in ACTIVE_PHRASES}, 2)
+        if hit is not None:
+            span, _ = hit
+            _add(span.split(), "active", None, True)
+            i += len(span.split())
+            continue
+
+        # EXPIRING window (v2): "expiring [within | in [the] [next]] <N> days".
+        if tok == "expiring":
+            j = i + 1
+            while j < n and tokens[j] in ("within", "in", "the", "next"):
+                j += 1
+            if j + 1 < n and tokens[j].isdigit() and tokens[j + 1] in ("day", "days"):
+                _add(tokens[i:j + 2], "time_ahead", "<=", int(tokens[j]))
+                i = j + 2
+                continue
+            _refuse("expiring", "say 'expiring within <N> days'")
+
+        # "won by <UEI>" (v2) — recipient axis, exact 12-char SAM UEI only.
+        if tok == "won" and i + 1 < n and tokens[i + 1] == "by":
+            utok = (tokens[i + 2] if i + 2 < n else "").upper()
+            if not _UEI_RE.match(utok):
+                _refuse(utok or "won by",
+                        "'won by' needs a 12-char SAM UEI (company names are not "
+                        "in the vocabulary — resolve the name to a UEI first)")
+            _add(tokens[i:i + 3], "recipient", "=", utok)
+            i += 3
             continue
 
         # CAPABILITY contexts: the following code literal binds to the entity field.
@@ -596,6 +653,9 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
     agencies = [b for b in bindings if b["axis"] == "agency"]
     quals = [b for b in bindings if b["axis"] == "entity_qualifier"]
     states = [b for b in bindings if b["axis"] == "state"]
+    actives = [b for b in bindings if b["axis"] == "active"]
+    aheads = [b for b in bindings if b["axis"] == "time_ahead"]
+    recips = [b for b in bindings if b["axis"] == "recipient"]
 
     def _code_filters(naics_field: str, psc_field: str) -> list[dict[str, Any]]:
         out = []
@@ -612,51 +672,94 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
 
     plan: list[dict[str, Any]] = []
     if terminal_grain == "entity":
-        # any event axis OR any time window on companies routes through the
-        # transaction grain (entity money is build-windowed — amendment B)
-        needs_pipeline = bool(axes & _TXN_ONLY) or bool(times) or bool(agencies)
-        if needs_pipeline:
+        if recips:
+            raise MapCompileError(
+                "phrase refused: 'won by' selects awards/orders/actions by their "
+                "winner — with a companies subject filter entities by uei directly")
+        # LANE ROUTING (v2). Event/plan axes ALWAYS open the transaction lane;
+        # 'expiring within N' ALWAYS opens the prime_award lane (request-time,
+        # any N). Shared clauses ride deterministically: naics/psc/agency ride
+        # every open lane; a time window rides the transaction lane when open,
+        # else the award lane's last_action_date. 'active' NEVER opens a lane —
+        # it binds the entity rollup posture (as_of) on the terminal step.
+        award_lane = bool(aheads)
+        txn_lane = bool(axes & _TXN_ONLY) or (
+            (bool(times) or bool(agencies)) and not award_lane)
+        if txn_lane or award_lane:
             if any(b["axis"] == "money_basis" for b in bindings):
                 raise MapCompileError(
                     "phrase refused: 'sub income' is an entity lifetime axis — it "
                     "cannot combine with event/time clauses (amendment B)")
-            step1_filters: list[dict[str, Any]] = []
-            for b in bindings:
-                if b["axis"] == "action_type":
-                    step1_filters.append({"field": "action_type_code",
-                                          "op": b["op"], "value": b["value"]})
-                if b["axis"] == "subcontracting_plan":
-                    step1_filters.append({"field": "subcontracting_plan",
-                                          "op": b["op"], "value": b["value"]})
-            step1_filters += _code_filters("naics_code", "psc_code")
-            for b in agencies:
-                step1_filters.append({"field": "awarding_agency_code",
-                                      "op": "=", "value": b["value"]})
-            for b in moneys:
-                step1_filters.append({"field": "federal_action_obligation",
-                                      "op": b["op"], "value": b["value"]})
-            step1_filters += _time_filter("action_date")
-            if not step1_filters:
+            if moneys and txn_lane and award_lane:
                 raise MapCompileError(
-                    "phrase refused: companies-pipeline needs at least one event/"
-                    "code/time clause (the transaction grain requires a filter)")
-            plan.append({"grain": "transaction", "collapse": "recipients",
-                         "filters": step1_filters, "limit": DEFAULT_STEP_LIMIT})
+                    "phrase refused: a $ amount is ambiguous across the event lane "
+                    "(per-action delta) and the award lane (life-to-date) — split "
+                    "into two phrases")
+            if txn_lane:
+                step1_filters: list[dict[str, Any]] = []
+                for b in bindings:
+                    if b["axis"] == "action_type":
+                        step1_filters.append({"field": "action_type_code",
+                                              "op": b["op"], "value": b["value"]})
+                    if b["axis"] == "subcontracting_plan":
+                        step1_filters.append({"field": "subcontracting_plan",
+                                              "op": b["op"], "value": b["value"]})
+                step1_filters += _code_filters("naics_code", "psc_code")
+                for b in agencies:
+                    step1_filters.append({"field": "awarding_agency_code",
+                                          "op": "=", "value": b["value"]})
+                if not award_lane:
+                    for b in moneys:
+                        step1_filters.append({"field": "federal_action_obligation",
+                                              "op": b["op"], "value": b["value"]})
+                step1_filters += _time_filter("action_date")
+                if not step1_filters:
+                    raise MapCompileError(
+                        "phrase refused: companies-pipeline needs at least one event/"
+                        "code/time clause (the transaction grain requires a filter)")
+                plan.append({"grain": "transaction", "collapse": "recipients",
+                             "filters": step1_filters, "limit": DEFAULT_STEP_LIMIT})
+            if award_lane:
+                # Topology honesty rides ALWAYS on the companies award lane: the
+                # collapse Σ$ must never mix vehicle wrappers with real money, and
+                # vehicle channel expiry is a future vocabulary cycle.
+                a_filters: list[dict[str, Any]] = [
+                    {"field": "award_topology", "op": "in",
+                     "value": list(MONEY_TOPOLOGIES)}]
+                a_filters += _code_filters("naics_code", "psc_code")
+                for b in agencies:
+                    a_filters.append({"field": "awarding_agency_code",
+                                      "op": "=", "value": b["value"]})
+                if not txn_lane:
+                    for b in moneys:
+                        a_filters.append({"field": "life_to_date_obligated",
+                                          "op": b["op"], "value": b["value"]})
+                    a_filters += _time_filter("last_action_date")
+                for b in aheads:
+                    a_filters.append({"field": "current_end_date",
+                                      "op": b["op"], "value": b["value"]})
+                plan.append({"grain": "prime_award", "collapse": "recipients",
+                             "filters": a_filters, "limit": DEFAULT_STEP_LIMIT})
             step2_filters: list[dict[str, Any]] = [
                 {"field": "uei", "op": "in", "value": ["<step1 ueis, chunks of <=500>"]}]
             for b in quals:
                 step2_filters.append({"field": b["value"]["field"], "op": b["op"],
                                       "value": b["value"]["value"]})
+            if actives:
+                step2_filters.append({"field": "active_award_ct", "op": ">=",
+                                      "value": 1})
             for b in states:
                 step2_filters.append(_state_filter(b))
             plan.append({"grain": "entity", "filters": step2_filters,
                          "limit": DEFAULT_STEP_LIMIT})
         else:
-            # single entity-grain step (lane/inferred/identity cuts)
+            # single entity-grain step (lane/inferred/identity/posture cuts)
             filters: list[dict[str, Any]] = []
             for b in quals:
                 filters.append({"field": b["value"]["field"], "op": b["op"],
                                 "value": b["value"]["value"]})
+            if actives:
+                filters.append({"field": "active_award_ct", "op": ">=", "value": 1})
             for b in states:
                 filters.append(_state_filter(b))
             # bare codes on the entity grain are ambiguous between lanes —
@@ -681,14 +784,27 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
             raise MapCompileError(
                 "phrase refused: action/plan codes live on the transaction grain — "
                 "say 'actions …' or 'companies …', not 'awards …'")
+        if shape.get("topology") == "vehicle" and (moneys or actives or aheads):
+            raise MapCompileError(
+                "phrase refused: vehicle channel semantics (rollup money, channel "
+                "expiry) are a future reviewed vocabulary cycle — query 'orders' / "
+                "'awards', or filter award_topology='vehicle' with rollup_obligated "
+                "on POST /api/v1/market/query directly")
         filters = []
         if "topology" in shape:
             filters.append({"field": "award_topology", "op": "=",
                             "value": shape["topology"]})
+        elif moneys:
+            # money-topology honesty (v2): $ on the bare 'awards' subject never
+            # counts vehicle wrappers — disclosed here, in the plan itself.
+            filters.append({"field": "award_topology", "op": "in",
+                            "value": list(MONEY_TOPOLOGIES)})
         for b in bindings:
             if b["axis"] == "parent_piid":
                 filters.append({"field": "parent_award_id_piid", "op": "=",
                                 "value": b["value"]})
+        for b in recips:
+            filters.append({"field": "recipient_uei", "op": "=", "value": b["value"]})
         filters += _code_filters("naics_code", "psc_code")
         for b in agencies:
             filters.append({"field": "awarding_agency_code", "op": "=",
@@ -697,6 +813,11 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
             filters.append({"field": "life_to_date_obligated", "op": b["op"],
                             "value": b["value"]})
         filters += _time_filter("last_action_date")
+        if actives:
+            filters.append({"field": "current_end_date", "op": ">=", "value": 0})
+        for b in aheads:
+            filters.append({"field": "current_end_date", "op": b["op"],
+                            "value": b["value"]})
         if quals or states:
             raise MapCompileError(
                 "phrase refused: entity qualifiers (dsbs/state/…) need the "
@@ -704,6 +825,10 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
         plan.append({"grain": "prime_award", "filters": filters,
                      "limit": DEFAULT_STEP_LIMIT})
     else:  # transaction
+        if actives or aheads:
+            raise MapCompileError(
+                "phrase refused: active/expiring live on the award grain — say "
+                "'awards …' or 'companies …', not 'actions …'")
         filters = []
         for b in bindings:
             if b["axis"] == "action_type":
@@ -712,6 +837,8 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
             if b["axis"] == "subcontracting_plan":
                 filters.append({"field": "subcontracting_plan", "op": b["op"],
                                 "value": b["value"]})
+        for b in recips:
+            filters.append({"field": "recipient_uei", "op": "=", "value": b["value"]})
         filters += _code_filters("naics_code", "psc_code")
         for b in agencies:
             filters.append({"field": "awarding_agency_code", "op": "=",
@@ -748,9 +875,12 @@ def _state_filter(b: dict[str, Any]) -> dict[str, Any]:
 def execute_plan(plan: list[dict[str, Any]],
                  today: "dt_date | None" = None) -> dict[str, Any]:
     """Run the compiled plan. Single step → that executor's result verbatim.
-    Pipeline → step-1 collapse, then the entity step with the RESOLVED uei set
-    in chunks of ≤ market_store.UEI_IN_CAP, rows unioned (deduped by uei). The
-    resolved uei list replaces the placeholder in the returned plan copy."""
+    Pipeline → every step but the last is a table-grain collapse; multiple lanes
+    (phrase.v2) INTERSECT their recipient UEI sets (AND semantics, ordered by
+    the FIRST lane's Σ$-sorted collapse order); then the entity step runs with
+    the RESOLVED uei set in chunks of ≤ market_store.UEI_IN_CAP, rows unioned
+    (deduped by uei). The resolved uei list replaces the placeholder in the
+    returned plan copy."""
     step1 = plan[0]
     if len(plan) == 1:
         if step1["grain"] == "entity":
@@ -766,16 +896,27 @@ def execute_plan(plan: list[dict[str, Any]],
                 "result": market_store.execute_table_query(
                     spec, step1["filters"], step1["limit"], today)}
 
-    spec = market_registry.TABLE_GRAINS[step1["grain"]]
-    collapsed = market_store.execute_table_collapse(
-        spec, step1["filters"], step1["limit"], today)
-    ueis = [r["uei"] for r in collapsed["rows"]]
-    step2 = {**plan[1], "filters": [dict(f) for f in plan[1]["filters"]]}
+    collapses: list[dict[str, Any]] = []
+    lane_ueis: list[list[str]] = []
+    for st in plan[:-1]:
+        spec = market_registry.TABLE_GRAINS[st["grain"]]
+        collapsed = market_store.execute_table_collapse(
+            spec, st["filters"], st["limit"], today)
+        collapses.append(collapsed)
+        lane_ueis.append([r["uei"] for r in collapsed["rows"]])
+    common = set(lane_ueis[0])
+    for lane in lane_ueis[1:]:
+        common &= set(lane)
+    ueis = [u for u in lane_ueis[0] if u in common]
+    step2 = {**plan[-1], "filters": [dict(f) for f in plan[-1]["filters"]]}
     if not ueis:
-        return {"steps": [collapsed, None], "resolved_ueis": [],
+        return {"steps": [*collapses, None], "resolved_ueis": [],
                 "result": {"rows": [], "total": 0, "returned": 0, "capped": False,
                            "executed": {"grain": "entity", "filters": [],
-                                        "note": "step 1 matched no recipients"}}}
+                                        "note": "step 1 matched no recipients"
+                                                if len(collapses) == 1 else
+                                                "table lanes matched no common "
+                                                "recipients"}}}
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     total = 0
@@ -791,7 +932,7 @@ def execute_plan(plan: list[dict[str, Any]],
                 seen.add(u)
                 rows.append(r)
     step2["filters"][0] = {"field": "uei", "op": "in", "value": ueis}
-    return {"steps": [collapsed, None], "resolved_ueis": ueis,
+    return {"steps": [*collapses, None], "resolved_ueis": ueis,
             "resolved_step2": step2,
             "result": {"rows": rows, "total": total, "returned": len(rows),
                        "capped": total > len(rows),
@@ -819,9 +960,10 @@ def compile_and_execute(body: Any, today: "dt_date | None" = None) -> dict[str, 
         "refused": None,
     }
     if "resolved_step2" in executed:
-        meta["plan"] = [compiled["plan"][0], executed["resolved_step2"]]
-        meta["step1"] = {k: executed["steps"][0][k] for k in
-                         ("total_rows", "distinct_recipients", "scan_capped")}
+        meta["plan"] = [*compiled["plan"][:-1], executed["resolved_step2"]]
+        for idx, collapsed in enumerate(executed["steps"][:-1], start=1):
+            meta[f"step{idx}"] = {k: collapsed[k] for k in
+                                  ("total_rows", "distinct_recipients", "scan_capped")}
     result = executed["result"]
     meta["returned"] = result.get("returned")
     meta["total"] = result.get("total")
