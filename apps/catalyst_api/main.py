@@ -41,6 +41,7 @@ from .src import (
     market_store,
     phrase_compiler,
     profile_html,
+    sub_universe_store,
     subout_store,
 )
 from .src.map_decoders import DECODERS
@@ -681,6 +682,24 @@ def market_query(body: MarketQueryRequest = Body(default=MarketQueryRequest())) 
             "executed": result["executed"],
         },
     })
+
+
+@app.post("/api/v1/market/sub-universe", response_model=None, dependencies=[Depends(require_operator)])
+def market_sub_universe(body: dict = Body(...)) -> JSONResponse:
+    """The sub-universe recipe (sub_universe.v1) — the per-sub eligible-buyer map
+    payload. Body: ``{uei, limit?}``. One call returns the target's ground truth
+    (anchors, demonstrated combos, PoP states, vehicles, own prime combos, form
+    DEFAULTS from their history) + every eligible buyer node with its gate facts
+    (per-combo farm-out medians, teaming repeat depth, vehicles, HQ geo,
+    matched_via evidence, prime_backed stamps). Form parameters are CLIENT-SIDE
+    predicates over these facts — no re-query on a slider move; culls dim with
+    disclosed reasons, never delete. NO SCORING. A target with no FSRS edges is a
+    200 with empty data + ``meta.reason``."""
+    try:
+        result = sub_universe_store.execute_sub_universe(body)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid request: {exc}")
+    return JSONResponse(result)
 
 
 @app.post("/api/v1/market/subout-opportunities", response_model=None, dependencies=[Depends(require_operator)])

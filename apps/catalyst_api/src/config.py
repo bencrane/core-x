@@ -186,6 +186,29 @@ GTM_ENTITY_GEO_URI = os.environ.get(
     "GTM_ENTITY_GEO_LANCE_URI", "s3://data-sink/active/gtm_entity_geo/"
 )
 
+# ── Sub-universe recipe reads (POST /api/v1/market/sub-universe) ─────────────
+# govcon_teaming_edges — 1 row per (prime_uei, sub_uei) FSRS pair (~89K):
+# edge_dollars_5y, edge_count_5y, names, dates. Anchors + repeat-depth facts.
+GOVCON_TEAMING_EDGES_URI = os.environ.get(
+    "GOVCON_TEAMING_EDGES_LANCE_URI", "s3://data-sink/active/govcon_teaming_edges/"
+)
+# gtm_prime_farmout_combo_lanes — (prime uei × naics × psc, ~37.5K): windowed subaward
+# $ ISSUED + median/p25/p75 chunk. The demand universe + MVS floor facts.
+GTM_PRIME_FARMOUT_COMBO_LANES_URI = os.environ.get(
+    "GTM_PRIME_FARMOUT_COMBO_LANES_LANCE_URI",
+    "s3://data-sink/active/gtm_prime_farmout_combo_lanes/"
+)
+# gtm_prime_vehicle_lanes — (prime uei × parent_piid, ~16K): windowed farm-out $ per
+# master vehicle. The vehicle-gate facts.
+GTM_PRIME_VEHICLE_LANES_URI = os.environ.get(
+    "GTM_PRIME_VEHICLE_LANES_LANCE_URI", "s3://data-sink/active/gtm_prime_vehicle_lanes/"
+)
+# gtm_prime_combo_lanes — (uei × naics × psc, ~5.1M): windowed prime obligations.
+# Anchor portfolios + the target's own prime posture (prime_backed stamps).
+GTM_PRIME_COMBO_LANES_URI = os.environ.get(
+    "GTM_PRIME_COMBO_LANES_LANCE_URI", "s3://data-sink/active/gtm_prime_combo_lanes/"
+)
+
 # ── SAM person layer (the operator profile's people + contactability reads) ──
 # gtm_sam_people — 1 row per sam_person_id: every distinct person observed across the
 # SAM/DSBS POC surfaces for a UEI, role-flagged (govt/ebiz/past-perf POC, DSBS
