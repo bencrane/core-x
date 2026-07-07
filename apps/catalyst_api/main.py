@@ -729,15 +729,18 @@ def market_subout_opportunities(body: dict = Body(...)) -> JSONResponse:
 
 @app.post("/api/v1/market/phrase", response_model=None, dependencies=[Depends(require_operator)])
 def market_phrase(body: dict = Body(...)) -> JSONResponse:
-    """The deterministic phrase compiler (phrase.v1 — plan approved 2026-07-06).
+    """The deterministic phrase compiler (phrase.v2 — active-axis unlock
+    authorized 2026-07-06; phrase.v1 plan approved same day).
     ``{"phrase": "..."}`` → the compiled plan (exact market-query bodies), every
     token→filter binding disclosed in ``meta.bindings``, and the terminal step's
     rows. CLOSED grammar over CLOSED vocabularies — zero LLM: any token that binds
     to nothing refuses the WHOLE phrase naming the token (422); reserved booleans
     (or/not/excluding…) refuse rather than silently AND (same-axis 'or' compiles
     to an in-list); a subject word (companies|awards|vehicles|orders|actions) is
-    REQUIRED. Cross-grain phrases emit the Cycle-1 pipeline (transaction collapse
-    → entity uei-in chunks); ``meta.plan`` carries the RESOLVED bodies."""
+    REQUIRED. Cross-grain phrases emit the Cycle-1 pipeline (table collapse →
+    entity uei-in chunks); v2 phrases carrying BOTH an event clause and an award
+    expiry clause emit TWO collapse lanes whose recipient sets intersect.
+    ``meta.plan`` carries the RESOLVED bodies."""
     try:
         result = phrase_compiler.compile_and_execute(body)
     except lance_store.MapCompileError as exc:

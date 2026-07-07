@@ -37,6 +37,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Version key surfaced as decoderVersion in the fields payload.
+# v6: active-posture axes — active_award_ct / pop_expiring_180d_ct exposed from the
+# behavior rollup's v2 param set (as_of build-time materialized; the request-time
+# active/expiry axis is the prime_awards grain's current_end_date, added in
+# prime_awards.v2 alongside this bump).
 # v5: cross-grain join enabler — the `uei` filter field on the entities grain ('='/'in',
 # charset-validated, list-capped at market_store.UEI_IN_CAP): a UEI set produced by any
 # other grain (e.g. a recipient-collapsed transaction query) can now be pushed back in
@@ -48,7 +52,7 @@ from dataclasses import dataclass
 # latitude/longitude/geo_precision; the map adapter emits real Point geometry.
 # v2: state → closed enum (live-probed USPS codes); `codes` typeahead attribute on the
 # code-valued fields (naics/psc/agency); agency added to the /market/codes systems.
-REGISTRY_VERSION = "entities.v5"
+REGISTRY_VERSION = "entities.v6"
 
 # The two scalar source tables (keys into market_store's URI map). Lane predicates are
 # a third, non-scalar source compiled separately (see LANE below).
@@ -167,6 +171,20 @@ ENTITY_FIELDS: dict[str, MarketFieldSpec] = {
         "rollup", "distinct_agency_ct", "int", (">=", "<=", "between"),
         "Count of distinct awarding agencies across the entity's prime contract history "
         f"(lifetime) — an agency-diversification signal.{_GRAIN}"),
+    # ── rollup: active posture (v2 param set; as_of build-time materialized) ───
+    "active_award_ct": MarketFieldSpec(
+        "rollup", "active_award_ct", "int", (">=", "<=", "between"),
+        "Count of the entity's prime contract awards still ACTIVE at the rollup build "
+        "date: period_of_performance_current_end_date >= as_of (NULL end dates are not "
+        "provably active — excluded; contracts-only universe, IDV parents excluded). "
+        "AS_OF-MATERIALIZED, not request-time — for a request-time active/expiry axis "
+        f"use the prime_award grain's current_end_date. '>= 1' = has active prime work.{_GRAIN}"),
+    "pop_expiring_180d_ct": MarketFieldSpec(
+        "rollup", "pop_expiring_180d_ct", "int", (">=", "<=", "between"),
+        "Count of the entity's ACTIVE prime awards ending within 180 days of the rollup "
+        "build date (as_of BETWEEN window; same universe as active_award_ct). The "
+        "fixed-window recompete signal, AS_OF-MATERIALIZED — arbitrary request-time "
+        f"expiry windows live on the prime_award grain's current_end_date.{_GRAIN}"),
     "top_naics": MarketFieldSpec(
         "rollup", "top_naics", "string", ("=", "in"),
         "The entity's top NAICS code by lifetime contract dollars (one code; exact match). "
@@ -566,6 +584,15 @@ PRIME_AWARD_FIELDS: dict[str, MarketFieldSpec] = {
         "Relative-time axis over the award's most recent FPDS action date, resolved "
         "against today at REQUEST time ('<= 90' = acted within the last 90 days). "
         f"{_PA_UNIVERSE}{_PA_GRAIN}"),
+    # v2: the ACTIVE axis — forward relative time over the award's current end date.
+    "current_end_date": MarketFieldSpec(
+        "prime_awards", "current_end_date", "days_ahead", ("<=", ">=", "between"),
+        "FORWARD relative-time axis over the award's current period-of-performance end "
+        "date, resolved against today at REQUEST time: '>= 0' = still active (ends "
+        "today or later); '<= N' = active AND ending within N days (the expiry/"
+        "recompete window); NULL end dates never match. On vehicle rows this is the "
+        "max end date across the vehicle's resolved child orders, not the parent's own "
+        f"period of performance. {_PA_UNIVERSE}{_PA_GRAIN}", index="BTREE"),
 }
 PRIME_AWARD_RESULT_COLUMNS = (
     "contract_award_unique_key", "award_topology", "award_id_piid",
@@ -575,10 +602,12 @@ PRIME_AWARD_RESULT_COLUMNS = (
     "rollup_order_count", "first_action_date", "last_action_date", "current_end_date",
 )
 
+# v2: current_end_date filterable as days_ahead (the active/expiry axis; the column
+# already rides result_columns and carries the state table's BTREE).
 PRIME_AWARDS = TableGrainSpec(
     grain="prime_award",
     dataset_key="prime_awards",
-    version="prime_awards.v1",
+    version="prime_awards.v2",
     source="prime_awards",
     description=(
         "Award-grain FPDS query surface (one row per contract_award_unique_key, "
