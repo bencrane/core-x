@@ -1024,6 +1024,123 @@ def open_dataset(name: str):
     return _cached_dataset(uri)
 
 
+# ── Substrait bridge guard (lance-format/lance#6130) ─────────────────────────
+# Registering a LanceDataset as a DuckDB relation lets DuckDB push WHERE
+# predicates AND dynamic join filters into the scan as pyarrow compute
+# Expressions; pylance converts an Expression filter to Substrait and resolves it
+# in Rust (lance-datafusion/substrait.rs). That resolver counts schema names with
+# DataFusion's DEEP convention (recursing into list-element structs) while
+# PyArrow emits SHALLOW names, so on any schema carrying a struct-under-list
+# column (e.g. entity_profile_gold's ``pocs`` list<struct>) the name index
+# overruns the array and the scan panics — surfacing as ``_duckdb.Error:
+# RuntimeError: Task was aborted``. Upstream: issue
+# https://github.com/lance-format/lance/issues/6130 (open), introduced by
+# PR #5015 (pylance >=3, verified still broken at 8.0.0; fix PR #6469 unmerged).
+#
+# The guard: datasets whose schema carries a struct-under-list column are
+# registered as a LanceDataset SUBCLASS whose ``scanner()`` intercepts
+# pyarrow-Expression filters (only DuckDB's pushdown produces those — the
+# gateway's own scanner calls always pass SQL strings, which take the native,
+# unaffected DataFusion-parser path), keeps the pushed PROJECTION in Lance, and
+# applies the filter via pyarrow (``Scanner.from_batches`` over the projected
+# stream) so the Substrait bridge never sees it. Correctness notes, all
+# empirically pinned (tests/test_bridge_guard.py):
+#   * DuckDB TRUSTS a pushed filter (does not re-apply) — the filter must be
+#     applied, never dropped.
+#   * DuckDB always includes the filter's columns in the projection it pushes,
+#     so evaluating over the projected stream is complete; if that invariant
+#     ever broke, pyarrow raises ArrowInvalid (loud), never a silent widen.
+#   * Flat / benign schemas keep the raw handle — the native bridge works there
+#     and Lance-side filtering (stats pruning) is worth keeping.
+_BRIDGE_GUARD_CLS: Any = None
+
+
+def _contains_struct(dtype: Any) -> bool:
+    import pyarrow as pa
+
+    if pa.types.is_struct(dtype) or pa.types.is_map(dtype):
+        return True
+    if (pa.types.is_list(dtype) or pa.types.is_large_list(dtype)
+            or pa.types.is_fixed_size_list(dtype)):
+        return _contains_struct(dtype.value_type)
+    return False
+
+
+def _has_struct_under_list(dtype: Any) -> bool:
+    """True when a struct occurs anywhere beneath a repeated type (list /
+    large_list / fixed_size_list / map — an Arrow map is physically
+    list<struct<key,value>>) in ``dtype``'s tree: exactly the shape whose deep
+    Substrait name-count overruns PyArrow's shallow names (lance#6130). A bare
+    top-level struct with non-nested children is NOT affected (both conventions
+    name direct struct children) and stays on the native bridge."""
+    import pyarrow as pa
+
+    if pa.types.is_struct(dtype):
+        return any(_has_struct_under_list(f.type) for f in dtype)
+    if pa.types.is_map(dtype):
+        return True
+    if (pa.types.is_list(dtype) or pa.types.is_large_list(dtype)
+            or pa.types.is_fixed_size_list(dtype)):
+        return _contains_struct(dtype.value_type)
+    return False
+
+
+def _bridge_guard_class():
+    """Build (once) and return the guard subclass. Lazy because lance/pyarrow are
+    lazy imports module-wide; cached so the idempotence check in ``_bridge_safe``
+    is a plain isinstance against one class object."""
+    global _BRIDGE_GUARD_CLS
+    if _BRIDGE_GUARD_CLS is None:
+        import lance
+        import pyarrow as pa
+        import pyarrow.dataset as pads
+
+        class _BridgeGuardedDataset(lance.LanceDataset):
+            """LanceDataset whose scanner() keeps DuckDB's pushed-down pyarrow
+            compute Expressions out of the pylance Substrait bridge (see the
+            section comment above). String filters and every other kwarg pass
+            through native. Stateless — safe to adopt via __class__ swap on the
+            shared warm handle."""
+
+            def scanner(self, *args, **kwargs):
+                flt = kwargs.get("filter")
+                if not isinstance(flt, pa.compute.Expression):
+                    return super().scanner(*args, **kwargs)
+                del kwargs["filter"]
+                cols = kwargs.get("columns")
+                base = super().scanner(*args, **kwargs)  # projection still pushed into Lance
+                return pads.Scanner.from_batches(
+                    base.to_reader(),
+                    filter=flt,
+                    columns=cols if isinstance(cols, list) else None,
+                )
+
+        _BRIDGE_GUARD_CLS = _BridgeGuardedDataset
+    return _BRIDGE_GUARD_CLS
+
+
+def _bridge_safe(ds):
+    """Return ``ds`` ready for DuckDB registration: a schema carrying a
+    struct-under-list column gets the warm handle class-swapped to the bridge
+    guard (the subclass adds behavior only, no state — the swap is idempotent and
+    keeps the resident scalar index; string-filter consumers of the same cached
+    handle are unaffected). Everything else returns untouched. Best-effort: any
+    guard failure registers the raw handle — at worst the query aborts exactly as
+    it does unguarded today, never a wrong result."""
+    try:
+        cls = _bridge_guard_class()
+        if isinstance(ds, cls):
+            return ds
+        if any(_has_struct_under_list(f.type) for f in ds.schema):
+            ds.__class__ = cls
+            log.info("gtm-mcp: substrait bridge guard engaged for %s "
+                     "(struct-under-list schema; lance#6130).", getattr(ds, "uri", "?"))
+    except Exception as exc:  # noqa: BLE001 — the guard must never sink the lane
+        log.warning("gtm-mcp: bridge guard skipped for %s (%s); registering raw handle.",
+                    getattr(ds, "uri", "?"), exc)
+    return ds
+
+
 def scan_table(
     name: str,
     *,
@@ -1038,9 +1155,12 @@ def scan_table(
 
     WHY (the correctness rail). Registering a ``LanceDataset`` as a DuckDB relation and
     letting DuckDB push a WHERE filter down into Lance routes the predicate through the
-    DuckDB→substrait→Lance bridge, which PANICS on some predicate/column-index shapes
-    (``lance-datafusion/substrait.rs`` index-out-of-bounds — observed on a
-    ``physical_address_state`` equality over ``entity_profile_gold``). The proven path
+    DuckDB→substrait→Lance bridge, which PANICS on any pushed filter when the schema
+    carries a struct-under-list column (``lance-datafusion/substrait.rs``
+    index-out-of-bounds, lance#6130 — observed on a ``physical_address_state`` equality
+    over ``entity_profile_gold``, whose ``pocs`` is list<struct>; the raw-SQL lane's
+    full registration now class-swaps such handles onto the bridge guard above, which
+    reroutes Expression filters through pyarrow). The proven path
     used everywhere else in the gateway (audience point-lookups, govcon ANN) is the Lance
     scanner directly: ``ds.scanner(filter=..., columns=...).to_table()``. This helper is
     that path, generalized — for the federal aggregations, which scan-then-GROUP-BY in
@@ -1258,7 +1378,9 @@ def _register_datasets(cur, names: Iterable[str], *,
                 )
         # Register the warm-cached handle (index resident) — NOT a fresh open. DuckDB
         # re-scans the LanceDataset lazily and pushes projections/filters into Lance.
-        cur.register(name, _cached_dataset(uri))
+        # _bridge_safe: a struct-under-list schema takes the substrait bridge guard,
+        # or DuckDB's pushed Expression filters would abort the scan (lance#6130).
+        cur.register(name, _bridge_safe(_cached_dataset(uri)))
 
 
 def query(
