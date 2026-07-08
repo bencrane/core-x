@@ -156,10 +156,14 @@ def verify() -> int:
     first_of_current = today.replace(day=1)
     naics_list = "(" + ",".join(f"'{c}'" for c in CONSTRUCTION_NAICS) + ")"
 
+    # materialize Layer 1 ONCE — this relation is scanned three times below
+    # (truth, l1_partial, boundary). A streaming to_reader() is single-consumption:
+    # the first scan drains it and the other two see an empty relation, which
+    # silently collapses `hybrid` to just l2_whole. to_table() is re-scannable.
     con.register("_l1", l1.scanner(
         columns=["uei", "action_type_code", "naics_code", "action_date"],
         filter=(f"action_type_code = 'C' AND action_date >= DATE '{floor90.isoformat()}'"
-                f" AND naics_code IN {naics_list}")).to_reader())
+                f" AND naics_code IN {naics_list}")).to_table())
     # truth: recipient set straight off Layer 1
     truth = {r[0] for r in con.execute("SELECT DISTINCT uei FROM _l1").fetchall()}
 
