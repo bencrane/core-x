@@ -294,6 +294,18 @@ NAICS_REFERENCE_URI = os.environ.get(
 PSC_REFERENCE_URI = os.environ.get(
     "PSC_REFERENCE_LANCE_URI", "s3://data-sink/active/psc_reference/"
 )
+# gtm_naics_psc_pairs — the NAICS×PSC pairing substrate: government stamping
+# practice over PRIME awards (award grain: n_awards/$/recipients/agencies;
+# txn grain: windowed 24/60mo cuts + first/last dates) FULL OUTER the psctool
+# curated crosswalk (is_psctool_suggested; suggested-never-stamped pairs ride
+# with zero counts — complete-universe aggregation, absence = 0). Conditional
+# shares both directions (P(psc|naics), P(naics|psc)); family_key baked
+# (freeze §0.1.3). Generation layer for inferred combo profiles of PSC-silent
+# entities. BTREE naics_code / psc_code / family_key.
+# Built by scripts/build_gtm_naics_psc_pairs.py.
+GTM_NAICS_PSC_PAIRS_URI = os.environ.get(
+    "GTM_NAICS_PSC_PAIRS_LANCE_URI", "s3://data-sink/active/gtm_naics_psc_pairs/"
+)
 # Capability-inference layer (scripts/build_gtm_capability_inference.py, all
 # pre-weighting raw evidence). Matrix: (subbed_under_code -> primed_in_code) same-type
 # cooccurrence over both-sider firms. Projections: per-entity inferred codes, BTREE
