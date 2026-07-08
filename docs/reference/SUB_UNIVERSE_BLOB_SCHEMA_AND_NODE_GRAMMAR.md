@@ -9,9 +9,17 @@ This document is two views of ONE artifact: (§2) the vocabulary axes the `sub_u
 
 ## 1. Container
 
-- **One blob per target UEI**, Lance dataset on R2 (`s3://data-sink/active/gtm_sub_universe_blobs/`), BTREE `uei`. Fetch once per call session (indexed point lookup); ALL queries execute in-memory over the fetched payload. No query-time access to any raw spine, ever.
+> **v2 AMENDMENT (2026-07-07, Phase 3b/4 — implemented & gated).** The blob is now
+> **two-tier** to hold the single-digit-MB / sub-second-load budget at the high-fan-out
+> tail (v1's flat "raw event grain for every node" hit 136 MB; v2 probe = **8.80 MB**,
+> ~27 ms parse). Changes below are marked **[v2]**; the grammar is otherwise unchanged.
+
+- **One HOT blob per target UEI**, Lance dataset on R2 (`s3://data-sink/active/gtm_sub_universe_blobs/`), BTREE `uei`. Fetch once per call session (indexed point lookup); ALL universe-filter and target-analytics queries execute in-memory over the fetched payload.
+- **[v2] Node tiering.** MATERIAL nodes (disclosed sub-buyers, ranked by `matched_prime_obl_60mo`, cap **1500**) carry full hot hydration: entity, award-state, `matched_via` (capped **5**), and per-node **monthly event buckets**. The undisclosed tail rides as lean **STUBS** (membership + ranking scalars + the base recipe's cheap demand summary — `needs_subs_now_total`, `by_action_type`, counts). The blob is still **total** (every paged member is present); tiering governs hydration depth, not membership.
+- **[v2] Event grain → monthly buckets.** The hot blob carries per-node **monthly** buckets keyed by `(action_type, subcontracting_plan, set_aside)` with counts + `first`/`needs` flags (~18× smaller than raw rows). Every in-horizon time / plan / set-aside / action-type predicate serves from these in-memory. Raw event rows are **not** stored in the blob.
+- **[v2] Row-exact drilldown — the §1 serving carve-out.** On node drilldown ONLY, the serve path makes exactly **one additional indexed PRECOMPUTE fetch**: raw event grain from `gtm_prime_demand_events` (BTREE `uei`) + win_portfolio from `gtm_prime_combo_lanes` (BTREE `uei`), filtered in-memory to the target's matched combos (so rows reconcile with the node's buckets — verified exact). These are marts (precompute), never the raw spine: **no query-time raw-spine access; refuse, never fall through** both stand, and **beyond-horizon windows still REFUSE** with the horizon named. No separate events sidecar dataset exists — it would duplicate ~106 MB/target across overlapping universes (multi-TB). See `apps/catalyst_api/src/sub_universe_serve.py`.
 - **Two payload sections**, one build:
-  - `universe` — the node map (the `sub_universe.v3` recipe with paging/quota/limit stripped: those are presentation, the blob is total).
+  - `universe` — the tiered node map (the `sub_universe.v3` recipe with paging/quota/limit stripped: those are presentation, the blob is total).
   - `target_analytics` — the pre-call brief facts (Acts 1–3 of `~/Desktop/hq/design-artifacts/pre-call/DATA_CONTRACT.md`, corrected per §4).
 - **Refresh = full rebuild** (nightly/weekly batch). No incremental, no invalidation. Schema evolution rides the refresh: change recipe, next batch rebuilds the world. `as_of` stamped and disclosed; "last 30 days" means 30 days back from query `today` over events as fresh as `as_of`.
 - **Batch input:** 5y-active subawardees (`edge_count_5y > 0` in `gtm_prime_sub_pairs`): **56,672** live (probed 2026-07-07). Lifetime ceiling 105,159. Proving batch ~350.
@@ -48,9 +56,16 @@ Status legend: **SHIPPED** (in `sub_universe.v3` today) · **WIDEN** (projection
 | Needs-subs-now | "first actions, plan attached, no subs yet" | derivable from event grain (`is_first_action` ∧ plan ∈ C–H ∧ ¬`has_disclosed_subs`) | event rows | WIDEN |
 | Lane trends | "lanes where chunks are growing" | `target.lane_trends[]` (§2.5) + per-lane slope stat | target edges + subaward spine | NEW |
 
-### 2.3 Event grain — THE time-axis decision (decided 2026-07-07)
+### 2.3 Event grain — THE time-axis decision (decided 2026-07-07; **[v2]** amended same day)
 
-The blob carries the node's demand events at **event grain**, restricted to the node's matched combos, capped per node (cap disclosed via `events_truncated`): `{action_date, action_type_code, naics_code, psc_code, obligation_delta, is_first_action, has_disclosed_subs, subcontracting_plan, type_of_set_aside_code, extent_competed, idv_type_code, award_key}`. Summaries (`by_action_type`, `needs_subs_now`) remain as baked conveniences but every time predicate computes over the rows — arbitrary N-day windows, calendar/fiscal years. **Depth horizon = the mart's ~24mo window; queries past it REFUSE with the horizon named.**
+**v1 (superseded):** carry raw demand events at event grain in the blob, capped 500/node. This hit 136 MB at the high-fan-out tail (§1) — raw rows are the wrong thing to store per node.
+
+**[v2] as implemented & gated:**
+- **Material nodes** carry per-node **monthly buckets** keyed `(action_type, subcontracting_plan, set_aside)` with `{n, obl, first, needs}`. Every in-horizon time / plan / set-aside / action-type predicate computes over these in-memory — arbitrary N-day windows resolve by summing covered months; calendar/fiscal years are exact. Buckets aggregate the FULL restricted event set (uncapped, ~18× smaller than raw rows).
+- **Stub nodes** carry the base recipe's `demand_summary` (`needs_subs_now_total`, `by_action_type`, `n_events_24mo`, `n_plan_added_Y`, `n_terminations_EFX`) — enough for coarse frontier prospecting (needs-subs-now, action mix, recency).
+- **Raw rows** (`{action_date, action_type_code, naics_code, psc_code, obligation_delta, is_first_action, has_disclosed_subs, subcontracting_plan, type_of_set_aside_code, extent_competed, idv_type_code, award_key}`) are fetched on **row-exact drilldown** from `gtm_prime_demand_events` (BTREE uei), filtered to the target's combos (§1 carve-out) — reconciles exactly with the node's buckets.
+
+**Depth horizon = the mart's ~24mo window; queries past it REFUSE with the horizon named** — the drilldown is never a horizon escape hatch.
 
 ### 2.4 Entity enrichment block (NEW, per node + target)
 
@@ -73,27 +88,40 @@ From `gtm_sam_entities` (BTREE `uei`): `name, cage, physical_city, physical_stat
 | Pool | subaward spine: target lanes ∩ target PoP states ∩ trailing 24mo | contract §4; "comparable primes" = all placing primes v1 |
 | Fragmentation buckets | top5 / next20 / rest | v27 design |
 | Deal-fit histogram bins | 12 log-spaced edges $25K→$2M, edges IN payload | v27 fix |
-| Event rows per node cap | 500 (truncation flagged) | blob size budget |
-| Blob size budget | single-digit MB per target | fetch-once latency class |
+| **[v2]** Node tiering | material = disclosed sub-buyers, ranked by `matched_prime_obl_60mo`, cap 1500; undisclosed tail = lean stubs | single-digit-MB budget at the fan-out tail |
+| **[v2]** Event grain (hot) | per-node MONTHLY buckets (material); base demand summary (stub) | ~18× smaller than raw; in-memory time predicates |
+| **[v2]** `matched_via` hot cap | 5 per material node (full combo set preserved in `gate_facts` keys) | blob size |
+| **[v2]** Drilldown raw cap | 500 events / 50 portfolio per node — served from marts, NOT stored | drilldown payload |
+| Blob size budget | single-digit MB per target (v2 probe **8.80 MB**) | fetch-once latency class |
 
 ## 3. Blob schema (JSON sketch — authoritative field list)
 
 ```
 {
-  "uei", "as_of", "recipe",                       // sub_universe_blob.v1 (bakes sub_universe.v3)
+  "uei", "as_of", "recipe",                       // [v2] sub_universe_blob.v2 (bakes sub_universe.v3)
   "universe": {
-    "nodes": [ { uei, name, entity{...§2.4}, latitude, longitude, geo_precision,
+    "nodes": [                                    // [v2] TIERED — every node has `tier`
+      // MATERIAL (disclosed, ranked by matched_prime_obl_60mo, cap 1500):
+      { uei, name, tier:"material", entity{...§2.4}, latitude, longitude, geo_precision,
         disclosed_sub_buyer, matched_farmout_60mo, matched_prime_obl_60mo,
-        n_matched_combos, matched_via[], matched_via_truncated, gate_facts{},
+        n_matched_combos, matched_via[<=5], matched_via_truncated, gate_facts{},
         target_combo_farmout{...v3},                        // Definition C
-        win_portfolio[], win_portfolio_truncated,
         teaming{}, vehicles[],
         award_state{ n_active_awards, n_expiring_180d, next_expiry_date },
-        pop{ states[{state, work_usd_24mo}], work_usd_within_25mi, _50mi, _100mi,
-             nearest_site_mi },                              // vs TARGET HQ
-        demand_events{ events[...§2.3], events_truncated, summary{} } } ],
-    "n_disclosed", "n_undisclosed"                          // full counts, no paging
+        pop{...} (v1 deferral, null),                       // vs TARGET HQ
+        demand_events{ summary{}, grain:"month", detail_in_mart:"gtm_prime_demand_events",
+          buckets{ "YYYY-MM": {n, obl, at{code:ct}, plan{code:ct}, sa{code:ct}, first, needs} } } },
+      // STUB (undisclosed tail — membership + ranking + cheap summary):
+      { uei, name, tier:"stub", disclosed_sub_buyer, matched_farmout_60mo,
+        matched_prime_obl_60mo, n_matched_combos, gate_facts{},   // combo keys preserve membership
+        demand_summary{ n_events_24mo, by_action_type{}, needs_subs_now_total,
+                        n_plan_added_Y, n_terminations_EFX } }
+    ],
+    "n_material", "n_disclosed", "n_undisclosed", "n_total", "nodes_truncated"  // full counts
   },
+  // [v2] win_portfolio + raw event rows are NOT stored — row-exact drilldown via
+  //      sub_universe_serve.fetch_node_detail reads gtm_prime_demand_events /
+  //      gtm_prime_combo_lanes (BTREE uei), filtered to the target's combos.
   "target_analytics": {                                     // pre-call brief, Acts 1–3
     "entity": { identity + header stats + trajectory_5yr_pct },
     "scopes": { lanes[], performance_states[], deal_band{low,high,median}, window_months },
@@ -123,9 +151,10 @@ From `gtm_sam_entities` (BTREE `uei`): `name, cage, physical_city, physical_stat
 
 ## 5. Build dependencies this freeze creates
 
-| Deliverable | Phase | Needs |
+| Deliverable | Phase | Status / Needs |
 |---|---|---|
-| `gtm_sub_combo_lanes` mart (sub_uei × naics × psc: $, n, chunk percentiles + per-sub states/band) | 3a | subaward spine; powers peer set + Act 3 |
-| `execute_sub_universe_full(uei)` emitting this schema | 3b | v3 store + this doc; verify `award_key`↔`prime_award_piid` join + IDV self-row index |
-| Predicate engine executing §2 vocabulary | 5 | frozen field map (this doc) |
+| `gtm_sub_combo_lanes` mart (sub_uei × naics × psc: $, n, chunk percentiles + per-sub states/band) | 3a | **DONE** — powers peer set + Act 3 |
+| `build_blob(uei)` emitting this schema (`sub_universe_full`) | 3b | **[v2] DONE & gated** — two-tier hot blob (8.80 MB probe, buckets reconcile exact); `award_key`↔`piid` + IDV self-row verified |
+| `gtm_sub_universe_blobs` dataset (BTREE uei) + `sub_universe_serve` (fetch_blob / fetch_node_detail) | 4 | **code DONE; proving batch running** — drilldown reads gtm_prime_demand_events / gtm_prime_combo_lanes (BTREE uei) |
+| Predicate engine executing §2 vocabulary | 5 | frozen field map (this doc) — scalar axes over hot nodes; time/plan/set-aside over monthly buckets; row-exact via drilldown |
 | Agency column on `gtm_prime_demand_events` | queued | events mart rebuild (unblocks §2.5.1) |
