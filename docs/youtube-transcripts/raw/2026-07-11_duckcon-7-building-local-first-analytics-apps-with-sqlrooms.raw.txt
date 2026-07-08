@@ -1,0 +1,26 @@
+00:00:00 - 00:01:06
+Thanks for the great intro, Gabor. Hi everyone. Um I'd like to start with a question. What if DuckDB a DuckDB file could uh contain an entire analytics workspace? Do you think it would be a good idea or not? Yeah, I'm not sure myself, but let me tell you a story like how I came to this idea. So, um I created uh SQL Rooms. It's a open-source framework for building um data analytics applications which uh benefits from the powerful DuckDB capabilities. And um it's supported by Foursquare, my current
+
+00:00:34 - 00:01:49
+employer, but uh it doesn't belong to Foursquare. We donated it to the OpenJS Foundation. Um yeah, um it has a lot of useful building blocks for making data analytics applications. Obviously, like DuckDB integration is one of them. There are different connectors. It can work with WebAssembly DuckDB, uh MotherDuck. It can work with an embedded uh native DuckDB uh as a Python server. Uh it has lots of UI components for like querying DuckDB, looking at the schema, uh things like that. It has capable UI
+
+00:01:11 - 00:02:27
+and layout capabilities which you can use if you build your applications on top. It has like collapsible, resizable panels, tabs, uh grid layout for dashboards. And all of this fits nicely into uh um uh cuz a modular system for saving your application state. Uh it has also uh a concept of artifact. You can add um configurable, pluggable, composable artifacts to your project which can be very different things. There are some artifacts which the framework provides, but you can bring your own, of course.
+
+00:01:49 - 00:02:58
+Um So, it it's been used by a couple of projects. It started with Flow Map City project I built before I joined Foursquare. At Foursquare, we're using it uh for instance for our special desktop um general purpose geo visualization geo analytics uh tool. Uh but also for a couple uh more internal applications. There are other companies which are using it. It's coming originally from the geospatial space, but now it's used in other domains as well. Uh but framework is a good thing, but I
+
+00:02:23 - 00:03:31
+thought it could have a better reach and be more useful if it was a tool which people could use without having um to code basically, right? So, I'm currently working It's It's early days, but um it's a bit rough. Um but I'm working on this CLI tool uh called SQLRooms which you can install with UV package manager. And the idea is that you have a single file which is your project file and it's a DuckDB uh database where you we start start we can store both um the data and and uh the application
+
+00:02:58 - 00:04:13
+state as well. And this way it becomes like a shareable portable artifact which is uh can be very convenient. Uh it is experimental, but you can make it even more experimental by specifying uh dash dash experimental. When you see uh all of the uh artifacts it currently offers. So, when you load it, uh you will see this uh UI um where you can add data and you can create uh artifacts. For instance, uh you can create either manually a dashboard based on Mosaic which was mentioned in the previous talk.
+
+00:03:35 - 00:04:55
+Um so, there's an integration with Mosaic in SQLRooms framework which you can benefit from. You can either build a dashboard manually or talk to the assistant with the integration for AI assistants in SQLRooms SQLRooms. Um you can also create a notion-like uh block document with blocks which you you can define which blocks you want to support. Um So, the this can be charts or text and you can get help from the system to write an analysis. Um you can use a Pyodide uh cells to um execute Python code and there's a bridge
+
+00:04:14 - 00:05:32
+to to talk to the host uh DuckDB instance to get the data from. Or you can even use a free-form HTML application builder which will basically create you an embedded app which you can run within as a as a work um as an artifact within your project. And this all will be saved as as a part of your single file with um all your artifacts and all the data. Um yeah, that's it. I I'm not sure if I convinced you this is um a promising. I think it is. But uh my my my hope is that it can be as lightweight, portable, and
+
+00:04:54 - 00:05:01
+local-first as DuckDB itself.

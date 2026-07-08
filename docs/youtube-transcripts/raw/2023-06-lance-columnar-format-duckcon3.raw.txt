@@ -1,0 +1,29 @@
+00:00:04 - 00:01:08
+okay um I have to admit that uh when I saw the lineup I nearly decided to cancel because I you I I used to work with Josh for four years at Cloudera and always hated going after him uh Todd uh before Julia details talk uh encouraging me to keep going uh because once upon a time was one of the early co-authors of the pandas Library so I'm glad to glad to hear the the kind words here um now I'm working on Lance columnar format and land CB so I think Lloyd uh what Lloyd's talk with what the
+
+00:00:36 - 00:01:38
+furthest back in time uh Josh's talk was certainly the funniest I'm gonna claim to have the craziest talk about how to build a full AI tooling stack using duckdb or how to bring that into the duckdb system so just picture me as the uh Always Sunny conspiracy theory uh theme the mean so the problem that I've seen with ML uh and ml Ops and AI is that you know it's not just that your data is not rectangular but the data is really irregular so you have annotations and labels and bounding boxes and you
+
+00:01:07 - 00:02:07
+have lots of deeply nested data uh and then all you also have really large blobs that can get up to like you know dozens of megabytes or sometimes even gigabytes when you have have 3D scans of things and so what ends up happening in data Lakes for AI heavy shops is you have your truth of uh single source of Truth format that might be parquet or something but then you have another copy of that data that stores like TF records for training and then you have yet another copy for it debugging or evals
+
+00:01:37 - 00:02:39
+or some other thing and so this creates a lot of complexity for tooling the pipelines that you build on top of it it also really blows up the cost of data storage and compute so that's all uh we try to solve with lands columnar format which we're working on uh Highland CB team so it's a high performance new columnar format optimized for AI it's designed to unify storage across embeddings text metadata tabular data images uh everything that you can think of out of the box it's compatible with
+
+00:02:08 - 00:03:10
+our favorite tools like duckdb and pandas polars pytorch and more it comes with zero copy schema Evolution and versioning so you can always roll back to the previous good state if you you're a your model eval shows bad results and because of the optimizations we've done in the data format we can achieve several orders of magnitude faster performance on parquet in terms of Random Access and just reduce overall training Time by at least two to three x for with faster shuffling with faster
+
+00:02:39 - 00:03:51
+filtering and just faster data loading all right but the data it's uh data format itself is not enough to uh have a full-fledged uh AI tooling uh uh tooling chain in duckdb so you need the models to run uh in SQL you want uh udfs and you want data exploratory exploration tools right so what you need is you need a data layer that is hopefully Lance format then you need ductdb extensions for pi torch uh or tensorflow and you need scanners for specialized data like if you use fmpeg or opencv to build a
+
+00:03:15 - 00:04:20
+frame scanner for videos and then you can add udfs on top of that to do image Transformations like crop and rotation of course all of those you can plug in with Cuda integration and all that is possible because duck DB is written in C plus and it works with all of those tools I had a a play sort of a tool to do all that put all that together in a blog post called Peking duck with two e's so looking not really hosting um the key to successful business is location location I think the key to a
+
+00:03:49 - 00:04:53
+successful data system is types types types so uh arrow and duck DB types are maybe 80 inoperable unfortunately right now ai sort of falls into that missing 20 those uh comes in sort of three buckets one is uh Nessa types for like uh annotations bounding boxes labels and then um extension types for images uh embeddings videos Point clouds and things like that and then there are some ml specific types like bf16 but those should be fairly easy to add and the the problems are going to be sort of how to
+
+00:04:21 - 00:05:18
+make sure that all of these different layers agree with each other and can talk to each other um two other sort of small problems is in the sort of push down layer uh duckdb pushes down to Arrow using the pi Arrow compute Expressions but that's not a sort of a standard across different Arrow implementations so if we're using like Lance format uses rust for example we use data Fusion for uh to handle predicate push Downs so there's some pain points there um possibly substrate can serve as a
+
+00:04:49 - 00:05:47
+long term an interface but who knows um okay so I'm gonna have ten seconds left roughly so uh you can find us on GitHub uh if you if you don't like it tell us how we suck if you like and if you don't hate it uh give us a star please and uh you know I'm really focused on the data layer but as you can see there's lots to build to build a full AI tool chain so if you're interested uh please uh pay me I'd love to collaborate on it with you thank you

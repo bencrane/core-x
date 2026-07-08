@@ -1,0 +1,59 @@
+00:00:00 - 00:01:04
+Well, I hope you like the formal talk with the agentic taste because we are going to speak about agents again. Um we're going to speak about search, about lakehouse, and Duck Lake. You have most probably experienced that, but if you're using coding agents today, whether it's through code code, whether it's through cursor, usually their first instinct, the first thing they do just after your ask, your prompt, is search. They want to grab your code base, they want to find something across
+
+00:00:33 - 00:01:47
+everything. They don't care about the structure, they don't care about the folders, they just want to grab everything. Well, that same pattern is happening and coming to data as well. And yet, if you have been playing with the data analyst agents that we have been introduced to a few quarters ago, what they are really good at right now is text to SQL. Yes, they know better than anyone than than me uh how to write a good SQL query. But that's not enough because SQL is very structured. SQL is about tables,
+
+00:01:09 - 00:02:16
+SQL is about columns, and so what they need to do as well is understand what table, what column to use for what use case. Of course, if you are in the BI space, the big word is semantic layer. And so, if you have a semantic layer, maybe you don't even need that because everything is documented. Well, I can tell that this is not happening often times. What's really missing in SQL is a schema-agnostic retrieval mode. I'm Sylvain, and I spent 13 years building search engine. I'm going to
+
+00:01:43 - 00:02:54
+tell you more about what we have done at Alta Table. I started my career as a C++ engineer uh in a French startup that was competing with Google at that time. They lost the battle. >> [laughter] >> Uh uh and and then as the first employee and VP of engineering at Algolia, a search as a service API. I then spent 4 years in 2 B2C where I could really experience what big and large-scale data means. But since last year, I'm co-founder and CEO of Alter Table and we're building a data runtime for this AI era
+
+00:02:19 - 00:03:28
+on top of the lake. Um we built a lakehouse with federation and as you will understand we hate pipelines. The platform comes also with a knowledge graph and always an AI agents because we really believe that this is what's what's happening next. And of course a lot of keywords that we do and and that you like. But the TLDR is we have extended Duck Lake with search capabilities. Why would you do that? Well, when you are building a lakehouse, when we are using a lakehouse, you have all the data already there.
+
+00:02:55 - 00:04:11
+And I'm not sure if you have been there, but I've done that so many times. You want to synchronize a database with a search engine. Because the database knows to do something and the search engine knows to do something else. That pipeline, a nightmare. I hated it. And I think we have seen that often times in the data world. What we wanted to do for Alter Table is bringing a new way, a new retrieval mode to our lakehouse so that we could rely on the same storage layer than Duck Lake that Duck Lake already use for for
+
+00:03:32 - 00:04:57
+search and semantic search. Maybe a few reminders because maybe not everyone is used to what an index is and what search is. Well, you can imagine that search is the process or indexing is the process of converting some objects that you have as input into the reverse version of them. So, you split the text, you maybe normalize some of that, but then what you want you what you build in a search engine is this map, this very optimized data structure that maps and associate the words that were in the documents to their IDs.
+
+00:04:15 - 00:05:27
+You do that because then at query time doing a full text search is very efficient. You very easily get to the inverted list of document IDs and querying two words and be doing a and between those two words is just an intersection. Something very similar is happening with semantic search. Um instead of tokenization and and simple normalization, it goes a little bit further with uh what most probably all heard about word embeddings. So, we're basically creating vectors that are reflecting the content of the
+
+00:04:51 - 00:06:04
+documents. And again, the indexing part of semantic search is about building this highly optimized data structure to be efficient for the search. We have chosen one simple graph uh structure, but it's really about putting all of that in the graph so that at query time you do the same, you do the embeddings on the query, you have a vector, and then with this very optimized graph you are able to search all the objects that have some similarity, some semantic similarity. Well, let's go down the let's go now to how we
+
+00:05:27 - 00:06:49
+have been extending DuckDB. We have been very inspired by what the team uh has done a few years ago with DuckDB. I believe one of the key asset and and one of the extraordinary power of DuckDB is its extension system. And we have seen it in the ecosystem. For us, it was kind of obvious that we needed the extension system in DuckDB. And so, we have been building extensions on an extension. Uh and by the way, we haven't started from scratch. We have been using a bunch of other open-source technologies. And
+
+00:06:09 - 00:07:21
+shout out to TenTen TV that has been delivering uh uh amazingly so far. When When wise man told us once, "It's all just SQL." And so, this is definitely what we wanted to do with our approach, saying, "Okay, how do we start by extending DuckDB's SQL surface?" Of course, if we speak about index, well, the database world is coming with what we all know about indices, usually B-trees, usually uh in a in a transactional database or or in in a in a non-Lakers database. Um
+
+00:06:47 - 00:08:04
+So, for us, it was obvious that we had to implement create index for DuckDB using either a full-text search index or a semantic search index, but something very similar. And so, then to use it, of course, we want to use something like this, where in your query, in your where clause, you expect a string, here with a typo, uh to be found in a field. We're all very lazy, so generally we prefer uh the operators. We have been plugging the double at operator that is already um used by some engines for full-text
+
+00:07:26 - 00:08:27
+search. But usually, that's not enough. What you want want is the scoring. I'm sure you have all typed into Google and stopped at first results, because the first result is the most relevant. You don't scroll anymore. If you're still using Google. Here is the same. Every single time there is a search engine, every single time there is a search, whether it's a full text or a semantic search, you have a score. A score whether this reflects the the the relevancy. And the good thing with DuckDB, it has this virtual
+
+00:07:56 - 00:09:11
+column mechanism that we have been using in order to reflect the score of what the search results look like. Where it start to be interesting is that instead of searching into the message column, I'm actually extending the DuckDB SQL dialect to allow anyone to use star as the column. And so this is where the magic happens. At this point, you are searching across all columns. And I can tell that in a lot of use cases, that's very useful for agents so that they don't do the big or between all those queries.
+
+00:08:35 - 00:09:51
+Very similar for semantic search. We have been introducing an operator that I believe is fairly elegant and also used in some engines. And so as you can imagine, once you have that, well, it opens a whole world of possibilities. And I think this is very elegant to look at. You are basically doing an analysis on top of a subset of candidates. Those are the ones that have been that are tickets where anywhere whether it's the title, the message, the comments, have some semantic similarity with GDPR EU residency.
+
+00:09:16 - 00:10:30
+Now that we had the SQL surface, we were like, "Okay, now it's time to implement." And again, one wise man once told us this. Uh and it's something we really thought about when we were designing this extension. You probably know uh how DuckLake is working, but I'm going to still repeat it bit. The lake is mostly a catalog and some parquet files. Usually, you store them on a distributed storage, and we are using Postgres for now for the catalog. Um and one thing you can very quickly
+
+00:09:54 - 00:10:56
+imagine is that adding search to DuckDB consists in bringing some of those small indices, those optimized data structure that we have built previously, very close to the parquet files. So, that it fits very nicely with all the snapshotting system, with all the time travel system that Lakehouse is uh bringing. Of course, under the hood, we had to also play a little bit with the metadata. We have been adding a few metadata tables in order to understand what are the indices that are created, what are
+
+00:10:27 - 00:11:40
+the files, where are the files. We have a few table functions to explain how to how to search, and we have been bridging with Tenny TV. For the more technical of you, one world is Rust, one world is C++, so it has been a little bit of of of a of a game to make sure that this works well without reinventing the wheel on both side. So, the Tenny TV index that we use for search actually relies on the file system from DuckDB and a lot of things happening like that. At query time, we have done a bunch of things, and and this is of
+
+00:11:06 - 00:12:23
+course a very simplified version of what we do, but we basically try to rewrite the query in a way that will be efficient for DuckDB to scan the table, scan the parquet files based on what the search results have retrieved. And so, as you might have understood, the DuckDB vector search or the DuckDB full text search functions are returning row IDs and scores, and then well, it's all just sequel. The TLDR, DuckDB has been it's all just sequel and so does Duck Search. Hannes, Mark, Pedro, if you are looking
+
+00:11:48 - 00:12:46
+for the next super secret next big thing to do, please be my guest and build extensions for DuckDB. Because we love open source and if that happens, we'd love to to contribute. Of course, for the sake of the talk and the 13 seconds that we have left, I've been simplifying a lot how search is actually working within DuckDB. But really, what you should remember after this talk is I hate pipelines and you should too. Thank you.

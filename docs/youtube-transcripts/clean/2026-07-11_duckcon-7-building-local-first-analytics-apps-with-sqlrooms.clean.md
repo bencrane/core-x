@@ -1,0 +1,21 @@
+# Building Local-First Analytics Apps with SQLRooms — DuckCon #7 — faithful transcript
+
+*Faithful cleanup of the ASR transcript: every word of substance preserved; only filler removed and clear mistranscriptions corrected. Not editorialized. Verbatim source: `raw/2026-07-11_duckcon-7-building-local-first-analytics-apps-with-sqlrooms.raw.txt`.*
+
+**Event:** DuckCon #7 — 2026-07-11.  **Topic:** SQLRooms — an open-source framework (and CLI) for local-first data analytics apps on DuckDB.
+
+---
+
+Thanks for the great intro, Gabor. Hi everyone. I'd like to start with a question. What if a DuckDB file could contain an entire analytics workspace? Do you think it would be a good idea or not? Yeah, I'm not sure myself, but let me tell you a story of how I came to this idea.
+
+So I created SQLRooms. It's an open-source framework for building data analytics applications which benefits from the powerful DuckDB capabilities. And it's supported by Foursquare, my current employer, but it doesn't belong to Foursquare. We donated it to the OpenJS Foundation.
+
+Yeah, it has a lot of useful building blocks for making data analytics applications. Obviously, DuckDB integration is one of them. There are different connectors. It can work with WebAssembly DuckDB, MotherDuck. It can work with an embedded native DuckDB as a Python server. It has lots of UI components for querying DuckDB, looking at the schema, things like that. It has capable UI and layout capabilities which you can use if you build your applications on top. It has collapsible, resizable panels, tabs, grid layout for dashboards. And all of this fits nicely into — because it's a modular system for saving your application state. It has also a concept of artifact. You can add configurable, pluggable, composable artifacts to your project which can be very different things. There are some artifacts which the framework provides, but you can bring your own, of course.
+
+So it's been used by a couple of projects. It started with the Flow Map City project I built before I joined Foursquare. At Foursquare, we're using it, for instance, for our spatial desktop general-purpose geo-visualization, geo-analytics tool. But also for a couple more internal applications. There are other companies which are using it. It's coming originally from the geospatial space, but now it's used in other domains as well.
+
+But a framework is a good thing, but I thought it could have a better reach and be more useful if it was a tool which people could use without having to code, basically, right? So I'm currently working — it's early days, but it's a bit rough — but I'm working on this CLI tool called SQLRooms which you can install with the UV package manager. And the idea is that you have a single file which is your project file, and it's a DuckDB database where we can store both the data and the application state as well. And this way it becomes like a shareable, portable artifact, which can be very convenient.
+
+It is experimental, but you can make it even more experimental by specifying `--experimental`, when you see all of the artifacts it currently offers. So when you load it, you will see this UI where you can add data and you can create artifacts. For instance, you can create either manually a dashboard based on Mosaic, which was mentioned in the previous talk. So there's an integration with Mosaic in the SQLRooms framework which you can benefit from. You can either build a dashboard manually or talk to the assistant with the integration for AI assistants in SQLRooms. You can also create a Notion-like block document with blocks which you can define — which blocks you want to support. This can be charts or text, and you can get help from the system to write an analysis. You can use Pyodide cells to execute Python code, and there's a bridge to talk to the host DuckDB instance to get the data from. Or you can even use a free-form HTML application builder which will basically create you an embedded app which you can run within, as an artifact within your project. And this all will be saved as part of your single file with all your artifacts and all the data.
+
+Yeah, that's it. I'm not sure if I convinced you this is promising. I think it is. But my hope is that it can be as lightweight, portable, and local-first as DuckDB itself.

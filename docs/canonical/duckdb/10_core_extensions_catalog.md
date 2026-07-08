@@ -9,6 +9,11 @@
 > - https://duckdb.org/community_extensions/ — the separate community-extensions catalog (`INSTALL … FROM community`).
 > - https://duckdb.org/docs/current/core_extensions/vss — vss / HNSW index syntax.
 > - https://github.com/duckdb/duckdb/releases + https://duckdb.org/release_calendar — release lines / current versions.
+> - https://ducklake.select/ — the DuckLake lakehouse-format spec/docs (architecture, catalog+data model, versions); used to verify the expanded `ducklake` row.
+>
+> Talk-corpus sources (committed clean transcripts — spoken claims, attributed inline and distinguished from upstream-verified facts):
+> - `docs/youtube-transcripts/clean/2026-02-02_duckdb-extensions-the-past-the-present-and-the-future.clean.md` — "DuckDB Extensions: The Past, the Present, and the Future" (Sam Ansmink, DuckDB Labs), published 2026-02-02. Source of the spoken core/community extension counts and download rates ("as of the talk"), and the DuckLake "own open lakehouse format" framing.
+> - `docs/youtube-transcripts/clean/2026-07-11_duckcon-7-state-of-the-duck.clean.md` — "State of the Duck", DuckCon #7 opening keynote (Amsterdam), published 2026-07-11. Source of the DuckLake 1.0 ship + downloads-rival-Iceberg/Delta claim, the >160M/month extension-install figure, and the DuckLabs company rename.
 
 Scope: The complete list of official DuckDB **core** extensions as of 2026-07-08, each with a one-to-two-line purpose, its built-in-vs-installable and autoload status, plus the exact INSTALL/LOAD surface and introspection queries needed to use them from a pipeline.
 
@@ -18,7 +23,7 @@ Scope: The complete list of official DuckDB **core** extensions as of 2026-07-08
 
 | Line | Latest release | Notes |
 |------|----------------|-------|
-| **1.5.x** (feature line, codename *Ossivalis* / *Variegata*) | **1.5.4** | 1.5.0 released 2026-03-09. Feature line, community support only. |
+| **1.5.x** (feature line, codename *Variegata* — *Tadorna variegata*) | **1.5.4** | 1.5.0 released 2026-03-09. Feature line, community support only. (UPSTREAM-VERIFIED 2026-07-08, https://duckdb.org/release_calendar — *Ossivalis* was **1.3.0**'s codename, not 1.5's; corrected here.) |
 | **1.4.x LTS** (codename *Andium*) | **1.4.5 LTS** (2026-06-17) | LTS line; ~1 year community support. From v1.4.0 onward, every other DuckDB version is an LTS edition. |
 
 Extensions are **versioned and distributed independently of the DuckDB engine** — they are downloaded from the extension repository keyed by the running engine version + platform, not shipped inside every binary. Two DuckDB builds on the same version can therefore differ in which extensions are already resident, because only a small built-in set is statically linked (see §2).
@@ -33,7 +38,7 @@ Core extensions are built, signed, and distributed from DuckDB's **core** reposi
 
 The five columns below (Name / Description / Maintainer / Support tier / Aliases) reproduce the upstream overview table verbatim. The two extra columns — **Autoloadable** and **Built-in?** — are *not* on the upstream page; they are annotations sourced separately (see footnotes 1 and 2) and must be verified per build.
 
-**Roster note:** The set differs by line. The **1.5 feature line** (28 rows) includes `odbc` and `quack`; the **1.4 LTS** roster (26 rows) omits both. `arrow` is **not** on either roster — see "Also frequently seen" below. Rows present only on 1.5 are marked (1.5-only).
+**Roster note:** The set differs by line. The **1.5 feature line** (28 rows) includes `odbc` and `quack`; the **1.4 LTS** roster (26 rows) omits both. `arrow` is **not** on either roster — see "Also frequently seen" below. Rows present only on 1.5 are marked (1.5-only). The **live `current` overview page** (https://duckdb.org/docs/current/core_extensions/overview.html) renders **29 core extensions** as of the 2026-07-08 fetch — the authoritative count; where this per-line accounting and the live page disagree, prefer the live page and re-count with `duckdb_extensions()` on your build (see "Core / community extension counts" below).
 
 | Extension | Purpose (1–2 lines) | Maintainer | Support tier | Autoloadable¹ | Built-in?² | Aliases |
 |-----------|---------------------|------------|:---:|:---:|:---:|---------|
@@ -42,7 +47,7 @@ The five columns below (Name / Description / Maintainer / Support tier / Aliases
 | **aws** | Features that depend on the AWS SDK (e.g. credential-chain lookup used with httpfs S3). | DuckDB | Secondary | yes | no | — |
 | **azure** | Filesystem abstraction for Azure Blob Storage (`az://` / `abfss://`). | DuckDB | Secondary | yes | no | — |
 | **delta** | Read Delta Lake tables. | DuckDB | Secondary | yes | no | — |
-| **ducklake** | DuckLake lakehouse format support (catalog + Parquet data files). | DuckDB | Secondary | — | no | — |
+| **ducklake** | DuckLake open lakehouse format (shipped **1.0**): catalog + all table metadata held in a standard **ACID SQL database** (DuckDB / PostgreSQL / SQLite), table data as **Parquet** files on local disk or object storage. Gives **time travel** (snapshot/at-version queries), **metadata-only schema evolution** (add/drop/rename columns without rewriting data files), **multi-table ACID transactions**, and **sorted tables**. Deep dives: **`14_ducklake_lakehouse.md`** (architecture + SQL surface) and **`15_ducklake_tuning.md`** (compaction/snapshot/perf). See §1 note. | DuckDB | Secondary | — | no | — |
 | **encodings** | Adds the text encodings available in the ICU data repository (for reading non-UTF-8 files). | DuckDB | Secondary | — | no | — |
 | **excel** | Read/write Excel (`.xlsx`) files; also Excel-style number/format strings. | DuckDB | Secondary | yes | no | — |
 | **fts** | Full-text search indexes (BM25 over text columns). | DuckDB | Secondary | yes | no | — |
@@ -73,6 +78,23 @@ The five columns below (Name / Description / Maintainer / Support tier / Aliases
 ¹ **Autoloadable** = DuckDB will silently `INSTALL` + `LOAD` it the first time a query references its functionality (see §3). This column is **not** on the upstream overview page; `yes`/`no` values are carried from the archived 1.0 core-extensions table (the last version exposing an explicit Autoloadable column). `—` means that older table did not list the (mostly newer) extension — treat as "manually install" and verify with `duckdb_extensions()` on your target build. See **Unverified / needs confirmation** (§8).
 
 ² **Built-in?** = statically linked into the standard binary distribution (resident with no download). Also not an upstream column. See §2 for the authoritative, platform-qualified answer.
+
+### DuckLake — ship status, roster count, and download standing
+
+The `ducklake` row above understates a now-shipped product; the load-bearing facts, with provenance:
+
+- **DuckLake 1.0 has shipped** and is positioned as production-ready. UPSTREAM-VERIFIED against https://ducklake.select/ ("DuckLake v1.0 is out", guaranteed backward-compatibility, April 2026). TALK-REPORTED corroboration: *"it's been a little bit more than a year for something to come from an idea to something that we actually think is production ready now… we have announced the 1.0"* (DuckCon #7 keynote, State of the Duck, 2026-07-11 — `docs/youtube-transcripts/clean/2026-07-11_duckcon-7-state-of-the-duck.clean.md`).
+- **Architecture** (UPSTREAM-VERIFIED, ducklake.select): catalog + all metadata in an ACID SQL database (PostgreSQL / SQLite / DuckDB); data in Parquet on disk or object storage; time-travel queries over lightweight snapshots; schema evolution; *"concurrent access with ACID transactional guarantees over multi-table operations"*. **Sorted tables** are cited as a DuckLake table property — treated here as vendor-reported and **NOT confirmed** on the ducklake.select landing page fetched 2026-07-08 (which enumerates snapshots/time-travel, schema evolution, partitioning, and multi-table ACID, but does not surface a "sorted tables" feature by that name); verify against the DuckLake spec/manage-data docs and confirm the exact `WRITE`/`SET` surface in **`14_ducklake_lakehouse.md`** before writing it into a pipeline (do not assume syntax).
+- **Downloads now rival Iceberg + Delta.** TALK-REPORTED, not independently verified: *"DuckLake is now up there with Iceberg and Delta in terms of downloads of the extension for DuckDB. So within one year, we kind of equalized in terms of popularity, at least in DuckDB land"* (DuckCon #7 keynote, State of the Duck, 2026-07-11 — same path). Scope is DuckDB-extension downloads, not total lakehouse-format adoption; DuckLabs published no absolute numbers.
+- **Own open lakehouse format.** TALK-REPORTED framing: DuckLake *"implements our own open lakehouse format"* (DuckDB Extensions: The Past, the Present, and the Future, Sam Ansmink, 2026-02-02 — `docs/youtube-transcripts/clean/2026-02-02_duckdb-extensions-the-past-the-present-and-the-future.clean.md`), described there as *"released last year"*.
+
+### Core / community extension counts — talk figures vs. live catalog
+
+The talks quote spoken round numbers that do **not** match the live catalog on the 2026-07-08 fetch — **prefer the live page**:
+
+- **Core count: the live overview page's main table enumerates 29 core-extension rows** (UPSTREAM-VERIFIED, https://duckdb.org/docs/current/core_extensions/overview.html, fetched 2026-07-08 — the 29 named rows are stable across refetches; automated row-counts of the rendered table wobbled 29–31, so trust the enumerated names, not a scraped integer). The §1 roster covers this set **plus** a `jemalloc` row: upstream lists `jemalloc` only in the core-extensions sidebar, not as a main-table row, so §1 carries 30 rows to the live table's 29 (the extra row is `jemalloc`, kept because it is a real, statically-linked core extension — see §2). TALK-REPORTED (as of 2026-02-02): *"By now we have 32 core extensions and 145 community extensions"* (DuckDB Extensions: The Past, the Present, and the Future, 2026-02-02 — path above). The 32 is a spoken figure five months stale relative to this fetch and is not independently verified; treat 29 (live) as ground truth and re-count with `duckdb_extensions()` on your build. (The 26/28 per-line split noted in the roster header is the 1.4-LTS vs 1.5-feature-line difference; the live current-page roster is what the 29 count reflects.)
+- **Community count (145):** TALK-REPORTED only (2026-02-02, same path); not verified against the community catalog here. The community list at https://duckdb.org/community_extensions/ is the live source of truth.
+- **Extension-install volume:** TALK-REPORTED, not independently verified — *"over 160 million extension installs every month"* (DuckCon #7 keynote, State of the Duck, 2026-07-11 — path above), up from the *"over 27 million times every week"* core-extension figure spoken at the 2026-02-02 talk. Both are spoken round numbers; cited for magnitude, not as audited metrics.
 
 ### Also frequently seen but NOT on the core list
 

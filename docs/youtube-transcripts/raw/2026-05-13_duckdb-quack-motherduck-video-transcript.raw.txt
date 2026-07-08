@@ -1,0 +1,35 @@
+00:00:00 - 00:01:09
+DuckDB just released what they call their next big thing, which is a client server protocol for DuckDB called Quack. And in this video, I'm going to explain what is all about, how Quack works, and where actually MotherDuck sits after this release. Just giving my honest take, you know, taking with a grain of salt. You're watching this from the MotherDuck channel. And see how it could be useful for you. So, quick recap. DuckDB is a new kind of database. Typically, you have in-process and client-server
+
+00:00:34 - 00:01:46
+database. And the two big category are transactional and analytical. And historically, we have for analytical database a v-server side where all the cloud compute is done and a light client where basically it's just SQL sent over the wire. Snowflake, BigQuery, and others are all into that setup of client-server. DuckDB when it appears in 2019 kind of flipped the story where it says like the SQL light for transactional, here we have a new kind of category of database for in-process analytic. Well,
+
+00:01:10 - 00:02:28
+our hardware today are much more powerful than it used to. So, why do we need a v-cloud setup where the client could actually process a lot of data. And if you've been using DuckDB a lot, you've been probably eating some of those challenge where if you want multiple writers, so you have multiple DuckDB process writing to the same DuckDB file, you cannot do that because the file is locked. Another big use case is that if you need to share a large DuckDB file for read-only purpose, well, user will have to download it someways
+
+00:01:49 - 00:03:00
+or you need to have your compute really close to the storage to be efficient. Typically, for BI use case, so where you have a BI tool connected to a SQL engine, that's one of the big challenge that DuckDB in the current setup can really solve out of the box. So, let's dive into what is actually Quack. So, Quack is a DuckDB extension. So, like any DuckDB extension, you just do an install and load the extension. Because it's in currently in preview, it will be GA'd by DuckDB 2.0, which is announced
+
+00:02:25 - 00:03:36
+later this fall, you have to do specifically install Quack from core nightly. Let's say you have one DuckDB as a server and one DuckDB as a client. And so, that's the other big thing is that any DuckDB process can play the role as a client or server or both. So, once you have installed the extension on both sides, you load it, and then on one side it's going to play the server, you call the Quack serve, and now you have a server with a specifically all token. On the other side, the only thing you need
+
+00:03:00 - 00:04:21
+to do is create the secrets, and then you can attach the database like it would for any other regular database pointing pointing to the URL and alias. So, protocol is using HTTP/2. I'm not going into the details why they've put that in their blog deeply on why they pick HTTP/2. With any protocol, there is some trade-off, of course. But, one of the big pro here is that because DuckDB also work in WASM, you can have basically the client in a browser tab connected to a remote server. So, once you attach, you
+
+00:03:41 - 00:04:57
+have your alias, well, it's really just like you would query a local DuckDB database. Here you see the remote alias, and the query is sent over the network, compute over the server, and then you get the result back. All right, so what does it solve? I already spoiled you, many writers with one server, that's really obvious and one of the big limiters that lifts this setup of client server. The other thing as we talked, if you have many read clients that point to a specifically large DuckDB file, typically BI tools or other
+
+00:04:19 - 00:05:26
+stuff, that's also another big one. And the latest I just mentioned, which is basically with DuckDB WASM acting as a client and you can connect to a bigger machine on the cloud where you have your DuckDB server hosted. Also other worth mentioning coming soon is Duck Duck Lake catalog coming on DuckDB. So today if you want to run Duck Lake in production, the recommendation is to go Postgres for the specific limitation of multi-writer, and that will be lifted with using uh Quack protocol, so there is a working
+
+00:04:52 - 00:06:02
+progress PR on that. So where does that leave now Motherduck? I think before talking about Motherduck itself, we have to understand what is a data platform, a data stack. The protocol here, the client server, is just one tip of the iceberg, it's just one layer. So you have also to think about authentication, SSO, users, there is no concept of users in DuckDB, authorization, and also security. By default, the server provide in HTTP, so you're on your own to set up your own web proxy, web server, and so
+
+00:05:28 - 00:06:32
+on. And then there is everything related to the compute itself, even if you have remote compute, how do you manage failover, always up, scale up, scale down, all that jazz. So that's really So now I would say classic for a data platform, and then for sure here it's not a Motherduck pitch, but there is specific feature of MotherDuck, not just this one of dual execution. Probably fourth to mention on this client-server protocol, but we have the SSO and other stuff that is just right above. But it's
+
+00:05:59 - 00:07:00
+just to let you think about what you need and what you want to build. And at the end of the day, this is really always the same question: build versus buy. If you are a small team who likes operational and simple out is fine, then sure, go ahead and build this and use this protocol. But if you can't afford to spend time on this, then you will use a managed uh services, of course, like everyone does for other things than just uh data. In any way, we are super excited about this feature. MotherDuck
+
+00:06:30 - 00:07:34
+has been building its own protocol to enable this for years now. It is great that as we have pushed the boundaries of DuckDB in the cloud in client-server uh mode, that DuckDB Labs is also coming with its own standard for the DuckDB ecosystem. So, I'm really curious personally on what people are going to build. I think there's going to be a lot of creative stuff, and at least we are cooking. So, stay tuned, and in the meantime, take care of your ducks, and I see you in the next one. >> [music]

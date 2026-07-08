@@ -1,0 +1,365 @@
+00:00:00 - 00:00:57
+Hello, hello everyone. Welcome to our live stream on the Duck Lake Lakehouse. Today we'll be going from getting started to going fast. My name is Gerald. I'm on the marketing team here at MotherDuck and I'm joined by Alex. And as we get going as we let people come in, I'm going to start with a quick poll just to kind of see how familiar familiar are all of you with Duck Lake? Have you I mean I didn't leave Have you not heard of it? Cuz hopefully if you signed up for this you've heard of it. But you
+
+00:00:29 - 00:01:27
+know, have you not tried it yet? Tried it yet? Have you just kind of played around with it a little bit or are you running it in production? Give it a little bit and see see what all I think if you just type in chat one, two, or three we can see we can we can see some results. Yeah, two completely around with it a little a little bit. Okay. Welcome welcome. We'll get started in just a little bit. Sounds like a couple you know, a lot of twos maybe maybe there's a maybe a two maybe three or running it almost running it in
+
+00:01:00 - 00:01:57
+production. A couple running it in productions awesome. >> [snorts] >> Some haven't tried it yet. Love it. We'll let this run for just a little bit longer. Um see if anyone else won. A couple a lot a lot of twos. Awesome. Okay, with that and we'll give it five more seconds and I'll close this one down and we'll kind of we'll we'll continue on. Uh-oh. A lot of more people haven't tried it yet, which is good. Well, hopefully by the end of today you will have at least tried it.
+
+00:01:28 - 00:02:12
+You know, played around with it a little bit maybe we'll help you get it in production maybe even you know, for those of you that are running it in production will hopefully you'll have learned some tips and tricks on making it even faster. So let me figure out how to stop this poll and we'll leave it at that. Seems like you know, we're relatively evenly split. Most people have played around with it a little bit some haven't tried it and then a lot of few of you are running it in production.
+
+00:01:50 - 00:02:50
+Awesome. Like I said, my name is Gerald. I'm on the marketing team here at MotherDuck. A few housekeeping items. We'll be recording this session. So you know, if you have to drop if you want to watch it again, we'll send out a link to it if you registered via email and we'll also post this on our website later on. And we'll have agenda wise we'll kind of keep it hopefully nice and tidy. We'll start with it just kind of what is what is Duck Lake and why is it exciting? We'll
+
+00:02:20 - 00:03:13
+talk about you know, what MotherDuck is and how it relates to Duck Lake and how you can use the two of them together. Then Alex will do a short demo of how to get started and then we'll finally close up with a tuning your Duck Lake how to customize customize it make it faster make optimize it and then also we'll have some time for some Q&A at the end. If there's a questions you know, after each section we'll do questions take some questions there as well. So feel free if you ever have questions put them
+
+00:02:45 - 00:03:50
+in chat. Love to see how you guys are using Duck Lake and what questions you have. And with that too we'll do one more quick poll and then we'll let Alex get going with his talk. I guess we know Oh, it's covering Alex. I don't even know how to move it. Let's do this. Which which Lakehouse technologies are you most familiar with? None, Iceberg, Delta Lake, or Duck Lake? I mean there's also other options out there. This tool only lets me pick four options. So these were the
+
+00:03:19 - 00:04:12
+four that I chose to pick. We kind of we didn't we we purposely said hey Hudi we'll we'll we'll relegate you to not on the list. So you can also type you know, you can type in chat if you do something else too. You bet. And the questions are my favorite part. So don't hesitate at all if you've got any kind of question throw it in the chat. You're probably not alone. And also if you guys know the answer to a question in chat we'd love to hear kind of your perspective as well especially when we
+
+00:03:45 - 00:04:35
+get into tuning. In some ways it's an art more than a science. It's also it's just very experimental. So love to hear thoughts from folks that are running in production in particular. Let us know how that's going and the advice that you have. Yeah, awesome. Love it. All right, let's let me close this one out now. It looks like it's relatively evenly split. At first there was a lot of Duck Lake but now you know, we're pretty evenly split between Iceberg, Delta Lake, and Duck
+
+00:04:09 - 00:05:03
+Lake. So with that let me hide this and I'll put Alex's slides back up. There we go. And go ahead Alex. Well, thank you. Well, welcome everybody. First I'll say a quick howdy. Howdy, I'm Alex. Really excited to be talking with you about this today. My background's industrial systems engineering but then decided that I really like this data stuff. So spent a lot of time at Intel and then I worked part-time for DuckDB Labs on the documentation and blogging side of things and I've been here at
+
+00:04:37 - 00:05:35
+MotherDuck for right around three years and initially doing a lot of customer support bringing people into production and then now I'm on the DevRel team. But I like ducks a lot. So you saw a lot of that is very orange. Spent a lot of time working on DuckDB related technology since 2020 or so been been involved. I've read just about every PR in the DuckDB repo across that time. So try to stay pretty up on what's what's happening there. I'm also a co-author on the upcoming O'Reilly book Duck Lake the
+
+00:05:06 - 00:06:00
+Definitive Guide. We've released two chapters already and Gerald put the link in the chat. You can head there and download those first two chapters. We'll send them to your inbox and we'll send every subsequent chapter to your inbox as we release it. Chapter three is an architectural deep dive that's coming next and chapter four is performance tuning. So you're getting a preview of that today but we're going to do even more experimentation and benchmarking for the book. So definitely sign up for that. It is
+
+00:05:33 - 00:06:42
+free. So what is Duck Lake? Why are we so excited about it? I'll go faster cuz you guys are are fairly familiar. Duck Lake is an open table Lakehouse specification. So it has duck in the name but it's a fully open spec can be implemented by anybody and there's a few implementations in addition to the DuckDB implementation already in Spark, Trino, and in DataFusion. So it is truly an open spec. The key reason we love Duck Lake is the whole design goal of Duck Lake is simplicity. And that is not the word that you hear
+
+00:06:07 - 00:07:10
+as the number one feature of any other Lakehouse. It's designed to be simple. So start by making it simple, start by making it elegant and that elegance leads to the speed, leads to the scalability. And the key architectural decision to enable that is that we keep both our catalog data and our metadata data inside of a SQL database. That could be DuckDB. It could be SQLite. It could be Postgres or it could be MotherDuck. And there's lots of different ways you could choose to mix and match those.
+
+00:06:39 - 00:07:43
+So to illustrate the simplicity the getting started for Duck Lake are these three commands. Install it as a DuckDB extension which is just which is just an install command. You'll attach a catalog and then you'll start using it. Simple as that. A little bit more about Duck Lake. We believe it's really the future of open table formats. We are very very excited about it. It has partitioning capabilities so you can scale up to petabyte scale data. However, you you retain high ingestion
+
+00:07:13 - 00:08:07
+speed as well. You're able to load data in very very quickly. That's sort of a Lakehouse style approach where you can bring your data in as it is and then compact it later in the background. On MotherDuck you can bring your own blob storage. You know, likewise on open source of course you have full control over the storage and it's using industry standard parquet and industry standard blob storage technology. So it's it's very very open. And a key differentiator because of that
+
+00:07:40 - 00:08:42
+SQL database architecture your query latency can be very very low. So instead of queries taking multiple seconds to do even basic queries you can have millisecond response time. You know, hundreds of millisecond response time which is just fundamentally different than other architectures. That also means you can ingest very very frequently. You know, 30 times per second. Whereas you can typically do a lot less with other formats. So it really opens the aperture of what's possible. Now another way to understand Duck Lake
+
+00:08:12 - 00:09:13
+is a little bit by analogy and this is comparing to Iceberg. Delta Lake is fairly similar here. It has a few less layers of the hierarchy but the the architecture is quite similar. So at the bottom you have your data files. And in both Iceberg and Duck Lake those are parquet. It's a columnar format. It's got indexes built in in the metadata. It's got strict data typing. And we actually have the exact same you know, almost identical format as Iceberg in Duck Lake. So we didn't reinvent the
+
+00:08:42 - 00:09:46
+wheel. We're we're using best of breed of what's out there. The next layer is that metadata layer and this is how Iceberg tracks where all these parquet files are which tables they relate to, which versions of which table it relates to. So if you delete some data out of a table and then reinsert over top of it we have to kind of track that change history. And that's handled in the metadata layer. One layer above that is the catalog and this manages multiple different tables. It manages concurrency across those and
+
+00:09:14 - 00:10:17
+you'll notice in that diagram on Iceberg that's that's a database canister. Well, it's actually a web API with a database behind it. And with Duck Lake we said hey, if you have a database in the stack let's use it for everything that it's really good at. Relational databases are very good at managing high concurrency transactional workloads and metadata operations look a lot like that. So with Iceberg to to query your data you have to do four round trips. You have to talk to the catalog.
+
+00:09:45 - 00:10:45
+You have to talk to your metadata file. And then you have to talk to your manifest list and then your manifest file and only then do you go get your data. And those have to be in sequence because they each depend on each other. And everything in that metadata layer is talking to object storage, which is great for throughput, but it's very slow for latency. Could be a 100 milliseconds each of those requests. So, even in the very, very fast case, it takes often seconds to read data out of a traditional lakehouse format.
+
+00:10:15 - 00:11:12
+Whereas with Duck Lake, you're talking to one relational database. That could be measured in single-digit milliseconds to go talk to a database. Uh very, very low latency. And at that point, then you can just go grab and start reading the parquet files you need. Another way to think about the differences, you know, another analogy, um we are you know, iterating on the lakehouse architecture, and we're we're making an adjustment, which is that we're taking the catalog and metadata and managing
+
+00:10:45 - 00:11:38
+them both inside of a relational database. Um and and that we think is a much better architectural fit for what relational databases are really good at. Um but again, it's not reinventing the wheel. It's still parquet on object storage, uh and we still have schema evolution, and you know, time travel, all the things that you you love about lakehouse formats that, you know, innovations that Iceberg and Delta and Hudi brought. Um but in much simpler way. And that was the crash course on Duck
+
+00:11:11 - 00:12:22
+Lake. Gerald, any questions uh at this point? Yeah, let me see here. There's a few that maybe uh we'll answer later. Uh maybe maybe this one here quickly. Uh I think any any path forward for K8 Helm chart on-prem implementation? I don't even know. Hm. That's a good question. Um I see no barrier to that. I don't know if it's been built yet. Um Duck Lake is you can deploy in a variety of ways. I'll show that very, very soon. It's very amenable to be deployed on prem. And um all the resources that
+
+00:11:47 - 00:12:37
+you'd be managing are things you could manage with Kubernetes. So, it's it's you know, you're managing a database, most likely Postgres, and managing DuckDB compute, which you can manage uh with with uh Kubernetes as well. Cool. Uh let's just do this one other one that I think we might not cover later, which is can you explain how the tables in Duck Lake map to the parquet files? I added some rows into a table in Duck Lake, and I deleted did some deletes, but I just see one parquet file
+
+00:12:12 - 00:13:18
+with a deleted row. Uh where is the other data in the table? Sure. So, the structure for Duck Lake is um set up in an append fashion, where as you add data in, we create new files on your behalf. Uh and when you delete data, to maintain the ability to time travel, to see the data that used to exist, what we do is we add a delete file. And it's following the Iceberg spec for for how delete files are managed. Um currently using the V2 spec. Uh the V3 spec is going to be released with the next next version, I believe. Uh it's
+
+00:12:45 - 00:13:40
+kind of in in testing mode right now. And so, you can see the deletions and the original data um as you're doing the inserts and deletes. If you want to merge those and clean them up, there's a metadata function that you call that says, you know, uh merge your deletes. And that will actually read the the raw data, read the deletes, and rewrite a new file that uh actually removes that data. And uh and then you can you know, run another cleanup maintenance operation to to remove it from existence if you don't
+
+00:13:12 - 00:14:14
+want to time travel back to it. Um in Duck Lake, there's also a special feature called inlining that might also be at play here. If you insert uh by default, inlining is enabled for rows inserting 10 rows or less. So, if you inserted five rows in, um you won't actually see any parquet files generated. That's because we have a database there already, and we can use that database to store small row counts of data and flush it out to parquet later. So, I've got a diagram on that. Stay tuned. If you're
+
+00:13:44 - 00:14:33
+playing around testing it live now, try inserting a 100 rows, it might behave a little more like you'd expect. Thank you. All right. I think we can go on to the next section. And I'll give a shoutout to Sahil. I think you're exactly right. I think inlining is what's happening there. So, so thank you for for chiming in and and helping out, as always. Well, awesome. Well, we'll cover a little bit about what is MotherDuck and how it works together with Duck Lake. So, what is MotherDuck? We are a
+
+00:14:10 - 00:15:07
+serverless cloud data warehouse. And the engine at our heart is DuckDB. And we are big fans of DuckDB. We think it's, you know, pound for pound the the best data engine out there. Uh our our emphasis is really on being very, very straightforward to use, similar to the Duck Lake ethos, where we think that your time is incredibly valuable. The key thing we should optimize for is time to insight. How fast could we help you answer your business questions? So, we we like to call ourselves infrastructure for
+
+00:14:39 - 00:15:31
+answers. Cuz that's what a data warehouse is for at the end of the day. Um you can connect through the DuckDB drivers. You see that example connection there. Again, it's a couple lines of code to get started with MotherDuck, just like it's a few lines of code to get started with Duck Lake, as we'll see in the demo. A bit more about the architecture, so we can see kind of how it relates. So, MotherDuck is serverless, which means we only spin up when you connect, and we spin down when you're done. And we can
+
+00:15:05 - 00:16:06
+do that very, very quickly. And that is very efficient uh from a cost perspective. You only pay for what you use. And it's also very different than most lakehouses. Most lakehouses have a big cluster that is used to manage it. And you know, you might be running Trino on top of Iceberg, where you have a long-lived set of compute that's up or at some capacity all the time. And MotherDuck uh takes a very different approach, and we'll we'll spin down aggressively whenever you aren't using it.
+
+00:15:35 - 00:16:34
+We are unabashedly single node. What does that mean? It means each query runs on one piece of hardware. However, if you have many queries that you want to run at once, you can have many individual pieces of hardware. And and we believe that that lets us use much more efficient algorithms, where we aren't taking one query, splitting it up on thousands of nodes, and having to then recombine it. You know, doing shuffle joins, broadcast joins. They're very computationally expensive and expensive in dollars. By being single
+
+00:16:05 - 00:17:02
+node, we can be more efficient. And lastly, MotherDuck has this unique capability of doing dual execution, where some of your queries you could choose to run them in the cloud, or you could choose to run them locally, or even a little bit of both in the same query. And that is very helpful for things like caching, for follow-up analysis, for slice and dice, or for just doing your development on your laptop before you push to the cloud. So, a couple quick diagrams of different ways you can deploy Duck Lake and how it
+
+00:16:33 - 00:17:30
+fits in with MotherDuck. So, with Duck Lake, uh you have three different components. You have a storage component. It's going to be parquet files. The question is, where are you storing those parquet files? Your metadata is is your catalog and your metadata together, which is kind of abbreviated as your metadata. And that's a relational database, and you have a lot of choices of which type of database. And then lastly is your compute. You can run that compute locally, or you can run that compute in the cloud
+
+00:17:02 - 00:18:05
+uh with a variety of engines now. So, the first kind of configuration for Duck Lake you could use is lightweight and local. You don't even have to run an object store API on your laptop. You could just use files and folders. And run it right on your SSD of your laptop. Your metadata uh database could just be DuckDB running locally, and you're using that laptop CPU you've already paid for. If you want to then do cloud persistence with local compute, you can use any object store, AWS S3, Google Cloud
+
+00:17:33 - 00:18:30
+Storage, Azure Blob. Um and then your metadata database, you'll want something multiplayer. So, you I would highly recommend uh Postgres. And then you could still run your compute on your laptop, but everyone connecting to the Duck Lake can run it on their own laptop. So, you get a nice nice distribution that way. Or you can build your own cloud Duck Lake, where you run your own compute on servers somewhere. There's a variety of different ways you can run uh server-side compute. Similarly, with MotherDuck, we have a
+
+00:18:02 - 00:18:52
+fully managed offering, where you can have storage managed by a bucket that we manage for you. Our metadata is managed in a MotherDuck catalog, and we have the MotherDuck compute, which is that nice elastic serverless compute uh there. And dual execution means you don't have to give up the laptop side, either. If you'd like to compute on your laptop for that low latency interactivity, you sure can. Uh we also have the option where you can bring your own bucket. And this is important, I think, for how
+
+00:18:27 - 00:19:23
+MotherDuck and Duck Lake work together, because this keeps the openness part. This is a bucket you own. Those are your parquet files. You can see them. You can touch them, almost, right? They're still just bytes, but you can feel them and and and know that you own them forever. It's an industry standard format that'll last for 50 years, right? So, it's it's really nice to have that portability. So, that is what I had to cover on the high-level intro side. Any questions on kind of Duck Lake, MotherDuck, how they
+
+00:18:56 - 00:20:02
+fit together before we jump into a demo? I don't think I saw any come in. Hopefully, uh whoever asked before, David, hopefully we answered all your questions uh about, uh you know, relationship between Duck Lake and MotherDuck. Um otherwise, I think we can keep going on to the demo. Sweet. Well, well, thank you for your questions. Keep them coming. We will also get to them as we go. So, this is a look at the DuckDB UI. To enable this, you just have to download the DuckDB CLI. There's a a single curl command that you
+
+00:19:35 - 00:20:37
+can run to to go ahead and download and install it. And then you'll execute one command to bring up this UI. Uh DuckDB -UI. And uh then you're here. So, this is using the the CLI, the command line compute, with a visual interface on top in the browser. You see I'm running here on localhost. So this is a fully open source DuckDB um approach here to start with. And this UI looks a lot like the MotherDuck UI because we've contributed it back to the community where anyone can use it for
+
+00:20:05 - 00:20:56
+free. Um we you know made that available to everybody. So the first thing to use DuckLake you'll go ahead and install it and load it and that does tend to happen automatically when you start to use it but that's just to let you know a bit about what's happening under the hood. We're downloading an extension from an S3 bucket and we are putting it in a common location to to find and then bringing it into memory. So nothing too surprising there. The next thing here is how we actually go
+
+00:20:31 - 00:21:32
+ahead and connect to our DuckLake. So we're going to do that with an attach command. This is a SQLite style command and we are attaching a DuckLake type catalog here so we've got DuckLake colon indicate that we want this to be DuckLake and then we could optionally specify the type of database here SQLite DuckDB Postgres. In this case we're we're using the default DuckDB so we we omit that and then we give it a name. And this is going to be a file on disk that where where we actually store the
+
+00:21:02 - 00:22:02
+catalog. Technically this is a dot DuckDB file so you can say dot dot DuckDB here dot DB dot DDB at whatever extension you could possibly desire. You can get creative. Um I'm calling it dot DuckLake so that I remember what the heck that file is when I go to it later. And uh then from there we give it a name. We're going to call it lake and a data path. So this is just the name of the folder where we want to store those parquet files. And later you can use this to point to an S3 path if you'd like. For local this
+
+00:21:32 - 00:22:26
+is just a folder name and we'll create the folder if it doesn't exist yet. So I'll go ahead and run that. Hey 40 milliseconds I have uh I have a lakehouse running on my on my laptop. So let's prove that. What does that look like? Well now I'm using lake here cuz I ran use so now you can see that's what's highlighted as my active database. And so I'm going to create a table inside of that DuckLake database. And let's go ahead and query out of it so we'll say let's run testing and
+
+00:21:59 - 00:22:59
+DuckDB fans will recognize I didn't put any select star in there um because it's optional in DuckDB but this is the same as running select star from testing. And I've got two columns some nice very generic data here for our quick little demo. So I've got this table I've done one insert into it. Let's look at what the files look like. This is a nice benefit of DuckLake. Part of the simplicity is this catalog here is already visible in our UI and this is this is the catalog.
+
+00:22:29 - 00:23:30
+This is all the metadata about our database. You can see what columns there are what data files there are. Uh if you're using macros or views we have that information and you could just quickly poke around and see you know what what we have. So here's the DuckLake table. We have one table ID of you know nice UUID here and it's table testing which we just created. Uh we can look in DuckLake column and we can say hey what do we have in here? Okay we've got you know table ID one so our testing table and we have two
+
+00:22:59 - 00:23:48
+columns and what are their names? Oh very creatively named I and J. Should have chosen something that looks a little bit different in small font but I apologize. We got to columns I and J. But not only can you just look at each table to really know what's happening with your data lake you can you can query them and join them together. So here I'm going to look at our data file table join with our table so I get the name of our table and see how many data files we have. And you can see here we
+
+00:23:24 - 00:24:20
+just have one parquet file so far. And that's because I inserted a 100 rows not not under 10. Well we'll get to the the secret inlining not secret. The the the fantastic inlining approach here in a bit. So what happens if I put in a little bit more data? So I've put in another couple rows. Let's go look at our data files again and you'll see now I've got two files and they have different snapshots so that way we could travel back in time. If we want to see what did my data
+
+00:23:52 - 00:24:42
+look like in the first snapshot or at this particular timestamp we can still see exactly what it would look like only at that particular time. From there there's a lot more that we could pull in to understand a bit about how DuckLake works. So here I'm joining to a few other things. I'm joining to my column stats and my column table. So I just want to say hey what statistics do I know about these parquet files so I can read only exactly the file I care about which we're going to
+
+00:24:19 - 00:25:26
+see is is our main way of doing performance tuning. So I could see that I've got my table name testing I've got my columns I and J and these two files so data file ID zero and one and it it lists the min value and max value of each of those files for these columns. And you can see my column I is nice and ordered zero to 99. My column J is totally random and so you'll see that my min max filtering is almost identical between the two data files for J but with with I let's say I only cared about you know data where I
+
+00:24:52 - 00:25:53
+is less than 20. I only have to read one file because I can look in the statistics and decide exactly which file I want to read. And I'm doing that decision making with one SQL query figure out hey what are all the files I need? We're running a filter filter where my my value is between my min and max value. Simple as that. Now there's a lot more that you could do with DuckLake to maintain this over time. It's also an important performance consideration a lot less so than other formats.
+
+00:25:23 - 00:26:22
+DuckLake tends to need less maintenance and less frequent maintenance but it's still something that is critical to having a lakehouse work well. You want to have at least one background job running. So you can for example merge your adjacent files. So these are the two files that we created. I took two files and I converted them into one. So let's look at that real quick. Let's look at all those files and the statistics of those files now and you can see that I have now combined those together into a single file that
+
+00:25:52 - 00:26:49
+ranges all the way from zero to to 999. So they're all together in one file. So that was a super crash course on DuckLake and some of the nice advantages of having your metadata right there in a database. To do the same in MotherDuck you could just click this sign into MotherDuck option here and that will take you to MotherDuck where you can log in. I'm going to log into the DevRel account. And we'll take a quick look. So now I can see some notebooks I've stored in the cloud. Also can take
+
+00:26:25 - 00:27:27
+advantage of the built-in visualization platform we have on MotherDuck called Dives. But I just want to show the slightly different syntax for getting started with a MotherDuck DuckLake and that is to create a database instead of running an attach command to create a DuckLake. So you do a create database command and you tell us what type it is and this will go ahead and create a DuckLake for you. And you can do all the same things that we just saw before where you can go ahead and create a table within that
+
+00:26:56 - 00:28:01
+lake and then pull push and pull data from it. All right. Well that's what I had on the crash course demo. I will swap on back to talk a bit about tuning. Any questions about the demo? Yeah let me see here. I think we had What did I see? Oh there's one question about the syntax. It says [clears throat] is DuckLake catalog one you know that's like in the database schema format? Good question. That is actually not. That's actually a file name. So if I looked at my actual file system you'd
+
+00:27:30 - 00:28:28
+see a file called DuckLake catalog one dot DuckLake. DuckLake here is the file extension. A little bit confusing. I probably should could have just called it you know dot dot DB something like that but in this case that's just the name of the file. Cool. Let me see. Let's let's I'm going to save some of these for the Q&A more longer Q&A at the end. Yeah so let's go let's go on to the tuning part and then we'll we'll get to the Q&A after that. Wonderful and keep
+
+00:28:01 - 00:28:45
+those questions coming. Like I said we have saved time for that. We we do really want to talk about that. So the next part here is tuning your DuckLake. Some practical tips for for how to get more out of it. The first thing is I want to start with things that you will probably always want to set. Of course I have an asterisk on always. It couldn't be a talk about a database without some it depends in there but most of the time you're going to want to set these three settings right out of
+
+00:28:23 - 00:29:25
+the gate. The first thing is you want to use parquet version two. So parquet version two is a version of the spec that came out many years ago that has some improved compression methods. And so it means for more common patterns of data you'll just get better compression with very little negative performance impact. It's it's pretty close to a free lunch to have an improved compression algorithm. The only downside here is ecosystem compatibility. Just if you want to use other tools with DuckLake just make sure
+
+00:28:53 - 00:29:43
+that they can read parquet V2. Again it's many years old at this point. It's it's got broad adoption but not universal adoption. So that's why it's not the default. So that's the first thing to do. And you'll see that that syntax there call my DuckLake dot set option. My DuckLake there is just the name of that DuckLake database. So our previous example we used lake and then on MotherDuck I used you know MotherDuck lake. That's just the name of our of our DuckLake.
+
+00:29:19 - 00:30:13
+The next one is to change the type of compression on your parquet files. This is again an industry standard technique. Zstandard is considered really the best in class compression for parquet. And by default we use snappy because that's the default and that's got the kind of lowest common denominator. Most readers are most familiar with it but Zstandard is going to be your best bet. Again only downside is compatibility. The next one is is a little bit more it depends but it's a still I would call it
+
+00:29:46 - 00:30:43
+an always type of option. And that's a a larger row group size. If you're running your DuckDB on the cloud, you should have a larger row group size. If you're running it on your laptop, keep keep the default. So, when we're retrieving data from object storage, object storage has high latency but high throughput. So, that means you want to request things in bigger batches. And uh there's a paper by the TU Munich Technical University of Munich uh that did some some empirical benchmarks of
+
+00:30:14 - 00:31:22
+what is sort of the the kind of location of diminishing returns for for chunk sizes downloading from object storage for database operations. And it's somewhere between 8 MB and 16 MB that you want to read in one chunk. And the way that DuckDB tends to read is a column row group chunk at a time. And so, you want to set your row group size. You can set a row group size bytes parameter. So, basically take your um look at how many columns are in your table, and then uh split this up so you get about 8 MB in a given column.
+
+00:30:48 - 00:31:44
+So, in this case, 80 MB, that's if I had like a 10 column data set. I would consider an 80 MB uh row group size. There are some boundaries here. You don't want to obviously set your your row groups to be in giant giant giant. Um uh but just keep in mind that kind of 8 MB or so rule of thumb. The next thing that you want to think about when you're setting up your DuckDB is you want to keep your compute and your storage close together. And now, this feels a little bit different than the kind of default
+
+00:31:18 - 00:32:26
+assumption of uh you know, using your laptop as your compute engine. When you want to run DuckDB at scale, you want to keep your compute near storage. And that's because the simple fact is most queries filter your data or aggregate it. And you want to do that without having to download it all to your laptop whenever possible. Uh so, the the the main thing is you you probably want to run some cloud compute. Also, when you run that cloud compute, make sure to put it in the same region as your storage bucket. Same cloud, same
+
+00:31:53 - 00:32:46
+region. You're you're going to be moving data back and forth quite a lot. It's it's much faster and better really cost-wise and speed-wise to to put them in the same location. And then, we start to get into some workload specific guidance. Really depends on what you need to tune. Again, the one of the big benefits of DuckDB is it's easy. If you had to tune it all the time, it wouldn't really be that easy. So, this tuning is not always necessary. This is sort of an optional
+
+00:32:20 - 00:33:21
+thing to get the most out of it. And and that depends on your workload. And the first one is really getting data ingested as fast as possible. The first feature of DuckDB to take advantage in this case is data inlining. So, data inlining is in place by default if you insert data less than 10 rows at a time. But you can change that uh however you'd like. So, what is inlining? What inlining means is if I'm inserting small amounts of data, instead of writing a separate Parquet file every insert,
+
+00:32:51 - 00:33:49
+I'm going to to batch those up by putting those as rows in my catalog database first, and then later, I will flush those rows out of my catalog database into larger Parquet files. However, things don't disappear when they go into that catalog database. All of your read queries will still be able to read out of that catalog, and it'll still be completely transactionally sound. So, sort of like you get the buffering type of capability of a Kafka, but you keep the transactionality of a
+
+00:33:20 - 00:34:20
+lakehouse. It really is a a a significant simplification over having to run Kafka, and a significant performance boost over having tons and tons of tiny little files. So, what this practically means is that you can ingest much more often into DuckDB than in other formats. Multiple times per second. Uh which will be uh significantly uh better. So, if you want to insert in bulk, we will typically be skipping the inlining step. We'll be going straight to Parquet. So, how do I optimize for that
+
+00:33:51 - 00:34:46
+bulk workload that's a little more common in traditional lakehouse scenarios? Uh the first thing is I'd recommend enabling per thread output. What does this means mean? It means that each DuckDB thread is going to write its own Parquet file, which allows us to blast data at object storage a lot faster. It doesn't make us synchronize things across threads. We could just push the data as fast as we can. Uh there's a trade-off here. You're going to have more Parquet files. And so, what that means is you might
+
+00:34:19 - 00:35:19
+want to run your compaction a little bit more often. And often, that trade-off is worth it. The next thing, if you're frequently loading data in bulk, I would recommend lowering the default retry wait time in DuckDB. And that means that your catalog is going to be able to move uh faster. So, the way that DuckDB handles transactionality, it does optimistic concurrency control like all the other lakehouses do where it will by default try and write your data, and then it will force a retry if there's some
+
+00:34:48 - 00:35:41
+reason that uh it's not uh valid to commit. Like let's say someone else got there first. And typically, it waits 100 milliseconds before trying that retry. And for most lakehouses, that could be a while, but for a transactional database or or that could be short. For a transactional database, that's that's that's a long time. So, you can shrink that number way down and and and insert data more quickly. So, that is kind of the fast ingest workload. Another common workload that you want to
+
+00:35:17 - 00:36:15
+tune for is is on the opposite end of the spectrum of how fast can you read data back out of your lakehouse. The key way to do this is to read as little data as possible. We saw a bit of that in the demo. And DuckDB does that at two layers. The first layer is what we looked at. File level statistics stored in the catalog. So, when when you read data out of DuckDB, step one, talk to the catalog. What files do I want to look at? And then, step two is go grab those files or pieces of those files. So, we
+
+00:35:48 - 00:36:49
+want to make sure that list is as small as possible by keeping that the statistics as narrow of a range as possible for the things you're filtering on. One key thing to look at there is partitioning. We'll see that in the next uh couple slides. Now, the second level of filtering is once you've decided what files to read, I don't want to read the whole file. So, DuckDB and any other DuckDB reader are just going to read just the columns that you want, and just the row group chunks. So, Parquet files are split up
+
+00:36:18 - 00:37:17
+into chunks, and we only want to read the chunks that match our filters. And the way to improve this and tune this is with sorting, which other folks call clustering. Same same approach. DuckDB has that capability. So, if you want to reduce the number of files that you read in total, you may want to partition your data. Frequently, you can partition by time buckets, year month day, or you might partition by something that's domain specific. Maybe you're always querying by customer. Maybe you want to split out your data by
+
+00:36:48 - 00:37:41
+customer to to make sure you only read exactly what you care about. Um but what if you have a million customers? I would not recommend creating a million partitions because those files will be tiny, and you'll spend so much time deciding what to read that you might as well just read a little bit of extra data. And so, there's a a tuning knob here that is a Goldilocks approach called uh bucket partitioning. This is also something supported the other lakehouses where I can say, "Hey, uh make a
+
+00:37:14 - 00:38:06
+thousand buckets of customers." So, if you know which bucket to go to, like for one specific customer, you did save, you know, a thousand X the amount of data you're reading, but maybe you won't have too many small files that way. So, that's a number that's worth tuning. Somewhere in the hundreds to thousands is probably a good partition count to to have. I don't know if I'd recommend hundreds of thousands of partitions, for example. So, there are things to be careful of.
+
+00:37:42 - 00:38:44
+Partitioning does take more work on the ingest side, and you can end up with more small files. So, those are the the other side of the coin. Be careful while you tune it. But by default, hundreds of partitions probably a a pretty safe sweet spot. The next level of tuning is with clustering or sorting. And the idea is to read as few pieces of Parquet files as you can. So, you can imagine in that demo, I had a a column that was totally random. I'm going to have to read all the rows in my data
+
+00:38:13 - 00:39:11
+to decide what what J values I I want to grab because it was it was randomly uh distributed. But if I sort my data, I could pick only one row group out of a file. And I tend to aim for a rule of thumb of about 10 row groups per file, plus or minus. So, that means that if you sort correctly, you get a 10 X boost. And that can be huge. So, somewhere around 10 row groups per file is is probably what I recommend. That works out pretty well with that like 80 MB example we had before. That means each
+
+00:38:42 - 00:39:47
+file is close to a gigabyte. That's a pretty good file size for a lakehouse format, somewhere around that gigabyte to half a gigabyte range for each file. The syntax for this is set sorted by, and you can set any expression or set of expressions. So, you can sort by customer then by date or date then by customer or or any other uh kind of combination. And I'm very biased. This is my my my um my main contribution to DuckDB so far is this sorting capability. So, um I added this index, and I I'm really a big fan,
+
+00:39:15 - 00:40:16
+and I I I think it'll come in really handy. So, if you have detailed questions on this one, uh I think I I can help with that. Other detailed questions, I will I'll do my absolute best. So, that's a a couple of pieces of things you could tune. You can tune um your types of files, you know, your your Parquet settings. You can tune how often you do compaction. You can tune your partitions. You can tune your your clustering and sorting approaches. And uh that can really improve either your ingest speed or your
+
+00:39:47 - 00:40:40
+read speed depending on what is your bottleneck for your application. If you want to learn more, highly recommend checking out the link in chat to to download a free ebook. It's an O'Reilly book. So this is not like a you know lightweight not not going into the details. We're going all the way into the weeds. We've got fun diagrams. You'll learn exactly how this how this how this works. And we'll send you every chapter as it comes out. But I think we've got a couple questions. Keep them coming. It is Q&A
+
+00:40:14 - 00:41:20
+o'clock. Sounds good. All right, let me work through these. First one here is how do you manage multiplayer in catalog back to buy Motherduck? You bet. So we we do manage multiplayer. That's part of the reason that you know Motherduck was created as well. >> [clears throat] >> DuckDB is this amazing single player engine and and Motherduck brings it into the multiplayer realm. So we are able to handle multiple connections to the same database. There are some more things we can do
+
+00:40:46 - 00:41:43
+with this in the future, but in general with the Motherduck ownership model we we tend to have ownership by user. And that keeps things nice and sandboxed. Especially in the agentic era, it's it's nice to have things sandboxed that way. We tend to recommend using service accounts. So that way you can have multiple humans logging into the same account to manage a central resource. So that's our main way that we approach it today. It it allows you to really scope down exactly what those agents can play with.
+
+00:41:17 - 00:42:19
+Um >> [sighs] >> Can we talk a little bit about you know I guess >> [laughter] >> security access governance? I think there's a couple questions around that. Yes, great questions there. I think this is an area where there's I think there's multiple patterns to choose from and there's more there's more experimentation to do to see which pattern is the best. And this is an area where Motherduck can manage it on your behalf if you like. So um The traditional way of managing access
+
+00:41:47 - 00:42:41
+control on a lakehouse is to manage it on the object store side. Where typically you're going to have your your data in folders by table and you can grant access to those tables or partitions of those tables by granting folder access in your cloud provider. And that does work in Ducklake. There's an option you can set. By default we store things in hive partition format so you can kind of find your files easily. If you don't like that, you can disable that and all your files will be kind of in the same place
+
+00:42:15 - 00:43:20
+and the catalog will be the only one that knows kind of where where the folders should be. Um The other option that is unique to Ducklake is um by using this encryption feature. So other lakehouse formats use a combination of parquet and plain text formats or binary formats like Avro in the iceberg case that don't support encryption. Parquet does. So what Ducklake can do there's a single one boolean you set I would like encryption please and we will give it to you. And that means that every parquet
+
+00:42:47 - 00:43:47
+file will be encrypted with a different encryption key. And that key will be stored in your metadata catalog database. And so if you protect your metadata catalog you don't have to secure the object storage at that granular level. You can have granular permissions on your catalog like say row level security table by table and that will grant access to those encryption keys. And that's a little bit harder because those are long-lived keys. It's built into the file on object storage. So there isn't really a way to
+
+00:43:17 - 00:44:15
+revoke that access. So that's part of what the value that we want to add from the Motherduck perspective is the ability that to manage that credential life cycle a bit more. Whereas with Ducklake once you grant access you have access to that file as long as you have access to that object store bucket. Um let's see here. What what is the best practice to use the number of workers based on the hardware resources? That's a great question. So this is going to vary based on which engine you're using. Most of the time
+
+00:43:49 - 00:44:48
+with Ducklake that'll be DuckDB, but Spark, Trino, Datafusion they'll have a different answer here. Um Typically the rule of thumb is about one of two things. Depends if you're CPU limited or you're network limited. If you're CPU limited, you should have the same number of workers, same number of threads as you have CPU threads. So if you have hyperthreading, you know it's the Intel term for that, you would want it the number of hyperthreads that you have. So you might have 16 physical cores, 32 threads. I
+
+00:44:19 - 00:45:12
+would set your your DuckDB thread count to 32. Now if you're network bound, if you're spending more time talking back and forth to object storage, which is very common in a lakehouse, I would take that that thread count and multiply it by two to five. And you might actually see significant improvement in total performance even if your CPU is operating a little less efficiently even if you're having to kind of thrash your CPU around. If you're spending all your time waiting on your network
+
+00:44:45 - 00:45:57
+it's good to make more network requests. So try bumping that up two to five times. Ooh interesting one here. Can you make Ducklake or Motherduck table native tables available as iceberg tables? That's a good question. Um the It is very straightforward to import from iceberg into Ducklake. It is a metadata only copy because we use the same exact parquet format as iceberg. Which means if you've got you know 100 terabytes of data in iceberg, you don't have to copy those 100 terabytes, you just copy the you
+
+00:45:25 - 00:46:28
+know megabytes or gigabytes you have of metadata and Ducklake can can take off and run from there. Exporting back to iceberg is still something that's being worked on and how we want to do it because Ducklake files are slightly more flexible than iceberg files. We allow multiple snapshots within one file. Because that's how inlining can really work well. If each insert to an inline table is a new snapshot and I have 1,000 snapshots in my inline table. And then I go to export it to parquet
+
+00:45:56 - 00:46:48
+if I have to create 1,000 separate files I I've lost all the benefits of that inlining. And so with Ducklake we are able to have a separate column in there for your snapshot ID. So we can do time travel within a file. Which is which is a unique capability to Ducklake. What that means is you have to make a decision when you export back to iceberg, you know you might have to do something like grab the latest snapshot for each file because iceberg doesn't have the understanding of of that row level
+
+00:46:22 - 00:47:22
+snapshot information. So we're working on that. I've also got like a side project I'm working on a little bit to to see if I can do a an iceberg rest API wrapper around Ducklake. So if you're interested, shoot me a note alex@motherduck.com. We'll play around with it a little bit. You me and Claude see how far we can get there. I think we might be able to to impersonate iceberg a little bit but use Ducklake as the engine. So that's a something I'm I'm playing around with.
+
+00:46:53 - 00:47:52
+Um Oh David's asking just to be clear you ingest the data in Ducklake and the engine generates the parquet file? That's exactly right. So in the DuckDB case, DuckDB is going to be writing the parquet file and in other engines they can choose to wrap around DuckDB. DuckDB is very portable and you could use DuckDB's engine to write that file or you can write it yourself with whatever engine you'd like. You know Spark could write those files for example. So part of that optimistic concurrency
+
+00:47:23 - 00:48:19
+idea is that we actually write the parquet file first all the way to object storage and it sits there. It's already there. But nobody knows about it cuz it's not in the catalog. So it's transactionally safe. And then we do a commit into the catalog after the fact to tell everyone that's querying all the read queries, hey this file exists now. And so that means that it's very decoupled. However you get that parquet file in, you can then just register it with the catalog later and that's when it becomes
+
+00:47:51 - 00:49:05
+visible. And so there's actually a way to write the parquet files with whatever engine you want. Daft, Pandas, Polars, and then just register it with the the DuckDB engine to the catalog. So you can however you can get your parquet files into object storage, we can read them. Cool. Easy. Uh next one here is uh is the reading utilizing the built-in DuckDB functionality to cache remote files? Is there a plan to support caching files locally on disk? Yes and yes. Excellent question. Thank you Kristoff. So yes, the DuckDB engine
+
+00:48:27 - 00:49:24
+does cache parquet files in memory while you are querying them. And it's again not reading the whole file, it's just caching the pieces that you've you've gone and pulled. There are some extensions in the ecosystem that extend this to your SSD as well. One of them by our our own Dr. Peter Bons here at Motherduck. He's a has built an extension that will will do just that. And so there there are a lot of different ways you can approach this. There's a other community extensions as
+
+00:48:55 - 00:50:02
+well. That's absolutely very possible. Uh let me see here. So many good questions. I'm trying to find what's this one? It's here. Last I checked Ducklake doesn't natively have primary keys or foreign key for or for relations. I have a use case with legacy reporting software that uses ODBC exclusively and want built-in get primary keys function. Is there a clean way to bridge the gap? Mm. I think that your approach is already quite innovative. So I like your approach there already to to work with
+
+00:49:32 - 00:50:37
+the DuckDB driver. This is very difficult because lakehouses it's very hard to store primary keys and get all the other benefits you already have from a lake house. So, I would recommend um some sort of work around. I think today you can also um with MotherDuck you can move data back and forth between DuckLake and MotherDuck. So, you could if you need those primary keys, you can move data over to MotherDuck selectively. Um the other thing is that I believe it's on the road map for DuckLake to have
+
+00:50:05 - 00:51:10
+kind of informational primary keys that are not enforced. And that might be just enough for for what you're looking for. Oh, interesting. Cool. Uh oh, a couple more questions on tuning. Uh are there recommendation recommended performance improvements to make the internal catalog queries quicker such as adding indexes? It's an excellent question. So, on the MotherDuck side we tend to to not need a lot of that just because our catalog is is already very fast. However, if you're using Postgres, there's a lot of of
+
+00:50:38 - 00:51:36
+literature out there about how to how to tune Postgres. Do highly recommend doing some of those things. The main first thing is I would uh put some profiling on your database to see if it's necessary. You know, Postgres by just out of the box is so much faster than talking to object storage three separate times. You probably don't need to tune Postgres that much to already be having a great time. Uh now, things I would look at, I would consider putting indexes on table ID. Cuz it's very often that you're querying
+
+00:51:07 - 00:52:09
+just a small subset of your tables per query and that would allow you to very quickly skip around to just the tables that you want. Um you could even consider doing Postgres partitions by table ID if this gets very very large. And that will allow Postgres to treat each metadata table uh about a physical DuckLake table as a separate physical Postgres table. So, that was a little bit of too many word times using the word table. But uh what that means is that you you you get, you know, uh performance advantages from
+
+00:51:38 - 00:52:40
+Postgres because it can keep things very separate by by separating it out partition-wise. Um So, yes, indexes are great. Yes, partitions are great. The good news is there's a lot of existing literature out there about how to do that for Postgres. This is not a DuckLake specific tuning exercise. This is just profile your Postgres and and add a couple indexes. So, my hope is that it's very low-hanging fruit if you do run into that as a barrier. Cool. Uh question here from Hoyt. Are there any best practices for tuning
+
+00:52:08 - 00:53:10
+the flushing threshold for inline data? That's a good question. Um currently today when you do a read query on inline data, Duck DuckLake will read the whole inline table and then do the filtering in memory. And it does that because catalogs like Postgres just can't filter as fast as DuckDB. And so, it often makes sense to take that workload out of the catalog database and do more of that work in the analytical engine. So, the rule of thumb there is just to kind of think about that mental model of
+
+00:52:40 - 00:53:35
+how many rows do I want to pull out of my catalog in one shot. And so, like maybe a million uh Postgres isn't super happy about downloading a million rows at a time. It's just it's it can do it. It's just not it's, you know, sweet spot. So, I tend to think of less than a million for that kind of inline flush, you know, kind of uh uh uh amount. The other way to think about it is is your parquet size. You don't want to be outputting every two rows cuz then you're going to have tiny parquet
+
+00:53:07 - 00:54:13
+files anyway. Uh so, that's the other side of the coin is is maybe wait until your parquet files are reasonable size. You may still want to do compaction anyway. Uh inlining and compaction you can do one or the other, but you may want to do a little bit of both. Inlining is going to mean you get to do compaction way less often, which which might be enough. Cool. Awesome. Uh I'll take a few more here and then we'll let y'all go. Uh is the set sorted by feature available at table creation?
+
+00:53:40 - 00:54:32
+Great question. Today it is a separate command that you run after the table is already created. So, you'll create the table and then you'll do a set sorted by. Um so, if you're using something like DBT, it does mean that you'll need a hook there to to run uh that after the table's created. The good news is that it has a deduplication there. So, if you run the exact same set sorted by that's already there, it's a no-op. So, there's really no downside to kind of always running set
+
+00:54:06 - 00:55:17
+sorted by uh in your DBT pipeline for example. Uh there is syntax support in DuckDB for putting that into the create table command uh la Spark. So, we have plans to implement that in DuckLake as well where you can do a create table with a sorted statement inside of the create statement. So, um that's on the road map. Thank you for the question. Cool. Uh oh, I don't know if much of a question here, but this is also DBT related. Uh you know, how I I uh Nicholas has been trying DBT DuckDB towards a DuckLake
+
+00:54:42 - 00:55:42
+as well as reading DuckLake through Metabase. Uh you know, some dirty hacks to make it work with glitches. Have you tried it out? What's your experience if you have tried it out? If not, I know we have some other internal DBT DuckDB experts here at MotherDuck and we can, you know, get answers there. Sure. Yeah, we we do definitely use DBT in internally and and extensively. So, it's absolutely something that we we've tested and used. Um I have as well. It it um I'm not aware of any outstanding issues
+
+00:55:12 - 00:56:04
+that are there significant. Please let me know if that's if that's not the case. File some bugs in that repo. Here at MotherDuck we're co-co-maintainers of the DBT DuckDB repo. So, we do look at all those issues and triage them and and help to get them fixed. Definitely let us know if you're seeing anything there. That's a key workload that we want to be super smooth on DuckLake. We want it to be just like any other database you're working with DBT on. Um Metabase likewise, we we do also um
+
+00:55:37 - 00:56:36
+want that to work smoothly, too. Um we probably have some extra things that might make that even a little bit smoother on the MotherDuck side. That's another option if you're really running Metabase at scale. We we have a a different connection approach in MotherDuck where you can actually pretend to be Postgres to your BI tool. We call it our Postgres endpoint. And sometimes that can have things be smoother. Uh so, please have a look there on the MotherDuck side. Cool. This is a a long beefy one, but a couple people
+
+00:56:07 - 00:56:59
+have asked about this cuz it covers your face also. I'm going to remove this. Uh does MotherDuck offer self-hosted deployment models? My customer data cannot contractually leave my cloud account and cannot be provided back to third-party vendors without major process. Uh so, can I set up DuckLake in S3, but can't spin up MotherDuck? Uh you know, I can spin up the DuckDB UI in a container and expose the port, but that doesn't seem super scalable. Sure. I think that is something where
+
+00:56:35 - 00:57:29
+if you're limited to your own cloud account, today open-source DuckLake is going to be your best bet. Um there is not a limitation on how much concurrency you do. You can spin up as many compute containers as you'd like uh there and use the same bucket, use the same metadata catalog and and get a decent amount of compute there. So, I do think open-source is the approach for now. On the MotherDuck side we are, you know, a database as a service and and our architecture is fairly complex under the
+
+00:57:01 - 00:57:55
+hood to make that very seamless for you, which means that it's not uh straightforward to go ahead and deploy in another cloud environment today. So, so today we are, you know, a database as a service as a service as our as our only deployment model. Um that said, we do want to get to that point where we can deploy into VPCs. We're we're a little ways out from that at the moment. Cool. Uh let me one last one. I will say also that you said without major process, let us know how we can
+
+00:57:29 - 00:58:17
+help with that as well if you're interested in MotherDuck. We can jump through hoops or or, you know, help make the case for you internally. Uh you know, I was a customer engineer for a couple years here and we we're happy to to be the the person that gets the questions asked to uh on your behalf. For sure. Uh yeah, I'll take this last one. Uh in DuckLake with respect to keeping storage and compute close to each other, what are the implications of bring your own bucket on, you know, R2 versus
+
+00:57:52 - 00:58:49
+MotherDuck managed storage and what is the cost difference? That's a great question. Um we do recommend uh having the the bucket be really close by. The main uh so, with R2 that's not as much of a cost concern because they don't charge egress fees. They have a different billing model, which is really excellent. Um so, with R2 you don't necessarily pay the same kind of cost penalty that you would with some of your other cross-cloud or cross-region operations that you would do. Um you will still pay a a cross
+
+00:58:21 - 00:59:16
+performance, you know, cross region performance uh challenge. Um that will be most acute based on how many files you have. You know, the smaller your files, the more often you pay that latency penalty. The bigger your files, the bigger chunks, the less often you'll pay that penalty. So, you might have to really tune your workload more to get it to perform well on R2. So, it's a little bit a bit more difficult. Price-wise, R2 is very cost-effective. It does mean it's a little less performant than some of the other other
+
+00:58:48 - 00:59:47
+providers. You know, you think of object storage as a commodity. Technically, it's not. R2 is a little slower, um but it's a lot cheaper. We are very competitive storage-wise uh on both DuckLake and managed MotherDuck storage because um you know, that's that's not where where we're trying to to necessarily be, you know, um prohibitive, right? We we want the cost to be very very competitive. So, uh take a look at our pricing on the MotherDuck side. It's it's very similar to what
+
+00:59:17 - 01:00:17
+you'd pay for just a traditional bucket. Uh most of the cost of a duck of a data lake of any kind comes on the compute. We tend to see it's 80-90% of the cost is compute. And so, really what you want to optimize for is your your fastest possible query response time. And that often times means means storage that might be a little more expensive right next to your compute. So, be sure to benchmark the whole system cost, not just your storage cost. Awesome. With that, we'll wrap it up. Uh thank
+
+00:59:47 - 01:00:24
+you for all the great questions. If you have more questions, join us. Uh we have our community slack. Uh you know, Alex hangs out there. I think there's even a DuckDB channel. Uh if not, you can either you can post it in in in general and we'll answer your questions. Um cheers, everyone. Have a great day. Thanks. Cheers. Thanks for the questions.

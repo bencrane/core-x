@@ -82,9 +82,17 @@ These are the verified upstream locations as of 2026-07-08. Individual files may
 | [`11_quack_extension.md`](duckdb/11_quack_extension.md) | The `quack` extension & the extension template (how DuckDB extensions work) |
 | [`12_sql_essentials.md`](duckdb/12_sql_essentials.md) | `TRY_CAST`, types (`STRUCT`/`LIST`/`MAP`/`VARIANT`), `QUALIFY`, window functions |
 | [`13_lance_interop.md`](duckdb/13_lance_interop.md) | **DuckDB ↔ Lance** — the native `lance` extension *and* the pyarrow bridge |
+| [`14_ducklake_lakehouse.md`](duckdb/14_ducklake_lakehouse.md) | **DuckLake** — the open lakehouse format (catalog + metadata as a SQL DB) |
+| [`15_ducklake_tuning.md`](duckdb/15_ducklake_tuning.md) | DuckLake tuning — `SET SORTED BY` clustering, partitioning, inlining, R2 specifics |
+| [`16_profiling_and_pitfalls.md`](duckdb/16_profiling_and_pitfalls.md) | Profiling & index pitfalls — `EXPLAIN ANALYZE`, ART index costs, memory |
+| [`17_search_over_lakehouse.md`](duckdb/17_search_over_lakehouse.md) | Search-first retrieval over a lakehouse (**vendor-reported**, awareness only) |
 
 ---
 
+## The talk-transcript corpus (primary-source provenance layer)
+
+A committed corpus of 17 talk/video transcripts (three layers each: verbatim ASR → **faithful clean** → editorialized) plus 3 reproduced articles lives at [`../youtube-transcripts/`](../youtube-transcripts/) and [`../batches/`](../batches/), indexed by [`../INDEX.md`](../INDEX.md). It is the primary-source layer behind `duckdb/14–17` and the corpus-folded additions to `duckdb/00`, `10`, `11`, `12` and `lance/10` (DuckCon #7, the Quack launch, DuckLake, extension workshops — much of it newer than any published docs). Canonical files cite it by transcript path; the **clean** layer is the citable one. Talk-reported claims are always qualified as such — where upstream docs exist, the canonical file verifies against them and the upstream citation wins.
+
 ## Maintenance
 
-These are point-in-time snapshots (fetched 2026-07-08). Upstream moves — signatures get added, defaults change, versions ship. When you rely on a file for a load-bearing decision, re-verify the specific signature/default against the source URL in that file's header. Regenerate any file by re-fetching its cited primary sources; a file's "Unverified / needs confirmation" section names exactly what was not pinned at authoring time.
+These are point-in-time snapshots (core library fetched 2026-07-08; corpus fold-in July 2026). Upstream moves — signatures get added, defaults change, versions ship. When you rely on a file for a load-bearing decision, re-verify the specific signature/default against the source URL in that file's header. Regenerate any file by re-fetching its cited primary sources; a file's "Unverified / needs confirmation" section names exactly what was not pinned at authoring time.

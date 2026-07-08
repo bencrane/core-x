@@ -1,0 +1,149 @@
+00:00:00 - 00:01:02
+Uh hi, my name is Sam. Uh I'll be talking about DuctTb extensions. Uh this morning I hope many of you have already enjoyed uh Rusty's workshop on extensions where he went really in depth. Uh right now I will actually take it a step back and do more of a high level uh view of DDTB extensions. Uh I'll basically just fly through the time as DTB extensions were created uh and where we are now and then we'll also look at the future. Uh so let's just dive right in. Uh today's menu is
+
+00:00:31 - 00:01:33
+actually quite straightforward. Uh we will start with a introduction. Uh after which we will go uh look at the past. After the past um maybe you guessed it, we will start with the future uh the present. And then after that we will hopefully somewhere end up in the future. um in the past I will just give you a bit of a a bit of a flight throughout uh all the key points in ductb extension uh uh well development in a sense not just the extensions themselves but also the whole framework and ecosystem around
+
+00:01:02 - 00:01:56
+them uh in the present I will uh actually go into uh looking at the current state of extensions like what's the current best practices what what's there now essentially if you want to get into extensions now what's there and in the future I'll give you a bit of a sneak peak into the future on the things that we're cooking up and the directions we think we're going to go. All right, let's start with a little introduction. Uh, so my name is Sam Onsm. For you non duchies, you can also
+
+00:01:28 - 00:02:35
+say Sam. Um, and I've been working at DuctTb Labs for over four years. Um, so before starting here, I did my master thesis at CWI not far from here. Uh, which is actually the birthplace of DuctTb itself. uh it's a research group uh which has a database architectures uh group um where I did my master thesis on encrypted query execution in ductb uh after that I started working at ductb labs which is then a very small startup um and I worked on various extensions like ones that well some of you may be
+
+00:02:02 - 00:03:21
+already familiar with but I also worked extensively on the extension framework itself which consists of things like the extension template uh but also the different APIs uh and the CI ICD pipelines to deploy them and test them. So now that's me. But uh the question now is who are you? So I have uh I have some questions. Uh just two. Uh so maybe for yes raise your hands and maybe for no make a small quacking sound. All right. So who here has used ductb extensions? All right. No quacks. Excellent. Uh, but now who has written
+
+00:02:42 - 00:03:38
+DTB extensions? >> All right, I think that's a healthy 50/50 mix, which is I think impressive, but that's probably due to Rusty. Um, so, okay, that's good to know and I know where uh where we're at. Um, so let's just dive right in. Um, the next part of the introduction, I will just make sure we're on the same page on DTB extensions. Like, there are some people here that are quite experienced already, but some might not. So let's just do a brief overview of what ductb extensions
+
+00:03:10 - 00:04:14
+actually are. Uh so what are ductb extensions? Well in essence they're uh a way to add or alter functionality uh to the core ductb feature set. Um now that can be anything that can be things or well it can be not anything but many things uh like table functions types file system cataloges uh cryptographic modules uh could be like the thing is ductb can extend a lot um I have some examples for you uh that you might already know there's a JSON extension which can help you read JSON files from
+
+00:03:42 - 00:04:37
+ductb there's a postgress extension which can integrate with Postgress obviously uh then there's some more complex or some more wonky ones maybe where you have Google Sheets where you can actually integrate into Google Sheets and you can just read and write data directly from Google Sheets which is a community extension very cool uh but also some obscure ones which might not be immediately relevant but yeah that's also how science works um so now why have duct DB extensions at all um
+
+00:04:10 - 00:05:11
+well that's a great question and I will answer it uh for us in this case so there could be many reasons and for us it boils down to well I think these four are quite key. There are also a bunch of others that I won't bore you with. One of the main things is that we care a lot about binary size. Duct DB is an embedded database and we want it to run everywhere anywhere. Uh which means that if the binary is uh 3 GB, that's a problem because we also want to run in like uh storage restricted or memory
+
+00:04:40 - 00:05:42
+restricted environments. So the binary size really matters. uh and ductb but ductb also wants to have an extensive uh feature set and those things don't combine so you'll have to make compromises and through extensions we can actually select or users can determine what this trade-off is between feature set and binary size another good reason is that uh we don't want external dependencies if you've seen any talks about ductb before you're probably familiar with the statement that ductb is a zero dependency system
+
+00:05:11 - 00:06:08
+and that is true but the but we do actually want to have dependencies because there are many great libraries out there that we want to use. So what the solution here is to push them into extensions. So duct DB itself remains fully dependency free. Whereas you have extensions which actually leverage these dependencies to implement certain features. But then only if you want to be exposed to these features or if you need these features only then will you actually be exposed to the external dependencies.
+
+00:05:40 - 00:06:44
+Um then there are some other reasons uh why we want them. For example, functional uh incompatibility where you would have extensions like uh let's say you have different SQL dialects uh that are functionally incompatible from each other. Then extensions are a great mechanism to to deal with that essentially. And finally we also have different maintainers for different parts of the code. So uh different people can maintain code that runs induct. Um we'll see uh how that works later. All right. So now, how do I use duct DB
+
+00:06:12 - 00:07:07
+extensions? So, um, I think most of you already said they were using duct DB extensions, so this should be pretty straightforward. But even if you said that you weren't using duct extensions, you maybe still already are. And how that works is that ductb actually autoloads and installs extensions. Uh so for example if we look at this quite simple uh query where we do a select star from a JSON file over the network we can see that duct DB under the hood actually automatically for you installs
+
+00:06:40 - 00:07:36
+and loads two required extensions for this query. This happens fully transparently uh and you won't even notice that it happened except for the fact that there are now two extensions that are installed. Uh alternatively you can still also just install and load them manually which can be useful in various situations. So uh another question where do I get them? Well we just saw that you can just install them but you can actually install them from different locations. So we have this concept called extension
+
+00:07:08 - 00:08:07
+repositories and we currently have two. Uh the one is core and one is community. The core ones contain all the extensions that ductb actively uh maintains. Uh whereas the community ones are maintained by the community. Now how does it work? Um it's actually quite straightforward. You can just do this straight from SQL. You can just install extensions however you like. The default is core. Uh but if you have some extension that's available in a community repository, you simply say from community. Uh and there you have
+
+00:07:38 - 00:08:48
+it. So um with that being said, there was actually there was a slide in between uh it went missing. Um with that being said, uh let's dive right into the past. Um because I think we have a solid introduction now. Uh I think everybody's on the same page. So I think we can dive into well how this whole ecosystem of ductb extensions came to be. Uh I draw here this uh slightly wonky timeline with not consistent intervals but uh it'll have to do. Um and I'll fill it in with some uh some key points in ductb's
+
+00:08:12 - 00:09:20
+history. So all the way back in 2018 you can see the first ductb commit back in CWI. Uh and all the way on the right just last Monday uh you see ductb v1.4.4. for and in between you have some key other releases like the first release and the first uh the first stable release v 1.0.0 now with those said we can uh we can take a further look. So here we actually have the key points I would say in uh the ductb extension uh mechanism and also ecosystem. So the first key point is well the extension mechanism itself
+
+00:08:46 - 00:09:57
+like duct DB's core ability to put code in an extension and load it. That was all the way back in 2020. So this thing is pretty old by now. Uh but it's still how ductb loads uh extensions today. Then a year later we see the core repository and the difference here is that the core repository was the mechanism where ductb can actually install extensions automatically using this install syntax we just saw. Then roughly two years later uh we see the C++ extension template arise and that's a key point because the extension
+
+00:09:22 - 00:10:25
+template was a point where basically uh we at DTB lab said well look we can build build these extensions but not only we can build them you can also build them and this is how you should do it. Uh so this template is now used for most of our core extensions and also used for most community extensions. uh and it's not just a template but it's also sort of a guideline and uh yeah it's basically how we promised that it will work uh a year later was another key point uh where the community repository uh was
+
+00:09:53 - 00:10:53
+created. So giving uh uh the community a template for how to like build extensions is one thing but what we also wanted to provide is to have this uh repository where people can easily deploy extensions so that users can just install them with the same ease that people can install uh core extensions. Right after that we see that there's two more extension templates the Rust extension template and the C extension template. I will not touch them too much for now but they will come back later.
+
+00:10:22 - 00:11:28
+So keep an eye on them. Quick sip. All right. Um then finally I just jotted around a few extensions across the board. There are many more but this is just a few to get an impression. So the first one was actually ICU uh which was interesting to note which is a quite a big library. Uh so uh that was actually the direct reason back then to be like all right well we really want this but it doesn't fit. So okay extensions extension mechanism it is. Then throughout the years uh different extensions that will probably be quite
+
+00:10:58 - 00:12:10
+familiar to uh many of you uh arose uh with finally one of the notable ones which is the duck lake extension which was released last year uh which implements our our own uh open lakehouse format. So I think that should give you a pretty decent uh feeling for uh what's been happening. Uh so I think it's now time then to jump into the present. So what does the present look like for duct DB extensions? Well uh the main thing is ductb extensions are very ubiquitous. Um I have some stats here that I think tell
+
+00:11:34 - 00:12:39
+pretty clear story. Um, by now we have 32 core extensions and 145 uh community extensions. And the core extensions are downloaded uh over 27 million times every week. And the community extensions are downloaded over 500,000 times a week. Those are quite serious numbers. And not only that uh when you compare to for example uh the ductb Python client um you can quite clearly see that these are also not insignificant numbers in relation to how many times our clients are downloaded. So that really means
+
+00:12:07 - 00:13:12
+that duct tb extensions are a pretty integral part to using ductb which can also of course be explained by our autoloading mechanism and the fact that many people will actually rely on features like parquet and hpfs. All right. So, how are extensions built today? Um, so if you've been to the workshop this morning, uh, you already know this. Uh, but you use this template that we have. This is the first template on the timeline, which is a C++ uh, template and it builds against DuctTb's unstable API. I
+
+00:12:39 - 00:13:39
+will come back to that later. This is now the recommended way of building extensions. Um, so the next one is an experimental one which some of you I know have also used or tried to use. uh it is experimental um and it is actually on paper really nice but it has some shortcomings now uh it's a Rust extension template uh and it uh currently codes against an unstable API as well that might change in the future though and finally we have the C extension template which can actually build both C and C++ and that is
+
+00:13:09 - 00:14:04
+actually the first one that uh works with a stable API this whole differentiation between stable and unstable APIs will come back later so don't worry so another thing is who is maintaining extensions today. Uh we actually have a few distinctions here to make. So we have the core repository and the community repository right now. And in the core repository we have different like groups of extensions. So we have the primary core extensions which are the ones that receive DUTDB Labs's top
+
+00:13:37 - 00:14:41
+uh support and you have the secondary core extensions which might be a little bit more uh experimental or receive a bit less support. You can find this uh in our documentation. Then we also have thirdparty core extensions which are actually uh maintained by partners of ductbabs. Then finally we also have the community extensions as I've said before a few times now in the community extensions repository which are maintained by well all of you. Now with that I think we're ready for the future. I hope at least. Um so what
+
+00:14:08 - 00:15:18
+does the future of ductb bring? Well, let's first take a step back and look at some challenges here because as I've said, um, we have this unstable C++ API thing going on. So, our main recommended extension template describing how we recommend to build extensions right now uses an unstable C++ API. Well, what does that mean? Um, well, it means that the API can change every version. It means you cannot rely on version uh on functions in this API to be the same next release. And what this means in practice is that you get
+
+00:14:44 - 00:15:43
+some downsides. Uh you get some downsides because since this API is unstable for example we have to rebuild all extensions for every duck to be released which is kind of a burden. Um but not only that, it's also quite heavy on extension maintenance. Uh because all the extensions also need to be updated whenever these APIs change. So every time a ductb um ductb core engineer changes an API which a lot of extensions use, it breaks a lot of extensions. All these extension maintainers need to be
+
+00:15:13 - 00:16:16
+like ah what changed? Um and they'll need to fix it which is work and it's not ideal of course. And finally um it's also hard to document. as well the API is a the API is a very moving target and that's on purpose like we want be to be able to have ductb move fast uh so that means that keeping up documentation either means you have to put in a lot of effort or uh you actually have to have still documentation so that's not ideal now the question is is there a solution well yes we're working on one which is also
+
+00:15:44 - 00:16:52
+where the other templates come in so uh the solution is to use a stable API which you probably could have guessed Um, and what does this uh uh stable API bring? Well, stability. Uh, and also because it's a C API, it brings good interoperability with other languages like for example, Rust. Um, so this is clearly a problem, a solution because it solves our issues with the unstable API. It means that when you compile an extension for duct DB, it will actually just keep working because DuctTB will say like, well, this
+
+00:16:18 - 00:17:33
+API is going to stay the same for multiple versions, ideally forever um or until we decide that the thing becomes unwilly. But this will allow uh extension maintainers to just build an extension and kind of forget about it and it will just keep working. Uh which essentially solves all these three main issues. So that brings us to the goals. Um and the goals here are all uh focused on this uh stable C extension API and switching actually uh the default from this unstable C++ API to the C extension
+
+00:16:56 - 00:17:51
+API that is stable. So our main goals are to just expand this uh C extension API as much as we can. Like right now what we would like to do is move a lot of our own extensions over but not all the functionality is there yet. Like I know Mox for example has done like great work in the past year to add many many features and we're we're getting uh closer and closer to the point where many extensions can actually be moved over uh giving us all those benefits of a stable uh API extension. But there's
+
+00:17:24 - 00:18:31
+more work to be done and it's going to be one of our like main priorities in this uh space. So with that being done, uh we want to also stabilize both the uh the rest extension template and the C extension template, leveraging the fact that these APIs will become more and more powerful, giving the community as well, but also the DuctTb Labs core team the ability to to leverage this this stable API. Then finally, yeah, we want to migrate as many extensions over as possible essentially. Uh where we also want to
+
+00:17:57 - 00:19:13
+see which ones we can actually move over to Rust and which ones we can move over to C or C++. Um okay, so the takeaways for today, uh DuctTb has a quite extensive extension ecosystem. Uh there uh it's been it's being downloaded quite a lot. Uh and we have a ever growing community of uh extension maintainers. um which offer all sorts of uh functionality that we had never even dreamed of. Um and also we have two main APIs. The recommended one today is still the C++ API. It reaches deep into duct
+
+00:18:34 - 00:19:47
+DB but comes at a price. Um and on the other hand, we're building on this new API which will actually improve the life of mostly the simpler extensions by a lot by uh bringing stability to the extensions. And that's it. Thank you. >> All right. If I would develop DDB extensions, I would have questions now. So, >> thank you. Thank you so much for this good talk. Um, I I miss a bit of a Are there any dates >> put like on the road map? It was a datalless road map. >> It's a dataless road map. Yeah. We have
+
+00:19:20 - 00:20:24
+a tendency to make dats >> for our own sanity. >> Yeah. >> Um no, so the goal is internally it's not publicish. Uh but it's v1.6. So uh these these top two two points uh we currently have for 1.6 like 1.5 is going to be in a few weeks and 1.6 is going to be a couple of months after that. So that's the goal. Yeah. >> A couple months after that. Yeah. >> Oh, okay. The summer say. >> Yeah. Oh wow. Okay. Thank you so much. >> If someone has a deep voice they can do
+
+00:19:52 - 00:21:05
+this summer. >> Thank you for the talk. It was really good. Um, are there any plans to make um some extra repositories available? Uh, like not just core and community, but the ability to to have their own, for instance, a company having a private repositories of extensions available not being open source because that might be a use case in the future. >> That's a that's a great point. Uh, right now Duck DB does allow for this. Uh so the only reason you would want to use these um core and community repositories
+
+00:20:30 - 00:21:35
+is because those extensions are signed. Uh so you can easily right now put ductb in unsigned mode and then you can just install and load extensions from wherever and you are of course always free to just build an extension compile your own version of ductb just the way you like it with your uh closed source extension in there and then just use that. Yeah, >> first of all, thanks a lot and very excited about the stable API for Rust. Um, we're currently looking at the uh iceberg extension and it might be one of
+
+00:21:03 - 00:22:17
+the key pillars for our next uh um you know stage architecture for the enterprise to replace uh legacy uh ATLs and stuff. One of the capabilities we're uh looking for is the ability to write uh partitions uh with iceberg uh in uh legacy hive partitions and and the hidden partitions. Do you have any kind of like uh forecast or maybe um agenda for for these capabilities? Um, I'm gonna have to forward you to Tom who's also in the room. >> For5 otherwise. Uh, yeah, it's soon. Um,
+
+00:21:46 - 00:22:53
+I am Tom. I'm responsible top contributor for DUTB iceberg. Uh, yeah, it's definitely something that is top of mind definitely for V2. Uh, so we can finish up V2 support and then move directly onto V3 support. Um, I would like to do V1.5, but I think we're really trying to wrap up V1.5 right now. Um, but so if it doesn't make that, then >> I might try to squeeze it in a bug fix release. >> Thank you. >> Yeah, it's uh soon. >> You may have noticed that a bug fix
+
+00:22:19 - 00:23:16
+release is only applied to Core Dark DB and then we ship extensions with some small features. That's one way to keep it a bit. Yeah, that's one of the sort of interesting side effects of having this like unstable API where we tie our extension releases to our ductb releases. That means that the bug release and duct doesn't actually mean a bug release in extensions because extensions actually ship features in these because they're only in lock step for this sort of maintenance reasons.
+
+00:22:50 - 00:24:17
+>> Thanks for the great talk, Sam. I have a question about um extensions being downloaded. you mentioned that before that some of them even download it silently. Um I I get it that it's very convenient and uh makes >> makes it easier to use advanced um >> um functionality but u it also kind of introduces a potential breaking point and increases the vulnerability exploits. Yeah. Right. So like what what you what would be your recommendation if like I'm building an application which depends on that how
+
+00:23:33 - 00:24:39
+can it be um prevented? >> Yeah, that's a great question. Um so we do think about this a lot. Um so the default mode in which duct DB runs uh is designed this way to make it as easy as possible to use which is why we have this mechanism right we want users to use ductb out of the box to just get a really good experience and just not have to think about things like this but if you build a kind of security uh if if you build a system where security is really important then you need to think
+
+00:24:07 - 00:25:03
+about these things uh so if you're building a like a critical infrastructure thing where you're like all right we cannot absolutely download extensions then you'll have to do mitigations yourself like we have a securing duct DB doc page on our documentation which goes into a bit of detail about setting up like secure integrations with ductb but in this case you can like again uh as on two questions back uh you can for example compile your own version of ductb with the extensions statically loaded so you
+
+00:24:35 - 00:25:43
+never have to install them and you can disable extension installation altogether for example All right, we have time for one final question. Yeah, I wanted to continue on the conversation around vulnerabilities and securities and I wonder if maybe within the template or um for for building extensions if there can be some or the publishing maybe of the extensions if there is can be some security considerations or uh testing or integration or scoring and maybe using something like score scorecard
+
+00:25:10 - 00:26:10
+um to evaluate you know like >> I'm I'm not familiar with that. >> Uh so I'm not sure if I follow the question. It's the question whether we should have like a reporting mechanism for vulnerabilities. >> Yeah. either either um a reporting mechanism or some testing during the as as extensions are published for example >> if there can be some evaluation right or potential risks or so that you know like you you could you could um you can make that information available uh and then
+
+00:25:40 - 00:26:36
+maybe also not automatically load extensions you know if they don't have it >> yeah soing >> yeah that's a great question and of course like security is pretty critical when you allow the community to build and deploy extensions. Uh so yeah, it is actually really important to consider uh security here. Uh it's also important to mention that autoloading will only work for extensions within the control of ductb score team. We will never autoload community extensions because that would
+
+00:26:08 - 00:27:13
+indeed be a security hazard. Um so yeah, how we manage security for community extensions is similar to how other package managers do it. um we in a sense put the burden on users to make sure you trust whose community extension you install. Like if you're going to install random mpm packages, it will probably also not take that long before you get a exploited. Um so in a sense, it's up to the user to see how popular and how well renowned a package is. Um like that's why they're all open source as well. Um
+
+00:26:41 - 00:27:11
+like you can't upload straight binaries to the community repository for example. Uh so yeah, it's a combination of the community needing to check on these and us actively also checking for uh for malicious extensions.

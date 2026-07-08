@@ -13,9 +13,17 @@
 > - https://duckdb.org/docs/current/sql/functions/list — `list_value`/`[...]`, 1-based indexing, slicing, list comprehensions
 > - https://duckdb.org/docs/current/sql/functions/text — `trim`/`ltrim`/`rtrim`, `replace`, `regexp_replace`, `lower`/`upper`, `strip_accents`
 > - https://duckdb.org/docs/current/sql/functions/lambda — current `lambda x: ...` syntax; deprecated `x -> ...` arrow syntax
-> - https://duckdb.org/docs/current/sql/dialect/friendly_sql — `EXCLUDE`/`REPLACE`, `COLUMNS()`, `GROUP BY ALL`, `ORDER BY ALL`, PIVOT/UNPIVOT, `FILTER`
+> - https://duckdb.org/docs/current/sql/dialect/friendly_sql — `EXCLUDE`/`REPLACE`, `COLUMNS()`, `GROUP BY ALL`, `ORDER BY ALL`, PIVOT/UNPIVOT, `FILTER`, **function chaining (dot operator)**, FROM-first
+> - https://duckdb.org/docs/current/sql/functions/overview — function-call syntax, the dot operator, scalar-only chaining restriction, literal-parenthesization rule
+> - https://duckdb.org/2023/08/23/even-friendlier-sql — "The prior expression in the chain is used as the first argument to the subsequent function"
 > - https://duckdb.org/docs/current/sql/samples — `USING SAMPLE` (reservoir/system/bernoulli, `REPEATABLE`)
 > - https://duckdb.org/2026/03/09/announcing-duckdb-150 — VARIANT GA in v1.5.0, GEOMETRY built-in, lambda-syntax change
+> - https://duckdb.org/2026/06/17/announcing-duckdb-154 — latest stable v1.5.4 ("Variegata"), 2026-06-17 (backs the "Version ground truth" table)
+> - https://duckdb.org/2026/06/17/announcing-duckdb-145 — latest LTS v1.4.5 ("Andium"), 2026-06-17 (backs the "Version ground truth" table)
+>
+> Corpus (committed clean transcripts — talk-reported, not upstream unless separately verified above):
+> - docs/youtube-transcripts/clean/2024-08-24_duckdb-function-chaining-the-simpler-sql.clean.md — YouTube tutorial, 2024-08-24: dot-operator chaining, the literal-parenthesization gotcha, the non-chainable-cast workaround via a macro
+> - docs/youtube-transcripts/clean/2026-05-28_duckdb-not-quack-science-ubuntu-summit.clean.md — Ubuntu Summit 26.04, London (Gabor Sarnyas, DuckDB Labs), 2026-05-28: `GROUP BY ALL`, `COLUMNS(*)` + `* EXCLUDE`, trailing comma, HTTP-URL-in-FROM as friendly-SQL features
 
 Scope: The SQL surface a pipeline engineer actually reaches for when moving messy source rows through DuckDB into Arrow/Lance — safe casting (`TRY_CAST`), the primitive + nested type system (STRUCT/LIST/ARRAY/MAP/UNION/VARIANT), value construction/access/UNNEST, the "friendly SQL" clauses (QUALIFY, `* EXCLUDE/REPLACE`, `GROUP BY ALL`, `USING SAMPLE`, `FILTER`, PIVOT/UNPIVOT), and string/number cleaning idioms — with runnable examples.
 
@@ -447,8 +455,56 @@ UNPIVOT monthly_wide ON jan, feb, mar INTO NAME month VALUE amount;
 
 - **Reusable column aliases** in the same `SELECT`: `SELECT i + 1 AS j, j + 2 AS k FROM range(0, 3) t(i)`.
 - **`LIMIT n%`**: `SELECT * FROM t LIMIT 10%` returns 10% of results.
-- **Trailing commas** are permitted in `SELECT` lists and `[...]` list construction.
+- **Trailing commas** are permitted in `SELECT` lists and `[...]` list construction. Upstream-verified on the friendly-SQL page; the talk frames it as a papercut-remover for interactive analytics: "when you're doing your interactive analytics, you can just comment that line out" (with the caveat that you must also fix the `GROUP BY` — a pain that `GROUP BY ALL` in §5.4 removes) (Not Quack Science, Ubuntu Summit 26.04, 2026-05-28 — docs/youtube-transcripts/clean/2026-05-28_duckdb-not-quack-science-ubuntu-summit.clean.md).
+- **`GROUP BY ALL`** (§5.4) is described in the same talk as "a fan favorite … actually turned out to be a competitor favorite. So, all the other vendors have cloned it since, including Postgres this year and including a future version of the ISO SQL standard" — *talk-reported adoption claim; not independently verified here.*
+- **FROM-first syntax:** a query may start with `FROM` and omit `SELECT` entirely. Upstream-verified: "DuckDB allows queries in the form of `FROM tbl` which selects all columns (performing a `SELECT *` statement)" (https://duckdb.org/docs/current/sql/dialect/friendly_sql). `FROM tbl` ≡ `SELECT * FROM tbl`.
+- **HTTP URL directly in `FROM`:** a remote CSV/TSV URL can sit in the `FROM` clause; DuckDB "fetches the data from a remote endpoint … decompresses the data … detects the schema of that CSV file, and … loads it into a temporary table" (Not Quack Science, Ubuntu Summit 26.04, 2026-05-28 — docs/youtube-transcripts/clean/2026-05-28_duckdb-not-quack-science-ubuntu-summit.clean.md). This is the `httpfs`/auto-detection path; see `07_httpfs_s3_r2.md` and `03_csv_import.md` for the read mechanics.
 - `GROUP BY CUBE` / `GROUP BY ROLLUP` / `GROUPING SETS` for multi-level aggregation.
+
+### 5.9 Function chaining (the dot operator)
+
+Source: https://duckdb.org/docs/current/sql/functions/overview • https://duckdb.org/docs/current/sql/dialect/friendly_sql • https://duckdb.org/2023/08/23/even-friendlier-sql
+
+Because DuckDB scalar functions are **first-argument-in**, any call `function(arg1, arg2, arg3)` can be rewritten left-to-right as `arg1.function(arg2, arg3)`. Upstream-verified: "The prior expression in the chain is used as the first argument to the subsequent function" (https://duckdb.org/2023/08/23/even-friendlier-sql). The chain works "only if the output from one function can be passed in as the first argument to the next function … in DuckDB almost all the functions are designed like that" (Function Chaining: The Simpler SQL, 2024-08-24 — docs/youtube-transcripts/clean/2024-08-24_duckdb-function-chaining-the-simpler-sql.clean.md). This reads top-to-bottom instead of forcing you to parse a nested call from the innermost argument outward.
+
+```sql
+-- these two are equivalent:
+SELECT replace(goose_name, 'goose', 'duck')   FROM t;
+SELECT goose_name.replace('goose', 'duck')     FROM t;   -- goose_name is arg1
+
+-- chain several first-arg functions:
+SELECT number.sqrt().pow(3).log() FROM t;      -- log(pow(sqrt(number), 3))
+```
+
+**Restriction (upstream-verified):** chaining is "limited to scalar functions and is not supported for table functions" (https://duckdb.org/docs/current/sql/functions/overview).
+
+#### Gotcha 1 — literals must be parenthesized
+
+A bare literal on the left of the dot is a **syntax error**; wrap it in parentheses. Upstream-verified: "To apply function chaining to literals … you must surround the argument with parentheses, for example: `SELECT ('hello world').replace(' ', '_'); SELECT (2).sqrt();`" (https://duckdb.org/docs/current/sql/functions/overview). The talk hits the same wall live: "the literal needs to be in parentheses. So let's delete those parens, and you can see we get back a syntax error … it's exactly the same if you're working with numbers or floats" (2024-08-24 tutorial, path above).
+
+```sql
+SELECT 'hello'.length();     -- syntax error
+SELECT ('hello').length();   -- 5   (literal wrapped in parens)
+SELECT (2).sqrt();           -- 1.414…
+```
+
+Note this is only for **literals**; a column identifier (`goose_name.replace(...)`) chains without parentheses.
+
+#### Gotcha 2 — casts are NOT chainable
+
+`CAST(x AS INTEGER)` is not a first-arg function call, so it cannot appear as `.cast(...)` in a chain — there is no dot form for the cast, and this breaks an otherwise-clean chain. The talk's workaround is a **macro** that wraps the cast:
+
+```sql
+-- can't write  number.sqrt().pow(3).log().cast(... ).factorial()
+-- define a macro that hides the cast, then chain through it:
+CREATE MACRO asint(x) AS CAST(x AS INTEGER);
+
+SELECT number.sqrt().pow(3).log().asint().factorial() FROM t;
+```
+
+The macro is cast-target-specific by design. Per the talk: "this is obviously quite specific, because it only works if you want to cast something as an integer. I can't find a function where you can parameterize the casting that you want to do" (2024-08-24 tutorial, path above) — i.e. there is no built-in parameterized-cast function to chain through, so a per-target macro (`asint`, `asdouble`, …) is the idiom. *The `CREATE MACRO` cast-wrapper and the "no parameterizable cast function" claim are talk-reported; the underlying fact — that `CAST … AS` is statement syntax, not a first-arg scalar function — is why it cannot chain.*
+
+> Relevance to core-x: function chaining is a readability convenience, not a semantic change — the planner sees the same call tree. It is safe in the DuckDB → Arrow → Lance projection, but the cleaning idioms in §6/§7 deliberately keep `TRY_CAST(...)` in prefix form: `TRY_CAST` (the NULL-safe cast that gates ingest quality) is a cast, so it is **not** chainable and must not be macro-hidden in a way that silently swaps it for a throwing `CAST`. Keep resolution-key casts explicit and prefix.
 
 ---
 
@@ -547,6 +603,8 @@ This is the shape of the projection that feeds `to_arrow_reader()` → `lance.wr
 - **VARIANT Arrow mapping is unconfirmed** — see §3. Do not build a zero-copy Arrow→Lance contract on VARIANT columns without testing on your pinned version.
 - **VARIANT is experimental on the 1.4.x LTS line**, GA only from 1.5.0. Check your pin.
 - **`unnest` only works in `SELECT`**, and `NULL`/empty lists yield zero rows — an inner join through `unnest` silently drops those parent rows.
+- **Function chaining: a bare literal on the left of the dot is a syntax error.** `'x'.length()` fails; write `('x').length()`. Column identifiers do not need the parentheses. (§5.9)
+- **Casts are not chainable.** There is no `.cast(...)` dot form — `CAST … AS` is statement syntax, not a first-arg scalar function. Chaining is scalar-functions-only (no table functions). Do not macro-hide a `TRY_CAST` to force it into a chain: swapping the NULL-safe `TRY_CAST` for a throwing `CAST` reintroduces the whole-query-abort footgun on dirty ingest. (§5.9)
 
 ---
 

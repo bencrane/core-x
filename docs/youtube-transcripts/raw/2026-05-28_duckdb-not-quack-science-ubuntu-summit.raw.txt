@@ -1,0 +1,179 @@
+00:00:06 - 00:01:08
+All right, hello from London. Thanks for coming or thanks for tuning in online. My name is Gabor Sarnyas. For a long time I was a database researcher and I work at a company called DuckDB Labs as a developer advocate. And today I'm here to convince you that DuckDB is not quack science after all. So, let's get right into it. What is DuckDB at a glance? DuckDB is an open-source analytical database system. It's available under the MIT license. It's a relational database that speaks a
+
+00:00:37 - 00:01:42
+dialect of Postgres. So, it's a standardish SQL dialect. And code-wise it's about a million lines of C++ code with no external dependencies. This means that we can compile it to a single binary. It's about 50 megabytes and you can put it just about anywhere. You don't need root rights, you don't need sudo or anything. You can just drop the DuckDB database binary and start using it right away. My favorite thing about DuckDB is just how versatile it is. You can think of DuckDB in many ways and I have selected
+
+00:01:09 - 00:02:18
+three conceptual levels here: command-line tool, portable database, and database server. So, let's see how this work in practice. As a command-line tool, you obviously work in some sort of Unix-like or Linux environment. To install it, apologies for this, we don't have a package. You have to curl this random script that you can inspect and then you will you will get DuckDB. You put it on your path and then you can get started. You type DuckDB and you get this wrapper, this read-eval-print loop.
+
+00:01:45 - 00:02:57
+Now you can use DuckDB as a glorified calculator. For example, you can calculate the sign value of pi over two, which is one, or you can compute the number of days that have passed since the latest release of Ubuntu LTS, Resolute Racoon. But obviously you don't need a million lines of C++ code for a glorified calculator. Let's do something more interesting. There is a high-speed train line between Amsterdam and London. Here are the stations of that train and I encoded them as a TSV file. TSV stands for tab
+
+00:02:21 - 00:03:30
+separated values. I chose this because for humans it's a tiny bit easier to interpret than a CSV which tends to be just one big block of text. I put the tabs there for visual separation and you can see it's really simple. Station name, country name, ordered alphabetically based on the station. What can we do with this? Well, we can do some really simple data analysis like listing the unique countries that this train is passing through. So, what would you do in bash? Well, I would start with cat out of habit and
+
+00:02:56 - 00:04:04
+then I would pipe it through a bunch of Unix commands. I would first use tail to chop the header off and keep the body. Then I would cut it horizontally along the tabulators, pick the second column, which is the country, and then I would ensure that they are the unique countries using sort minus U. And then you get four countries which actually aligns with my real life experience when taking this train. How about DuckDB? DuckDB speaks this language called SQL, which is structured English query language, and I think that
+
+00:03:30 - 00:04:32
+is quite fitting because what we see here is that you say select distinct country from stations.tsv. It's almost like an English sentence. But actually there is something to unpack here. In most SQL database systems, you have to select from a table and you have a to have a table, you have to create it, you have to define the schema, and then you have to load the data from the TSV file. With DuckDB, we have an auto-detection mechanism that sees this file name, loads the file, determines the header names, determines
+
+00:04:01 - 00:05:15
+the types that are in the fields, and loads it into a temporary table, and then you can say that I want the distinct countries from this table. The result will be the same as with the Unix command line tools. DuckDB also works as a Unix command line tool. You can just take the same query and pass it as an argument with minus C, yielding the same results. And of course, we quite like composability in the Unix philosophy. We like things to produce text and be able to consume text. So, you can do DuckDB minus C while you're piping
+
+00:04:38 - 00:05:50
+something at DuckDB, and then you have to spell out that you're reading a CSV from the standard input. The same idea also works with the standard output. So, this is DuckDB kind of put in the middle of it all. Let's take another slightly more complicated table, which is the trains.tsv file, which has two Eurostar trains that were traveling here last week on Friday. So, you can see that this is already a bit more interesting. Three columns, ID, timestamp, station name, and this train operates over two time zones, so you
+
+00:05:14 - 00:06:26
+also have that encoded. What happens if you load this into DuckDB? Well, with the DuckDB CSV loader, it detects that the first column is a varchar, the second column is a timestamp with a time zone, and it even converts everything to our local time zone, which is UTC plus one, and then we have the station. Okay, now we have two tables. We have the stations, we have the trains. Let's try to combine these tables together. Let's see which stations of this of these train services are in which countries? In SQL,
+
+00:05:50 - 00:07:06
+this is very easy. What you have to say is select star from trains.tsv and then you just add join stations.tsv using the column called station. I think this is as simple as it gets and then you get a result. DuckDB has one nice trick that you can use. You can take the last result of whatever SQL query you ran and then you can keep operating on the result. For example, you can say copy underscore to another file with the specific delimiter. So, you can get your data into DuckDB very quickly and then get
+
+00:06:28 - 00:07:39
+the result out of DuckDB very quickly and then DuckDB gets out of the way. It doesn't have to run all the time. How would this work in a standard Unix environment with no databases? I actually tried and implemented it using standard tools. It is a tiny bit painful. You have joins, tails, awk, sort and so on. I will spare you from the details, but there is a lot of things to do. You have to pre-sort columns, chop the header, stitch it back in, use awk and so on. Ultimately, it will get you there, but it's not pretty
+
+00:07:03 - 00:08:07
+and as you start scaling the complexity of your queries, it will get more and more difficult. And this is actually a common trajectory that I have observed in my work. I have a bunch of CSV files. I need to do something simple with them. So, I start using grep, I start using sed, sort and so on, but at some point I have to do a join, I have to do an aggregation and then I have this junction in the road. I can either keep working in shell and evolve it into a complex shell script with GNU parallel
+
+00:07:35 - 00:08:39
+doing some chunking and all sorts of tricks to keep things together or I can bite the bullet and rewrite the entire thing in something like Python, in which case it will be usually quite inefficient and maybe it will have additional dependencies in the form of data frame libraries like Pandas. And I think what's great about DuckDB is that you can drop this single binary in and you can do most of this data analysis in the command line in DuckDB and you get a composable, parallelizable, easy to
+
+00:08:07 - 00:09:13
+debug pipeline with DuckDB. And DuckDB actually offers SQL that's more powerful than a lot of the command line tools. There is a feature called pivot, which is not standard SQL, but we have tastefully borrowed it from other SQL systems. So we have the syntax that is used in other database systems. What is pivoting? Pivoting is taking a long table and then turning it into a wide table. Maybe this is not the most intuitive way to explain it, so let's see an actual example. Sticking to our
+
+00:08:40 - 00:09:55
+train, this is the distance from London.csv file, which encodes the distances from London St. Pancras to Amsterdam along the railway tracks. London is 0 km away, Amsterdam is 542 km away. How does this look in practice? Well, to create this little distance matrix that I want to create, one that you would find in sort of a the appendix of a road book, you first have to create all station pairs and calculate the distances. This is really simple in SQL. You just put DFL distance from London twice in the
+
+00:09:18 - 00:10:25
+from clause. It will create a Cartesian product. You calculate the difference of the distances, take the absolute value, and then you get the long table. So long in fact that it doesn't even fit on the screen. So, what do you want to do with this long table? We want to pivot it along station two. So, we just say that the pivot the last result on station two using the first occurrence of the distance for that particular pair of stations. And now we have a really nice wide table. You can print it and put it in your travel
+
+00:09:52 - 00:11:11
+magazine. Or we can continue operating on it. We are in the United Kingdom, which uses imperial uh units. So, maybe we want to continue working, save it as a matrix, and then convert the kilometers to miles. This is where it gets a bit annoying with standard SQL because what you would have to do is you would have to take all the columns and do the same operation divided by 1.61 and then cast to integer with every single column. And this can get, of course, quite long with trains that stop in many stations.
+
+00:10:31 - 00:11:38
+It works, but it reads a lot of typing. And this is where some of DuckDB's other friendly SQL features come into play. For example, we have this thing called column star, which is listing all the columns that are available in a given table. So, what are we doing here? We are saying we want station one, that's a given, but then for everything except station one, asterisk exclude station one, we want to do this operation that converts the distance to miles. And now we have the same result except
+
+00:11:04 - 00:12:17
+we only had to type four rows, and it scales for an arbitrary amount of stations. Okay, back to pivoting, or rather unpivoting. What if you get this matrix, which is quite common in CSV data sources, and you want to turn it back into a long table? Well, you can say I want to unpivot this table on all the station names that are not the first column. And again, this is quite a lot of hassle. But we have just learned that we have column star to do this for us. And this is actually a really nice composable
+
+00:11:41 - 00:12:54
+thing in DuckDB. You can just use column star here. And you have this really simple five-line expression to turn a wide table back into a long table. So, to sum up this approach of DuckDB in the CLI, you can use DuckDB as an analytical database. In the CLI, it works in pipelines. It has error handling. It has type safety. You don't need to have any storage. It runs perfectly well in in-memory mode. You can run your workload in parallel out of the box. DuckDB will take care of that. And you can also spill on disk if
+
+00:12:16 - 00:13:26
+your workload is larger than memory. I have been thinking about this quite a lot. I have blogged about this in 2024. There is this book called Data Science at the Command Line, which implements things with Unix tools. And I have re-implemented most of it with DuckDB. And that was, I think, quite a nice exercise to do. And then, um, in December 2024, I put out this post claiming that DuckDB is faster at counting lines than WC. And I was shouted at. So, what actually happened is that I ran it on macOS, and macOS has
+
+00:12:52 - 00:14:12
+this ancient BSD version of WC. And yes, DuckDB can beat that. So, I had to write a follow-up blog post. And what turned out that actually back then, the GNU core utils still lost to DuckDB. That has changed in 2025. But the uutils Rust rewrite was already faster than DuckDB. And of course, you can do all sorts of magic. And now, in 2604, I understand this is a bit contentious issue, but the WC from the Rust rewrite is plainly beating DuckDB. I ran the benchmarks a couple of days ago. So, that was command line tool. What
+
+00:13:32 - 00:14:43
+about portable database? Why would you want to do database work outside of a client-server application? Well, it turns out that databases are kind of neat if you can import them quickly. And with DuckDB, this approach actually works. So, we have drivers for all sorts of programming languages. You can import a driver and it will attach us either to an in-memory database or a single file DB file. And the idea is, at a high level, is that you get a full-fledged database with no configuration, no client-server protocol
+
+00:14:08 - 00:15:20
+setup, and then you can implement your application logic with transactions, primary keys, constraints, all the declarative SQL uh vehicle at your disposal. And DuckDB's idea is that it integrates really well in the data ecosystem. You can read just about any protocol or format or write them. And I myself find myself quite often doing really not database work with DuckDB. For example, once I had a Java program that was comparing a billion numbers to the expected results, which were another billion numbers, with a for
+
+00:14:44 - 00:15:50
+loop. And then I thought, "Okay, why don't I just import DuckDB, put this in DuckDB, write a really simple SQL script that you can debug with the REPL if you want to?" And that turned out to be a really simple way of using DuckDB. You would never normally use a data warehouse for this, but because this is just a library, you can import it, do one operation, and then you can leave it alone. Of course, to facilitate this, we do have DuckDB drivers for all sorts of popular programming languages, Python,
+
+00:15:16 - 00:16:25
+Go, Rust, C, C++, Java, JavaScript, R. And interestingly enough, DuckDB also runs in WebAssembly. You can run it in the browser because of its portability. So, I talked about the high-speed rails, but of course, that's tiny amounts of data. I have this really nice data set from trains in the Netherlands. This is the last 6 years and 4 months of trains that ran in the Netherlands or through the Netherlands. And because it captures every single train stop with every single train service, it has 160 million
+
+00:15:51 - 00:17:05
+records, and it's about 21 GB in CSV files. And if you want to analyze it, we can ask questions like, "What's the average delay of trains in the Netherlands in a given year?" For this, I picked something called Marimo. This is a Python-based notebook environment. And I'm just going to show you really quickly how this works. So, as promised, DuckDB is a library. You can import DuckDB in the first cell. Then you can connect to a local uh database file that stores all our tables. And then to load this, we have
+
+00:16:28 - 00:17:34
+this from services asterisk call. It's globbing. It's finding all the services files, and it's loading DuckDB loading the data into DuckDB at about 1 GB per second on a modern laptop. I said it's 160 million lines. I didn't lie. Indeed, that's the amount that we loaded in the table. So, now we can do the analysis that we wanted to do. The query itself is not very interesting. We take the year out of the data, and then we convert the delays into seconds, average them, and
+
+00:17:02 - 00:18:13
+then make sure they are nicely printed. But this is where the integration comes into play. DuckDB results can be read by Python as Pandas data frames. So, you can just click on this little chart icon, and spend 30 seconds clicking together a bar chart and you can see that the trains were most punctual in 2020. I wonder what happened in 2020. Ever since then the trend is not good. So, there have been improvements, but the trend is is going up with regards to the delays. However, the average delay is less than
+
+00:17:37 - 00:18:46
+a minute. So, it's actually not too bad after all. And of course, the interesting thing that I didn't point out is that this whole analysis took 150 milliseconds. So, DuckDB is crunching through all these rows and all these delays at more than 1 million per milliseconds. So, it's rather fast and rather economical. So, I talked about powerful SQL, but there is a feature of DuckDB that I like even more, which is friendly SQL. Friendly SQL is kind of getting rid of some of the rough edges that the SQL
+
+00:18:13 - 00:19:28
+language have, allowing you to basically make queries like this. What's interesting in this query? Well, we already established that you can put a CSV or TSV file in the from clause, but now we have put an HTTP URL. And this means that DuckDB does four things. It fetches the data from a remote endpoint. It decompresses the data. It detects the schema of that CSV file and it loads it into a temporary table and now you can do all the remaining operations. There is another maybe more hidden and
+
+00:18:50 - 00:19:54
+less striking feature that we do, which is the trailing comma that's at the end of select. Most normal programming languages have invented this in the past couple of decades and I think it's really neat because then when you're doing your interactive analytics, you can just comment that line out or you can comment that line out. Okay, actually you cannot do that because then you also have to do to the group by and delete that manually or command that out, which I always find mighty annoying. Why cannot the computer
+
+00:19:22 - 00:20:34
+tell that select station average delay needs to be aggregated based on the station. Well, it turns out that with DuckDB, there is group by all, which is something that we have invented, and then it will do the aggregation on all the columns in the select clause that are not part of an aggregate expression. And this turned out to be a fan favorite. Uh it's actually turned out to be a competitor favorite. So, all the other vendors have cloned it since, including Postgres this year and including a future version of the ISO
+
+00:19:59 - 00:21:16
+SQL standard, which will have this uh built in. All right, but does it scale? So, I took something called the TPCH, which is the gold standard in database benchmarking, and it comes with these data sets measured by the size of how many gigabytes they are in CSVs. And we have the 1 TB, the 10 TB, and the 100 TB data set. And the interesting thing about this is that this 10-15 years ago used to be the territory of these big iron machines where you bought a server for 150,000, you bought the database license for
+
+00:20:38 - 00:21:56
+another 150,000, and then you could do it really well. With DuckDB, it turns out you buy a Raspberry Pi for $100 or so, buy five with 16 GB of memory, add an SSD to it, maybe a cooling box, install Ubuntu it, and you can crunch through the 1 TB data set without much of a problem. You can run the 10 TB data set on an ultra book. I run it on a Framework 13 maxed out with 128 GB of RAM. And even the 100 terabyte data set, which used to be distributed data processing territory, runs in a single server with 1.5 terabytes of
+
+00:21:16 - 00:22:31
+memory, which is large, but it's not huge by today's standards. You can just spin it up in most cloud providers and run it for a few hours. Um performance-wise, I also run a more complex version of this workload with all the updates and concurrent inserts deletes built-in. And I have heard reports that the new scheduler may have an effect on database performance. So, back in April, I installed 2404 with the kernel V6, ran the workload, did a dist upgrade, and I was delighted to find that it has a 10% improvement on the
+
+00:21:55 - 00:23:07
+composite score. So, this was the 300GB data set, and it turns out that it's worth upgrading your Ubuntu. You will have a better scheduler, and your database will be thankful for it. Okay, it's of course not all fun and games. DuckDB is an in-process database, and being in-process has this fundamental limitation of making it into a single-player experience. That's because you can connect to this database file in read-write mode. You can connect with multiple DuckDB clients in read mode, but you cannot connect with
+
+00:22:32 - 00:23:38
+multiple DuckDB clients in read-write mode because this would destroy all the caching that we do, and this would have a detrimental effect on performance. So, So, what can we do? Well, this is where the third part comes into play, database server. A couple of weeks ago, we have released something called Quack, which is, of course, how ducks communicate with each other. And we have this multiplayer mode where the database is still writing a single file and reading a single file, but you have clients that can connect to
+
+00:23:05 - 00:24:13
+the database. So, you have concurrent read-write access, but unlike in a normal database like Postgres, where you have a big database process and these rather simple clients, here the clients are also DuckDB instances. So, you can move the computation around wherever you see it fit. And the clients are full-fledged database systems. This is kind of a work in progress thing that we plan to finalize by the autumn. It uses HTTP. You can authenticate with tokens or bring your own. You can authorize operations with callbacks or
+
+00:23:39 - 00:24:45
+bring your own. And as I said, it's currently in a beta state, but already usable. And the way to use it is actually quite simple. You set up two DuckDBs. You start up the server. You say, "I want to do quack_serve." You set a token. You create some data. And then from the other side, you set this token as a secret. You connect to the remote endpoint. And then you can say, "I want to select star from remote." And this is how it works. But this is probably the most boring thing. This is
+
+00:24:12 - 00:25:17
+what every database can do. What's more interesting is that because now we have these databases everywhere, we can do even some sort of a distributed processing if we have a client on the left, we have a coordinator in the middle, and we have servers on the right that do kind of the heavy lifting. Uh I think there's a lot of creativity that can go into this because you can now move around where your query or parts of the query are actually running. So, these were the three conceptual use
+
+00:24:44 - 00:25:54
+cases into DuckDB. And you can memorize them by basically thinking of command-line tool. It's like a Unix combination of Unix tools and data frame libraries. Portable database is like SQLite, but geared for analytical workloads. And the database server is like Postgres, but for analytics. So, that was the high-level overview. And because I'm a former academic, I cannot resist doing some educational work on how things work in the background. So, a little bit of a deep dive on storage and
+
+00:25:20 - 00:26:36
+indexing. How would you store tables on disk? I think this is where it all starts. Do you do row or column-based storage? We have another railway-inspired uh little example. I think you can see a pattern here. We have three columns, date, station, and delay uh of a given train. And most databases, if you run up SQLite, Postgres, MySQL, or something similar, will do a row-based storage. So, whatever is logically in the same row will be physically in the same same location on disk. You can think of
+
+00:25:58 - 00:27:02
+the disk as like this one-dimensional array or a tape. And the problem with this is is that it's really not great for analytics. If you want to do average delay per train station, you have to read all the way through, and you will have difficulty parallelizing it. You will have all sorts of cache misses. It's not really efficient for that. It's much nicer to do something like a columnar storage, where you store stuff based on column. And this has a few unintended advantages. The first one is
+
+00:26:30 - 00:27:40
+that usually there is some sort of a logic in how the data is inserted. For example, the date column or the timestamp column is often either completely sorted or almost completely sorted. Here, it's all the 28th of February, so we can just encode it as one constant value. For the delays, luckily most of the delays are zero, so we can apply something like run-length encoding. Say it's zero times three, and then two for the one train that got delayed. This is what's being used in analytical databases like DuckDB, and
+
+00:27:05 - 00:28:12
+this is what's also used in the Parquet file format that is very popular in data lakes and in data exchange in recent years. Parquet is so important, in fact, that I have dedicated a slide to it. Um because I think Parquet is far superior to CSV when you need to pass data around. And the reason for this is that it's a binary format, it's a columnar format, and it encodes the schema and some high-level statistics of your data. So, the way Parquet works is that you have row groups. In those row
+
+00:27:38 - 00:28:43
+groups, you store all the columns, and usually around 100,000 rows. And then for every single column in every single row group, you calculate the minimum value and the maximum value. So, you can see that on the left, this is the 28th of February, minimum and maximum. On the right, it's the 1st of March and the 2nd of March, minimum and maximum. Sometimes this is not that interesting. I don't think the minimum station name is very useful, but it can be very useful for date values, delays, and so on.
+
+00:28:11 - 00:29:14
+For example, we may ask which train stations had the worst delays on the weekends of February 2025. Well, we can rely on these built-in indexes, which are called min-max indexes, and we can prune the data really efficiently. So, you can take a look at row group one, but this certainly has data in February, but then you take a look at row group two, and the minimum is March, so obviously we don't care about that at all. We can just immediately throw that away, and you can usually prune it to
+
+00:28:42 - 00:30:00
+just a single percentage of the data that you need to access. DuckDB chose columnar storage. It's quite similar to Parquet, but it's an updatable format that contains multiple tables in a single file. And just to show you how powerful this is, you can create a local database, you can load the services of 6 years and a bit into it in 20 seconds. During the loading, it automatically creates these min-max indexes. And if you issue the same question, which train stations had the worst delays, you write this medium complex
+
+00:29:21 - 00:30:33
+SQL query, and it runs in 30 milliseconds. And it turns out that the worst Dutch train stations are actually in Germany, because if you have a a longer time to travel, you will accumulate more. I think the top 25 or so are in Germany, which is actually interesting to investigate. So, this is great locally, and it it gets even better if you deal with remote endpoints. So, if you have something that's up in the cloud or at an HTTP endpoint, then a lot of these tricks, doing column projection and reading just
+
+00:29:57 - 00:30:59
+a single column from the Parquet or DuckDB file, and doing this predicate pushdown, where you try to leverage the min-max indexes to skip reading data, actually work with HTTP range requests. So, this is really nice, and of course, here it's even more important, because you save on bandwidth and remote communication and potentially egress costs. As I said, it works with DuckDB's format, it works with Parquet, and it's really like a no-setup, comes out of the box uh advantage that these
+
+00:30:28 - 00:31:44
+formats have. Cool. So, how does DuckDB work in practice? Um well, we have 38 and a half thousand GitHub stars. We have about 100,000 human website visits per week. I try to exclude all the bots and the crawlers. We have more than 10 million downloads from PyPI, and we have all these releases where we name our releases code named after an animal. I wonder where we got that from. And we have LTS releases, although our LTS releases only last 1 year. We are moving at a bit higher pace. So, this is our timeline.
+
+00:31:06 - 00:32:13
+And how this this whole thing gets funded? We get this question all the time, and it's actually an interesting structure. So, I work at a company called DuckDB Labs, which was founded as DuckDB Labs in 2021, but now that we have the DuckDB database project, the clock protocol, and the Duck Lake Lakehouse format that I didn't touch on, it made sense to call ourselves DuckDB Labs. And we are the company that provides services around this stack of software. We are a bootstrap company, so we don't
+
+00:31:39 - 00:32:50
+have any venture capital investment. We sustain ourselves from selling these services, and we are based in Amsterdam. The intellectual property of all these projects is held by a different organization. We have the DuckDB Foundation, which is a Dutch nonprofit, and this is a nonprofit with the sole purpose of ensuring that the project stays open source under the MIT license. And to achieve that goal, the foundation collects donations. Cool. So, what is DuckDB used for in practice? To be quite blunt, I think the
+
+00:32:16 - 00:33:23
+number one use case for DuckDB is to save money. So, people use it for fast local development, which saves time and network costs. People use it to replace proprietary systems, which saves on the license cost. And people use it to replace distributed systems, where you cut a lot of complexity, and then you also save on the compute cost. Another thing that DuckDB is great for is something called last mile analytics. I said that DuckDB can scale, but if you have a 1 petabyte log, I wouldn't use
+
+00:32:49 - 00:34:02
+DuckDB. I would spin up a Spark cluster and do some sort of pre-aggregation on it with the Spark cluster. And then, maybe once you have that 200 GB binary pre-aggregate, keep aggregating that with DuckDB, do all sorts of dashboards. You can build these really fast dashboards with DuckDB in the browser, and then you have it as part of your analytical tool chain. And finally, I learned SQL from a proprietary evil database with a bad SQL syntax. I don't have very good memories of that. I think any open-source system
+
+00:33:26 - 00:34:31
+is preferable. DuckDB is neat because it's easy to install, and you don't even need a DBA to run it. You can just say DuckDB and start learning SQL right away. Speaking of, how do you learn DuckDB? Obviously, we have a documentation that will get you up to speed, and you can start using it based on that. But, we also have a library. We have the scientific papers that we have written. We have the scientific papers that others have written while using DuckDB and building on top of DuckDB. We have
+
+00:33:58 - 00:35:12
+podcasts, books, interviews, and so on. So, we have 100-plus pieces of material in the DuckDB library. And we have sponsored two university courses. There is the tabular database systems courses from the University of Tübingen, which is a basic SQL and relational database course. And they also made a really nice detailed course in this beautiful terminal-like um design about the internals of DuckDB and how to develop DuckDB extensions. So, to sum up, I think, I hope, I convinced you that DuckDB is not quack
+
+00:34:36 - 00:35:07
+science and databases are also not rocket science. Databases are not these clunky, difficult pieces of software to be intimidated by. You're more than welcome to try DuckDB. It only takes a few seconds. And if you have any questions, I'm open to it.

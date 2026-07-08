@@ -1,0 +1,170 @@
+00:00:00 - 00:00:57
+Welcome everybody also from me. Um, it's amazing to see everybody uh and I say this every time but uh we would have never thought that our you know, puny little GitHub uh repo would uh ever lead to something like this. Um, I'm really happy we get to be here at the Kits today and um yeah, just really great to see everybody. Looking forward to all the talks. Um, as is tradition and this is Docker Con number seven. Um, I will be starting we will be starting with the state of the duck which is kind
+
+00:00:29 - 00:01:26
+of our overview of what has happened and what will happen in in Docker TV land. Um, and we're live streaming Docker Con again, right? Like hello world. Uh, we we again try to find a time slot that that works for everybody and a good evening China and India, good afternoon Europe and Africa and a good morning America, you know, like probably the most people going to be in America. Okay. Um, it is a a growing global community absolutely and we just want to make sure that people can participate
+
+00:00:57 - 00:02:03
+even if they can't come to Amsterdam for whatever reason. For the talks today, um, we're going to again use the Slido system which is like this online system where you can ask questions and upload upvote questions. So, the address is very easy. It's qa.dockercon.org. Uh, the screenshot will steal all your Bitcoin and also get you to this website. >> [laughter] >> Um, and basically the idea is that while the talk is running, feel free to add questions to this um and later on I will
+
+00:01:30 - 00:02:34
+basically prioritize them based on the votes as well and what I like and not like and then we will have those questions here. Um, this is of course also something for the people at home uh could also participate in the Q&A uh using this link qa.dockercon.org. No? Um, yeah, I want to give a big thanks to our sponsors today. We have two lovely sponsors. We have Mother Duck um as a gold sponsor and we have Spire as a silver sponsor, so give them a round of applause. >> [applause] [clears throat]
+
+00:02:07 - 00:03:12
+>> And it's really important because, you know, we we wouldn't be able to have an event for free in a lovely room like this with ice cream without sponsors, right? Like it's it's a big effort and and we really happy that we have these sponsors today. As a general mission of, you know, DuckDB and our company, we always have this slide and I just want to reiterate it to you. Our mission is to give you confidence when working with data. I think that from our personal experience
+
+00:02:41 - 00:03:42
+there's so much sort of you know, there's so much anxiety about working with data set, you know, here's this folder of 1,500, you know, wonky JSON files I just found. Here's this CSV file that's somewhere this Here's this big parquet file that's like seems a bit untractable. And we really This is our mission as a as a company, as a project, as people is that we want to give you the confidence to work with data of any shape, any size, you know, like you name it and not worry too much about it and
+
+00:03:11 - 00:04:09
+that, you know, that is of course the hope and we we hope that we are you know, doing at least something on that on that path. And one of the big things that we have built on this path is of course DuckDB. All right, like this is the the piece of software that started it all, you know, all these years ago in in a bar not far from here where we sat down and said it it needs to happen. We're going to have to build a database system and this is really the yeah, it's it's of course the biggest
+
+00:03:41 - 00:04:40
+project we have. It's it's doing extremely well. DuckDB is loved by agents and we can tell from you know, our download statistics for example that it's just it turns out something that is built to do well with humans is also doing well with non-humans. Who would have thought? So that's really an amazing thing to see. And DuckDB has also become more than just, you know, an in-process SQL library over the day over the years. Like maybe you've seen this. This is something that is on our website now.
+
+00:04:10 - 00:05:00
+But maybe something that you haven't seen it. That it's actually quite dazzling to see like all the different things that you can do with DuckDB these days, right? Like a batteries included if you want. And now there's all these protocols that we can we can talk to all these storage systems that we can talk to. We can talk to other database systems. We may have accidentally built a database client, a universal database client for other databases. But then there's also all these platforms that DuckDB runs on and this
+
+00:04:35 - 00:05:25
+is every every day we hear about some strange platform that somebody managed to run get DuckDB running on and we're always like applauding in the office. There's integrations for clients like you can you can talk to DuckDB from sort of almost every programming language and and there's like also something that's been growing immensely even also especially also from external contributors, not just from the team. And of course there's all the data formats under the sun. Like if you just
+
+00:05:00 - 00:05:57
+look at these data formats on the right here, this is you should you should just think think somebody had to really really become an expert in that stuff in order to make that work, right? I remember, you know, we have people here that have against their will maybe become big experts at CSV files, right? We have people here that know everything about every last word of the parquet spec. We know people that even know everything about Avro files. Um again, maybe against their will. And um And it's
+
+00:05:29 - 00:06:33
+Um Uh and that's really amazing to see. And I think it's also something that's changed quite a lot from the original sort of project that was really more like narrow in focus to this kind of ecosystem of stuff, right? Yeah, and it's popular as I said. So the adoption we have slightly changed the slide Apologies for that. The adoption of DuckDB has also been growing like crazy. Like at the moment we are beyond 1 million installs every day. Like that is just something that I didn't think would ever be possible.
+
+00:06:00 - 00:07:08
+It's also crazy to see that we're now at um over 160 million extension installs every month, right? So DuckDB has all these extensions to do all these different things. And these are installed 160 million times each month, which um shout out to um our hosting company Cloudflare who you know donates the traffic to us. Um we also have seen quite a lot of adoption on on socials like GitHub stars LinkedIn followers and most importantly and least importantly the DB-Engines ranking. If you don't know what it is,
+
+00:06:34 - 00:07:32
+you know, bless your life. It is not important, but people care a lot about this. >> [laughter] >> Sorry, DB-Engines people. Um we also have announced DuckLake. And you know, it seems like to you maybe that this is something that oh yeah, I've heard about DuckLake. Like these crazy people. Um but it's actually something that's quite recent. I mean it's only been a little more than a year ago that we that we first basically published like a 0.1 like here's our wild idea
+
+00:07:03 - 00:08:05
+um of DuckLake. And it's just been a couple of weeks ago actually that we published DuckLake 1.0, right? Like it's it's been it's been a bit little bit more than a year from for something to come from a sort of an idea to something that we actually think is production ready now. So that is actually kind of cool to see. And you know, you have you have we have announced the the 1.0. Maybe you've seen the the blog post. Um it was really nice to see the reactions. And we also seen Sorry, I
+
+00:07:34 - 00:08:32
+I have the the wrong slide here. But just to reiterate on on DuckLake what it is about. This is the the this that I like to show um, where we basically took the idea of a lake house and radically simplified it a DuckDB style, right? We said, "Hey, we don't need 15 layers of indirection. We don't need 15 layers of our files. We We just going to have So, there's this table shape thing uh there's this bucket shape thing up top there that's on the other side as well. And we're
+
+00:08:03 - 00:08:59
+just going to use it better. So, that's that's really that's really what DuckLake is about. And actually, we're really happy to see the adoption as well. Like uh DuckLake is now like up there with Iceberg and Delta in terms of downloads of the extension for DuckDB. So, within 1 year, we kind of equalized in terms of, you know, popularity at least in in DuckDB land, which is really cool to see. And there is, um, um, there is interesting blog posts, you know, why we bet the company on the Duck
+
+00:08:30 - 00:09:30
+Stack, which is also something um it's mildly terrifying, of course. It's a lot of responsibility, but you can see really how that has um become a lot become a sort of a big adoption. And it's actually DuckLake is now really like a second really own, you know, grown-up project with its uh inside our company, inside the project uh next to DuckDB. Of course, you know, you can use DuckDB to talk to DuckLake, but there's also lots of other implementations around to do this. Yeah. So, this I've mentioned like the
+
+00:09:01 - 00:09:57
+downloads for for for DuckLake are getting up there with the with the others. And then also most recently, and again, to me this already seems an eternity away, but it's only been 4 weeks or something. Um, we have uh you know, presented Quack, which is this uh communication protocol that extends DuckDB to talk to other DuckDBs. Uh we thought that was the case, but then the world has said, "No, no, no, no, you know, we're actually going to build another client for it." And people
+
+00:09:29 - 00:10:18
+have already built standalone clients for Quack at this point. Like it's it's kind of crazy to see that. So, in case you don't know what Quack does, like the idea is that you have two different DuckDB instances and you can suddenly have them communicate with each other by using this extension. So on one side you say quack serve and on the right side you say attach and then basically what happens on one side goes to the other side and so on and so forth. So this is really nice and you
+
+00:09:53 - 00:10:46
+can see that the syntax down there like from remote.query dollar dollar blah blah blah we we looked at that and we said now this cannot be it. So I'm happy to to tease her that with 2.0 we're going to have new syntax the connect statement that you can basically directly forward queries to the other side. So that's really exciting. But what quack kind of gives you is this kind of more client server pattern for DuckDB where you more traditional you know something you didn't think we would
+
+00:10:20 - 00:11:23
+be doing but people asked for it so persistently that we decided to do it. So that's quack and again you know it seems like ages ago in my mind but it's only been a few short weeks and again you know adoption has been really cool. And because we have all these projects now we have DuckDB and we have DuckLake and we have quack we actually decided to change our company name. Are you ready? So the company is now called DuckLabs just because to acknowledge the fact that there are more things beyond DuckDB
+
+00:10:55 - 00:11:57
+in the company and I think it's also rolls off the tongue better. In fact some people have been calling us DuckLabs for ages without us realizing this and just so we figured we'll you know adjust our name to the reality. Okay so I think this is this is what I want to talk to you about about sort of what we have been doing and now I'm really happy to hand over to Mark for the what is going to be happening. >> Thank you very much. >> [applause] >> Yeah so once again want to thank
+
+00:11:30 - 00:12:33
+everyone for coming and spending the day this beautiful sunny day indoors with us. It brings me back a bit to my teenage years where I spend the summers inside behind the computer. I still do sometimes nowadays, but maybe a bit less. Yeah, so I want to talk to you about the next DuckDB release which is DuckDB 2.0. It's going to be named after the cinnamon teal. So for those that are not familiar, we name all of our releases after duck species essentially. Because that's just cool and then you
+
+00:12:02 - 00:13:08
+get nice pictures of of ducks and you can actually well maybe go and see them in the in the zoo or some of them outside as well. So the release is scheduled for the fall and well we have we have I think it's fair to say we have some big plans. Of course Quack being one of them that has been released early on, but uh as a preview, but that's going to be a bit of a central part of our strategy going forward. So one of sort of the last year when we had DuckCon, we announced that it was going to be the
+
+00:12:35 - 00:13:37
+year of the lake house. And the reason for that was obviously that we were working on DuckLake, but not just DuckLake, right? We were also working on Iceberg, we're also working on Delta, we're doing a lot of work on basically making the the the lake house experience using DuckDB as nice as possible and I think we have come a very long way thanks to our amazing team. Now I think it's we're going to go for the year of DuckDB as a server. So we have released Quack which is of course a pivotal component of that,
+
+00:13:06 - 00:14:05
+right? Like it allows you to actually run DuckDB as a client server. But the server side it comes with a lot of other new challenges, right? Like if you think about how you deploy DuckDB, how you run DuckDB. If it's in a shell or like in a Python script, you you spin up DuckDB, run some queries, then tear down again. And there's like a lot like uh fewer considerations that that you need than if you're running DuckDB long-term in sort of a sustained way. So, we're looking at doing things like better
+
+00:13:36 - 00:14:39
+metrics, better logs, better observability uh because those things all become more important. You start wanting to actually look at DuckDB and go like, "Hey, what are you actually doing?" Um stability is of course also a big thing that becomes more of a factor in these kind of situations. Um and the multi-tenant scenario. So, one thing that's kind of interesting or funny about DuckDB is that we built DuckDB since day one as a uh analytical like but also a transactional database that can do multi-clients. You can we
+
+00:14:07 - 00:15:05
+have we have like all of the all of the nice asset properties, you know, like we have transactions, we have multiple connections, we have transaction isolation, MVCC, all that sort of stuff. And then most of the people weren't actually using that because they were just doing the single-user uh perspective. But it turns out now that we're doing the client-server uh scenario now we're moving more in that direction, that starts becoming actually a a pivotal point of what DuckDB can do.
+
+00:14:36 - 00:15:40
+Uh so, I I think it's very cool to see that feature that we've had for a long time now become in a way much more use useful more usable for the community at large. Um one of the things that's also kind of interesting is that DuckDB is not that bad at transactions. So, if you have worked with analytical systems in the past, you may have the assumption that DuckDB is not good at transactional workloads. It cannot do any deletes, any insertions per second. Um like if you look at like uh let's say
+
+00:15:08 - 00:16:05
+some of the maybe competing lakehouse formats, we're looking at like maybe a few transactions per second in many situations. Um so, DuckDB is actually not that bad at transactions and it's kind of interesting that uh you can actually run kind of like a hybrid workloads with DuckDB. And some of our clients already are are doing that. Some of our customers already doing that. We've seen these scenarios. And this like a nice slide from um from Hannes first revealed revealed Quack to the world about
+
+00:15:37 - 00:16:35
+actually like transaction performance of DuckDB versus Postgres, which is a traditional transactional system. And we're seeing that we're actually Quack and DuckDB they're they're not doing that bad at transactions. Of course, there are many different kinds of transactional workloads. Postgres is doing better than DuckDB at many of those. But it's kind of showing that, hey, maybe DuckDB can actually do [clears throat] pretty well at transactions, at least well enough to the point where it can can be
+
+00:16:06 - 00:16:57
+competitive with like general-purpose databases like Postgres. Um So that we think is very interesting. So I want to give a quick rundown of some of the features that we're planning for 2.0. It's always hard to make these slides because we we're doing like a lot of stuff and we don't want to like it's it's always a bit of like a fight of like what's getting in and we don't want to discredit like we have a lot of people working on DuckDB now, our cool team who's around and you can chat with
+
+00:16:31 - 00:17:31
+if you see this this logo, the company logo. Anyone with a shirt with the shirt they work for us. So please reach out, talk to them about all the cool stuff they're working on. Um yeah, we have kind of I've kind of condensed it down to some of the cool things that I want to talk about. Um So one of the things that I want to talk about is the variant type. This is something that's actually already in DuckDB V1.5. And the way you can envision the variant is that it is kind of like JSON on
+
+00:17:01 - 00:17:58
+steroids. It's like imagine if JSON were fast. I think that's kind of the the the sort of the the the recollection. So basically variant type it's like it behaves very much similar to JSON in the sense that you can store for data in any sort of row. Uh the cool thing about variant is that it's no longer just a text-based thing. So, DuckDB will automatically look at the schema that's in the JSON and then can try to extract common patterns because often JSON does have some form
+
+00:17:30 - 00:18:23
+of structure, extract that and then do optimizations on that both at the storage layer so that it gets compressed and stored efficiently, and also at the query execution layer so that you actually get like very cool performance. Um and this is kind of like how this looks like. One of the plans we're also having, but we probably won't make for 2.0, but don't don't hold my words to it, is that we want to replace the actual JSON type with variant in the back end so that you will get all these
+
+00:17:56 - 00:18:53
+advantages also just when you keep on using the sort of regular JSON type. Um and I think one of the nicer things about the variant as well, when it relates to this client-server, is that it actually works very well with these like long-running like log collection things. Because there what you often see is that you get like a stream of logs in like some JSON unstructured format, um and you you you kind of have to keep them as JSON because they come from different sources, maybe they get different updates at different times,
+
+00:18:25 - 00:19:16
+the schema changes, but they are very structured. And the cool thing about the variant is that you can now do this kind of like real-time log ingestion into DuckDB while still getting a lot of the benefits of the engine, which the JSON type currently in its current state does not offer you. And so, as I mentioned, it's already in DuckDB 0.5, so you can already try it out, but it is going to get a lot of improvements in 2.0 that we're working on. So, that's very exciting. Um the other thing I want to
+
+00:18:50 - 00:19:50
+talk about is triggers. So, uh triggers, basically what a trigger is in in SQL, is it is um like an an event sort of thing. Like you can basically say, "If something happens in the system, you can now trigger another event." So, one of the very common use cases of triggers is they have like audit tables or logs. So, you can say, for example, "I want to create a trigger that after I insert into this table, I'm going to insert into my audit table. And it's also kind of something that's
+
+00:19:21 - 00:20:17
+that works very nicely with this sort of like run long-running service. And it also we're planning to use this for a lot of other cool features that we're going to going to going to build internally as well. But it is also being exposed at the SQL level so you can make your own like cool triggers, do your own kind of cool stuff with this. Um All right, object stores. Yeah. So object stores, that's one of the things that a lot of people use, you know, like S3 or things like that. And it's
+
+00:19:49 - 00:20:40
+often a central part of the DuckDB experience is interacting with object stores. I mean, in the end you have to get your data from somewhere. Usually DuckDB is not your source of truth for data, although that might change with the whole client-server thing, of course. But usually often these files are stored in these object stores. Of course, DuckDB has been able to read these object stores from a long time for a long time we've been able to parallelize them. We can do a lot of cool stuff. But there
+
+00:20:14 - 00:21:18
+have been some limitations when it comes to like the synchronous file reads and the the which could then limit how fast we can read from these object stores. There are were some workarounds, but it it's it's not was not never quite as nice. One of the cool feature that's coming to DuckDB 2.0 is we're going to do asynchronous IO. And what that means in essence is that you can scale your IO layer like your input layer separately from your query processing layer. Which means that you can use a lot more
+
+00:20:46 - 00:21:41
+parallelism for these remote reads and that will make all this IO stuff, all this like remote network stuff a lot faster. We're planning it first for parquet files, but it's also coming to other file formats and also coming to the DuckDB file format, of course. And it will also help a little bit probably with local storage, but this is really the network storage is going to is going to be where you see most of the big gains. Um another cool stuff that are cool thing that we're working on is partition aware
+
+00:21:13 - 00:22:13
+execution. So, um DuckDB itself in its native storage format doesn't really support partitioning, although there's some semblance of uh partition awareness you can use there as well. But the lakehouse formats like uh like DuckLake, like Iceberg, and of course just having parquet files on S3, they support partitioning and it's often quite critical to get uh optimal performance to take away to to basically make partitioning uh aware uh plans during query time. So, one of the uh things we're also working on
+
+00:21:43 - 00:22:46
+there is to make the uh uh to make the query planning and optimization more partitioning aware, which allows you to to do a lot faster query processing on partition data sets and take full advantage of the partitioning. Um some changes that are like more under the hood about DuckDB as well. So, one of the cool things we're working on is the C++ V2. So, if that doesn't like if that doesn't ring any bells, then uh you may not have been working on the extension API or things like that.
+
+00:22:15 - 00:23:12
+Uh I will kind of summarize it for like the the the the main user-facing angle of this. So, DuckDB has these extensions, right? And these extensions, they are very cool. They enable a lot of cool new features. However, currently the extensions are almost always made against the unstable C++ API, including our own extensions. And that gives a bunch of problems. Like if you develop an extension, you polish an extension, you have to choose a DuckDB version to target it to, right? So, you have to build your extension for DuckDB 1.5.4.
+
+00:22:44 - 00:23:33
+Um and then if the new DuckDB version comes out, you have to do it again. And because it's an unstable API, you have to constantly upgrade like update your extension, keep it up to date. It's a lot of work. Um and that's something that we want to avoid. It's also something that for the community we have seen that if you rely on a community extension, for example, uh that may not be there for the next DuckDB release because of this, because the author has to actively work on keeping it up-to-date. So, one of the
+
+00:23:09 - 00:24:03
+things that we're working on is basically making the scope of our stable API much broader, so that we can develop these extensions, write them only once, build them only once, publish them only once, and then it will be available essentially until the end of time. That will both make life easier for extension developers, it will make make life easier for us, but also it will make a lot uh these extensions a lot more reliable reliable for the community because they're not going to just disappear on you. Also, uh nowadays it's
+
+00:23:36 - 00:24:36
+of course much easier to build these extensions if you want to have a go at it with all the AI tooling and stuff. Like uh so, maybe once this hits, give it a go. You can do a lot of cool stuff uh with these extensions and it's all constrained. You can make DuckDB do a lot of cool stuff. Um yeah, that's the C API for extensions uh indeed. Uh another cool thing that we're working on is we're ripping out the old parser and we're uh making a new parser. So, DuckDB has famously always used the
+
+00:24:05 - 00:25:06
+Postgres parser. Um and we have basically decided enough is enough. We are going to make our own modern parser. That kind of ties into the extensions as well and allows the extensions to uh integrate uh integrate like new parser uh constructs much more easily. So, maybe in as a result of this, you will see more extensions that expose new SQL syntax and things like that. Um you should not actually notice anything from the parser though. So, if you do, please file an issue uh because it should be compatible
+
+00:24:36 - 00:25:33
+with the old one. Um all right, then that was the uh quick uh show about what some of the features that we're applying for 2.0. Of course, there's many more to come. I think it's time to do the Q&A. So, you can all if you want to scan this Q uh this QA code and ask questions. Or even if you don't want to ask questions, just have a look at the questions, upvote them so we know which ones to answer. Please do so. Then we can start a Q&A session. Thank you so much. >> Thank you.
+
+00:25:05 - 00:25:56
+>> [applause] >> Thanks. So there's already a bunch of questions that I can I can read and while I do this you can you know add others or upvote others. So there's how do you feel about major industry leaders like Databricks building next-gen engines like Raiden that are modeled off of of DuckDB. I think we're very flattered by that. >> [laughter] >> I mean why would what would else would we say? I mean you know I think there's there's there's there's what is that
+
+00:25:35 - 00:26:36
+imitation is the most sincere form of flattery? >> Absolutely. >> And I think this is also something that we've seen in lots of places that you know other competitors have also saw themselves sort of required to build a in-process analytical database and I think that's really great. Like we we are really happy about that. So and and in the similar vein like people building something similar to DuckDB and in you know big corp is really great. So that's great. Um Another question. So there are um
+
+00:26:05 - 00:26:55
+what are the plans to bring the spatial extension closer to PostGIS since you often compare with Postgres? Uh >> Should ask Mark. >> I think we should ask Mark for this. You can find you can find him in the break. >> [laughter] >> I think Postgres compatibility is high in our sort of priority list and I think the Postgres extension the spatial extension is also one of those areas. So generally we take as a rule that unless we have good reason to we don't want to deviate from Postgres.
+
+00:26:31 - 00:27:33
+>> Yeah. This is a nice one. This is a totally not passive-aggressive question. Why is the integration with Google Cloud so limited? Um this is a great question and you should ask that to your Google sales rep because they we are very happy to work with them to make that better. >> [laughter] >> Yeah? Uh so Uh so yeah. Um there is um, also maybe one more. Um, where do you see the DuckDB ecosystem in five years? >> Well, I I I I I mean >> How do you see Where do you see yourself
+
+00:27:02 - 00:27:54
+in five years? >> That's a great That's a great question. I mean, our vision has always been for DuckDB to achieve world domination, of course. So, I think five years is a is a good timeline for that, although it's always five years away, you know, like uh >> Like fusion. >> Like Like Like fusion. I I think DuckDB everywhere is like a nice sort of mantra. It's something that we do internally as well. Like we try to put DuckDB in as many places possible, and expanding the use case of DuckDB, like
+
+00:27:27 - 00:28:01
+now with the client server, allowing DuckDB to be used in more places. I think that's something that we really like to see and like to see Well, yeah, DuckDB everywhere. I think that's the Yeah. >> The goal. >> Yes. [laughter] >> Excellent. I think this we can leave it here for now, and then we'll go to the next speaker. Thank you.
