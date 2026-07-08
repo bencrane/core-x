@@ -1,4 +1,4 @@
-"""Unit tests for the sub-universe recipe v2 — pure, no R2 / network.
+"""Unit tests for the sub-universe recipe v3 — pure, no R2 / network.
 
 Pins (1) the fail-closed request contract ({uei, limit?} ONLY — unknown keys →
 MapCompileError), (2) the universe definition: nodes are the FULL lookalike
@@ -11,7 +11,10 @@ then undisclosed winners by prime obl (disclosed in meta.display_order),
 (5) gate_facts over the FULL matched set + matched_via_truncated, (6) NO
 SCORING, (7) target defaults: mvs_n rides alongside, < 5 combo-bearing edges →
 mvs_usd null + mvs_reason (the fixture target has 2 edges), (8) empty-anchor
-targets are a valid 200 with meta.reason, and (9) the boot-cache lifecycle."""
+targets are a valid 200 with meta.reason, (9) the boot-cache lifecycle, and
+(10) v3 Definition C facts: target_combo_farmout keyed to the TARGET's own
+demonstrated combos — independent of the anchor-portfolio matched set, null
+(never an empty block) when no lane discloses."""
 
 from __future__ import annotations
 
@@ -261,6 +264,47 @@ def test_meta_carries_tier_counts():
     assert m["returned_disclosed"] == 1
     assert m["returned_undisclosed"] == 1
     assert m["returned_disclosed"] + m["returned_undisclosed"] == m["returned"]
+
+
+def test_target_combo_farmout_definition_c(monkeypatch):
+    # v3: farm-out keyed to the TARGET's demonstrated combos. A node matched via
+    # anchor combo X must carry disclosed farm-out at target combo Y even when Y
+    # is NOT in the anchor portfolio (membership + matched_via unchanged).
+    extra_edge = {"subaward_amount": 50_000.0, "subaward_action_date": "2024-08-01",
+                  "prime_awardee_uei": ANCHOR, "prime_awardee_name": "ANCHOR PRIME",
+                  "prime_award_naics_code": "561730",
+                  "prime_award_product_or_service_code": "S208",
+                  "prime_award_parent_piid": None,
+                  "subaward_primary_place_of_performance_state_code": "AL"}
+    buyer_fo_s208 = {"uei": BUYER, "naics_code": "561730", "psc_code": "S208",
+                     "naics_title": "Landscaping", "psc_title": "Grounds Maintenance",
+                     "farmout_amt_60mo": 750_000.0, "farmout_amt_lifetime": 900_000.0,
+                     "median_chunk_60mo": 150_000.0, "median_chunk_lifetime": 140_000.0,
+                     "p75_chunk_60mo": 250_000.0, "n_subawards_lifetime": 5,
+                     "n_distinct_subs_60mo": 4, "last_action_date": "2025-04-01"}
+    monkeypatch.setattr(S, "_scan_target_edges",
+                        lambda uei: ([dict(r) for r in TARGET_EDGES] + [dict(extra_edge)])
+                        if uei == TARGET else [])
+    monkeypatch.setattr(S, "_scan_farmout",
+                        lambda: [dict(r) for r in FARMOUT] + [dict(buyer_fo_s208)])
+    S.reset_caches_for_tests()
+    out = S.execute_sub_universe({"uei": TARGET})
+    assert out["meta"]["recipe"] == "sub_universe.v3"
+    node = next(n for n in out["data"] if n["uei"] == BUYER)
+    # membership untouched: 561730xS208 is outside the anchor portfolio
+    assert {m["combo"] for m in node["matched_via"]} == {"541330xR425"}
+    tcf = node["target_combo_farmout"]
+    assert tcf["n_combos"] == 2
+    assert tcf["farmout_60mo"] == 2_750_000.0
+    # $-desc order: the 2M anchor-overlap lane, then the 750K target-only lane
+    assert [c["combo"] for c in tcf["combos"]] == ["541330xR425", "561730xS208"]
+    s208 = tcf["combos"][1]
+    assert s208["median_chunk_60mo"] == 150_000.0
+    assert s208["p75_chunk_60mo"] == 250_000.0
+    assert s208["n_distinct_subs_60mo"] == 4
+    # undisclosed node: null, never an empty block (unknown != zero)
+    b3 = next(n for n in out["data"] if n["uei"] == BUYER3)
+    assert b3["target_combo_farmout"] is None
 
 
 def test_undisclosed_quota_survives_disclosed_flood(monkeypatch):

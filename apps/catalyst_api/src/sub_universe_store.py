@@ -1,4 +1,4 @@
-"""Sub-universe recipe v2 — the per-sub eligible-buyer map universe.
+"""Sub-universe recipe v3 — the per-sub eligible-buyer map universe.
 
 POST /api/v1/market/sub-universe  {uei, limit?}  →  one payload the map form runs on:
 the target's ground truth + every eligible buyer node WITH its gate facts attached.
@@ -7,7 +7,7 @@ predicates over these facts — the server computes the universe once per target
 re-query on a slider move. Culls dim with disclosed reasons, never delete
 (operator doctrine 2026-07-06). NO SCORING anywhere.
 
-UNIVERSE DEFINITION (sub_universe.v2 — FULL lookalike winners):
+UNIVERSE DEFINITION (unchanged from v2 — FULL lookalike winners):
   anchors    = primes the target has received FSRS subawards from (spine-derived,
                usaspending_subaward_canonical — the pair mart is stats-only)
   combo set  = the anchors' own 5y prime-award portfolios (gtm_prime_combo_lanes)
@@ -20,12 +20,23 @@ matched combos. v1 admitted only disclosed sub-buyers — that silently culled e
 winner whose sub-buying is simply not FSRS-visible; v2 carries them, dimmed by
 absent facts, never deleted.
 
+v3 (Definition C facts, operator session 2026-07-07): node.target_combo_farmout —
+farm-out lanes keyed to the TARGET'S OWN demonstrated combos, LEFT-joined per node.
+Membership is untouched (still the anchor-portfolio lookalike rule); this is the
+"does this winner demonstrably buy the work the target sells" evidence, attached as
+a client-side filter fact. matched_via keys farm-out by the ANCHOR-portfolio combo
+the node won in; target_combo_farmout keys it by what the TARGET performs — a node
+matched via combo X can carry disclosed farm-out at target combo Y. The two views
+answer different questions and both ride on every node.
+
 NULL SEMANTICS (unknown ≠ zero, non-negotiable):
   • undisclosed nodes: matched_farmout_60mo is null (not 0); per-combo farm-out
     fields in matched_via are null with candidate_prime_obl_60mo always present.
   • nodes with no gtm_prime_sub_pairs rows: all three teaming fields are null —
     no disclosed pair history is an absent fact, not zero partners.
   • gate_facts medians are null where no farm-out lane discloses one.
+  • target_combo_farmout is null when the node discloses no farm-out lane at ANY
+    of the target's demonstrated combos — no evidence, not "doesn't buy".
 
 QUOTA PAGE (so H3's frontier is never truncated away): the page reserves a share
 (UNDISCLOSED_PAGE_QUOTA) of `limit` for undisclosed winners — a large target can
@@ -77,7 +88,7 @@ from . import lance_store
 
 log = logging.getLogger("catalyst.sub_universe")
 
-RECIPE_ID = "sub_universe.v2"
+RECIPE_ID = "sub_universe.v3"
 CACHE_TTL_S = 6 * 3600
 DEFAULT_LIMIT = 1000
 MAX_LIMIT = 5000
@@ -380,6 +391,7 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
                              "n_edges": len(amts), "total_usd": round(sum(amts), 2),
                              "median_chunk_usd": round(_median(amts) or 0, 2),
                              "last_action_date": max(i["date"] for i in items)})
+    target_combo_set = set(by_combo)
     own_prime = _scan_prime_lanes([uei])
     prime_combos = sorted(
         ({"combo": f"{r['naics_code']}x{r['psc_code']}", "naics_code": r["naics_code"],
@@ -490,6 +502,34 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
                 "anchor_obl_60mo": round(best_anchor[1], 2),
                 "prime_backed": k in prime_combo_set,
             })
+        # v3 Definition C facts: farm-out keyed to the TARGET's demonstrated
+        # combos (independent of which anchor-portfolio combo matched the node).
+        # No disclosed lane at any target combo → null, never an empty block.
+        tc_rows = []
+        for k in target_combo_set:
+            fo = fo_lookup.get((cu, k[0], k[1]))
+            if fo is not None:
+                tc_rows.append((k, fo))
+        if tc_rows:
+            tc_rows.sort(key=lambda e: -_f(e[1]["farmout_amt_60mo"]))
+            target_combo_farmout = {
+                "farmout_60mo": round(sum(_f(fo["farmout_amt_60mo"]) for _, fo in tc_rows), 2),
+                "n_combos": len(tc_rows),
+                "combos": [{
+                    "combo": f"{k[0]}x{k[1]}", "naics_code": k[0], "psc_code": k[1],
+                    "naics_title": fo["naics_title"], "psc_title": fo["psc_title"],
+                    "farmout_amt_60mo": round(_f(fo["farmout_amt_60mo"]), 2),
+                    "median_chunk_60mo": (round(_f(fo["median_chunk_60mo"]), 2)
+                                          if fo["median_chunk_60mo"] is not None else None),
+                    "p75_chunk_60mo": (round(_f(fo["p75_chunk_60mo"]), 2)
+                                       if fo["p75_chunk_60mo"] is not None else None),
+                    "n_distinct_subs_60mo": (int(fo["n_distinct_subs_60mo"])
+                                             if fo["n_distinct_subs_60mo"] is not None else None),
+                    "last_action_date": _d(fo["last_action_date"]),
+                } for k, fo in tc_rows],
+            }
+        else:
+            target_combo_farmout = None
         stats = caches["pairs_by_prime"].get(cu)
         g = geo.get(cu)
         nodes.append({
@@ -505,6 +545,7 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
             "matched_via": matched,
             "matched_via_truncated": len(entries) > MATCHED_VIA_CAP,
             "gate_facts": gate_facts,
+            "target_combo_farmout": target_combo_farmout,
             # unknown ≠ zero: a prime with no pair rows has UNDISCLOSED teaming,
             # not zero partners — all three fields ride as null
             "teaming": ({"n_sub_partners_5y": stats["n_sub_partners_5y"],
