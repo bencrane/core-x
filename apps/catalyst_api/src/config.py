@@ -216,6 +216,28 @@ GTM_PRIME_DEMAND_EVENTS_URI = os.environ.get(
 GTM_PRIME_COMBO_LANES_URI = os.environ.get(
     "GTM_PRIME_COMBO_LANES_LANCE_URI", "s3://data-sink/active/gtm_prime_combo_lanes/"
 )
+# gtm_sub_combo_lanes — (sub uei × naics × psc, ~339K): windowed subaward $ DELIVERED.
+# The sub-side mirror of gtm_prime_combo_lanes; peer-candidate discovery.
+GTM_SUB_COMBO_LANES_URI = os.environ.get(
+    "GTM_SUB_COMBO_LANES_LANCE_URI", "s3://data-sink/active/gtm_sub_combo_lanes/"
+)
+# gtm_sub_profiles — 1 row/sub_uei (~105K): deal band (median/p20/p80 chunk),
+# pop_states ($-ordered), lane breadth, buyer concentration, 5y CAGR (null-not-zero).
+# The peer-set + percentile dimensions for the blob builder (Phase 3a, 2026-07-07).
+GTM_SUB_PROFILES_URI = os.environ.get(
+    "GTM_SUB_PROFILES_LANCE_URI", "s3://data-sink/active/gtm_sub_profiles/"
+)
+# gtm_sub_universe_blobs — 1 row/target uei: the precomputed Surface-1 HOT blob
+# (sub_universe_blob.v2, two-tier). The JSON payload the pre-call page / on-call
+# console fetch ONCE per call and filter in-memory. BTREE uei. (Phase 4)
+GTM_SUB_UNIVERSE_BLOBS_URI = os.environ.get(
+    "GTM_SUB_UNIVERSE_BLOBS_LANCE_URI", "s3://data-sink/active/gtm_sub_universe_blobs/"
+)
+# Row-exact node drilldown (raw event grain + win_portfolio) is served by
+# point-lookup on the EXISTING indexed marts — gtm_prime_demand_events (BTREE uei)
+# and gtm_prime_combo_lanes (BTREE uei) — filtered in-memory to the target's combos.
+# No separate events sidecar dataset: it would duplicate ~106 MB of event rows per
+# target across overlapping universes (multi-TB). See sub_universe_serve.
 
 # ── SAM person layer (the operator profile's people + contactability reads) ──
 # gtm_sam_people — 1 row per sam_person_id: every distinct person observed across the
