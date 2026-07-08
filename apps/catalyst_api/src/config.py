@@ -230,8 +230,31 @@ GTM_SUB_PROFILES_URI = os.environ.get(
 # gtm_sub_universe_blobs — 1 row/target uei: the precomputed Surface-1 HOT blob
 # (sub_universe_blob.v2, two-tier). The JSON payload the pre-call page / on-call
 # console fetch ONCE per call and filter in-memory. BTREE uei. (Phase 4)
+# SUPERSEDED by the v3 pair-grain marts below (see freeze-doc §0, 2026-07-08) —
+# retained as the frozen blob-era record; new work does not write it.
 GTM_SUB_UNIVERSE_BLOBS_URI = os.environ.get(
     "GTM_SUB_UNIVERSE_BLOBS_LANCE_URI", "s3://data-sink/active/gtm_sub_universe_blobs/"
+)
+# ── v3: pair-grain precompute replacing the blob (freeze-doc §0, 2026-07-08) ──
+# The per-UEI blob is dead (denormalized shared node facts into every overlapping
+# target; the two-tier rescue degraded exact-day windows to monthly buckets).
+# Replacement is two relational datasets, built operator-triggered per target and
+# grown monotonically (rebuild-per-target: delete target's rows, append fresh).
+# Node-grain facts (award-state, demand events, entity, win portfolio) are NOT
+# stored per pair — they serve at query time from the already-indexed node-grain
+# marts, restoring exact-day time windows. Built by scripts/build_sub_universe_target.py
+# via apps.catalyst_api.src.sub_universe_pairs.build_target.
+#
+# gtm_sub_universe_pairs — 1 row / (target_uei × node_uei): pair-specific scalars
+# only (matched obl/farm-out, Definition-C tcf totals, teaming, band_fit, node HQ
+# geo, compact matched_via_json). BTREE target_uei AND node_uei. (sub_universe_pairs.v1)
+GTM_SUB_UNIVERSE_PAIRS_URI = os.environ.get(
+    "GTM_SUB_UNIVERSE_PAIRS_LANCE_URI", "s3://data-sink/active/gtm_sub_universe_pairs/"
+)
+# gtm_sub_universe_targets — 1 row / target uei: target_analytics JSON (pre-call
+# brief Acts 1–3: pool/peers/percentiles/lane trends) + target scalars. BTREE uei.
+GTM_SUB_UNIVERSE_TARGETS_URI = os.environ.get(
+    "GTM_SUB_UNIVERSE_TARGETS_LANCE_URI", "s3://data-sink/active/gtm_sub_universe_targets/"
 )
 # Row-exact node drilldown (raw event grain + win_portfolio) is served by
 # point-lookup on the EXISTING indexed marts — gtm_prime_demand_events (BTREE uei)
