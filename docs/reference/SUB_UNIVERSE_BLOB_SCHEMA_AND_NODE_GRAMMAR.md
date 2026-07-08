@@ -80,6 +80,64 @@ vocabulary change and a schema change are still the same PR.
 
 ---
 
+## 0.1 v3.1 AMENDMENT — five-input model, capability families, uncapped membership (operator-ratified 2026-07-08)
+
+> Extends §0. Full input-model text: `docs/reference/CATALYST_FIVE_INPUT_MODEL_ADDENDUM.md`
+> (§1 the model, §1.1–1.2 agency/bases/buildings rulings, §2 families, §3 the three-surface
+> Cycle C spec — **C build remains ON HOLD until explicit operator green-light**). This
+> section carries the binding substrate rulings.
+
+**1. Five inputs, one universe.** The per-UEI universe presents as five named inputs
+(geographic focus, core capabilities, lookalike primes, lookalike subs, deal economics),
+each with baked per-target defaults, each tunable live without global rebuild. Inputs
+1/2/5 and all monetary/time knobs are **filters over ONE universe** whose membership is
+the lookalike-winner rule (widest tier, dim-never-delete). Money and time never add
+members. Declared SAM codes: facet/display only, never membership. Vehicle co-holding
+(same parent IDV): per-node annotation only, never membership.
+
+**2. Membership is materialized IN FULL — the serving cap never touches the mart.**
+`build_target()` writes a pair row for **every** member of the lookalike-winner universe.
+`MAX_LIMIT` (5000) is a serving/page parameter only. Rationale of record: the build-time
+rank cut (disclosed-first ordering) deleted precisely the undisclosed frontier — on the
+2026-07-08 live gate every mid-size target truncated at exactly 5000 and **100% of the cut
+rows were undisclosed** — violating dim-never-delete at the substrate and silently emptying
+the two knobs (undisclosed tier, family widening) the model exists to serve. The only
+build-time truncation is the mega-universe guard (`BUILD_NODE_CAP`, reseller-class targets
+per §0 doctrine), always with `nodes_truncated=True` — disclosed, never silent.
+
+**3. Capability families — definition (CORRECTS addendum §2 as first written).**
+`family_key = NAICS[:4] + 'x' + psc_family(PSC)` where `psc_family = PSC[0]` when the
+first char is a letter (services `R…`/`K…`/`M…`/`S…`, R&D `A…`), else `PSC[:2]` (products:
+the 2-digit FSC **group**). One-digit product truncation is wrong — it collapses `1410`
+guided missiles / `1510` aircraft / `1903` ships into family "1". Examples:
+`541330×R425 → 5413xR`; `336411×1510 → 3364x15`.
+- **F1 placement:** family rollups ride the pair build — pair-row JSON dict columns
+  `family_matched_obl_60mo` / `family_tcf_farmout_60mo`, plus the target row's
+  demonstrated families (top-X by frequency + $, titles inline). No mart rebuilds.
+- **F2 placement:** `family_key` column + BTREE on the combo marts at their next
+  operator-triggered rebuild — never initiate a rebuild for F2 alone.
+- **Null doctrine at family grain:** `family_tcf_farmout_60mo` sums **disclosed** lanes at
+  the target's combos only; a family with no disclosed lane is ABSENT from the dict (null
+  semantics), never 0. Negative farm-out (net de-obligation — observed live 2026-07-08)
+  passes through unclamped.
+- **Deal economics stay at true combo grain** and aggregate up. Family-grain medians over
+  heterogeneous combos are refused — they would blur the one number the deal-fit story
+  depends on.
+
+**4. Execution environment.** Per-target builds execute adjacent to R2 (the deployed API
+service path), never as serial laptop batches (retired 2026-07-08: ~95% of a measured
+12.5-min/target laptop build was residential-link RTT, cache warmth immaterial). The
+trigger script is unchanged; the host moves.
+
+**5. Substrate deltas recorded (2026-07-08).** `usaspending_fpds_prime_award_state`
+(82.9M rows) gained `naics_code` + `product_or_service_code` BTREEs (dataset versions
+23–24) — unblocks S3 award/flow filtering by combo/family. Agency axis: §2.5.1's REFUSAL
+is **superseded** (addendum §1.1) — agency serves from `gtm_txn_events_slim` and the
+Cycle B rollups (all carry `awarding_agency_code`, indexed); sub-toptier names still
+refuse pending a reviewed alias table.
+
+---
+
 ## 1. Container
 
 > **v2 AMENDMENT (2026-07-07, Phase 3b/4 — implemented & gated). SUPERSEDED by §0
@@ -231,6 +289,7 @@ From `gtm_sam_entities` (BTREE `uei`): `name, cage, physical_city, physical_stat
 | `build_blob(uei)` emitting this schema (`sub_universe_full`) | 3b | **[v2] DONE & gated** — two-tier hot blob (8.80 MB probe, buckets reconcile exact); `award_key`↔`piid` + IDV self-row verified |
 | `gtm_sub_universe_blobs` dataset (BTREE uei) + `sub_universe_serve` (fetch_blob / fetch_node_detail) | 4 | **code DONE; proving batch running** — drilldown reads gtm_prime_demand_events / gtm_prime_combo_lanes (BTREE uei) |
 | Predicate engine executing §2 vocabulary | 5 | frozen field map (this doc) — scalar axes over hot nodes; time/plan/set-aside over monthly buckets; row-exact via drilldown |
-| Agency column on `gtm_prime_demand_events` | queued | events mart rebuild (unblocks §2.5.1) |
+| Agency column on `gtm_prime_demand_events` | ~~queued~~ | **SUPERSEDED (§0.1.5)** — agency serves from `gtm_txn_events_slim` + Cycle B rollups (#1072) |
+| `naics_code`/`product_or_service_code` BTREEs on `usaspending_fpds_prime_award_state` | v3.1 | **DONE 2026-07-08** (versions 23–24) — S3 flow surface unblocked |
 | **[v3] `gtm_sub_universe_pairs` + `gtm_sub_universe_targets`** (§0) — pair-grain precompute replacing the blob; `sub_universe_pairs.build_target(uei)` + `build_sub_universe_target.py` | v3 | **DONE** — operator-triggered per-target, monotonic grow; node-grain facts serve at query time from indexed marts (exact-day windows restored) |
 | Standard executor serve path (pinned target lane + set intersects over the two v3 marts) | v3-serve | NOT this scope — replaces `sub_universe_serve` |
