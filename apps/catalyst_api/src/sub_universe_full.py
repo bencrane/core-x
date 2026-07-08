@@ -1,10 +1,19 @@
 """sub_universe_full — the per-UEI blob builder (build path, not the serving path).
 
-Emits ONE payload per target UEI per the frozen schema
-(docs/reference/SUB_UNIVERSE_BLOB_SCHEMA_AND_NODE_GRAMMAR.md): the FULL universe
-node map (sub_universe.v3 facts, paging/quota stripped — those are presentation)
-plus the target_analytics section (pre-call brief Acts 1–3). The batch runner
-writes these blobs to Lance keyed BTREE uei; serving = fetch + in-memory filter.
+build_blob(uei) -> blob. TWO-TIER (v2, Surface-1). ONE payload per target UEI: the
+FULL universe node map (sub_universe.v3 facts, paging/quota stripped) +
+target_analytics (pre-call brief Acts 1–3). Kept single-digit MB so the one
+per-call load is sub-second.
+  • MATERIAL nodes (disclosed sub-buyers, ranked, capped MATERIAL_CAP) carry full
+    hot hydration: entity, award-state, matched_via (capped), and per-node MONTHLY
+    event buckets — time / plan / set-aside predicates serve from these in-memory.
+  • the undisclosed tail rides as lean STUBS: membership + ranking scalars + the
+    base recipe's cheap demand summary (needs-subs-now / by-action-type / counts).
+Raw event grain and win_portfolio are NOT stored — row-exact drilldown reads the
+indexed marts (gtm_prime_demand_events / gtm_prime_combo_lanes) by uei point-lookup
+(see sub_universe_serve). The batch runner writes the hot blob ->
+gtm_sub_universe_blobs (BTREE uei) — the ONLY new dataset. Serving = one indexed
+blob fetch + in-memory filter; drilldown = one indexed mart point-lookup.
 
 BUILD-TIME SPINE ACCESS IS SANCTIONED HERE (the request-path prohibition does not
 apply to the batch): the pool scan reads usaspending_subaward_canonical, the
@@ -35,10 +44,13 @@ from . import sub_universe_store as S
 
 log = logging.getLogger("catalyst.sub_universe_full")
 
-BLOB_RECIPE_ID = "sub_universe_blob.v1"   # bakes sub_universe.v3 node facts
+BLOB_RECIPE_ID = "sub_universe_blob.v2"   # two-tier: hot blob + mart drilldown; bakes sub_universe.v3 node facts
 
-EVENT_ROWS_PER_NODE_CAP = 500
-WIN_PORTFOLIO_CAP = 50
+EVENT_ROWS_PER_NODE_CAP = 500             # raw rows per node returned on drilldown (serve path cap)
+WIN_PORTFOLIO_CAP = 50                    # portfolio entries per node returned on drilldown
+# ── two-tier trim (Surface-1: single-digit-MB hot blob, sub-second load) ──────
+MATERIAL_CAP = 1500                       # max fully-hydrated (disclosed) nodes per blob
+MATCHED_VIA_HOT_CAP = 5                   # matched_via combos kept per material node (hot)
 POOL_NAMED_PRIMES_CAP = 100
 PEERS_NAMED_CAP = 100
 TREND_MIN_N = 5                            # reuse of the MVS_MIN_N doctrine
@@ -196,6 +208,34 @@ def _hist(vals: list[float]) -> list[int]:
     return buckets
 
 
+def _month_buckets(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-node MONTHLY event buckets — every time / plan / set-aside /
+    action-type predicate serves from these in-memory; the raw rows drill down
+    from the gtm_prime_demand_events mart (BTREE uei). ~18x smaller than raw
+    grain (measured). Aggregates the FULL restricted event set for the node."""
+    cells: dict[str, Any] = {}
+    for e in events:
+        d = _d(e.get("action_date"))
+        if not d:
+            continue
+        c = cells.get(d[:7])
+        if c is None:
+            c = cells[d[:7]] = {"n": 0, "obl": 0.0, "at": {}, "plan": {},
+                                "sa": {}, "first": 0, "needs": 0}
+        c["n"] += 1
+        c["obl"] = round(c["obl"] + _f(e.get("obligation_delta")), 2)
+        for axis, key in (("at", "action_type_code"),
+                          ("plan", "subcontracting_plan"),
+                          ("sa", "type_of_set_aside_code")):
+            v = e.get(key)
+            c[axis][v] = c[axis].get(v, 0) + 1
+        if e.get("is_first_action"):
+            c["first"] += 1
+            if not e.get("has_disclosed_subs"):
+                c["needs"] += 1
+    return cells
+
+
 # ── the builder ────────────────────────────────────────────────────────────────
 def build_blob(uei: str) -> dict[str, Any]:
     today = dt_date.today()
@@ -218,75 +258,94 @@ def build_blob(uei: str) -> dict[str, Any]:
     # full node set: the store caps at MAX_LIMIT; the blob carries the full
     # universe when it fits, else the store's quota page with the cap disclosed.
     nodes = base["data"]
-    node_ueis = [n["uei"] for n in nodes]
     universe_truncated = base["meta"]["capped"]
 
-    # 2. node hydration the page path skipped — enrichment, win portfolio,
-    #    award state, event-grain demand — for EVERY carried node.
+    # 2. TIER the universe (Surface-1 two-tier trim). MATERIAL nodes = disclosed
+    #    sub-buyers (ranked by prime_obl_60mo, capped) get full hot hydration:
+    #    entity, award-state, matched_via (capped), and per-node MONTHLY event
+    #    buckets — time / plan / set-aside predicates serve from these in-memory.
+    #    The undisclosed tail rides as lean STUBS carrying membership + ranking
+    #    scalars + the base recipe's cheap demand summary (needs-subs-now /
+    #    by-action-type / counts), enough for coarse frontier prospecting.
+    #    Raw event grain and win_portfolio are NOT stored: row-exact drilldown
+    #    reads the indexed marts (gtm_prime_demand_events / gtm_prime_combo_lanes)
+    #    by uei point-lookup (see sub_universe_serve). Every build_blob hydrate
+    #    scan is MATERIAL-ONLY — the tail costs nothing here.
+    disclosed = sorted((n for n in nodes if n.get("disclosed_sub_buyer")),
+                       key=lambda n: -_f(n.get("matched_prime_obl_60mo")))
+    material_ueis = {n["uei"] for n in disclosed[:MATERIAL_CAP]}
+    material_ueis.add(uei)                        # the target's own header row
+    mat_list = sorted(material_ueis)
+
     t = time.monotonic()
-    sam = {r["uei"]: r for r in _scan_sam_entities(node_ueis + [uei])}
-    _, caches = S._ensure_caches()
-    # full win portfolio: invert the winners index once per cache generation
-    inv = caches.get("_winners_by_uei")
-    if inv is None:
-        inv = {}
-        for combo, entries in caches["winners_by_combo"].items():
-            for cu, obl in entries:
-                inv.setdefault(cu, []).append((combo, obl))
-        caches["_winners_by_uei"] = inv
-    aw_rows = _scan_award_state(node_ueis, today_iso)
+    sam = {r["uei"]: r for r in _scan_sam_entities(mat_list)}
+    aw_rows = _scan_award_state(mat_list, today_iso)
     aw_by_uei: dict[str, list[dict]] = {}
     for r in aw_rows:
         aw_by_uei.setdefault(r["recipient_uei"], []).append(r)
-    ev_rows = _scan_demand_events_full(node_ueis)
+    ev_rows = _scan_demand_events_full(mat_list)      # MATERIAL-ONLY: for buckets
     ev_by_uei: dict[str, list[dict]] = {}
     for r in ev_rows:
         ev_by_uei.setdefault(r["uei"], []).append(r)
     timings["hydrate_ms"] = int((time.monotonic() - t) * 1000)
+    timings["n_material"] = len(material_ueis)
 
+    # the base recipe's cheap per-node demand summary (needs-subs-now, by-action-
+    # type, counts) rides on every node; keep a trimmed copy on stubs.
+    STUB_SUMMARY_KEYS = ("n_events_24mo", "by_action_type", "n_plan_added_Y",
+                         "n_terminations_EFX", "needs_subs_now_total")
+    hot_nodes: list[dict[str, Any]] = []
     for n in nodes:
         cu = n["uei"]
-        sr = sam.get(cu)
-        n["entity"] = ({
-            "cage": sr["cage_code"], "name": sr["legal_business_name"],
-            "sam_is_active": sr["sam_is_active"], "in_dsbs": sr["in_dsbs"],
-            "business_types": sr["business_types"], "primary_naics": sr["primary_naics"],
-            "naics_codes": sr["naics_codes"], "psc_codes": sr["psc_codes"],
-            "physical_city": sr["physical_city"], "physical_state": sr["physical_state"],
-            "physical_zip": sr["physical_zip"],
-        } if sr else None)
-        port = sorted(inv.get(cu, []), key=lambda e: -e[1])
-        n["win_portfolio"] = [{"combo": f"{c[0]}x{c[1]}", "naics_code": c[0],
-                               "psc_code": c[1], "prime_obl_60mo": round(o, 2)}
-                              for c, o in port[:WIN_PORTFOLIO_CAP]]
-        n["win_portfolio_truncated"] = len(port) > WIN_PORTFOLIO_CAP
-        aws = aw_by_uei.get(cu)
-        if aws is not None:
-            exp = [a for a in aws if a["days_to_expiry"] is not None
-                   and 0 <= int(a["days_to_expiry"]) <= 180]
-            ends = sorted(_d(a["current_end_date"]) for a in aws if a["current_end_date"])
-            n["award_state"] = {"n_active_awards": len(aws),
-                                "n_expiring_180d": len(exp),
-                                "next_expiry_date": ends[0] if ends else None}
+        base_summary = n.pop("demand_events") if isinstance(n.get("demand_events"), dict) else None
+        if cu in material_ueis:
+            sr = sam.get(cu)
+            n["entity"] = ({
+                "cage": sr["cage_code"], "name": sr["legal_business_name"],
+                "sam_is_active": sr["sam_is_active"], "in_dsbs": sr["in_dsbs"],
+                "business_types": sr["business_types"], "primary_naics": sr["primary_naics"],
+                "naics_codes": sr["naics_codes"], "psc_codes": sr["psc_codes"],
+                "physical_city": sr["physical_city"], "physical_state": sr["physical_state"],
+                "physical_zip": sr["physical_zip"],
+            } if sr else None)
+            aws = aw_by_uei.get(cu)
+            if aws is not None:
+                exp = [a for a in aws if a["days_to_expiry"] is not None
+                       and 0 <= int(a["days_to_expiry"]) <= 180]
+                ends = sorted(_d(a["current_end_date"]) for a in aws if a["current_end_date"])
+                n["award_state"] = {"n_active_awards": len(aws),
+                                    "n_expiring_180d": len(exp),
+                                    "next_expiry_date": ends[0] if ends else None}
+            else:
+                n["award_state"] = None          # no live rows found ≠ zero awards ever
+            full_via = n["matched_via"]
+            n["matched_via"] = full_via[:MATCHED_VIA_HOT_CAP]
+            n["matched_via_truncated"] = n.get("matched_via_truncated") or \
+                len(full_via) > MATCHED_VIA_HOT_CAP
+            # event grain restricted to this node's matched combos -> monthly
+            # buckets (hot). Raw rows drill down from gtm_prime_demand_events.
+            mset = {(m["naics_code"], m["psc_code"]) for m in full_via} | \
+                   {tuple(k.split("x", 1)) for k in (n["gate_facts"] or {})}
+            evs = [e for e in ev_by_uei.get(cu, [])
+                   if (e["naics_code"], e["psc_code"]) in mset]
+            n["demand_events"] = {"summary": base_summary,
+                                  "buckets": _month_buckets(evs), "grain": "month",
+                                  "detail_in_mart": "gtm_prime_demand_events"}
+            n["pop"] = None                      # v1 deferral (meta.deferred)
+            n["tier"] = "material"
+            hot_nodes.append(n)
         else:
-            n["award_state"] = None          # no live rows found ≠ zero awards ever
-        evs = sorted(ev_by_uei.get(cu, []), key=lambda e: _d(e["action_date"]) or "", reverse=True)
-        # event grain restricted to matched combos (the blob doctrine)
-        mset = {(m["naics_code"], m["psc_code"]) for m in n["matched_via"]} | \
-               {tuple(k.split("x", 1)) for k in n["gate_facts"]}
-        evs = [e for e in evs if (e["naics_code"], e["psc_code"]) in mset]
-        n["demand_events"] = {
-            "summary": n.pop("demand_events") if isinstance(n.get("demand_events"), dict) else None,
-            "events": [{k: (_d(e[k]) if k == "action_date" else e[k])
-                        for k in ("action_date", "action_type_code", "award_type_code",
-                                  "naics_code", "psc_code", "obligation_delta",
-                                  "is_first_action", "has_disclosed_subs",
-                                  "subcontracting_plan", "type_of_set_aside_code",
-                                  "extent_competed", "idv_type_code", "award_key")}
-                       for e in evs[:EVENT_ROWS_PER_NODE_CAP]],
-            "events_truncated": len(evs) > EVENT_ROWS_PER_NODE_CAP,
-        }
-        n["pop"] = None                      # v1 deferral (meta.deferred)
+            hot_nodes.append({                   # lean STUB — detail via mart drilldown
+                "uei": cu, "name": n.get("name"),
+                "disclosed_sub_buyer": n.get("disclosed_sub_buyer"),
+                "matched_farmout_60mo": n.get("matched_farmout_60mo"),
+                "matched_prime_obl_60mo": n.get("matched_prime_obl_60mo"),
+                "n_matched_combos": n.get("n_matched_combos"),
+                "gate_facts": n.get("gate_facts"),   # combo keys preserve membership evidence
+                "demand_summary": ({k: base_summary.get(k) for k in STUB_SUMMARY_KEYS}
+                                   if base_summary else None),
+                "tier": "stub",
+            })
 
     # 3. target analytics — Act 1: the target's own record
     t = time.monotonic()
@@ -490,12 +549,13 @@ def build_blob(uei: str) -> dict[str, Any]:
     timings["act3_ms"] = int((time.monotonic() - t) * 1000)
 
     tgt_sam = sam.get(uei)
-    return {
+    blob = {
         "uei": uei,
         "as_of": today_iso,
         "recipe": BLOB_RECIPE_ID,
         "universe": {
-            "nodes": nodes,
+            "nodes": hot_nodes,
+            "n_material": len(material_ueis),
             "n_disclosed": base["meta"]["n_disclosed_universe"],
             "n_undisclosed": base["meta"]["n_undisclosed_universe"],
             "n_total": base["meta"]["total"],
@@ -564,6 +624,13 @@ def build_blob(uei: str) -> dict[str, Any]:
         },
         "meta": {
             "base_recipe": base["meta"]["recipe"],
+            "tiering": {
+                "material": f"disclosed sub-buyers, ranked by prime_obl_60mo, cap {MATERIAL_CAP}",
+                "stub": "undisclosed tail — membership + ranking scalars + base demand summary",
+                "event_grain": "monthly buckets hot (material); raw grain via mart drilldown",
+                "drilldown_marts": ["gtm_prime_demand_events", "gtm_prime_combo_lanes"],
+                "matched_via_hot_cap": MATCHED_VIA_HOT_CAP,
+            },
             "deferred": ["node.pop (awaits uei×pop_state rollup mart)",
                          "placement subcontracting-plan axis (awaits agency/plan tagging pass)"],
             "timings_ms": timings,
@@ -573,3 +640,4 @@ def build_blob(uei: str) -> dict[str, Any]:
             "doctrine": base["meta"]["doctrine"],
         },
     }
+    return blob
