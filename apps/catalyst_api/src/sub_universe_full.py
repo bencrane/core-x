@@ -109,22 +109,30 @@ def _scan_demand_events_full(ueis: list[str]) -> list[dict[str, Any]]:
 
 
 def _scan_pool(lanes: list[tuple[str, str]], states: list[str], w24: str) -> list[dict[str, Any]]:
-    """The Act-2 pool: sub-out placed in the target's lanes ∩ states, trailing 24mo."""
+    """The Act-2 pool: sub-out placed in the target's lanes ∩ states, trailing 24mo.
+
+    State membership is enforced in Python (null-safe trim), not in the pushdown:
+    Lance's scan planner rejects TRIM/COALESCE, and a bare `IN` on the raw column
+    would silently drop whitespace-padded state codes (null ≠ zero). Only the
+    lane + date predicate — both Lance-supported and selective — is pushed down.
+    """
     if not lanes or not states:
         return []
-    slist = ",".join(f"'{s}'" for s in states)
+    states_set = set(states)
     out: list[dict[str, Any]] = []
     for i in range(0, len(lanes), 50):
         combo_pred = " OR ".join(
             f"(prime_award_naics_code = '{n}' AND prime_award_product_or_service_code = '{p}')"
             for n, p in lanes[i:i + 50])
-        out += _scan(config.CONTRACT_SUBAWARD_URI,
+        rows = _scan(config.CONTRACT_SUBAWARD_URI,
                      ["prime_awardee_uei", "prime_awardee_name", "subawardee_uei",
                       "subaward_amount", "subaward_action_date", "prime_award_piid",
                       "prime_award_naics_code", "prime_award_product_or_service_code",
                       "subaward_primary_place_of_performance_state_code"],
-                     f"({combo_pred}) AND subaward_action_date >= DATE '{w24}' "
-                     f"AND TRIM(COALESCE(subaward_primary_place_of_performance_state_code,'')) IN ({slist})")
+                     f"({combo_pred}) AND subaward_action_date >= DATE '{w24}'")
+        out += [r for r in rows
+                if (r.get("subaward_primary_place_of_performance_state_code") or "").strip()
+                in states_set]
     return out
 
 
