@@ -300,6 +300,49 @@ USASPENDING_AWARD_CANONICAL_URI = os.environ.get(
     "USASPENDING_AWARD_CANONICAL_LANCE_URI", "s3://data-sink/active/usaspending_award_canonical/"
 )
 
+# ── Phrase-query precompute marts (remove the raw spines from the request path) ─
+# The phrase compiler's event + award lanes fall through to the FPDS spines at
+# request time. These three marts precompute those collapses. NO serving/routing
+# change lands with them — marts only (scripts/build_gtm_txn_events_slim.py,
+# build_gtm_txn_recipient_month_rollup.py, build_gtm_award_recipient_rollup.py).
+#
+# gtm_txn_events_slim — full-history FPDS action grain (~108M rows), the closed-
+# grammar projection of usaspending_fpds_canonical_txn ONLY (action_type_code,
+# subcontracting_plan, naics_code, psc_code, awarding_agency_code, action_date,
+# federal_action_obligation, uei + action/award keys). BTREE uei/action_type_code/
+# naics_code/psc_code/awarding_agency_code/action_date. Feeds Layer 2 + the
+# partial-current-month tail. NOT gtm_prime_demand_events (that stays 24mo + FSRS).
+GTM_TXN_EVENTS_SLIM_URI = os.environ.get(
+    "GTM_TXN_EVENTS_SLIM_LANCE_URI", "s3://data-sink/active/gtm_txn_events_slim/"
+)
+# gtm_txn_recipient_month_rollup — whole-month event rollup off Layer 1. Grain:
+# uei × action_type_code × plan_class × naics_code × psc_code ×
+# awarding_agency_code × month; n_actions + obligation_sum. plan_class buckets
+# A / B / attached (C–H) / null. Closed months read here; the partial current
+# month rides gtm_txn_events_slim (hybrid = exact). BTREE uei/naics_code/psc_code/
+# awarding_agency_code/action_type_code/month.
+GTM_TXN_RECIPIENT_MONTH_ROLLUP_URI = os.environ.get(
+    "GTM_TXN_RECIPIENT_MONTH_ROLLUP_LANCE_URI",
+    "s3://data-sink/active/gtm_txn_recipient_month_rollup/"
+)
+# gtm_award_recipient_rollup — award-lane collapse off usaspending_fpds_prime_award_state.
+# Grain: uei × naics_code × psc_code × awarding_agency_code × award_topology;
+# n_awards_lifetime, obligated_lifetime, n_active, obligated_active (active =
+# is_terminated=false AND current_end_date >= as_of, materialized). BTREE uei +
+# the filter dims.
+GTM_AWARD_RECIPIENT_ROLLUP_URI = os.environ.get(
+    "GTM_AWARD_RECIPIENT_ROLLUP_LANCE_URI",
+    "s3://data-sink/active/gtm_award_recipient_rollup/"
+)
+# gtm_award_expiry_months — expiry sidecar off usaspending_fpds_prime_award_state.
+# Grain: uei × end_month (first-of-month of current_end_date); n_awards, obligated.
+# Forward-looking only (current_end_date >= as_of) — the expiring-within-N window.
+# BTREE uei/end_month.
+GTM_AWARD_EXPIRY_MONTHS_URI = os.environ.get(
+    "GTM_AWARD_EXPIRY_MONTHS_LANCE_URI",
+    "s3://data-sink/active/gtm_award_expiry_months/"
+)
+
 # ── Subout-opportunities recipe substrate (subout_store.py) ───────────────────
 # gtm_prime_subout_by_recipient_code — the two-sided sub-out history cube
 # (1 row / (prime_awardee_uei, context_code_type, context_code, recipient_code_source,
