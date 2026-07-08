@@ -26,9 +26,21 @@ is precisely what moves to query time here, paid once per node, never precompute
 per target. The ONE per-node hydration retained inline is HQ geo (gtm_entity_geo,
 chunked) — its build cost is measured and returned in target["timings_ms"].
 
-UNIVERSE = the sub_universe.v3 universe run with NO page/quota (the store's paging
-is presentation; the pair mart is total). Every candidate node of the full
-lookalike-winner universe gets exactly one pair row.
+UNIVERSE (freeze §0.1.2, v2): the sub_universe.v3 universe in build_mode — the FULL
+membership set, no serving page/quota (MAX_LIMIT is serving-only). Every member of
+the lookalike-winner universe gets exactly one pair row. The only build truncation
+is the store's BUILD_NODE_CAP mega-guard (reseller-class), always disclosed via
+nodes_truncated. build_mode also skips the node-grain hydration the pair writer
+never persists (demand events / vehicles / gate_facts / page geo) — the measured
+fix for the 627–820s laptop builds.
+
+FAMILY ROLLUPS (freeze §0.1.3, v2): family_key = NAICS[:4] × (PSC[0] alpha | PSC[:2]
+FSC group). Pair rows carry family_matched_obl_60mo + family_tcf_farmout_60mo as
+compact JSON dicts (family → $, desc). family_tcf sums DISCLOSED lanes at the
+target's combos only — a family with no disclosed lane is ABSENT (null ≠ zero);
+negative farm-out passes through unclamped. The targets row carries the target's
+demonstrated_families (title, n_edges, total_usd, share_pct, member combos) and
+its county-grain footprint (scopes.pop_counties) — input 1/2 baked defaults.
 
 NULL SEMANTICS (unknown ≠ zero, non-negotiable — inherited from sub_universe.v3):
   • undisclosed node: matched_farmout_60mo is null (not 0).
@@ -62,10 +74,11 @@ from typing import Any
 
 from . import config
 from . import sub_universe_store as S
+from .psc_families import family_key, psc_family_name
 
 log = logging.getLogger("catalyst.sub_universe_pairs")
 
-PAIRS_RECIPE_ID = "sub_universe_pairs.v1"
+PAIRS_RECIPE_ID = "sub_universe_pairs.v2"   # v2: uncapped build_mode + family rollups
 
 MATCHED_VIA_JSON_CAP = 5          # top-5 matched combos in the compact json string
 POOL_NAMED_PRIMES_CAP = 100
@@ -79,6 +92,9 @@ DEAL_FIT_BIN_EDGES = [round(25_000 * (2_000_000 / 25_000) ** (i / 10), 2)
                       for i in range(11)]
 
 _CHUNK = 400
+_GEO_CHUNK = 1000   # build-path bulk geo: a 30K-node universe in ~30 round trips
+                    # (the store's 100-per-chunk serving size measured 527s at 25K
+                    # nodes — 89% of the whole build; RTT dominates, not payload)
 
 
 # ── scan seams (reuse the store's + blob-era build-path seams) ────────────────
@@ -156,6 +172,39 @@ def _scan_sub_profiles(ueis: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+def _scan_naics_reference() -> list[dict[str, Any]]:
+    return _scan(config.NAICS_REFERENCE_URI, ["naics_code", "naics_title"], None)
+
+
+def _scan_geo_bulk(ueis: list[str]) -> list[dict[str, Any]]:
+    """Build-path geo hydration at bulk chunk size (vs the store's serving-page
+    100/chunk — measured 527s of a 591s build at 25K nodes)."""
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(ueis), _GEO_CHUNK):
+        pred = "uei IN (" + ",".join(f"'{u}'" for u in ueis[i:i + _GEO_CHUNK]) + ")"
+        out += _scan(config.GTM_ENTITY_GEO_URI,
+                     ["uei", "latitude", "longitude", "geo_precision"], pred)
+    return out
+
+
+_naics4_titles: dict[str, str] | None = None
+
+
+def _naics4_title_map() -> dict[str, str]:
+    """naics4 → title, cached per process. Titles are display sugar — an
+    unreachable reference degrades to the bare naics4 code, never fails a build."""
+    global _naics4_titles
+    if _naics4_titles is None:
+        try:
+            rows = _scan_naics_reference()
+        except Exception:
+            log.warning("naics_reference unavailable — family titles fall back to codes")
+            rows = []
+        _naics4_titles = {str(r["naics_code"]): r["naics_title"] for r in rows
+                          if r.get("naics_code") and len(str(r["naics_code"])) == 4}
+    return _naics4_titles
+
+
 # ── small helpers ──────────────────────────────────────────────────────────────
 def _f(v: Any) -> float:
     return S._f(v)
@@ -212,11 +261,11 @@ def build_target(uei: str) -> dict[str, Any]:
     timings: dict[str, int] = {}
     t0 = time.monotonic()
 
-    # 1. FULL universe via the shipped recipe at MAX limit for the node facts.
-    #    The store's quota page is presentation; we take base["data"] and, when
-    #    the store itself truncated (universe > MAX_LIMIT), flag it — the pair
-    #    mart is total up to the store's own hard ceiling, disclosed in meta.
-    base = S.execute_sub_universe({"uei": uei, "limit": S.MAX_LIMIT})
+    # 1. FULL universe via the shipped recipe in build_mode (freeze §0.1.2): total
+    #    membership, no serving page/quota, no node-grain hydration the pair
+    #    writer does not persist. The only truncation is the store's
+    #    BUILD_NODE_CAP mega-guard, disclosed via meta.capped → nodes_truncated.
+    base = S.execute_sub_universe({"uei": uei}, build_mode=True)
     target = base["target"]
     demonstrated = target["demonstrated_combos"]
     lanes = [(c["naics_code"], c["psc_code"]) for c in demonstrated]
@@ -233,11 +282,29 @@ def build_target(uei: str) -> dict[str, Any]:
     deal_band = {"low": _quantile(amts, DEAL_BAND_LO), "high": _quantile(amts, DEAL_BAND_HI),
                  "median": statistics.median(amts) if amts else None}
 
+    # input 1's baked default at county grain (freeze §0.1; addendum §4.2): the
+    # target's evidenced sub-side footprint. Rows without a county fact are
+    # skipped (null ≠ zero), state-grain totals still ride in pop_states.
+    county_agg: dict[tuple, dict[str, Any]] = {}
+    for r in edges:
+        st = (r.get("subaward_primary_place_of_performance_state_code") or "").strip()
+        cc = (r.get("sub_place_of_perform_county_code") or "").strip()
+        cn = (r.get("sub_place_of_perform_county_name") or "").strip()
+        if not st or not (cc or cn):
+            continue
+        e = county_agg.setdefault((st, cc or cn.upper()), {
+            "state": st, "county_code": cc or None, "county_name": cn or None,
+            "sub_usd": 0.0, "n_edges": 0})
+        e["sub_usd"] += _f(r["subaward_amount"])
+        e["n_edges"] += 1
+    pop_counties = sorted(({**c, "sub_usd": round(c["sub_usd"], 2)}
+                           for c in county_agg.values()), key=lambda c: -c["sub_usd"])
+
     # 2. per-node HQ geo — the ONE inline per-node hydration retained (measured).
     #    Every other node-grain fact serves at query time from the indexed marts.
     t = time.monotonic()
     node_ueis = [n["uei"] for n in nodes]
-    geo = {g["uei"]: g for g in S._scan_geo(node_ueis)} if node_ueis else {}
+    geo = {g["uei"]: g for g in _scan_geo_bulk(node_ueis)} if node_ueis else {}
     timings["geo_hydrate_ms"] = int((time.monotonic() - t) * 1000)
     timings["n_nodes"] = len(nodes)
 
@@ -271,6 +338,29 @@ def build_target(uei: str) -> dict[str, Any]:
         else:
             band_overlap = bool(deal_band["low"] <= node_median_chunk_60mo <= deal_band["high"])
 
+        # family rollups (freeze §0.1.3): matched-obl over ALL matched combos;
+        # family_tcf sums DISCLOSED lanes at the target's combos only — a family
+        # with no disclosed lane is ABSENT (null ≠ zero); negatives unclamped.
+        fam_obl: dict[str, float] = {}
+        for mc in n.get("matched_combos") or []:
+            fk = family_key(mc["naics_code"], mc["psc_code"])
+            if fk:
+                fam_obl[fk] = fam_obl.get(fk, 0.0) + _f(mc["prime_obl_60mo"])
+        family_matched_obl_json = json.dumps(
+            {k: round(v, 2) for k, v in sorted(fam_obl.items(), key=lambda kv: -kv[1])},
+            separators=(",", ":"))
+        family_tcf_json = None
+        if tcf:
+            fam_tcf: dict[str, float] = {}
+            for c in tcf["combos"]:
+                fk = family_key(c["naics_code"], c["psc_code"])
+                if fk:
+                    fam_tcf[fk] = fam_tcf.get(fk, 0.0) + _f(c["farmout_amt_60mo"])
+            if fam_tcf:
+                family_tcf_json = json.dumps(
+                    {k: round(v, 2) for k, v in sorted(fam_tcf.items(), key=lambda kv: -kv[1])},
+                    separators=(",", ":"))
+
         teaming = n.get("teaming") or {}
         mv = n.get("matched_via") or []
         matched_via_json = json.dumps([{
@@ -296,6 +386,9 @@ def build_target(uei: str) -> dict[str, Any]:
             # Definition C totals (null when no evidence at the target's combos)
             "tcf_farmout_60mo": tcf_farmout_60mo,
             "tcf_n_combos": tcf_n_combos,
+            # family rollups (freeze §0.1.3) — compact JSON dicts, family → $
+            "family_matched_obl_60mo": family_matched_obl_json,
+            "family_tcf_farmout_60mo": family_tcf_json,
             # teaming (null when the node has no gtm_prime_sub_pairs rows)
             "teaming_n_sub_partners_5y": teaming.get("n_sub_partners_5y"),
             "teaming_deepest_repeat_edges_5y": teaming.get("deepest_repeat_edges_5y"),
@@ -318,7 +411,28 @@ def build_target(uei: str) -> dict[str, Any]:
     # 4. target_analytics — Acts 1–3, reused verbatim from the blob-era build path.
     analytics = _target_analytics(uei, today, w24, target, demonstrated, lanes,
                                   lane_set, states, anchor_ueis, edges, amts,
-                                  deal_band, timings)
+                                  deal_band, pop_counties, timings)
+
+    # input 2's baked default: demonstrated capability FAMILIES (freeze §0.1.3) —
+    # frequency + $ rollup of the demonstrated combos, titles inline, exact combos
+    # retained underneath for drilldown.
+    fam_rollup: dict[str, dict[str, Any]] = {}
+    for c in demonstrated:
+        fk = family_key(c["naics_code"], c["psc_code"])
+        if not fk:
+            continue
+        e = fam_rollup.setdefault(fk, {"family": fk, "n_edges": 0,
+                                       "total_usd": 0.0, "combos": []})
+        e["n_edges"] += c["n_edges"]
+        e["total_usd"] = round(e["total_usd"] + c["total_usd"], 2)
+        e["combos"].append(c["combo"])
+    n4 = _naics4_title_map()
+    fam_total = sum(e["total_usd"] for e in fam_rollup.values())
+    families = sorted(fam_rollup.values(), key=lambda e: -e["total_usd"])
+    for e in families:
+        naics4, fam = e["family"].split("x", 1)
+        e["title"] = f"{n4.get(naics4, naics4)} × {psc_family_name(fam)}"
+        e["share_pct"] = _pct(e["total_usd"], fam_total)
 
     target_row = {
         "uei": uei,
@@ -328,6 +442,7 @@ def build_target(uei: str) -> dict[str, Any]:
         "n_disclosed": n_disclosed,
         "n_undisclosed": n_undisclosed,
         "nodes_truncated": universe_truncated,
+        "demonstrated_families": json.dumps(families, separators=(",", ":")),
         "target_analytics": json.dumps(analytics, separators=(",", ":")),
         "timings_ms": json.dumps(timings, separators=(",", ":")),
     }
@@ -352,6 +467,7 @@ _PAIRS_SCHEMA_ORDER: list[str] = [
     "target_uei", "node_uei", "node_name", "disclosed_sub_buyer",
     "matched_prime_obl_60mo", "matched_farmout_60mo", "n_matched_combos",
     "tcf_farmout_60mo", "tcf_n_combos",
+    "family_matched_obl_60mo", "family_tcf_farmout_60mo",
     "teaming_n_sub_partners_5y", "teaming_deepest_repeat_edges_5y",
     "teaming_n_partners_ge_3_edges",
     "latitude", "longitude", "geo_precision",
@@ -372,11 +488,16 @@ def _dataset_exists(uri: str, storage_options: dict) -> bool:
 def write_target(result: dict[str, Any], *,
                  pairs_uri: str | None = None,
                  targets_uri: str | None = None,
-                 storage_options: dict | None = None) -> dict[str, Any]:
+                 storage_options: dict | None = None,
+                 recreate: bool = False) -> dict[str, Any]:
     """Land one target's pair rows + target row via rebuild-per-target append.
 
     Deletes the target's prior rows from both datasets then appends the fresh set,
-    creating each dataset (with BTREEs) if absent. Returns {pairs_rows, targets_rows,
+    creating each dataset (with BTREEs) if absent. On a recipe schema evolution
+    (existing dataset columns ≠ this recipe's columns) the write REFUSES — pass
+    recreate=True (script: --recreate, first target of the run) to overwrite both
+    datasets at the new schema; prior targets rebuild on demand (rebuild-per-target
+    is the write path, freeze §0). Returns {pairs_rows, targets_rows,
     pairs_version, targets_version}."""
     import lance
     import pyarrow as pa
@@ -392,27 +513,41 @@ def write_target(result: dict[str, Any], *,
     pairs_tbl = pa.Table.from_pylist(
         [{k: p[k] for k in _PAIRS_SCHEMA_ORDER} for p in pairs]
     ) if pairs else pa.table({k: pa.array([], type=_empty_type(k)) for k in _PAIRS_SCHEMA_ORDER})
-    if _dataset_exists(pairs_uri, so):
+    if _dataset_exists(pairs_uri, so) and not recreate:
         pds = lance.dataset(pairs_uri, storage_options=so)
+        existing = [f.name for f in pds.schema]
+        if existing != list(pairs_tbl.schema.names):
+            raise RuntimeError(
+                f"pairs schema mismatch (dataset {existing} vs recipe "
+                f"{list(pairs_tbl.schema.names)}) — recipe evolved; rerun with "
+                "--recreate to rebuild the datasets at the new schema")
         pds.delete(f"target_uei = '{uei}'")
         if pairs:
             lance.write_dataset(pairs_tbl, pairs_uri, mode="append", storage_options=so)
         pds = lance.dataset(pairs_uri, storage_options=so)
     else:
-        lance.write_dataset(pairs_tbl, pairs_uri, mode="create", storage_options=so)
+        mode = "overwrite" if _dataset_exists(pairs_uri, so) else "create"
+        lance.write_dataset(pairs_tbl, pairs_uri, mode=mode, storage_options=so)
         pds = lance.dataset(pairs_uri, storage_options=so)
     _ensure_indices(pds, [("target_uei", "BTREE"), ("node_uei", "BTREE")])
     pds = lance.dataset(pairs_uri, storage_options=so)
 
     # ── targets dataset (1 row / target uei) ──
     tgt_tbl = pa.Table.from_pylist([result["target"]])
-    if _dataset_exists(targets_uri, so):
+    if _dataset_exists(targets_uri, so) and not recreate:
         tds = lance.dataset(targets_uri, storage_options=so)
+        existing = [f.name for f in tds.schema]
+        if existing != list(tgt_tbl.schema.names):
+            raise RuntimeError(
+                f"targets schema mismatch (dataset {existing} vs recipe "
+                f"{list(tgt_tbl.schema.names)}) — recipe evolved; rerun with "
+                "--recreate to rebuild the datasets at the new schema")
         tds.delete(f"uei = '{uei}'")
         lance.write_dataset(tgt_tbl, targets_uri, mode="append", storage_options=so)
         tds = lance.dataset(targets_uri, storage_options=so)
     else:
-        lance.write_dataset(tgt_tbl, targets_uri, mode="create", storage_options=so)
+        mode = "overwrite" if _dataset_exists(targets_uri, so) else "create"
+        lance.write_dataset(tgt_tbl, targets_uri, mode=mode, storage_options=so)
         tds = lance.dataset(targets_uri, storage_options=so)
     _ensure_indices(tds, [("uei", "BTREE")])
     tds = lance.dataset(targets_uri, storage_options=so)
@@ -457,7 +592,7 @@ def _ensure_indices(ds, indices: list[tuple[str, str]]) -> None:
 
 
 def _target_analytics(uei, today, w24, target, demonstrated, lanes, lane_set,
-                      states, anchor_ueis, edges, amts, deal_band,
+                      states, anchor_ueis, edges, amts, deal_band, pop_counties,
                       timings: dict[str, int]) -> dict[str, Any]:
     """The pre-call brief, Acts 1–3 — pool/peers/percentiles/lane trends. Reused
     verbatim from the (sound) blob-era sub_universe_full.build_blob; only the
@@ -672,8 +807,8 @@ def _target_analytics(uei, today, w24, target, demonstrated, lanes, lane_set,
             "median_chunk": deal_band["median"],
         },
         "scopes": {"lanes": [{"naics": n_, "psc": p_} for n_, p_ in lanes],
-                   "performance_states": states, "deal_band": deal_band,
-                   "window_months": 24},
+                   "performance_states": states, "pop_counties": pop_counties,
+                   "deal_band": deal_band, "window_months": 24},
         "current_performance": {
             "customer_composition": composition,
             "top_buyer_pct": top_buyer_pct, "top_two_pct": top_two_pct,

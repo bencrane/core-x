@@ -261,6 +261,13 @@ GTM_SUB_UNIVERSE_TARGETS_URI = os.environ.get(
 # and gtm_prime_combo_lanes (BTREE uei) — filtered in-memory to the target's combos.
 # No separate events sidecar dataset: it would duplicate ~106 MB of event rows per
 # target across overlapping universes (multi-TB). See sub_universe_serve.
+# gtm_prime_pop_lanes — prime WIN-SIDE place-of-performance rollup (freeze §0.1,
+# addendum §4.2): grain uei × pop_state × pop_county_fips, trailing 60mo (+24mo
+# cut), last_action_date. Input 1's audience-side geo for S1/S3. BTREE uei /
+# pop_state / pop_county_fips. Built by scripts/build_gtm_prime_pop_lanes.py.
+GTM_PRIME_POP_LANES_URI = os.environ.get(
+    "GTM_PRIME_POP_LANES_LANCE_URI", "s3://data-sink/active/gtm_prime_pop_lanes/"
+)
 
 # ── SAM person layer (the operator profile's people + contactability reads) ──
 # gtm_sam_people — 1 row per sam_person_id: every distinct person observed across the
