@@ -1,0 +1,206 @@
+00:00:00 - 00:01:05
+Good morning everybody. Um, it's I'm kind of an informal speaker especially in these types of of rooms. So, let's just get to know each other a little bit. How many you guys work at the DUTDB Labs? Okay. So, those are the people that ask the real questions when I get it wrong and and my slides are not perfect, but uh otherwise we're going to have some fun today. And if if that's what we do, that's totally cool with me. And um if you have questions feel free to raise your hand, but I think the slides are
+
+00:00:33 - 00:01:28
+pretty comprehensive. So we have a break coming up in about an hour and uh we'll get started. So this is kind of our agenda this morning just kind of to let you know what we're going to learn. Um I'm not going to read a lot of the slides of this, but if you guys are familiar raise your hands and like we could skip some topics if you wish or if you're kind of like hey I don't know what we're talking about here. also trying to say like slow down, we need to recover it and and go like that. So, I want to kind
+
+00:01:01 - 00:01:54
+of have like a a two-way on this on this talk rather than just being in a dark room and me talking at you guys for two hours and you getting bored of my voices and, you know, LinkedIn posts everywhere and thinking about the coffee. But part one's going to be pretty light on code. Part two is going to be pretty deep on code. Uh, I would advise you. So, uh, I'm going to kind of bring you into the mental model that I've built over two years of writing extensions into how I think about DUTDB and the
+
+00:01:27 - 00:02:21
+internals and the classes there. And I may have it wrong, but it's worked out so far. And and if we need further clarification, we can ask some of the DuctTb Labs guys. So, about me, I've written 30 extensions. Uh, I started a little company called Query Farm, and it's just an extension company. So, if you need extensions to be built and don't want to do all of this work yourself and after this talk you're like, man, I don't want to hear about it again, send me an email. I'm happy to help you. Uh, the my
+
+00:01:54 - 00:03:00
+my biggest most public thing that you can see in DuctTb is this ETA counter at the end of when you run your queries in the CLI. I brought in the the countdown clock and the predictive the prediction algorithm to uh predict when your queries are going to complete. Um, and I also kind of inspired a little bit of the new prompt in5. So, uh, beyond that, I've done quant finance for about the last decade and I've done a lot of arrow work and and those types of, uh, groups are kind of my friends. Um, so arrow,
+
+00:02:27 - 00:03:27
+python, ductt, the triangle of of analytics, that's me. So, let's get into it. uh life cycle of an SQL query inside the the engine are these steps. Uh parsing transforming it from your SQL to the the A the abstction text tree is kind of where it all starts. We're not going to cover that today in the talk. I'm going to leave parser extensions out. Um but then once we get a parse into an A, we have to bind that a into the actual types and functions that we're actually going to
+
+00:02:58 - 00:03:50
+call inside the engine. So that's that bind phase which we will talk about quite a bit. Uh there's an optimize phase which where where ductb rewrites the plan and operations into more uh an easier to execute plan an easier to execute organization of the plan. We're also going to skip those today. We're not going to build a custom optimizer but that could be a future talk. Then we have the init global which will be kind of called once for the query when we actually start execution because queries
+
+00:03:23 - 00:04:15
+can be rebound multiple times. um especially if you're using like the any type in SQL, it can call it could trigger the the bind phase to run again. Then we have init local which is kind of a nit that runs in the in the per thread per executor thread. Um and then finally the execution phase. And we're probably going to talk a lot about bind and it global init local and execute is what where we're going to cover. Everybody okay so far? I know it's early. It's 3:00 am for me. It's 9:00 am for you
+
+00:03:50 - 00:04:42
+all. If it's if it's if it's not working, just let me know. Um, I put this up before, but I have an entire repo that we're going to kind of step through. We're going to build an extension together. We're going to do a scaler function, a table function. If you haven't cloned it, please start the clone and bang on their Wi-Fi because a recursive clone could be a little bit of uh bandwidth in the morning. Um, I'll leave this here while you guys do that. Normally, I had like a song to play, but
+
+00:04:16 - 00:05:24
+let me just tell me when everybody's like, I got the URL and we're ready to go. And >> I have the Wi-Fi. >> I do have the Wi-Fi. Um, there you go, guys. And then this is the repo right here. And then once we get a consensus that everybody has it cloned, we'll we'll go on from there. But in the meantime, um, trying to think, is this the coldest it's been in Amsterdam or has this been normal weather? Because like when I came here last year, it was a little bit warmer.
+
+00:04:57 - 00:06:11
+>> Yesterday it was quite chilly. >> Yeah. >> All right. I see some people. Good. We ready to go? Anybody's like, "Wait, wait, wait." All right, we're going. So once you clone, you'll see kind of files like this. Uh the way I start ductb extensions, I always use the extension template that Sam and Carlo wrote, and it kind of builds in an extension. And these files won't be named exactly the same way. They'll be named quack uh extension or quack extension.hpp for
+
+00:05:43 - 00:06:35
+the header files. And I did a simple like said rename to just make it workshop rather than quack. There's a couple fun things you have to do there with with case sensitivity, but we'll get into that later. Then I have this file here called a test. This is SQL unit test. We'll get into that. This is build configuration. These you really don't have to touch, but CMake list is because all ductb extensions use CMake. Um, and these things kind of like tie all together with the make file. And VC
+
+00:06:08 - 00:07:16
+package.json is for C++ dependencies. And then finally, we have some documentation of a license file and the normal readme. You guys all good? Okay, this is going to start to be is the source code too small? Is it I can I can try to zoom it in, but this is kind of like the basic start. If you do a get checkout step one on that repo, that'll get us to our first kind of evolutionary step of how we're going on the extension building. And we're going to open this will be um workshop_extension.cpp.
+
+00:06:46 - 00:07:42
+And while you open it, if you want to follow along, you can do if you have Ninja installed, you can use that as your build tool. That's kind of a tool that really parallelizes the calls to CMake and C and C++ or or your Cang C++ compiler just with make debug. And that can run in the background while we're talking through the source code because it'll take you about three to four minutes on my laptop to run the duct DB build if you if you're not using Ccash, which is like a compiler caching uh
+
+00:07:14 - 00:08:24
+tool. Um, and then we'll then we'll get started with build test here. But walking through this code, hello and welcome. >> Oh, it's all good. Um, we have this little part here with the extern C is kind of what's called our hook into the extension. So when ductb loads an extension, it calls dlop. a dynamically loaded SO file or shared library gets loaded into the same process and it needs to find a way to how do we call the initial function to bootstrap that extension and to do that
+
+00:07:51 - 00:08:43
+C++ will use name mangling so it's kind of hard to predict what that symbol will be called so that's why we're using extern C and we're going to say ductb extension entry then workshops our extension name and our loader um and that's just going to say call load internal inside the ductb name space which is all most of the extension code is covered in ductb namespace where it's like namespace in the top close here that's just kind of the standard that we see and then inside of there here's our
+
+00:08:16 - 00:09:21
+workshop extension load load function but this calls again a static function called load internal and this is just kind of the basic scaffolding of when the shared library gets loaded into the process how do we get started to interact with the rest of the ductb engine and then finally uh load internal and this is where we actually going to start to put our logic inside the load internal call to add our functions, add our functionality, and kind of build our extension out inside of there. We good to go? Okay. What we're going to
+
+00:08:49 - 00:09:45
+do today is we're going to build a function. The first function we're going to build is called uh Easter to calculate the day of Easter for a particular year. And Easter varies around. So, it's not a simple, hey, it's the last Sunday in April or March or wherever. It's it's dealing with uh equinoxes and lunar phases. Um, and there's a nice claude provided anonymous algorithm to calculate the day of Easter using the Gregorian calendar. So, that's what we'll be coding, but we're not
+
+00:09:17 - 00:10:12
+really going to get into that part of the presentation. We're just going to kind of take that code and paste it in as as a as a piece of logic, but we're going to put all of the scaffolding around it so DuctTb can call it. Now, if you haven't used ductb much or you're kind of new, it operates in a vectorzed manner. So rather than just calling your C or C++ function a thousand times, ductb would rather just say, hey, I'm going to call you with a thousand sets of parameters to your
+
+00:09:46 - 00:10:50
+function and you go calculate and then return me a thousand results rather than kind of like a one by one by one by one by one by one. It wants to do like a th00and 2,000 2,000 results. Um this slide is kind of showing you like we're going to do vectorzed execution rather than just a scalar execution and scalar functions mean we just get a single output to multiple inputs and that's where the scalar part comes. It's not scalar execution it's actually a scalar result. So here's where the talk kind of becomes
+
+00:10:21 - 00:11:20
+how did I learn all of this? Bringing the mental model of ductb into your head can be really challenging. And I think it's best to kind of we're going to kind of go through this of of starting here at logical types and values and vectors. And I'm going to try and give you an understanding of what I've built up of all these C++ classes so I can think about the right way to understand the internals so I can actually integrate into them well. And this is kind of a mental map of the types as I learned.
+
+00:10:51 - 00:11:39
+starting at the top, moving down in functionality. So if you just open up duct DB and start reading the source code, it's really hard to kind of figure out how do I glue it all together? Which way is up, which way is down, where do I start? And it's really best to kind of probably start here in logical type. Um, and then we'll go into value and vectors and and build this direction. Um, we won't talk much about string storage, but we can vector types, validity mass. We'll get to all of that. And then
+
+00:11:16 - 00:12:35
+scaler functions, table functions, generic exeutors. This will be kind of like what we're covering in the talk today. So, let me refresh this. We should have there's our picture of a logical type. A logical type is the way that we express all of the basic types inside the data inside ductb's uh execution model. Um all of the other types the physical storage of them is built on is at a lower level. But these logical types can be composed for nested types as well kind of like on our strrus maps arrays and lists and unions.
+
+00:11:55 - 00:12:56
+But if you guys how many of you have written C++ before okay so you guys all know about the primitive types and you all understand like int 64s and in32s these they all kind of map into this column here. These are all kind of like your standard C++ types. Your date time stamp. These are kind of interpretations on top of those basic C++ types. Your varices and your blobs pointers and a little bit different of string and turning inside duct DB hugents. Uh C++ doesn't quite support them yet in a nice way. So
+
+00:12:25 - 00:13:15
+they're kind of handled a little bit differently. Um and then bits and geometry. Uh this is like a variable length bit string. And geometry is kind of its own little thing. And I'm not really going to touch on it too much, but these are the basic types and you kind of build up from there. And as you're building extensions, you're going to use a lot of logical types to kind of say these are the types of my arguments. These are the types of my parameters that I accept or produce. So it's really important to
+
+00:12:50 - 00:13:51
+understand what types to use. So in this workshop today, we're mostly going to stick in with dates and integers. Um, and we might get into some strings a little bit later. Any questions on logical types? Don't be shy if you do. There's no bad questions. >> Well, they could be logical because you can do com you can have composed types whereas like a strruct can be a dynamic type with the members actually being specified because a strruct you have to know the keys are fixed but the values
+
+00:13:27 - 00:14:40
+change. So the so you can have dynamic types in that way whereas like the physical representation of that in C++ the strct will have individual vectors for each member. So there's not like a direct mapping always between a logical type and a single vector C++ primary type. You're welcome. Thanks for the question. Now values are simply just a logical type associated with a value. So like if we had -30 and it was a a big int that's totally possible. So just think of value as like a container between a logical
+
+00:14:04 - 00:15:15
+type and the actual type itself like a scalar single single value uh container. A vector is a collection of multiple values but they have a logical type but rather than having the type stored 400 a thousand times or 2,000 times it'll just have a single type. Then it has a validity mask which is kind of like how we know in this vector of say 2,00 ins which ones are null and which ones are not null. And we have buffer data which is in the case of say we have an integer vector and it's a flat buffer. It's going to
+
+00:14:40 - 00:15:37
+be48 int 64s right after each other in that same old continuous way. And I and I was thinking about this a lot at home and I was like, well, do people see arrays as left to right or do they see them as top to down, bottom to top? And I think that depends like how you were raised and how you were educated and I don't know, but I am a left to right array person. >> I guess, but like is memory does memory go left to right or does memory go down? Like do you grow from the top or the bottom? These are these are hard
+
+00:15:08 - 00:16:12
+questions to really to really solve. Um and then with vectors you have auxiliary data and that means you can attach other pieces of memory that that vector references and this is how strings are really stored inside ductb rather than being contiguous inside uh a vector. It stores pointers to those strings if they're longer than 12 characters um inside of that inside of that vector structure itself. And that's kind of what we're talking about here in string t where this is how strings are stored
+
+00:15:41 - 00:16:43
+inside ductb where it has a length of like how long is the string because it's all UTF8 and it can be binary. It has a prefix of 12 characters and then it has a pointer to the actual data where that string is stored. So that could be at any location >> like characters or by >> well in this case uh this would be bytes because characters can be code points that take lots of lots of bites. link list. >> Um, no, it's not a link list. So, if the string is longer than 12 characters,
+
+00:16:12 - 00:17:03
+it's going to be stored with a pointer off where the actual where the where the string is. But if it's less than 12 characters, it'll actually be stored in line with the string t. >> Yeah, like a CPU cache line purposes. And a lot of times, like there's been good studies that say a lot of strings are pretty short. And a lot of times when you're doing like comparisons, if you can do the comparison within 12 characters, it'll be much faster than doing a a pointer follow to arbitrary
+
+00:16:38 - 00:17:40
+memory locations. >> That seems so unamerican. [laughter] You know, yes. >> Uh no, these this is a strct inside C++. So there's a length I think it's like a size t. Um and then a static carrot 24 and then the pointer is your standard pointer. All right. >> Yes. >> Uh what's the vector type? >> The vector type of what of this? >> Yeah, >> there's different vector types. So there's flat types, there's dictionary vectors, there's sequence vectors,
+
+00:17:16 - 00:18:19
+there's constant vectors. We're going to get into that in the next in the next slide. >> Oh, okay. Good. Okay. Um, and then here we go into data chunks, our collections of vectors that we just kind of covered. And these are all the different types of vector layouts that I wanted to put on a slide that I could actually draw. Um, DUTDB has this cool way that it will optimize vectors. So if you just have 2,000 integers that are all the same value, it really doesn't want them to waste your
+
+00:17:53 - 00:18:41
+memory on having 2,000 integers all the same. So it's better to say that's a constant vector of the same value. So you get nicer cache performance. But the typical way that you'd like to kind of work with vectors in their case of having them from left to right is an array. And that's kind of called the flat vector. Meaning the the data is flatly contiguous one after another. Each value is one after another. And that's what's illustrated in this this value here. um for the flat vector
+
+00:18:17 - 00:19:17
+layout with a validity mask of saying these elements are null, these elements are not null. And the validity mask is stored as like a a binary packed uh bit mask. So So rather than just being like these are not characters 0 1 0 1 0 1 0, this is just a single bit packed that way. And then for a dictionary vector, that's kind of combining a child vector, which could be a flat vector of the values and then just the index in that dictionary of where that value is referenced. So rather than having if you
+
+00:18:46 - 00:19:45
+have a a really low canonical or low number of unique values vector of long strings, you'd probably want to have a dictionary vector so you don't have to duplicate all that memory over and over. Now this is a lot to kind of lay on you guys for mentally modeling how this works. Is everybody okay with vector layouts? Sort of kind of. So, so all these different vector types they >> from the outside they have the same interface in in programming requirement. >> Um, well, we're going to do this thing
+
+00:19:16 - 00:20:10
+called orification. And there's this thing called unified vector layout some unified vector format or something like this API call. I won't show you, but there's a function you can do that'll change all of these different layouts into a flat vector or un a uniform vector representation that allows you to keep them in this layout, but access them as if they were like a flat vector. >> So, you really don't have to worry about and you can also produce these different types of vectors in your extensions to
+
+00:19:44 - 00:20:52
+be really efficient for execution later on. There was a question in the back. >> Yes. >> Oh, no problem. So if you have a low if you have a vector that has a large number of repeating values and those values are largeish like non integers say strings you don't want to have the 2,00 copies of the same strings over and over and over again. So you can take the unique values that you have in your vector and then just store them as a child vector in a dictionary and then just kind of
+
+00:20:18 - 00:21:16
+point to their index like zero means apple, two means car, zero means apple again, one means banana. You got it. So >> what's that? >> It's an encoding. Yes. Yes. >> Are they stored in auxiliary data we saw before or is it >> um in the dictionary vector? The strings will be stored in the auxiliary data, but this child vector is actually part of the dictionary vector. So it's it's we'll get into it, but to be honest, guys, in two years, I haven't written
+
+00:20:47 - 00:21:46
+any code that's actually had to generate a dictionary vector. I've I've consumed them, but I've never actually had to write them. So it's cool to know it's there, but I didn't bring an example today. So we're going to get back into building Easter. And this is kind of our name load internal builder extension here where we had it before. And this is a really fun thing. Um I kind of like how it morphs the slides. >> So we can do that again because it's really fun.
+
+00:21:18 - 00:22:10
+So we're going to call there's an extension loader that's passed into us and this is kind of a nice object object reference that allows us to do interactions with the main duct DB catalog. Um so we're going to say extension loader register function and then we're going to walk through it line by line. So Easter here is the name of our function that we're registering just a normal string. The first argument are the arguments we're going to take and we're going to take a this is a ve this is a C++ vector
+
+00:21:44 - 00:22:54
+which is why I have those curly brackets an inline definition of a vector and these are the input arguments to the function. So the first parameter to our function is just going to be a big inant or in a case int 64 which is the year and then the next the next uh parameter to register to scalar function is the return type. So we're going to return a date and then finally we just give it the name of our function uh to call that will calculate our Easter date. Any questions on this so far? Yeah,
+
+00:22:20 - 00:23:41
+>> this is the workshop extensions. >> Yes. And if you go to um step one, I believe this code will be there. Or if you check out the branch step two, the code will be there too. Step hyphen one or step hyphen two. >> Okay, let's go to step two, please. >> The we will check. Let's try step two. Number two. It might be formatted it slightly differently, but I also can pull it up in my VS Code. Yes, the starting link. >> This one. >> You're welcome. Okay. So, I just checked out step two
+
+00:23:45 - 00:24:56
+and this is what I have. Um, it it's a tag. Step two may be a tag and then it's formatted slightly different on line 38, but I can but I can make it happen for you guys. I think when I made the slides I'd added additional new lines but in the regular code it's just one line. So we walk through register function and then uh I'll go back to the slide here for just a second. There's this function up here which is our actual Easter calculation function and all scalar functions have the same signature
+
+00:24:30 - 00:25:34
+on the top where it's like it takes a data chunk for the arguments coming in expression state don't really need that for now. Um and then our vector which is our result where we actually have to write the result. Everybody okay with this so far? Yes. >> Well, scalar just means it writes a single output value. So it's and since duct tob is vector execution, if we have uh vectors of inputs, we have to have a vector of outputs. So that's why we have a >> yeah in the vector, it's just writing
+
+00:25:14 - 00:26:14
+one value in the vector of result, but the result is still a vector. So we're going to take the first argument which is our year. So it's like args data zero normal normal state of access there. And then we're going to call this thing called a unary executor. It's a templatey function which we'll go into where it takes the input which our in64t which is our our input type and then our date t is our return type from the from the template function. And we'll we just kind of highlighted
+
+00:25:46 - 00:26:45
+that. And here's our actual implementation of this uh C++ lambda where we have our year vector which we already got as an arg the first argument the result where we're storing the result args size is the number of elements in the vector of our input that we were called with to execute our scalar function and then our square bracket here amperand means our capture list of what we want to capture in the C++ lambda. So we don't need to capture anything from outside of the scope because everything we're
+
+00:26:15 - 00:27:18
+everything we need is already being passed to us. And our year is our uh argument parameter. And this is run once this is is run one two three four five six seven. It's run 248 times the size of the standard vector because it's the lambda. And I'm going to emit the code of actually calculating the date of Easter, but it's in your extension. And finally, it's going to return the the the date um from those values that I calculate. That was kind of a big leap. Everybody, you got through that explanation.
+
+00:26:46 - 00:27:53
+Okay. Um, so if you update to step two and you build it, you should be able to run select Easter 3000. And does it work for you all? I see some people saying yes because you all are overachievers and you've already compiled it and you've done Yes. >> Yes. this one. >> Okay, I have another slide about executors coming up. Um, let's let's go through that slide and then then we'll come back to if you don't get it. All right, while you guys are compiling and I see
+
+00:27:28 - 00:28:32
+some people looking around, so I'll take a minute. But these are these are our uh executors and the ductb Labs team has been really really nice to us because a lot of times when you run a scalar function, you need to check validity masks. You need to unpack what type of vector did I get passed in. Um there's a lot of details kind of that that just happen that you don't have to worry about if you use these executor template functions where you can kind of just be like, hey, I want to just write my C++ code and kind
+
+00:27:59 - 00:29:08
+of isolate all that ductb logic and vector handling outside of my implementation. So they have unary, binary, turnary, catinary, you know, just various uh numbers of arguments is kind of how they're named. Unary meaning one, binary meaning there's two arguments passed into the function. turning area three. Uh and then there's generic where you can have n inputs to to one output. Vector executors are only useful for scalar functions. They make no sense in a table function uh context, but they
+
+00:28:33 - 00:29:48
+they cover a lot of really good functionality that you that you may mess up. And they also do nice optimizations where if say the first argument is a constant um it can it can do some nice handling of uh of not passing that same value in so many times to your function. So so there's other optimizations that that I'll kind of gloss over but please just use executors until you can't use executors anymore due to your use case. Sure. >> You need to build it using the make debug and then you do builddebug ductb.
+
+00:29:14 - 00:30:20
+So those will be the build targets. If you ran a release build, it would be build buildrect db and those builds have your extensions statically linked into it. It's not being dynamically loaded. It's already built in. So there's no need to call load or anything else like that um for for your use case. All right, and we're almost done with phase one. So the nice thing about ductb functions is that it also allows you to provide documentation. So if you're like me and Gabber, we're
+
+00:29:52 - 00:30:48
+always publishing web pages with documenting our extensions and you want to have a way to kind of tie the documentation of the function together with the implementation. So if you ever have used this or haven't used this, there's a ductb functions table function and you'll see probably about 1500 built-in functions in that table uh to return it. But with our new extension called Easter, I'm also giving you the ability to have the description, the parameter types, the return type. So the
+
+00:30:20 - 00:31:13
+parameter here is year, the return type is date, some categorization, and some examples. And you can add that to your extension. So your users of your extension will also be able to figure out, hey, how do I call what you guys just gave me? So to do that, we're going to take this is our initial register function, and we're going to change it into this where kind of our main function went up here. Easter the name main Easter function but now we're going to create it with additional scalar info
+
+00:30:46 - 00:31:45
+where we're setting a description examples categories parameter names and then we register the function wrapped in all the extension function info so if you if you're I didn't also take a survey of who else has published extensions here in this room there's probably some of you please do this to to give nice documentation and I'm sure uh Gabber will build tools eventually to extract this from all the extensions that are published in the community collection to build nice documentation
+
+00:31:15 - 00:32:43
+pages. Yes. >> Uhhuh. >> Hey. >> Uhhuh. >> Uhhuh. No, it's unary because we have only one argument to the function. We just have the year coming into the function. Let's go back to that slide. >> We have one which is the um the the year is the input and we have the date as the output. So we have unary the the executor is named after the number of inputs. So we have one input means unary two inputs binary. Sure. >> Uhhuh. So on the unary call, I'll clarify here.
+
+00:32:12 - 00:33:22
+>> Unary execute in 64T is our input. So that's the year like 2026 2019 and then date T is our return type out of the executor. No, you should when you build it with your with your make debug and you run it. You do you don't run regular duct DB like the kind you download from homebrew. You just run it in the you're in your extension directory and you do dot slashbuild dot slashdebugduct and that'll be a custom ductb build with your extension already loaded statically. Okay, I can I can help you during the
+
+00:32:59 - 00:34:22
+break. >> Uh, no. So, ductb does this thing called morselbased execution. So, it will call you with the standard vector size number of uh rows based on your inputs. So, if you just call select Easter 3000 like we had in this other slide, it's just going to get called with a single value. But if I have it with two with 20,000 rows, it's going to call you 248 chunks at a time. Does that make sense? >> It will call Easter the the main function because Yeah. No vectors, right? >> It ve it chunks ductb executes rows in
+
+00:33:57 - 00:35:11
+these things called standard vector size vectors which are two thou right now 248 elements >> and it runs 240 elements and then it streams the results back out through that execution size. >> Correct. Correct. But inside the executor, it will actually execute that lambda 248 times. way. >> There's ductb guys in the room. I'm sure there's a way to control it. But but but I think in my understanding as an extension builder, there's no way to really say call me one row at a time on
+
+00:34:34 - 00:35:54
+a scalar function. But you can tell me if I'm wrong. >> I don't think you do as an extension builder. Oh, uh, good question. We'll go back here. You do select star from duct functions where function name equals Easter. >> There's probably going to be an exception raised when you try to register a function with the same name. But I don't think Easter is built in [laughter] >> yet. Yet as as of when I wrote this uh this this uh this presentation, but I know who to talk to about that.
+
+00:35:35 - 00:36:27
+>> Yes. Um and we covered this. We have the documentation and then um it's time to update to step three if you guys are ready for that. And that'll have the same that'll have the function documentation built in for your extension. And then we're going to get into testing. And then we're then we're almost ready for a break. So I know you guys have gone through a lot and I know you're like, "Oh man, coffee." We'll get there. And I know this is kind of how like testing always is. It's like
+
+00:36:05 - 00:37:10
+the last part of your development process. But hey, I'm not any different from the rest of you all. Um, so there's this great file called workshop. It's under testsql workshop. And it uses this thing called SQLUnit. I haven't been able to decide if if if the ductb team invented this or it came from TCL. I don't I'm not sure how this thing does anybody know the lore of how these tests were written. >> Okay. Do you know where it came from? >> Okay. Okay. So, we're going to use the
+
+00:36:41 - 00:37:29
+SQL unit test as well. Um, and this I'm not going to explain the whole syntax of it because I I haven't found found the documentation page, but I will find it on SQLite and point you guys to it. Um, it's where it's like it's either a statement or a query. And this was saying statement error, meaning this statement should raise an error. And then you put the statement and then you say like this is the error I expect to be raised from the from the from the engine. And that's going to be, hey, if
+
+00:37:06 - 00:38:11
+you call Easter without loading my extension, I expect it to say this function doesn't exist. Then the next line's going to say require workshop. And workshop is the name of the extension we've kind of been building, which has the Easter function. And then we'll say after that, if we do query I means I expect one column being an integer type value. Select Easter 2026. I expect it to be this value. And that's how you write your tests. And I see a lot of confused faces and I was
+
+00:37:38 - 00:38:31
+kind of the same way. And eventually I I wrote enough of these things to kind of feel comfortable with with how this is. And they're they're kind of spaceepparated files, which I think also tripens you up. So when you're in VS Code, you have to like go down the bottom right corner, change tabs to spaces, otherwise it's going to be complaining like I I expected one column, but I got four or something like that. But it's space separated values. um for the tests. So if you were to have
+
+00:38:05 - 00:39:22
+a query, I II would be date and then whatever the value is and we'll see that next in our table functions after the break. Any questions on testing? So then if you do make test_debug means run the test with the debug build, it will run these tests and and give you the right um assurances about the code is correct. And then here's uh an example of query II, meaning two columns. Here's the the year and here's the Easter day of that of that particular year. And I just did a little like from range.
+
+00:38:44 - 00:39:04
+Range is pretty popular. We'll get into that. Um so select year, Easter year. And here's our result. Now it's break

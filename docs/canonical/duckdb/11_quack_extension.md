@@ -9,6 +9,14 @@
 > - https://duckdb.org/docs/current/quack/overview — the Quack remote protocol overview page.
 > - https://github.com/duckdb/duckdb-quack — the `quack` core-extension source repo (default branch `v1.5-variegata`); `README.md` read verbatim.
 > - https://duckdb.org/docs/current/extensions/overview and https://duckdb.org/community_extensions/ — extension system (INSTALL/LOAD, autoloading, unsigned extensions) and the community-extensions channel.
+>
+> Talk / article corpus folded in (§8–§12) — the trustworthy clean-transcript layer under `docs/youtube-transcripts/clean/` plus the committed article batches under `docs/batches/`. These are TALK-REPORTED / vendor-reported unless cross-checked against upstream (each fact below is tagged):
+> - `docs/batches/2026-05-12-quack-remote-protocol-blog.md` — the **official DuckDB blog** "Quack: The DuckDB Client-Server Protocol" (2026-05-12), the authoritative source for the benchmarks and the "Why Not Arrow Flight SQL?" appendix. Treated as upstream-grade for the benchmark numbers.
+> - `docs/youtube-transcripts/clean/2026-05-12-quack-ai-council-announcement-talk.clean.md` — Hannes Mühleisen's AI Council launch talk (2026-05-12), the spoken announcement (source of the rounded "~5,000 txns/s" figure).
+> - `docs/youtube-transcripts/clean/2026-05-27_quack-hannes-muhleisen-interview.clean.md` — Practical Data "Lunch and Learn" interview with Hannes Mühleisen (2026-05-27), extended live demo + Q&A.
+> - `docs/youtube-transcripts/clean/2026-05-13_duckdb-quack-motherduck-video-transcript.clean.md` — MotherDuck channel explainer (2026-05-13); secondary source, contains the "HTTP/2" gloss flagged below.
+> - `docs/batches/2026-05-12-duckdb-quack-multiple-writers.md` — Siddique Ahmad, "DuckDB Just Changed the Game: Meet Quack" (2026-05-12); secondary source for the multi-writer use-case catalog and the "HTTP/2/HTTP/3" gloss.
+> - `docs/batches/2026-05-17-duckdb-quack-as-ducklake-catalog.md` — Mike Ritchie / Definite, "Using DuckDB Quack as the DuckLake catalog" (2026-05-17, updated 2026-06-08); early-production report of Quack-as-DuckLake-catalog with spike numbers.
 
 Scope: What "quack" actually is today (a real experimental **core** remote-protocol extension, NOT a demo), how it differs from the historical hello-world usage, and — the load-bearing part for extension development — how the official DuckDB extension template (`extension-template`, C/C++) and its Rust sibling (`extension-template-rs`) are laid out, built with vcpkg + make, loaded as unsigned `.duckdb_extension` binaries, and distributed via community extensions.
 
@@ -389,6 +397,11 @@ INSTALL quack;
 LOAD quack;
 ```
 
+> **Install-channel / autoload transition — resolves the open question flagged against this file (UPSTREAM-VERIFIED 2026-07-08).** The channel and autoload behavior **changed between the launch and the current stable**, and stale docs disagree — pin the timeline:
+> - **At the 2026-05-12 launch**, quack shipped **only in the `core_nightly` repository** and did **not** autoload. Every launch-era source shows the explicit nightly install: the official blog says "For now, Quack lives in the `core_nightly` repository and is available in DuckDB v1.5.2" (`docs/batches/2026-05-12-quack-remote-protocol-blog.md`); the AI Council demo ran `install Quack from core nightly` — "It's currently sitting in a separate repository because it's kind of still moving" (AI Council launch talk, 2026-05-12 — `docs/youtube-transcripts/clean/2026-05-12-quack-ai-council-announcement-talk.clean.md`); the MotherDuck explainer says "you have to specifically install Quack from core nightly" (MotherDuck explainer, 2026-05-13 — `docs/youtube-transcripts/clean/2026-05-13_duckdb-quack-motherduck-video-transcript.clean.md`); the multi-writer article shows `INSTALL quack FROM core_nightly; LOAD quack;` (`docs/batches/2026-05-12-duckdb-quack-multiple-writers.md`). The blog's own "Next Steps" listed autoload as future work: "We plan for example to enable auto-installation and auto-loading of the Quack extension whenever it is needed."
+> - **By DuckDB v1.5.3 (2026-05-20) that plan shipped.** quack was promoted to the **`core`** repository and now **autoinstalls + autoloads on first use**. Upstream today (`/docs/current/quack/overview`, `/docs/current/core_extensions/quack`, fetched 2026-07-08) states quack is "available in DuckDB v1.5.3, shipped via the `core` repository" and "will be transparently autoinstalled and autoloaded on first use." The 2026-05-27 interview confirms the pivot: "since the DuckDB release, 1.5.3, that happened last week, all of this just works magically out of the box, because Quack is implemented as a DuckDB extension … it will basically automatically install once you start using it" (Practical Data interview, 2026-05-27 — `docs/youtube-transcripts/clean/2026-05-27_quack-hannes-muhleisen-interview.clean.md`).
+> - **Net for the current stable (v1.5.3 / v1.5.4):** plain `INSTALL quack; LOAD quack;` (or nothing at all — autoload) is correct. `FROM core_nightly` is a **launch-era artifact**; do not copy it from the May-2026 blog/articles onto a current install.
+
 **Verified usage example** (verbatim from the `duckdb-quack` README):
 
 ```sql
@@ -612,7 +625,96 @@ make debug
 
 ---
 
-## 8. Footguns & honest caveats
+## 8. `quack` benchmarks (from the official launch blog)
+
+> **Attribution:** all figures in this section are from the **official DuckDB blog** "Quack: The DuckDB Client-Server Protocol" (2026-05-12 — `docs/batches/2026-05-12-quack-remote-protocol-blog.md`), which is the authoritative benchmark source. The AI Council launch talk (2026-05-12 — `docs/youtube-transcripts/clean/2026-05-12-quack-ai-council-announcement-talk.clean.md`) and the 2026-05-27 interview present the same experiments with **spoken rounded numbers**; where the talk and the blog differ, the blog wins and both are noted. These are vendor-published benchmarks (the DuckDB team benchmarking their own protocol), not independently reproduced.
+
+**Test rig (blog, verbatim details):** two AWS VMs running **Ubuntu on Arm**, instance type **`m8g.2xlarge`** (**8 vCPU, 32 GB RAM**, "up to 15 Gbps" network), client and server **in the same availability zone**, average **ping ≈ 0.280 ms**. Compared against the PostgreSQL wire protocol and Arrow Flight SQL (the latter served by **GizmoSQL**, which itself uses DuckDB internally).
+
+> The talk rounds the rig to "32 GB of RAM and eight CPUs … 15 GB per second networking" (AI Council talk) — note the talk says "15 **GB**/s"; the blog says "up to 15 **Gbps**." The blog's units are correct; the talk's "GB" is a spoken slip.
+
+### 8.1 Bulk transfer — TPC-H `lineitem`, up to 60M rows
+
+Median wall-clock over 5 runs, transferring an increasing row count up to **60 million rows** (≈76 GB as CSV). Lower is better.
+
+| Protocol | 60M-row transfer time | Source |
+|---|---|---|
+| **Quack** | **under 5 s** | blog (UPSTREAM-grade) |
+| Arrow Flight SQL (GizmoSQL) | ~20 s | blog |
+| PostgreSQL wire protocol | ~3 min | blog |
+
+Blog phrasing (verbatim): "Quack is doing great for bulk result set transfer, transferring the 60 million rows in under 5 seconds! Even the purpose-built Arrow Flight SQL protocol can't compete here, and Postgres' row-based protocol is rather hopeless in general." The talk states the same shape: "Quack … 60 million rows … around 5 seconds. And Postgres took 3 minutes … Arrow Flight took 20 seconds." Caveat the blog itself raises: standard PostgreSQL clients do not parallelize reads across threads, whereas Quack and Arrow do.
+
+### 8.2 Small writes — single-row `INSERT` transactions, scaling threads
+
+Each row in its own `INSERT` transaction; parallel-thread count increased (1, 2, 4, 8, …) for five-second runs; median transactions/sec over five repeats. Higher is better.
+
+- **Quack peak: ~5,500 transactions/s at 8 threads** (blog, authoritative). Blog verbatim: "we see Quack outperforming PostgreSQL up to 8 parallel threads to a maximum transaction rate of around **5,500 transactions per second**. Beyond that, we hit a **current limitation of DuckDB itself in concurrent insertions per second into the same table**. PostgreSQL scales better here."
+- **The launch talk rounds this to "~5,000"** (AI Council talk: "we finished something like 5,000 transactions per second on DuckDB for eight clients"). **Prefer the blog's 5,500; the talk's 5,000 is the spoken rounded version.**
+- Arrow Flight is "roughly half as fast as Postgres" on this workload (blog) — bulk-optimized, not transaction-optimized.
+
+> The **concurrent-insert ceiling beyond 8 threads is a DuckDB-core property, not a Quack-protocol property** (blog: "a current limitation of DuckDB itself"). The blog's "Next Steps" commits to "greatly increasing the transactions per second achievable, so we can scale transactions far beyond eight parallel threads." Do not attribute the ceiling to the wire protocol.
+
+Benchmark scripts: `github.com/duckdb/duckdb-quack/tree/v1.5-variegata/benchmarks` (blog).
+
+---
+
+## 9. Multi-writer use cases (what Quack unlocks)
+
+The core value Quack adds is **cross-process concurrent writers into one DuckDB store** — the thing an in-process DuckDB could never do (blog Conclusion: "multiple separate processes — locally or remote — can now modify contents of tables in parallel without locking each other out"). The canonical patterns, drawn from the DuckDB team's own framing plus the multi-writer article (`docs/batches/2026-05-12-duckdb-quack-multiple-writers.md`, secondary/vendor-reported):
+
+1. **Multi-process telemetry ingestion + live dashboards** — the DuckDB team's own headline example: many processes `INSERT` telemetry into a central Quack server while a dashboard queries the same tables in real time. Blog: "inserting into the same database from a bunch of processes collecting telemetry while at the same time querying the same tables to drive a dashboard." Hannes calls this "the real-time analytics use case … a fleet of nodes … a flood of fairly small inserts" (AI Council talk) and "this observability use case … you just want to centralize all the information" (2026-05-27 interview).
+2. **Parallel ETL writers into one analytical store** — N parallel workers each write their partition to the same server concurrently instead of writing separate files and merging later ("No merge step. No temporary files. Writers contend at the server, server serializes commits" — multi-writer article).
+3. **Microservices sharing an analytical backend** — each service keeps its own local DuckDB for local queries and reads/writes a shared analytical layer over Quack; the article frames Quack as the native replacement for the "EleDucken" (DuckDB-inside-Postgres via `pg_duckdb`) hack.
+4. **WASM browser → cloud server** — because DuckDB-Wasm speaks Quack natively, a browser tab running DuckDB-Wasm connects directly to a server-side DuckDB with no REST layer in between (blog: "DuckDB running in a browser can e.g. directly connect to a DuckDB instance running in an EC2 server using Quack"; demonstrated live in the AI Council talk browser demo).
+5. **Edge → central data collection** — edge nodes run in-process DuckDB and periodically flush to a central Quack server that runs rollup queries (article; matches the "fleet of nodes … out in the field … collect telemetry" framing in the interview).
+
+> These five are the **vendor/secondary-reported use-case catalog**; the underlying capability (concurrent cross-process writers, WASM-native, single server serializes commits) is UPSTREAM-VERIFIED against the blog. The article's code snippets (e.g. `ATTACH 'quack:etl-server:5432'`) are **illustrative and not canonical** — note the article uses port `5432` in one snippet, which is Postgres's port, not Quack's `9494`; treat article port numbers as sloppy and use `9494` (§5, §11).
+
+---
+
+## 10. Why not Arrow Flight SQL (design rationale)
+
+From the blog's "Why Not Arrow Flight SQL?" appendix (`docs/batches/2026-05-12-quack-remote-protocol-blog.md`) and the interview. Two reasons the DuckDB team rejected Arrow Flight SQL as Quack's basis:
+
+1. **Two round trips per query.** Blog verbatim: "there is also one fateful design decision in Arrow Flight SQL: every single query requires at least two protocol round trips, `CommandStatementQuery` and `DoGet`. This is not ideal for small updates … especially in higher-latency environments." Quack instead does **single-round-trip query execution + result fetch** for small queries (blog "Round-Trips": "Once connected, a query can be completely handled with a single round trip").
+2. **Not wanting an externally-controlled wire format.** Blog verbatim: "we cannot allow ourselves to be restricted by formats that are controlled externally. This is why we use our own serialization in Quack. If we want to add a new data type or protocol message, we can ship tomorrow." The interview echoes this: "we made a conscious decision to not use Arrow for our internal protocol for Quack, but to use something that DuckDB has anyway, which is called a serializer."
+
+**Protocol facts (UPSTREAM-VERIFIED 2026-07-08 unless noted) — these confirm/extend §5:**
+
+- **Transport: plain HTTP over TCP/IP.** Blog: "Quack is built straight on the venerable HTTP." The choice is driven by WASM (browsers only speak HTTP) and by HTTP's ubiquitous infrastructure optimization. **Note the "HTTP/2" phrasing in secondary sources is a downstream gloss.** The blog and docs say generic **HTTP**; the MotherDuck explainer says "the protocol is using HTTP/2" (`docs/youtube-transcripts/clean/2026-05-13_duckdb-quack-motherduck-video-transcript.clean.md`) and the multi-writer article says "HTTP/2 and HTTP/3 optimizations apply automatically." The accurate statement is the blog's: Quack rides on HTTP, so **whatever HTTP/2 or HTTP/3 optimizations the stack provides apply automatically** — but the protocol is not specified as "HTTP/2." Treat "HTTP/2" as a secondary-source gloss, not an upstream fact.
+- **Serialization MIME type: `application/duckdb`** (blog "Serialization"; confirmed on `/docs/current/quack/overview`, 2026-07-08). Uses DuckDB's internal serialization primitives — the same code path as the WAL — so complex/nested/decimal/interval types cross the wire losslessly. Not an interchange format.
+- **Default port: `9494`** (blog "Default Port"; confirmed on `/docs/current/quack/overview`, 2026-07-08 — "Default port: `9494`"). `94` = the year Netscape Navigator shipped. Also demonstrated live in the interview ("that's our default port, by the way, 9494").
+- **Token authentication, localhost-bound, no SSL for localhost** (blog "Encryption"). The server generates a random token at startup and by default **binds only to localhost**; **no SSL for localhost** ("it is a bit silly to bring all that infrastructure … just for localhost communication"). For non-local exposure the client assumes SSL and the docs recommend an nginx reverse proxy terminating TLS. Clients pass the token via a `quack` secret scoped to the server URI **or** an explicit `TOKEN` option on `ATTACH` / `quack_query` (confirmed on `/docs/current/quack/overview`, 2026-07-08). Auth and authorization callbacks are both overridable by user extensions or plain SQL macros (blog "Authentication and Authorization").
+
+---
+
+## 11. Quack as a DuckLake catalog (roadmap + early production)
+
+**Roadmap status (UPSTREAM-VERIFIED):** the DuckDB blog's "Next Steps" commits to this directly — "we are going to integrate Quack into DuckLake, so that it becomes possible to use a remote DuckDB server as a DuckLake catalog! We expect this to greatly improve performance, especially with inlining" (`docs/batches/2026-05-12-quack-remote-protocol-blog.md`). In the 2026-05-27 interview Hannes names it "the unlock that I'm most excited about … DuckDB as a remote catalog server for DuckLake … that's actually working already," and demos it live via a `ducklake:` + `quack:` ATTACH. The MotherDuck explainer notes "there is a work-in-progress PR on that" (2026-05-13). Cross-link: [14_ducklake_lakehouse.md](14_ducklake_lakehouse.md), [15_ducklake_tuning.md](15_ducklake_tuning.md).
+
+**Motivation — the Postgres-catalog pain (from the Definite article, `docs/batches/2026-05-17-duckdb-quack-as-ducklake-catalog.md`, early-production vendor report; the DuckLake type-mapping facts are UPSTREAM-checkable against ducklake.select):**
+
+- **Type conflicts at the seam.** A Postgres catalog cannot hold DuckDB-native types natively: `UBIGINT`/`HUGEINT`/unsigned family map to `VARCHAR` and store as text; nested `STRUCT`/`MAP`/`LIST` store as strings; and **`VARIANT` column inlining is not supported on Postgres at all** because the type information does not survive the string round trip. A DuckDB catalog makes the mapping the identity function. (Verify against `ducklake.select/docs/stable/specification/data_types` before quoting as canonical.)
+- **Connection ceiling.** A small metadata Postgres has a small `max_connections`; every query worker / ingestion job / dashboard holds a stateful catalog connection, and Definite reports hitting "catalog connection exhaustion in production." HTTP keep-alive under Quack defuses this (requests, not a fixed stateful pool).
+- **Inlining growth.** DuckLake data inlining buffers small writes as rows **inside the catalog** rather than as tiny Parquet files (`ducklake_default_data_inlining_row_limit` defaults to 10). Turn the limit up under a high-frequency write workload and the "just metadata" catalog now holds real data — Definite saw an 835,000-row inlined gap (3,000+ un-flushed `ducklake_inlined_data_*` tables) in one customer clone. A DuckDB-served catalog is where inlined rows live in the fastest place for DuckDB to read them.
+
+**Definite spike numbers (vendor-reported, single-tenant, "a ceiling, not a production SLA"):**
+
+- **8 parallel writer processes** (each a Quack client), disjoint key ranges, **250,000 rows each = 2,000,000 rows total, zero errors.** Aggregate write rate **≈222,000 rows/s**, *above* the single-writer baseline of ≈192,000 rows/s. The article explicitly notes the "5,500 TPS at 8 threads" ceiling (§8.2) applies to **tiny single-row transactions**, not DuckLake-style commits where each commit is a real Parquet write — so the serialization point did not bind here.
+- **`CREATE TABLE IF NOT EXISTS` race gotcha:** across concurrent writers, `IF NOT EXISTS` did **not** short-circuit; the DuckLake transaction layer caught the concurrent creation and aborted all but one writer. **Mitigation: pre-create the table, then start the parallel writers** (article, verbatim guidance).
+
+> **Honest limit (both the blog roadmap and the Definite article agree):** Quack-as-catalog is still **one writer process** — the Quack server serializes everything; there is no horizontal write scaling and the server is a single point of failure until the DuckDB team's **planned WAL/journal replication protocol** ships. Fine for single-tenant; a real constraint for a large multi-tenant fleet. The replication protocol is roadmap, not shipped (blog "Next Steps"; interview: "planned for the future … ship the journal entries to a secondary standby replica over Quack").
+
+---
+
+## 12. Stable C Extension API (roadmap pointer)
+
+The 2026-05-27 interview flags that DuckDB 2.0 ships work "around the extension API" alongside async I/O and the new extensible PEG parser (`docs/youtube-transcripts/clean/2026-05-27_quack-hannes-muhleisen-interview.clean.md`). The Rust template (§7) is already built on DuckDB's **C Extension API**, which is the mechanism intended to become the stable, language-agnostic basis for out-of-tree extensions (including pure-Rust ones submittable to community extensions). For the extension-loading/signing machinery and the core-extension model this rides on, see [09_extensions_system.md](09_extensions_system.md) and [00_overview.md](00_overview.md). This is a **TALK-REPORTED roadmap intention** for the API's stabilization trajectory — verify the exact v2.0 C-API surface against upstream when it lands; do not treat specific signatures as canonical from the talk alone.
+
+---
+
+## 13. Footguns & honest caveats
 
 - **`quack` ≠ demo.** Do not tell an engineer "run the quack extension to test extension loading." Today `quack` is the experimental remote-protocol core extension; the template demo is `waddle`. (§0)
 - **The template docs are ahead of / behind the code in spots.** `docs/README.md` claims one function `waddle()` returning `Quack Jane 🐥`; the source has two functions and returns `"...........🦆 ..."`. Trust `src/`. (§1)
@@ -621,6 +723,12 @@ make debug
 - **Binaries are version-locked.** An extension built for DuckDB v1.5.4 will not load into a different DuckDB version. Rebuild per DuckDB release; keep the submodule pin and the distribution workflow current. (§6.4)
 - **vcpkg is pinned.** The docs pin a specific vcpkg commit (`ce613c4...`) — don't assume `HEAD` of vcpkg works. (§4.1)
 - **Rust template is experimental.** `extension-template-rs` is explicitly marked experimental and "works with community extensions" is "coming soon" — don't build a production distribution path on it without checking its current status. (§7)
+- **`FROM core_nightly` is stale for `quack`.** The May-2026 launch blog/talks/articles all show `INSTALL quack FROM core_nightly`; that was launch-only. Since v1.5.3 quack ships in `core` and autoloads — use plain `INSTALL quack; LOAD quack;` (or nothing). (§5)
+- **Prefer 5,500 over 5,000 txns/s.** The small-write peak is **~5,500 txns/s at 8 threads** per the authoritative blog; the "~5,000" in the launch talk is a spoken rounding. The beyond-8-threads ceiling is a **DuckDB-core** limit, not a Quack-protocol limit. (§8.2)
+- **"HTTP/2" is a secondary-source gloss.** Upstream says Quack rides generic **HTTP** (so HTTP/2/3 optimizations apply automatically); the MotherDuck video's "HTTP/2" and the multi-writer article's "HTTP/2 and HTTP/3" are downstream paraphrases, not the protocol spec. (§10)
+- **Article port numbers are sloppy.** The multi-writer article shows `ATTACH 'quack:etl-server:5432'` — `5432` is Postgres's port; Quack's default is **`9494`**. (§9, §11)
+- **`CREATE TABLE IF NOT EXISTS` races under concurrent Quack/DuckLake writers.** `IF NOT EXISTS` did not short-circuit in Definite's spike; pre-create the table before starting parallel writers. (§11)
+- **Quack-as-catalog is still single-writer / single-point-of-failure.** No horizontal write scaling and no built-in HA until the planned replication protocol ships. (§11)
 
 ---
 
@@ -642,3 +750,11 @@ make debug
 | `quack_serve` / `CREATE SECRET (TYPE quack)` / `ATTACH 'quack:...'` | `duckdb/duckdb-quack` README | contents API verbatim |
 | Rust template: C Extension API, `make configure/debug/release`, `rusty_echo`/`rusty_quack` | `extension-template-rs` README + `src/lib.rs` | WebFetch + contents API verbatim |
 | `quack_stop`/`quack_identify`/`quack_query`/`quack_uri_parser`/`whoami()`/`DETACH`, port 9494, `application/duckdb` serialization, `httpfs_connection_caching` | `/docs/current/quack/overview` + `duckdb/duckdb-quack` source | WebFetch of overview page **and** GitHub code search (`quack_serve`=31, `quack_stop`=23, `quack_query`=16, `quack_identify`=2, `9494`=7 hits on `v1.5-variegata`) — CONFIRMED (§5) |
+| **Install-channel transition:** launch = `core_nightly`, no autoload; v1.5.3+ = `core`, autoinstall/autoload | launch blog + AI Council/MotherDuck talks (`core_nightly`); `/docs/current/quack/overview` + `/docs/current/core_extensions/quack` + 2026-05-27 interview (`core`, autoload) | WebFetch 2026-07-08 ("available in DuckDB v1.5.3, shipped via the `core` repository"; "transparently autoinstalled and autoloaded on first use") + transcript cross-check — CONFIRMED, resolves the file's open question (§5) |
+| Benchmarks: `m8g.2xlarge` 8 vCPU/32 GB, same-AZ ~0.280 ms ping, 60M rows <5 s (vs ~20 s Arrow Flight, ~3 min Postgres); small-writes peak ~5,500 txns/s @ 8 threads, DuckDB-core ceiling beyond | `docs/batches/2026-05-12-quack-remote-protocol-blog.md` (official blog) | Blog verbatim (authoritative); talk gives spoken-rounded "~5,000" — blog preferred (§8) |
+| "HTTP/2" is a downstream gloss; upstream = generic HTTP | blog "HTTP-Based" (generic HTTP) vs MotherDuck video ("HTTP/2") + multi-writer article ("HTTP/2 and HTTP/3") | Cross-read; flagged as secondary-source gloss (§10) |
+| Why-not-Arrow-Flight: two round trips (`CommandStatementQuery`+`DoGet`); no externally-controlled wire format | blog "Why Not Arrow Flight SQL?" appendix | Blog verbatim (§10) |
+| Token auth, localhost-bound, no SSL for localhost; token via `quack` secret or `TOKEN` on `ATTACH`/`quack_query` | blog "Encryption" + `/docs/current/quack/overview` | Blog verbatim + WebFetch 2026-07-08 — CONFIRMED (§10) |
+| Quack-as-DuckLake-catalog on roadmap; Definite spike 8×250k=2M rows, 0 errors, ~222k rows/s; `CREATE TABLE IF NOT EXISTS` race → pre-create | blog "Next Steps" (roadmap, UPSTREAM) + `docs/batches/2026-05-17-duckdb-quack-as-ducklake-catalog.md` (vendor spike) | Blog verbatim for roadmap; article for spike numbers (vendor-reported, single-tenant) (§11) |
+| Postgres-catalog type pain: unsigned→VARCHAR, nested→string, `VARIANT` inlining unsupported on Postgres | Definite article, sourced to DuckLake docs | Vendor-reported; verify against `ducklake.select/docs/stable/specification/data_types` before quoting canonical (§11) |
+| Stable C Extension API / v2.0 extension-API work | 2026-05-27 interview | TALK-REPORTED roadmap intention; not verified against a shipped v2.0 API surface (§12) |

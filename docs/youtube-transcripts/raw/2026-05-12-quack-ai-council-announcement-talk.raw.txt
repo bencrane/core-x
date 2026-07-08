@@ -1,0 +1,188 @@
+00:00:06 - 00:01:15
+All right. Hello everybody. This is quite interesting. Thank you so much for the invitation. And I'm still amazed I got away with this talk proposal, right? Because I just basically said this. And that's what we wanted to surprise you and it wouldn't have been a surprise if it would have been in the program half a year ago. You probably understand this. Let me start with you know the story so far. And you know a small recap like in a in a good in a good TNG episode two parter, you know, we start with a previously.
+
+00:00:41 - 00:01:37
+I see my people are here. We're good. We're going to have fun today. This is this is great. So DuckDB, right? I've spent the last decade or so working on DuckDB together with many other wonderful people. And since we're always looking for superlatives, you know, it's the friendliest SQL database. I think that's fair, right? friendliest. We're not going to you know get into this whole like you know game of who has the fastest and whatever. You know, cuz it's the friendliest.
+
+00:01:09 - 00:02:11
+DuckDB is a universal data wrangling tool. That's how we like to call it because you can kind of use it for everything under the sun as long it is like vaguely tabular, right? It's actually used quite everywhere. It's kind of wild to see that. I'm still totally amazed that our like little project from from university became such a big thing. It runs in space. It runs in a battery. It can run fully local in a process. It's kind of ideal for tasks that you don't you know trust your intern with,
+
+00:01:40 - 00:02:38
+right? Like we have a lot of these tasks where we kind of send the intern to do it and then we hope that they don't blow up the database. Well, DuckDB is actually quite useful for this because you can just run all of that locally. And you don't end up with a massive Snowflake bill. It's great. Sorry. I mean I I I like the guys a snowflake, but I mean, you know what I mean. Um DuckDB has actually quite crazy adoption at the moment. So, we are at the moment running at about 40 million downloads
+
+00:02:09 - 00:03:05
+per month of DuckDB itself, and that's just a Python package. Like, that doesn't cover anything else. It's just a Python package. It's just the one that we have the best metrics on. Um and uh that's that's kind of crazy. That's like more than 1 million each day. And we have Also, what's kind of crazy to see is we have these extensions, which are plugins for DuckDB. And those are downloaded like 160 million times each month, which is also totally wild. Like, it's like I'm
+
+00:02:37 - 00:03:47
+clearly all these downloads must be humans, right? We're absolutely sure. We run out of Americans in about 10 months, right? >> [laughter] >> Anyways. Um But, we went beyond DuckDB. Actually, this was from almost exactly 1 year ago. I stood on the stage of you know, the this conference and hinted in my last slide at something new for DuckDB. Um also, I only have one set of clothes, right? Um And so, from this logo, um obviously, the logo has slightly changed, but we announced actually
+
+00:03:14 - 00:04:21
+DuckLake um about a week after the conference. And now you know this is DuckLake. DuckLake is a is of course a lakehouse format that kind of admits that metadata is best stored in a database. And it was released um the preview in May, like about a year ago. And the logo has slightly changed since the preview, but that's fine. Um DuckLake is Yeah, it's I mentioned it's the simplest way to a data lake. And this is like a bit of a you know, aggressive, if you want, slide from us, where we just
+
+00:03:47 - 00:04:44
+show the sort of the bits and pieces of Iceberg, the you know, that lakehouse format lots of people use. On the left side where you see, oh, we need to have this catalog and then we have metadata files and manifest lists and manifest files and data files and it's all a bit complex. Um, and then on the right side we have DuckDB which again admits that metadata probably should be stored in database and then like you have a much more simpler structure. And this has been hitting quite a nerve. We
+
+00:04:16 - 00:05:06
+actually expected criticism but we got an overwhelmingly positive response. Like lots of praise. So things like this where somebody said, "DuckDB and DuckDB Lake, why we bet the company on the Duck stack?" Kind of like Duck stack. It's uh And this was on a preview. Can you imagine, right? Like we we bang something out which is a preview and then people say, "Now we'll let's bet a company on it. It's great." Right? And this is only the kind of things that you can I can talk about in public, right?
+
+00:04:41 - 00:05:50
+There's loads of loads of insane insanely positive response to to DuckDB. Clearly hit a nerve. Great. Um, just a month couple of weeks ago, a month ago we released DuckDB 1.0. Um, so the first version of DuckDB that we think is production ready. Um, this time we actually got press coverage which was nice. Um, and you know, you people have then said, "Okay, uh, DuckDB is this thing that only the DuckDB people love and and you know, the the real people use use something else." But we actually mentioned earlier we we
+
+00:05:15 - 00:06:15
+can kind of count how many times people download the extensions. And DuckDB has extensions for Iceberg, for DuckDB and for Delta Lake, right? And so, you know, in in in your mind imagine how these kind of different systems stack up in terms of downloads, right? Just make a mental picture. And if you look at this, you can actually see that within less than a year actually and only 4 weeks after declaring 1.0, there's already like DuckDB is 2.5 million downloads a month at the moment for the extension and the
+
+00:05:45 - 00:06:59
+Iceberg extension is 2.9 and the Delta is 2.3, but it's to us totally amazed amazing to see how many people are really happy uh with with this DuckDB thing. And yeah, so this is again, this is of course only the respective downloads within uh the DuckDB ecosystem. Uh yeah, within a year. But that's not what I want to talk about today. And now um the clicker stopped working. Isn't it in a very dramatic pause, right? Clicker stops working in the in the in our the continuation of the of the of
+
+00:06:22 - 00:07:16
+the Star Trek episode, obviously. Um today is really not about DuckDB, and I have to admit that we also worked on other things this last year. Uh only maybe less public than uh DuckDB. And if you think about it, it's kind of an insane speed for any sort of database project to sort of run these gigantic initiatives and then kind of finish them within a year and do something else in the meantime. I I'm I'm still amazed and actually really proud of our team to be able to do that. And actually Pedro, one
+
+00:06:49 - 00:07:46
+of our guys, ended up taking over DuckDB so that I could do something else. And then uh other people have thankfully uh taken over some project management, so I could do something else. So this is something that I have actually worked on personally, and so I'm kind of nervous to talk to you about it today, okay? Let's look at this. Okay. New thing. What's the new thing? Okay, of course single node DuckDB works great, right? I would I would even say single node DuckDB works extremely great, right? You
+
+00:07:18 - 00:08:20
+have a single computer. We have done experiments. You can go to gigantic data sizes. Basically, it will just continue crunching stuff until you run out of disk space, which is pretty good um sort of um boundary to have. Okay, so this is great. Little check mark. DuckDB can also talk to almost everything under the sun, right? As it can talk to Postgres, for example. Oh, we just you have a extension that is the post scanner. There's my sequel one, there's a sequel light one. We have run we can talk to random ODBC
+
+00:07:49 - 00:08:47
+drivers and integrate with and just pull data back and forth between these things. Works really well. Okay. Uh DuckDB can also talk to object stores, right? We have integrations for all the wonderful object stores. You can all the data formats we have support for all the you know, parquet and its various competitors. All works really well. You can read and write from the object store. We have integrations with catalogs like S3 tables. It's all it's all wonderful. Little check mark. Works well.
+
+00:08:18 - 00:09:21
+But somehow DuckDB cannot talk to DuckDB. Well, that's a bit annoying, isn't it? And we are not the first people to notice this. There's actually been a quite uh large amount of GitHub repos and I think what about we are running at about one per week that's popping up where people are um just adding functionality for DuckDB to talk to DuckDB. And here are just four of them. There's many more. And maybe it's also, you know, something that is maybe quite easy to to wipe code
+
+00:08:50 - 00:09:42
+in an afternoon. That's why they're popping up so many. But it's it's it's just one of these things where yeah, we we really we we didn't have a strong sort of feelings about it or maybe we did. And then all these people out there do things that that kind of solve this problem of DuckDB to talk to DuckDB. And at some point it's not sort of I have to sort of take off my academic hat of being right, which of course I love being right. But at some point it's about solving
+
+00:09:15 - 00:10:22
+people's problems, right? And clearly there is a need out there because people are people are building all these things. Um at this point I also have to admit that 1 year ago I was standing here and talked about the benefits of single node in-process databases, right? Yeah, yeah. And while I fully admit that it is still a great idea, that I mean I will still I will still think that making a single node database is a great idea. There are just lots of use cases out there where a in-process database cannot
+
+00:09:49 - 00:10:45
+cover, all right? Like if you're an in-process database, there's just some things that you cannot do. And I'm going to show you one example, um which is uh this sort of the real-time analytics use case, right? You have you got you have a fleet of nodes. They they do whatever, and they try to store some for example some telemetry in a central sort of authoritative location. And it's a flood of sort of fairly small inserts. So, what do you do now with your in-process database, right?
+
+00:10:16 - 00:11:18
+It's really difficult to to map this um to an in-process database, and it's unfortunate because it excludes a lot of really exciting use cases, right? And also maybe from the academic side that we have to kind of admit that this is also part of analytics. Like I think for the longest time uh the academic world has kind of treated change in analytical databases as like a you know a something for other people to fill to solve, but we have to kind of we have to kind of get around to that. And the crazy thing is that this even
+
+00:10:48 - 00:11:45
+happens on localhost. Like people have multiple tools they want to talk they want to have talk to the same database. Like you have For example, you have like a DBeaver or DataGrip running on a DuckDB database, and then you want to use the CLI to do something else. You want to start up the DuckDB UI, or I don't know. Like this has been a a sort of long-standing customer complaint, or I mean feature request. Sorry. Um I should I should get my corp speak better. Uh but you can kind of do this already
+
+00:11:16 - 00:12:18
+with DuckLake, but this is quite a lot of additional operational complexity. And performance for small inserts is really like these these lakehouse formats are really not made for tons of tiny inserts. So, that's kind of annoying. So, it says breeze on my presenter notes here. So, that was the motivation. And now I'm can I can show you something that makes me really happy to show you. So, I mean, this is just the happiest duck, right? I was I found this picture and I was I was so happy that I get to show you this
+
+00:11:46 - 00:12:56
+little happy ducky. But, so let's say we want to have ducks talk to each other. What do they do? They quack. Exactly. Today I I as I'm very very happy to to show you Quack. And Quack is a DuckDB extension that basically extends DuckDB with capabilities with quite powerful capabilities and I'm going to show you all about it um to communicate with other Duck DBs. Um and maybe we can do like a a favor and we can quack together. So, we do this in our company quite a lot. So, can do quack quack quack quack quack. Come
+
+00:12:21 - 00:13:22
+on. Quack quack quack quack quack quack quack. Excellent. You made me very happy. Uh So, what is Quack anyway? Um So, this is how it looks like. So, Quack is kind of a client-server protocol in the in a sort of traditional sort of sense for DuckDB. So, it is as I mentioned implemented as a DuckDB extension. But, the cool thing is that both sides are just DuckDB. So, there's not like a separate there's not a separate server. There's not a separate client. It's just DuckDB. So, you have two DuckDBs. Here
+
+00:12:53 - 00:13:52
+we have two. Like one is green and one is blue. Um and on left you can say, "Okay, please serve this local database that I'm currently in on this uh local host and then maybe you're creating a table there." And on the other side you say attach, which is the DuckDB way of connecting to other things. Like we had this for a while. For example, you can connect attach a Postgres or you can attach a SQLite or a Duck Lake or whatever. And then you can just type for example from remote foo and then magically
+
+00:13:22 - 00:14:27
+the query will be run on the other side. The result will be shipped back and be displayed on the blue side, obviously. The same you can also if you want you can also have a sort of explicit uh query there where you say from remote.query from foo and we actually working on something really cool there with uh DuckDB 2.0 uh to um make this really nice in a user interface. So, yeah, this is this is really a minimum example, but you can do anything reachable from SQL, right? Everything. All the extensions.
+
+00:13:55 - 00:15:01
+All the data types, all the all the everything it just works, right? Here is actually a slightly bigger uh example because this actually works already. So, if you today if you have DuckDB 152, you can just run this script and it will already do all of this. So, you have client server um right right off the box in DuckDB 1.5. Um this works for all DuckDB distributions, for Python, for shell, for web assembly. Yeah, you name it, right? Like Windows, OSX, Linux, we don't care. So, this is being released today as a
+
+00:14:28 - 00:15:22
+sort of beta. And we expect the production release in a couple of months uh with DuckDB 2.0 uh which are which coming in fall, by the way, in case you haven't heard yet. Um and yeah, as I mentioned, we're going to do um some new simplification some simplification on the way that you specify queries that should be run remotely which I should give you a really um great sort of experience in writing queries for other servers. It's just that it's not there yet and I didn't want to show you syntax that
+
+00:14:55 - 00:16:03
+doesn't work today. So, here you go. So, let me talk a bit about how Quack works internally. So, this is like, you know, this is kind of how it looks like for you or for your agent. Um but how does it actually designed? And this is something that uh we did kind of ourselves. So, on the bottom is TCP/IP. Obviously, we have no choice but to use TCP/IP to talk to other servers, right? Uh we're not using UDP. Uh it's TCP/IP. And then what is what we have on top? Any guesses? Hm? Any Any guesses what we put on TCP IP as
+
+00:15:30 - 00:16:34
+a protocol? HTTP. Excellent. So, this is um we need a protocol on top of HTTP because of WASM. Like, in case you don't know, but DuckDB runs in the browser, right? And we do want to talk to a server from the browser. And so, we really don't have a lot of choices uh to to not use anything else. And this is also really great to use HTTP for database protocol in that you build in 2026 because all the firewalls like it, the cyber people don't freak out. Um you can just slap uh TLS on it and it's going to be
+
+00:16:02 - 00:16:56
+encrypted. Um and it's actually quite impressive. We've done some done some benchmarks because HTTP is so ubiquitous, all the hardware actually is optimized for it. So, if you if you if you use a different it's it's really counterintuitive, but because of you know, I guess because of YouTube, HTTP is faster than anything else. So, it's actually by just because the hardware prioritizes and just knows better how to deal with it. It's kind of funny. So, if you have an an another
+
+00:16:29 - 00:17:25
+protocol, it's it's actually going to be slower. Um and uh yeah, it's kind of it's kind of a weird counterintuitive thing. Okay, so what do we do on top of HTTP? We actually use our We need a serialization format. We need something to basically encode queries and results and all that stuff. And so, what we we have that already in DuckDB, right? We have a serializer because we need to serialize things to the write-ahead log. And let's just use that. So, we can use lossless serialization
+
+00:16:57 - 00:18:01
+of all the internal structures like types, columns, data, chunks, all that stuff. It's really lossless serialization. And on top of that, we just put uh we need some interaction protocol. All right? And it's really straightforward. It's just messages with different types like every other database RPC out there. So, it's a request-response pattern. So, you can for example imagine that you can execute a statement, fetch more results, and so on and so forth, right? So, we have a RPC, kind of a client-server protocol,
+
+00:17:29 - 00:18:28
+all these things, and now we have some sort of side requirements. For example, everybody's favorite. Who here loves this? No one. Okay, me neither. Um So, it's really it's really interesting because once you start I'm going to come over here because I see you people, you know, like I love you, too. I just I'm not always over there. It's just my my notes are over there, so I'm um This is uh one of these things where now that we have a client-server, we cannot really hide behind our in in-process
+
+00:17:59 - 00:18:57
+authentication model anymore, right? We have to do authentication, which is terrifying, right? Um but we also realized that we cannot solve this for everybody. So, what we have done is we have basically made this pluggable through DuckDB extensions. So, basically you, anyone, can override the authentication method that that uh Quack has with whatever you think is best. There is a default one, which is based on tokens. I'll show you in a bit, but it's basically something that you can decide what you want. If you want to
+
+00:18:28 - 00:19:29
+glue this to your um you know, uh LDAP server or so, you can do that, right? Um I think it's really exciting when you have such a community like DuckDB has. Um there is this community of DuckDB extension writers that have already written many extensions. We can kind of rely on them to to um to just cover some more use cases, and of course, if you're a big corp, you can just make your own. Um you can also just write a SQL function, by the way, if you want. You can if you can you express your
+
+00:18:58 - 00:19:53
+authentication in SQL, you can just write a SQL function. It's fine. So, that's cool. And then the other thing, the even more fun thing, is the authorization, right? This is even harder. It's like now we've authenticated somebody, how do we decide what the permissions are going to be, right? Like you have table level, column level, row level, blah blah blah. It's a huge feature set. Uh people expect a ton of stuff there. And uh we again we have managed to avoid it so far. Again, we
+
+00:19:25 - 00:20:08
+don't really want to solve we're not don't want to solve this once and for all. We're going to give you the flexibility to do your own thing. And you there's going to there's also a callback for that where basically you have a callback that sees what the user wants to do. You can decide whether you want to allow it or not. We can even modify the queries that the user is running. There's lots of interest. There's some really powerful things there. And this is I think interesting
+
+00:19:47 - 00:20:47
+in Quack is that it's it's kind of giving you the tools to build something exciting. It's not trying to solve everything from the get-go, right? All right. But experiments. Because I'm a database person and I cannot live without showing a performance experiments, right? It's very important. So in case you don't know um many years ago in 2017 we wrote a paper how terrible database client-server protocols are. Um here you see the plot on this on this paper where basically every database
+
+00:20:17 - 00:21:19
+protocol was worse than netcat by a factor of 10. It's not so great. Um and actually the insights from this paper um made us really strong believers in in process. But now you know we had to reconsider. But it is of course extra terrifying to build a client-server protocol when you have been the one that's been banging out like has been complaining about everybody else's protocol, right? So we better get this right. Okay. Okay, so this is the 2017 um 2017 state of the world. Um so let's do some experiments. And the
+
+00:20:48 - 00:21:51
+experiment is really simple. We have a client and server. And these are uh running in AWS. These are virtual machines. Um they are like fairly small. They have 32 GB of RAM and eight CPUs, right? But they do have fairly fast network. They have 15 GB GB per second networking. And they are in the same availability zone, right? Like what you would have in your in your like own sort of setup. These are different, and we tried three different things. So, we tried Postgres, because everybody likes Postgres.
+
+00:21:19 - 00:22:11
+We tried Quack, of course, because of course we tried Quack. And we tried Arrow Flight SQL. There is So, the Arrow project has also created something to basically deal with, you know, database protocol interactions. It's called Flight SQL, and we actually use something called Gizmo data, which is one of the projects that I've mentioned earlier that has shown us that this is really something people want. And we have two experiments, bulk transfer and small inserts. So, let's start with
+
+00:21:45 - 00:22:51
+bulk transfer. Bulk transfer. So, here is the result. We've transferred millions of rows of a database table. So, it's 100,000 rows, 1 million rows, 10 million rows, 60 million rows, and we measured wall clock time. Lower is better, obviously. So, Quack manages to transfer 60 million rows in this is scenario in around 5 seconds, right? And Postgres took 3 minutes. So, the Postgres protocol took 3 minutes, and just hold on to that. It's like it's uh 5 seconds versus 3 minutes. Pretty good. Arrow Flight took 20
+
+00:22:18 - 00:23:16
+seconds. It's better, but it's of course still much slower. But now, really the the other So, I mean, kind of you kind of trusted us to get bulk transfers right, right? Like I mean, we have been working on this for ages. It's it's okay. Um but something that was that we were then we we said, "Okay, we also need to do transactions." And especially for this use case, where you have many small inserts coming from all over the place. So, here we have a second experiment, where we run single insert transactions
+
+00:22:47 - 00:23:42
+with an incoming increasing number of client threads, right? So, 1 2 4 8, and so. And we just measured the completed transactions per second. And we do What we see? Well, we see Arrow Flight not doing so well. Um it's designed for bulk, and kind of only for bulk. Um Postgres is doing okay. It's kind of was designed for this use case. But Quack surprisingly did really well. Like we finished something like 5,000 transactions per second on DuckDB uh for eight clients here. So, that's that's
+
+00:23:15 - 00:24:16
+pretty good. We have optimized the protocol a little bit to make this work. But pretty amazing to see those results. So, it's fast both for bulk and for um for small transactions. So, what can you do with this now? Well, you can do lots of things. Here's the classic case. You can use Quack to glue two DuckDBs together. Great. Um But what cool What's really nice about this is you have DuckDB on both sides. So, you can do really cool things like post-process a result coming from the server, or you can aggregate your local
+
+00:23:46 - 00:24:38
+data before you insert it into the into the into the central server, right? It's really cool. You can also do crazier things, right? Why don't, you know, proxy a bunch of shards that living in separate databases through one sort of coordinator node and then send that to a client and do that through Quack. You know, could be shards, could be replicas, could be both. It's like really the Duck Stack in action. Like you really the your own imagination is only the the only limiting factor here.
+
+00:24:11 - 00:25:16
+Um By the way, we're also planning to um to add valve replication to Quack so we can basically have a read replica for DuckDB. That's um that's automatically kept up to date. And again, we've been surprised so many times with what people build uh with DuckDB. So, surprises again. And now I'm going to zoom out a little bit more. And this is the part where, you know, like uh maybe I have to run away quickly after the talk, or maybe I need security during the during the um uh office hours. So,
+
+00:24:44 - 00:25:36
+I would really kind of want to talk about this endless OLTP versus OLAP debate. You know, let's see where DuckDB is on the spectrum here. It's on I mean, you would argue that it's it's pretty far on the on the like side of the analytics, right? So, let's look at this scenario in a sort of yesterday, today, and tomorrow, okay? Let's start with yesterday. The common wisdom says that OLTP is sort of Postgres land, and DuckDB is OLAP. And somewhere in the middle is this elusive
+
+00:25:10 - 00:26:13
+HTAP, maybe, you know? Who knows? Haven't seen it yet. However, this is wrong. This is just not true. To yesterday, actually, is that Postgres is actually the middle as a sort of general-purpose system, and there are hardcore OLTP systems out there like um TigerBeetle. Anybody here knows TigerBeetle? Yes, great system. Um and TigerBeetle can run like so many circles around Postgres in transactions. You would You would It's insane, right? Um so, Postgres is actually the general-purpose system here.
+
+00:25:42 - 00:26:41
+It's not really great at any single task, but good enough for a lot of use cases. Okay, that was yesterday. So, we think that with Quack, we've actually been working also behind the scenes on concurrent transactions, concurrent checkpointing, commits while checkpointing. There's still work to do, of course. Um and we have announced Quack today, so we just did that. But, we think that actually moves DuckDB much closer to the middle without compromising anything on the analytics, right? We haven't made anything slower.
+
+00:26:11 - 00:27:12
+So, this is kind of a bigger blob like the We're moving closer to the middle. So, DuckDB is we think with Quack on the way of becoming general-purpose uh as as well, just from a different sort of side, right? It's coming from this from this analytic analytics side. So, this is today with Quack as of today. And you know, who knows what happens tomorrow. Um maybe it's time to use a database built after 2000 at some point. I don't know. >> [sighs] >> But, I want to come back to our mission
+
+00:26:43 - 00:27:42
+uh here at DuckDB Labs. Um our mission is to empower people to deal with data and to build in amazing sort of systems to deal with data um with confidence and Quack is really an important ingredient here because it really greatly expands where DuckDB can be useful, right? Like we've had this sort of restriction that DuckDB was this really in-process only system and it couldn't really deal with this more complex deployment models, but that's really changing and I'm I'm really excited that we've built
+
+00:27:13 - 00:28:24
+something that's, you know, also fast, of course. Um and now I think I have time for a demo. You want to see a demo? Yes. Okay, great. >> [snorts] >> Um this is medium terrifying as you can probably imagine. Um I'm going to have to do the mirroring. Mirroring. All right, can you see this? Actually, I shouldn't show you show you this. Okay. So here you have a browser. Um and here I have a magic URL and I'm just going to put that here in my browser and hope that it works.
+
+00:27:49 - 00:28:53
+Um Yes, great, it works. Um so what happened here? So I loaded up a DuckDB instance in the browser which is already kind of mind-blowing that this is possible in the first place, right? So this is just loaded up DuckDB in the browser. Um and then I said, "Hey, install this Quack extension, install Quack from Cornell nightly." It's currently sitting in a separate repository because um it's kind of still moving. Um then we create a secret which is a DuckDB's way of doing handling authentication tokens. Also, we
+
+00:28:20 - 00:29:23
+use secrets for everything like S3 credentials and things like that. So we create a credential um and of course you can now copy paste my token if you if you want if you're quick. Um and actually you yeah, you can. Um and then we can just run a query here. So for example here we just run this query and you can see hey, this is a node that um select meta. You can actually see it. This is like something that runs in a cloud formation on Amazon where we just click a button to spin this up. Okay,
+
+00:28:52 - 00:30:01
+cool. And in this um it's also a small node. It's a T3 micro. It's really small. And on this node, I have a I have a uh I cannot type, of course. Of course. Oh, no. See? This is This is you should try live demos. This is This is medium terrifying. I have to attach. So, so I have to attach. Now, I'm attaching this uh this remote database as a sort of as an alias remote. It's just called remote. You don't have to call it it. You can call it whatever. But now, I can basically just look at this table that
+
+00:29:28 - 00:30:37
+lives on this other server and hopefully the Wi-Fi doesn't let me down. Yes. >> [laughter] >> Thank you. Um I was I was kind of terrified about this. So, what happened is basically this used Quack to talk to the server that sits in EC2 from the from this laptop because this runs in the browser and it's all good. Um and of course, you can also say something like remote query select star from line item limit 10. So, this is sort of equivalent, but you can see that the second one was faster.
+
+00:30:02 - 00:30:54
+Why was the second one faster? Well, because the first one actually transferred the whole table. That's why we had to wait a little bit. Um and this is exactly what what Quack allows you to kind of choose where computation happens by either shipping the query remote side or you're just running it locally with this virtual uh catalog attachment. So, this is like yeah, and this again this works as of today. You can you can start building stuff with Quack. Um how are we on time? Pretty good.
+
+00:30:29 - 00:31:34
+All right. Um now, I can't see my notes. Uh it's okay. I can manage this. So, so this is I think um we are really excited about Quack because it's it's solving sort of this long-standing issue and it's just really expanding sort of the the use cases in which DuckDB can be useful, right? Um and if everything goes well, then this URL is live now um because I Gabo, our DevRel, has heroically stayed up uh in Amsterdam to click the publish button on on this website during the talk. So, let's see
+
+00:31:01 - 00:31:58
+whether it works. But yeah, so this is really that everything the next sort of frontier for DuckDB where it becomes more a general-purpose sort of system without really compromising on its really strong in-process roots and also of course without losing them. You can still use all of these use cases that DuckDB has been solving before still all work perfectly well. It's just we're adding to that. Yeah. So, that's it. Um thank you so much and I'm happy to answer some questions. >> [applause]
+
+00:31:33 - 00:31:35
+[applause]

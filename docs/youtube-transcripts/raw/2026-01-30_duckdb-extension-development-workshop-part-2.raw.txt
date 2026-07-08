@@ -1,0 +1,329 @@
+00:00:00 - 00:01:04
+questions and answers over what we've covered so far because you guys have had a couple minutes to kind of look at. Does anybody have more questions that they need clarific? Yes, >> let's use the microphone so that it gets captured in the recording. >> Oh, sorry. >> Uh, which mode were you using in the in the duct TV binary when we were quering uh >> the debug mode >> but you do dot mode something >> um >> line >> line. >> This one is query. This one
+
+00:00:32 - 00:01:33
+you mean like here? Oh, I'll jump into VS Code. >> When when you were looking at the description of the function. >> Oh, yes. That dot dot dot mode line dot mode line. >> Yeah, because duckbox really if you have more many columns, it kind of does dot dot dot and hides them from you. >> Okay, thank you. >> Who's that? Somebody else has a question. >> You mentioned you normally use the unary binary executors and the generary yes generic executors. >> Um what are use cases that you can't use
+
+00:01:08 - 00:02:07
+them or are you going to get into that later? >> Well, uh one use case would be when I have a parameter that is constant and I want to cache something based on that parameter. So I have this extension called uh terra and mini ginga which are template functions and a lot of times when someone's going to call me as a scaler function include a template their template is fixed. So I want to kind of determine that value does not change do a cached compilation of that template into the template a and then just kind
+
+00:01:36 - 00:02:32
+of use uh that cached template a with varying secondary parameters for that call. So it allows me to kind of prevent compiling that template every time uh for the execution. So that's when I'd have to use a custom executor or a custo a custom function rather than an executor. >> There probably more examples, but >> yeah, but but my extensions are open source. So you can go into query farm and and take a look at Terra or Mini Ginga and and see that. >> All right. Thanks.
+
+00:02:05 - 00:03:20
+>> You're welcome. >> All right. Any more questions? >> Yeah, just a small question. Uh why binary exeutor exist? You have nary exeutor. Why you need binary at all? >> Um >> and and actually >> I didn't but I think this was kind of how it kind of grew up into uh different optimizations can happen for unary binary turnary executors because sometimes with scalar functions you have this thing called null handling. So if there's any nulls of the input, the one thing those executors can
+
+00:02:43 - 00:03:47
+do is say, oh, the third argument is, the second argument is null, the whole result has to be null. So that's a part of what the the executor wrapper does. And I also think there may be some compilation benefit for uh the non-generic template of how it's executed. But that that should really just be a labs question. I'm going I'm going to punt on that one. So if anyone wants to take that, go ahead. No, no, no. [laughter] >> Ask Mark. Yeah, if you see Mark around, he'll he'll he'll tell you.
+
+00:03:16 - 00:04:31
+>> Yes. >> Oh, what? >> In the test like uh I couldn't provide. So this query one and is this I you mentioned I I for two columns. >> So then what if I want to add a third query that would also be query I but then a different query. Uh yeah. So you would have like a new line on the bottom and then you could do query I I and I I think is like integer. A is for ASKI string T. I'm not sure I'm not sure what those letters really mean. I've kind of cargo culted my SQL unit test knowledge.
+
+00:03:53 - 00:05:07
+Um but uh yeah, it's just query I I would be for three columns, queries four I for four columns, those types of things. But I'd be happy to attend a session about SQL unit testing in the next ductbcon. >> Noted. All right. No further questions. One more. >> Uh so in this case um uh it's a simple logic of Easter. uh >> but let's say I am doing some custom stuff and I would like also some unit tests for my uh C++ logic. >> Okay. >> Is that like a common thing to do or
+
+00:04:37 - 00:05:33
+>> I in my extension building I've mostly focused on SQL based testing. There is some hooks for C++ testing but I haven't seen that in the extension template but I'd have to talk with Carlos and Sam about or Carlo and Sam to um see how that's built in. But I know duct DB itself supports C++ tests but I haven't written any. >> Okay. >> But there might be someone in the room that has. >> So these would be kind of like exec uh integration tests. >> Correct. These are when you're testing
+
+00:05:05 - 00:06:10
+here it's complete integration testing because you're really inside the ductb engine. >> Thank you. >> All right. So seeing no further questions, let's continue. >> Great. Uh this is kind of a review of some some gotchas. Like I ran my talk through Claude and it was like hey how can I improve it and it was like add a slide about where where problems are. So this is kind of a claude powered slide and reviewing it. Um when you're writing C++ code you have to realize you're running in the same
+
+00:05:36 - 00:06:33
+process space as duct DB. So memory safety is the biggest gotcha in extension creation. So if you have a pointer that goes crazy or you're overwriting memory somewhere, the exception will show up and it'll be like, "Hey, why does Dcb have this weird bug and I'm filing it and Gabber says I can't reproduce it." It's generally your fault, you know, if it's in the extension code. Um because we're in the same process. So use the tools that C++ gives you with having smart pointers
+
+00:06:06 - 00:07:02
+rather than regular pointer arithmetic if possible. always use the debug builds because it does a lot more verification of the data structures themselves when you return them. Whereas, if you use a release build, that's just going to go as fast as possible and if you have a bug, you might not see it because the exceptions won't be there. But debug builds are slower because it's doing those additional checks. Um, and uh you guys can kind of see the other the other things here, but we'll get into it. Um,
+
+00:06:34 - 00:07:34
+but now I kind of want to transition you into table functions. So, we did scaler functions for our first half. Table functions are going to be more C++ code because there's a bigger, wider API for them. So, be ready. Hopefully, we're more awake than we were this about an hour ago. Um, and table functions can return more than one output value than a scalar function. So, they can return multiple columns. And the only way they know they're done is when a table function returns a data chunk that has a cardality of zero,
+
+00:07:03 - 00:08:04
+meaning it has zero rows. That table function is complete. Otherwise, it can just keep yielding infinite number of rows back to duct DB. And since ductb executes a streaming queries in a streaming manner, it will just continue to consume those rows over and over and over again. We're also going to now touch on the bind and global init callbacks because uh that's what you need for table functions to tell them, hey, this is the columns and they're the names and the types of columns I'm going to return.
+
+00:07:33 - 00:08:48
+So please update to step four in your code uh to follow along. >> Streaming means when ductb runs a select from a table, uh it's not going to buffer all those rows into memory before it gives you the result. It will yield rows as it processes them through the query execution. So it may yield you the first rows and then the next 248 rows and the next 248 rows in a streaming manner rather than say buffering the entire 1 billion result set into memory and then giving it to you all at once.
+
+00:08:21 - 00:09:36
+>> We are starting to We're not going to give >> we are gonna you'll see we are going to get there. >> Yes. >> Yes, they can. But we are going to demonstrate uh multiple threads in this workshop but they can also run in parallel processes in a different way but we'll get into that. >> There was one more question. one through the other ones >> branches. I'm I'm sorry. >> Consistency like like I will get I will be better at this. It's my first time through. So we're
+
+00:09:06 - 00:10:02
+beta we're beta testing the presentation model, you know, but if I give this talk again, they will all be consistently probably tags. Um if you guys are ready, we'll keep going. So this is the example table function we're going to do. We're actually going to reimplement range because I didn't want to break our brains with too much stuff today. Uh range is a function that just says count from starting value to ending value. And we're just going to call it incremental sequence because I couldn't think of a
+
+00:09:34 - 00:10:42
+better name than range. But incremental sequence is what we're going to build. And we'll give it say 100 to 110. Um it's exclusive of the last value which is the tricky part of this function. So, so it has the uh the parenthesy on the left but the square bracket on the right if you're going to write it in the rangebased uh notation. Any questions so far? So, we're not going to implement select star from a table. A table function isn't integrated with a catalog in the sense of like
+
+00:10:08 - 00:11:08
+select star from employees. But these table functions allow us to do select star from this function passing it arguments. And to to return from a table, we would have to implement the catalog API with the attach syntax. And that was just too much for this talk. But next time we could get into that. Um, keep going. So we're going to start by going back into our good old load internal function. And we had Easter defined in there. And I'm just going to kind of build on top of that. We're
+
+00:10:38 - 00:11:37
+going to add a new function called table function incremental sequence which is we'll step through it. There's the name of the function again. This is kind of like scalar function where we had eers before. Now it's incremental sequence. Then we have our arguments. This is going to take two int 64 values. A big int for start big int for the end. We're going to have a function that's going to produce our rows. Notice how like a scalar function in this call would be here's the output type. Table functions
+
+00:11:08 - 00:11:55
+don't roll like that. They have a function which is kind of I'm not quite sure what this function is called, but I'm calling like the execute function. The run function would be another name for it. U and these are all kind of callbacks. And this is the we're going to have a bind function. And a bind is that bind phase of the query that runs after the parse to tell you these are the these are the columns that we're going to return and these are the values. And then we're going to have
+
+00:11:31 - 00:12:42
+global init. And that will be kind of like when we start to run this function, here's an init function to set up some values. Bind can run multiple times. Init runs only once because it executes when the query executes. And finally, we'll just call register at the end. I told you the code's going to get heavy. Um, it's probably best to follow along on your laptop or you look up on the screen. But uh this is bind function time. We're going to start through it. So we have our start and our end value. And
+
+00:12:09 - 00:13:01
+these are just grabbed as two vectors. And we're going to say uh input.inputs is kind of an array of values. And now they're not vectors, they're values. I'm sorry, I misspoke. They're values. Remember how I said in the original part we have values that have a logical type and then a scalar value. table functions aren't passed vectors of their parameters. They're only passed a single value. So, they're values. Get value is a templatized uh function where you can give it the
+
+00:12:35 - 00:13:23
+primary type and it'll just return that for you. And we're going to throw an exception. This is a case of like if your end value is greater than your start value. I mean, if that's not the case, we're going to say, hey, you can't do that. We're going to raise an exception that'll come back to the user as a nice like, hey, this is an exception in your SQL. uh you need to adjust your values that you're passing to me rather than crashing the program. And finally, we have the names and
+
+00:12:59 - 00:13:52
+return types. Names are the names of the columns that are going to be returned back and then return types of the return types of those columns. Why this is not a tpple uh where they're because these two things are kind of associated is like seems like ductbs doesn't really like to use tpples together um for this. So they kind of want to keep them separated. Um, so they're just names is one one vector and then return types is another vector of logical types. So return types is logical types. Names are
+
+00:13:25 - 00:14:33
+just strings. Um, and they're passed in as references into the bind function. So you're manipulating them uh by reference of the caller. And then finally, we're going to return a bind data unique make a unique value of an incremental sequence bind data structure, a bind data class with a start value and the end value using the constructor and we'll get into that but that's up here. So in the bind data we need to store these arguments our start value and our end value. And to do that we need to
+
+00:13:59 - 00:14:53
+derive from function data class for the function data class to say this is the bind data associated with our table function for our start value and end value. And a lot of this is boilerplate because the two members are right here start value and end value and they're constants. we put them into the constructor and then these two other methods copy and equals I just kind of omitted because they're just kind of saying if we wanted to copy this this class or how if we wanted to compare it
+
+00:14:27 - 00:15:52
+we could do that why we need those methods that's a question for the labs guys or girls um in that case this is a lot it's more than this morning are we okay we hanging in there I see some yeses tentatively Okay. >> Yes. >> Uhhuh. >> You would get a compilation error because the the value that you're pushing but the vector is already typed. So you see like the vector here it says vector logical type vector string. >> Yeah. These are not duct DB vectors. These are C++ these are C++ vectors.
+
+00:15:19 - 00:16:21
+>> So they're they're they're they're not uh they're not like what we discussed earlier. These are just your normal standard C++ vectors. >> I mean oh like logical type var. >> Yeah. Exactly. >> Okay. >> I want to do this to see what happens next. >> Okay. uh what will happen? >> Well, you could do that and then as we get into the implementation of the function, if the if the functions are still implemented as they are, you'll likely get a crash
+
+00:15:54 - 00:16:56
+>> because the the the size of uh the me the memory layout will be different. So, we're going to assume that there's int 64 values for uh these two ranges. But if if you say it's a varb is going to say, "Oh, I'm expecting that to be a string t type and it's gonna kind of try to read beyond the end of the data that we've defined." And you'll get a address sanitizer exception most likely. >> Purpose of the bind operation. It's it allows you to dynamically define
+
+00:16:31 - 00:17:34
+not only mostly the return value not the signature. The signature is mostly defined when you do the registration in the previous screen here of the function. You see how we have the arguments here of big int and big int. That's the signature. But you could also have logical type any which allows you to have polymorphism or you can have variable arguments like var. I'm using my pronunciation. I don't know if I'm saying it right here for you guys, but variable v variable arguments which allow you to
+
+00:17:03 - 00:18:07
+do dynamically typed function signatures. with the bind. Yes, that's that's the real benefit of that bind function. It allows you to do, as my CS professors would say, polymorphism sort of maybe, but not encapsulation. You know, these are really old cobwebs. Um, so you guys got the bind function. Now, we're going to get into global init. And this is a lot simpler. When we global init, we just want to say our starting value is the start value of the in of the interval that we want to calculate.
+
+00:17:44 - 00:18:43
+But we need to save that as well. So we want to sign a keep this state uh this state to be saved. So we're going to say have our callback for global init. We're going to to say our state current value equals the start value from our bind data uh when we start to execute because we the bind data we really don't want to kind of reference it uh too much. Um you could do it in that way but I did a global and it just be nicer because you'll see where we get to on the next stage. Here's the global function state.
+
+00:18:13 - 00:19:13
+the global state and it has the current value but it also has this thing called max threads and this is how you can control your concurrency of your table function. So right now I just want to have one thread. I don't want to have eight different separate workers all executing my table function to produce results because I want the values to return in order and if I just have one thread I know I'm starting at the start and I will go all the way to the end and we'll get there. Um so this in general if you have a table
+
+00:18:44 - 00:19:56
+function you want to control concurrency you you override the max threads method in the global state. Any questions? >> Sure. >> Yeah. So we have this we have the the name of the function we have the arguments and then these are three different callbacks where it's the executing function the bind function and the global init function. >> I agree with you. Um the reason why it has to be complicated is it's kind of a lot of boilerplate to store the arguments. The function when we execute
+
+00:19:38 - 00:20:54
+the sequence function doesn't get past the arguments from the bind phase. Do you understand? So when I say incremental sequence start like 100 to 200 that 100 to 200 how do I pass that down to the execute callback? it's not actually sent there and also the bind phase needs to tell ductb what are the return values of the table function and I can't really do that in the execute call because by the time I get there I need to know what the memory layout is to expect to produce. So that's why it's kind of it's kind of
+
+00:20:17 - 00:21:30
+like we have to pay the cost at this phase to do those two decisions. But but you're right. There is complexity here that is larger than the other the other phases. Does does I do a bad job of answering? Probably. But Well, a sequence in this case, we're writing a function that will produce these rows from like 100 to 109. >> Yeah, this could be also list employees. It could be um what are the current processes running on my computer? It could be it could be anything. A table function can return. It's just a
+
+00:21:14 - 00:22:15
+multicolumn multirow function as opposed to a scalar function that has multiple inputs but a single output. That is absolutely great. That is correct. As for query planning, it it it there's more to query planning than that, but you are correct that that is the right uh understanding. There's also query planning for how many rows will this function return kind of like the canonical estimate of of the function. But you're right in that understanding. Let's roll along here. Go back. Can I
+
+00:22:01 - 00:23:11
+ask a question? >> Yes, you may. Sorry. >> It was um it was for >> y >> and I'm just >> you will see we're going to get into that and we're actually going to make sequence into a multi-threaded sequence generator as we go on. Any there was other questions? Okay. So now we're going to go into the execute function. This is the function that's run to actually produce the rows and we'll we'll step through it. These two lines here are grabbing the uh bind
+
+00:22:42 - 00:23:37
+data and global state data and casting them to the derived types because when they're how ductb passes them in as the generic type and we're casting them to the subasses uh is the is the right way to say it. So we're just using a safe casting mechanism rather than like if you're I grew up in C rather than C++. So I would always be like open parenthesy type name pointer cast we're done. Um that's not so safe anymore. That's not the way to do it. So uh I've really learned a lot
+
+00:23:10 - 00:24:12
+about C++ by using ductb and developing inside of it. So so secondarily um then inside of this we say if the current value is greater than the end value we stop. We say output set cardality zero meaning there's no rows on our output. Stop doing anything. Don't call me anymore. Um that's that's why we have to say set cardality to zero. But otherwise we grab the the remaining number of rows of like between the end to where we are and then we grab the row count of of the chunk because because if we have like a
+
+00:23:41 - 00:24:55
+10,000 row sequence, we can only return 48 of them in this call and we set the cardality. And then we say make a sequence vector which is a really cool vector compared to say a flat vector. uh we can say go from this value to this value using this increment using sequence. But if you wanted to do the flat vector way, you can say get data as int 64 and then populated in a loop from zero to the number of rows in this particular function. Um and you just kind of result I is where the the the output value is in memory of these
+
+00:24:18 - 00:25:42
+sequence values. And then that's it for calculating the sequences. You guys all good? This is the simplest way I can make a table function be I think. But if it's simpler, let me know if you have better ideas. >> So you mentioned that for the values there's like this uh string that tells you which are null for the arguments. >> Uh yes, the selection the selection >> return. How would that >> uh that would work? Um you would change the result. You would say result uh set valid or set invalid I
+
+00:25:01 - 00:26:02
+believe is a function call and then you give the offset in the result vector of which particular offset in the result vector is is null I believe but but I would have to look at my other extensions to find out but I'm pretty sure that's right. >> Yes. to me where >> the global state um is getting updated at the last row of this function says global state current value plus equals row count. >> Sorry I didn't highlight that but I but I will next time. So that's the end of
+
+00:25:33 - 00:26:51
+we're saying we just gave you this chunk of values and the next time a call may go on from there. All right. So, if you did an explain analyze, um, you're going to see that this function could return 100 billion rows in about 3 seconds, which is pretty fast, pretty good. You know, counting to 100 billion is is is cool. Um, I don't know if anybody's going to check me, but but it works. Go to step five, please, on your git tags. >> Yes, I can. >> Yep. Uhhuh. >> Let me get let me help you out.
+
+00:26:38 - 00:27:48
+So in the bind function we have the return values right and we said we're going to return in 64. So when I get called with uh by duct db it has the data chunk already kind of here with output and then I can say um set cardality the line above this >> uh we'll say how many rows I need to be in there and I believe that will trigger allocation if necessary uh to store those val to store those values um so that the so that you actually don't need to mess with it um and since Since it
+
+00:27:13 - 00:28:17
+knows the type, it automatically knows how to allocate that much memory in the resulting vectors. >> Yeah, because you see this auto reference thing here. >> So that's just going to say like it is uh it it's just a reference to the memory and I believe it's just like an in 64 pointer is the actual type right there. I'm proud of you guys for sticking with me because C++ on slides is not easy. >> Yes. Unified vector is mostly used for reading you know like and this is this is my
+
+00:28:00 - 00:28:53
+this is my understanding because I think like if you do unified you're basically casting the whatever the vector is you're putting it into that unified uh representation. I haven't really used unified vector for writing, but unified like the unified format allows you to kind of go to like what index is element n of this vector. And if it's a constant, it'll it'll do the right thing. If it's a if it's a dictionary, it'll do the right thing. But when you're writing, I'm pretty sure it's
+
+00:28:26 - 00:29:35
+always going to be generally uh a flat vector, but I know you can I know you can write other types, but I don't know. You might we might have to follow up on that. Sorry to muddle your answer on that, but I think it's okay. >> But the thing is the data will never be huge because ductb only works in 48 row chunks. So you're always going to kind of know it's not going to be 10,000 rows. It's not going to be 10 million elements there on the ductb side. vector. >> Uh, it's sequence vector is what I went
+
+00:29:10 - 00:30:12
+with because I am trying to be cognizant of the number of rows of lines of code on the slide. But flat vector, I just did it here to kind of show you if you didn't want to use sequence, you can use the the flat vector. All right, so now we went to step five and and here's where we're going to kind of go crazy. If we start using threads, we can go faster to generate our sequences and but it also means we're going to lose the ability to say the sequence is monotonically increasing. So the values
+
+00:29:44 - 00:30:44
+of a sequence will all still be unique, but they may not be in order. And to do this, I thought it's worth to demonstrate it because I'm going to show you how the parallelism works. And I'm going to show you how we have to kind of work around uh sometimes we get threads, sometimes we don't get threads, sometimes the work assignments are unfair. We'll get into it, but we're going to actually add a new phase here called local in it, which will be initializing for each thread.
+
+00:30:14 - 00:31:14
+Here's where I said it's getting complicated. We need to kind of understand what we are putting on the structures for the threading. So, our bind data is still going to have our start value and end value. Our global state is going to now have a work Q where we're going to put portions of the of the sequence range into a queue where threads can pull them off and and produce them with a mutex for locking because we don't want to have the same thread get the same thing more than once or or the same thing uh
+
+00:30:44 - 00:31:37
+when they all request it. Our local state will have our current value and our start and end and if we have work or not. And finally, our work item will just be a a smaller chunk of the original sequence. You guys all right with that? Cool. Here's our global state changes. Here's our original global state where it's just like here's our current value and we're going to have to build it up into a bunch of chunkier things where now we're going to have a Q and the and these Q details don't really matter.
+
+00:31:10 - 00:32:10
+These are just kind of like C++ uh cues. There's no ductb specific stuff here. Um here's a function that grabs a grabs the mutex and and tries to grab an item off the work. And the work Q again is just portions of the original sequence. Here's uh some tracking for total rows returned. Um I like progress bars to work in my duct functions. So if we track how many values we've produced out of the sequence, we can get that progress bar working where it'll just kind of count up to completion of the
+
+00:31:41 - 00:32:48
+query. Um we changed our constructor to just kind of track the total rows. And finally, our max threads rather than being one like we had before is now the total there's a se there's a static value that ductb uses for use as many threads as possible. And that's what I basically said because we're we're going to arbitrate uh we're going to arbitrate the work that way. Now uh we'll have a Q like I said global init will have a Q to execute. Um that was the old version of global init.
+
+00:32:16 - 00:33:32
+This is the new version of global init. Again, we're casting our bind things. We're creating a new state here for uh the start and the end. The number of threads. Um this is uh telling me how many threads will duct kind of already have. If you say set threads equals one, we're only going to put one range on the work. But if it tells me you have eight cores, this value of taskuler, getuler, number of threads will say eight, it's kind of whatever the maximum value of the CPU cores plus the with the minimum value of
+
+00:32:54 - 00:33:55
+what the user has specified of set threads to gives is this value of number of threads. And that's just telling me how many slices I want to slice up the range into as I put it onto the queue. And then I'm going to loop here, slice up the range, and push it onto this statework and push it um to go on. I see head nods, which is good. Uh here's our local state. When a when a when we get a work item, we need to store what we're working on. So local state is local to the thread. Um we have
+
+00:33:26 - 00:34:25
+current value where we are because again the chunk of we give to a thread could be bigger than48. So we need to resume where we are within the status of that sequence chunk. Um, here's our our constructor where we're just kind of grabbing some initialization around. We're storing the thread ID because you'll see I'm now having sequence return both the value and the thread ID as a possible column. So, we can tell which thread produced these values and has work is just kind of an indicator. Does this thread have a
+
+00:33:56 - 00:34:56
+chunk of the sequence to work on right now? And here's the constructor. It's just a simple make me uh this object. The default constructor is called there. And finally, we're getting into execute, which is going to be this is the original execute that we had before. The execute got a little bit longer. I'm sorry. This is this is the problem with multi- threading. Um, global and local state. Now, we're going to say get new work. If we don't have an item, we're going to go to that queue that's sitting
+
+00:34:25 - 00:35:26
+in the global the global structure. Grab the work. If not, we're going to say we're done with producing uh values on this particular thread with that set cardality zero and that will kind of end our executor. Otherwise, we'll we'll store it on our local state like these two lines here. And here's where we're doing the same uh producing a sequence vector, but we're doing the second thing. Output this new line here is saying store the thread ID of the values we're producing as the second
+
+00:34:55 - 00:36:10
+column of this function. Any questions on this? I feel like I've kind of tried to talk through it as much as possible, but the nice thing here, >> um, no, I don't really know. The the ductbuler can move uh can do whatever it decides to do. I don't I I'm not in control of the Pthread create or anything else like that. Like it it it really does it all. >> Yes. >> So you have to guarantee that only that only one thread is accessing states. >> That is correct.
+
+00:35:39 - 00:36:51
+>> That would be a problem if that was not true. Um, and uh, what I what I did realize was kind of a bug here would be this local state is storing the thread ID, but the initializer of the local state does not also have to be the same thread that is executing. So, that is a little bit of a bug there, but I'm handwaving that away because, you know, we'll we'll get there. So, we'll skip along here. Progress and cardality callbacks, uh, in the aspect of time, I'm just going to kind of skip
+
+00:36:20 - 00:37:17
+past this, but progress callbacks allow you to return a value between zero and 100 that tell DuctTb how complete you are in processing the query. Um, and and it will just be called pretty often in the CLI to say how far along are we. It's it's it's really good for estimating those ETAs. Um, and then cardality is a callback that says how many total rows are you going to produce as a table function. And if you can tell me that plus your progress, I can do an estimate of of when you're going to be
+
+00:36:49 - 00:37:46
+done. Cardality is also important for joins. So if your cardality estimate is not good, you may be put on the wrong side of say a hash join, whereas if it's really accurate, you're always going to be guaranteed to get a nice query plan. And then bind changes. Here we're having the value is the first column and thread ID is the second column. So the first column is a big int. The second column is an unsigned big in for the thread ID. And this is just changing the bind function to have those two columns.
+
+00:37:20 - 00:38:27
+Now here's where you get the performance. Uh so if one thread we were just doing for I think it was for like a 100 billion rows took about eight seconds. But as you increase threads you'll get 1.9 3.6 six 4.9 times faster because we chunked up the work and those other threads can execute. This is should not surprise you all because CPUs are cool and you know everybody has a ton of different cores now. Um and uh it works well. And here's where I wanted to show you that even if you have a thread, the work assignments
+
+00:37:54 - 00:38:47
+don't actually have to be uniform. So you can see these three threads got twice the work done on them than the original threads did. Even though the sequence was evenly chopped up in the work queue, duct DB may not launch eight threads. Like my machine has eight different cores. So it may not launch eight threads. In this case, it only launched five and those those threads were so fast. They got done with their first chunk of work and then they got a second chunk and that was it. So don't
+
+00:38:20 - 00:39:21
+assume that your threads are going to have a uniform distribution of work when they come across the executor. Um and then we can tell about column statistics which is even cooler. So when you have a ductb function you can a ductb table function you can kind of have this additional callback that says hey here's statistics about the columns of my function. it will help the query planner do better assumptions and better filtering about uh your queries. So in this case I have statistics here that
+
+00:38:53 - 00:39:44
+say when we're building a sequence I know what the minimum value will be and the maximum value will be of the column and I also know all the values won't be null and and that'll be important in just a second. This is for the the thread stuff. I just know um there could be a total number of threads of a total number of distinct values and a unique value here. But here's where it's cool. Statistics. Now that we implement the statistics call back, these queries don't actually run
+
+00:39:18 - 00:40:11
+the function. So normally we'd have to run from like 100 to 200. But if I say where value equals 50, and those statistics say the min value is 100 and the max value is 200, Dr. B will never call our function. It'll just say, yo, man, like there's nothing to do here. Empty result. The statistics say the value will never be within the range. We don't have to execute you at all. So it's a nice way to skip work. Um, same thing for isnull. You can do those same types of things. And if you want to
+
+00:39:44 - 00:40:53
+do something really crazy where you do two calls of your same function like a and b here and you want to say where a equals b, it will look at the statistics and determine the filters that it needs to apply to those functions. And you can see that by doing that the estimates of the cardality really becomes much more accurate. So please implement statistics for your functions if possible because great things happen that you really don't have to work too hard to have the benefit of. >> Statistics are a callback um on the
+
+00:40:21 - 00:41:40
+function called incremental reference incremental sequence statistics and you know how we registered the function. I'll show you in the real code here. One second. Um get checkout Step five. Let's go down here. Do I get there? One second. Live coding problems here. There we go. So, statistics are registered as a callback right here. It's just another optional call back to your table function that allows you to say, hey, if you want to grab statistics about the columns that I'm going to
+
+00:41:22 - 00:42:20
+return from this function, please call this function. >> They're really specific for the types of the columns. So we have numeric statistics where it's like min min and max values. We have null or not null like can the column contain nulls can the column not contain nulls. Um the ductb guys will probably know there's more stuff there but there's there's string function there's string statistics for like min values and min max values for strings. It really depends on what the ductb team wants to
+
+00:41:53 - 00:42:52
+to give you for statistical stuff. So soon they might have say a more um number of distinct values is really important for for join planning. Um but how that's represented I'm not sure. I don't think there's anything like stochastic distributional sampling is I don't think there's those types of statistics in there. >> Yes. Yes. You you implement this function right here incremental sequence statistics just just like this. So I say like oh if it's column index zero that
+
+00:42:25 - 00:43:20
+means it's our sequence value here's our numeric stats because it's a numeric type it's a big int here's our min here's our max and it has no nulls I'm going to return the return the result >> yes >> how do you threads >> uh that's on the global d the global init data and you have the max thread max threads call back but if you're talking about at runtime you can say set threads equals three or you could say I'm not sure gabber do you know how to
+
+00:42:53 - 00:43:55
+unset when you say set threads equals three. >> Um >> maybe it's just unset threads >> reset threads and that'll just give you the max threads there. Um so your your extension can either control that or it can go by the user specification. Yes sir. So when you say >> uh >> no. So the fun thing here is ductb is really in control. So, >> you're giving that hint. >> I'm giving it a hint, but it may say, "Hey, I'm using three of the normal
+
+00:43:34 - 00:44:48
+threads for this other table over here. U I'm not going to launch you with that many or those threads don't get time allocated to them on your OSU. So, you may not actually receive work on them. Um, it's really hard to guarantee every thread is going to get a piece of work. >> Yes, sir. um >> htop. [laughter] >> I'm going to go with the crowd on that. Htop is generally how I look at it. Um I don't think it's actually inexplained, but the profiler may have it. Um if Maya is here or
+
+00:44:20 - 00:45:15
+someone like that, they may be able to tell you. uh but but uh I don't think it's an explain right now. >> Yes. >> My table function. >> Uhhuh. >> What I will get is >> I'm not quite sure what you mean. So you mean like statistically? >> Yeah. So this >> Oh yeah, these statistics are only really suitable for the function that we're implementing here because since we know start and end of the interval, we can tell you what the statistics will
+
+00:45:01 - 00:45:53
+be. But say I was writing a table function that fetches stuff from the web. You can't you have no idea. You can't you can't really predict like what those values will be. So those statistics that you return there are probably just going to say unknown. But if you can say it's not null, it's still worth telling duct it's not going to be null. >> Yeah. Because you gave the example when it's out of range it does not even run. >> Yes. >> So statistics are considered what I
+
+00:45:27 - 00:46:26
+would say covering meaning it ductb trusts them. It doesn't go back and reverify them. So wrapping up uh what we didn't cover today projection Um, projection's kind of like, hey, I have a table function that makes a thousand columns, but I'm only doing a select of two. It makes sense to only have that function produce those two columns rather than returning those thousand. Projection is that type of thing. Filter push down and filter pruning. That's kind of like taking the wear clauses and pushing them into the
+
+00:46:28 - 00:47:23
+function. Um, that's a pretty cool thing to do because now if you're say you're doing an external fetch or an external service that you're interacting with, you can now say select, say we had a table function that's returning the current list of processes like PS and you say select star from PS where user equals rusty. It'd be much nicer rather than yielding all the other processes that aren't owned by me to the function. you can just put that filter in your table function, apply that
+
+00:46:56 - 00:48:01
+upstream from duct DB and then just give it the data that it needs. Um, var that's kind of like taking multiple arguments, you know, one to n number of arguments. Uh, and then named arguments are kind of optional arguments that you can have for your function only supported by table functions that uh you can default or or let people pass, but they're set with saying option name wallalrus operator. So, colon equal and then the value to specify them um rather than positional arguments that we've all
+
+00:47:28 - 00:48:35
+demonstrated here today. Finally, we're getting to uh the fun part of publishing your extension. So, once you're done writing all these things, uh you have this repo called community extensions that that that the DB Lab team has built and you just create a new file, a new YAML file under extensionextensionameescription.yiml YML and you put in some of uh a common formatting here of just following the existing format of docs and some basic extension metadata. Um and then you put in your repo of query farm/workshop and
+
+00:48:02 - 00:48:58
+then your your your GitHub reference of what version you want to publish and you make the PR and then it's put into community and that's it, you know. And then you can just do install workshop from community load workshop and the whole world can use your extensions. And I will show you how successful that has been for just a second here. So Query Farm, the one the the company that I run has published 30 different extensions and they've kind of taken off. I don't know who's out there. Hello
+
+00:48:31 - 00:49:35
+to anyone who's using the query farm extensions on the internet. Um but we just did a 1.44 release so there's some CI out there. But you can tell like there's been like 76,000 instances of ductb that have loaded one of the query farm extensions yesterday. Um so these the audience for extensions is out there but we don't know who this is or what they do or where they're what company they're from. We don't keep any of that data but we can just tell you the extension was loaded into the
+
+00:49:02 - 00:50:08
+process that many times. So what I've seen is is like it grows. as it comes up, it comes down. But it really does have a cool um a cool ecosystem is growing of extensions and and you guys here in the room are all going to write your own, I hope, and join me with giving more functions to these users out there and uh the audience is there and the and they're and they're hungry for new functionality. So, anything I can do to support you or answer your questions or kind of give you ideas, I'm here for it.
+
+00:49:34 - 00:50:40
+>> Extensions, are they tied to They are tied to ductb releases actually. So we have the the ductb release calendar of LTS for long-term support which is our 1.4 branch and we're going to have 1.5 soonish. Um so we're going to have 1.4 extensions will continue to be built and then 1.5 will also be built and we'll kind of keep LTS running and the normal release cadence. I don't know what we call nonLTS, but we'll have two branches of extensions moving forward. And as as
+
+00:50:08 - 00:51:09
+you release those extensions should be rebuilt for each version of extensions, but this is starting to get into Sam's talk that'll be this afternoon of what the futures of extensions will be. >> Yes. behavior. >> Well, this is really we're getting into policy and I'm not part of DTB Labs. Just like that be very clear like I'm very grateful to be here but I am not officially telling you what what it is. Talk to talk to Gerard and those guys. But community extensions is kind of like
+
+00:50:48 - 00:51:46
+pip or or pi pie. Anyone can anyone can publish things there, but there's no guarantees about what they're publishing or the quality or contents thereof. So, it's kind of like no warranties, open source, read the license, and that's kind of where it is. Um, and I think as for me to say if there's any I can't I can't really say, but I know that there are tons of extensions getting published every day and I like to see them. I like to use them. Um, and I'd like to see
+
+00:51:17 - 00:52:22
+more extensions to be there. Um, but as for core extensions, I think there's a real difference there where like the ductb Labs team has control and authorship over them and really there's a there's a there's a difference between a core extension and a community extension. >> Yes. >> Watform. >> Yes. So then we have to do anything special to make our extensions also crossplatform. >> No actually um let me show you if we go to one of my extensions. So we go to
+
+00:51:50 - 00:52:44
+GitHub here. Um I'll show you what what happens. So airport's a good extension is uh it's what I spoke at at Duckcon about a year ago. And if we go to actions you'll see these kind of builds here. And it's it's failing but that doesn't really matter. Um, I'll fix it later. So, when you build, I'm going to go to an extension that actually works because now I'm kind of embarrassed and this will be on the internet and everyone will be everyone will be sad. You know
+
+00:52:17 - 00:53:25
+what I mean? Um, we'll go to one that probably is building fine. Go to Terra. Yay. Green check mark. All right. I'm so so much less embarrassed. So, this is our our actions. And you'll see here that uh the extension template actually builds all the different platforms. So it has Linux, AMD 64, ARM 64 and then the different GIC C's that we're using and then it has Mac OS and Windows and then WM at the bottom. So the extension CI tools will actually build all those other platforms for you
+
+00:52:51 - 00:53:57
+and you can exclude them if your extension is not supposed to be built on that platform for no support. >> Okay. So because earlier you mentioned say reading park files if my extension reads park files reading files on Windows is very different from >> Yes. And I would say like use the duct DB file system handling that has the correct abstractions across those platforms. So you don't have to worry about what the platform specific code is unless you want to go there. >> Yes.
+
+00:53:31 - 00:54:36
+I hope so. rather trying. >> Okay, this is this is this is a how long do you got? You know what I mean? So I think like I'm going to give you the shorter answer. I've tried to build a lot of extensions to figure out that same need of like where do users uh of DUTDB need the functionality to be built out and it's been really kind of hard to figure out and and I've had some hits and some misses. I can tell you like some extensions are super popular and some extensions aren't
+
+00:54:35 - 00:55:47
+super popular. But for the people that are using an extension, it's the greatest thing since sliced bread. But should we count the number of times an extension is used as usefulness? Is that the right measure? Or is a better measure the broadness of an extension across a a space? So, I guess I I'm gonna have to kind of defer to the crowd, but I think a measurement of popularity of number of times it's loaded is a good measurement, but I also think having an extension in an area of a vertical, say statistics and
+
+00:55:11 - 00:56:09
+statistical distributions like I wrote with stocastic was a uncovered area of a SQL that needed to be kind of the basic functionality coming in would be really good because it isn't really able to be done inside the normal built-in functions of duct DB. So, my answer is put a lot of fishing hooks out in the water and see what fish you catch to kind of be guided by what the what the marketplace needs. Um, but I defer to the rest of the room of what they what they think. >> If I can make a comment.
+
+00:55:41 - 00:56:48
+>> Sure. >> I like to scratch my own very useful facing a problem, >> build an extension for it. >> That makes sense to me. >> At least you will serve yourself and your colleagues. And I think the other thing I would say is in the last couple months, Claude has really made Claude and and other coding assistants have made extension creation much easier. Um, so and I think DuckDB Labs is and and I and all the community people are trying to make extension building much less of a niche industry and be
+
+00:56:13 - 00:57:16
+more of a okay, hey, I need an extension to go do this and it will generate that and and you'll load it and if it's popular, we'll publish it out to community and we'll get going and and if you look at the growth and I'll show you this page over here which I think will really kind of illustrate um the growth of the extensions Um down here we have extension ecosystem report and this is the growth of extensions from say 1.0 all the way up to 1.42. So we've gone from about 15 all the way to
+
+00:56:45 - 00:57:49
+107 of when I last generated this web page. And you'll see down here of platform trends of like which platforms are actually getting more extensions. And then this is the pace of our extensions being added and removed per release of ductb. So you can tell as we've kind of been in the 1.4 branch, a lot more extensions have been created uh over time than say in the 1.0 or 1.2 branches. So the growth is accelerating of extensions and I think uh all of us will make the community better and and
+
+00:57:17 - 00:58:11
+ductbs will also build out more tools to kind of get this ecosystem more visible because I think one thing in ductb right now is the extension ecosystem isn't as visible as it could be and I think that will change as as the ecosystem has grown up and as more extensions are built it becomes more important to have this functionality surfaced up for our users because I think if you right now if If you talk to people, they're like, "Doctorb is great for parquet and reading CSVs, but they don't know about
+
+00:57:44 - 00:59:00
+these other 150 extensions that exist that add additional functionality for say fuzzy string matching has been one of the most popular extensions I've written. Um, and and they don't know that that's kind of in existence out there. >> Yes. >> Um, thank you for the workshop. Um, we have seen function related Scala and functions. Are there other kind of function we can develop this extension thinking about if we want to implement something that make automatic data masking select? Can we do that?
+
+00:58:22 - 00:59:32
+>> Um automated data masking. So there's a thing called table in-out functions which allow you to pipe the result of a query and you return a you return a table as well. So if I were to say a PII masking function, I would say select star from PII mask open bracket and then put my subquery in there and then close that. And that what that would do is stream all of the data from the original query into PII mask. It would do whatever magic it needs to do to determine, hey, is this column named
+
+00:58:58 - 00:59:58
+>> name or something like that? And then do the masking and then just yield out what the results would be but masked. this on this this function is loaded it will be automatic automatic call when we do >> no you must actually call it to perform that masking >> okay >> um as for putting like a proxy function there that would require you to manipulate the parsing and and and yes you can do fun things but that's it's it's a little bit more complicated >> in a view
+
+00:59:27 - 01:00:24
+>> sure sure any function can be used in a view and I think even reading parquet files and CSV files are just functions so if you read paret or read CSV your extension could provide the same type of functionality there. >> Yes. >> Yeah. >> Well, in this case, I would say I would say a SharePort file system is what you need. A SharePoint file system is what you need. I wouldn't change read CSV at all because that that's just a CSV parsing. But if you said SharePoint
+
+01:00:10 - 01:01:09
+slash or some type of scheme like that and you provided that as a normal file system like we have for S3 or um Azure, any of those other cloud providers, it would totally work in the same way. >> Yes. >> Can you write extensions? >> Yeah, you can. Uh, I've written a couple in Rust and I've mostly done um there's a C I think it was a couple weeks ago I saw a C# community member is you can build them there. You can build them in Rust. You could build them in anything
+
+01:00:39 - 01:01:50
+that has Cbased FFI boundaries. But as for are they as polished as the C++ and C extension APIs? Um, probably not. But come to the talks this afternoon. I think we'll hear some great news about what they're doing there. >> Yes. Yes. >> It's possible because like even airport has some different operators like that. Um, this is this is starting to get in the talks this afternoon and I don't want to steal any of their thunder, but I think what I can say is that C++ binding extensions into the C++ core has
+
+01:01:39 - 01:02:39
+always been something that DuctTB Labs has supported, but not actually given a ton of stability guarantees around. But as we started to build the C API and the C++ API based on top of the C API, the stability guarantees will be there and also it will make the compilation and linking phases much faster because it'll go against a standard C API rather than linking against ductb core. Um, as they build out more stability guarantees, they'll have more of the API exposed. But will they ever reach the point where
+
+01:02:08 - 01:03:18
+every interface is in the extension API and and and stably there for extension? Uh that we'll have to see this afternoon. >> Question. >> Okay. For example, if I extension or something >> so I've written the airport extension and it has time travel abilities and that's just kind of in the bind call where those functions are there. But say we wanted to extend the query parameters rather than saying like at time or at version we want to say at something else that would require a
+
+01:02:58 - 01:03:52
+parser extension to interface then with and then you then you kind of do the parsing and then it kind of would call that bind phase again. Now the exciting thing is like we have the PEG parser or the PEG parser coming. I'm not sure if it is in one f again, I'm outside the outside their company, so I don't know what's going to be shipped or not, but the peg parsing is going to allow us to do extensions of parsing much easier because right now it seems like if a parse error happens,
+
+01:03:25 - 01:04:26
+your extension can now be called with the query that couldn't be parsed can can then proceed with that query that wasn't parsible and then do some recovery there. Anything else you guys? I think we're at our end. Um, thank you for coming. I really appreciate you showing up so early and and listening to me for two hours. And I hope it wasn't terribly boring. Um, if you have more questions, reach out to me and I'll be around this afternoon and and uh I'm so happy to see all of you and kind of grow
+
+01:03:57 - 01:04:06
+the community of Extension Builder. So, thank you very much. [applause]

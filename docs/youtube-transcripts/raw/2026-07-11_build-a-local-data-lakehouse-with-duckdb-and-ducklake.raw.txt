@@ -1,0 +1,98 @@
+00:00:01 - 00:00:54
+Hey y'all, DataGuy here, and I'm back with yet another review request video. This time kind of continuation on a local data lakehouse, this time using DuckDB, which one of my followers wanted to see. Um, and so, you know, what I kind of want to prove here is that the thing about modern data lakehouses is your actual data is a handful of nice clean parquet files, but the bookkeeping files of which files went to which table, which change in which version, all of that lives in a sprawling tree of JSON
+
+00:00:27 - 00:01:13
+and Avro and manifest files. Um, and DuckDB actually has a really cool solution to that, which is why we're embedding a file format to track metadata when databases have been the world's best tool for tracking metadata for 50 years. And so, that's DuckDB. So, today we're going to build a complete DuckDB data lakehouse on your laptop with time travel, schema evolution, and multi-table transactions. And then at the end, I'm going to show you that the entire metadata layer is also a database
+
+00:00:51 - 00:01:41
+that you can run a select statement against. So, this is again all going to be run locally. We're going to have a make demo file. Um, and just kind of going through this diagram, right? So, the whole idea is, hey, lakehouse, two things: data and the metadata that turns a bag of files into a real table you can query. And so, what we're going to do here, um, is you'll have DuckDB keep all the data in parquet files, and then instead of a file tree, DuckDB is going to stuff all that into a SQL database,
+
+00:01:16 - 00:02:03
+um, which is going to make it a lot simpler for querying. Um, so, this is really useful for anyone that wants lakehouse features on a local machine and wants to just test this out without standing up a, you know, catalog service or Spark cluster. Um, and before any code, the kind of path we're going to rock is we'll run one command, which will kick off a Python script that wipes any old lakehouse. We're always starting clean. Then we're going to run through six, seven chapters of SQL one
+
+00:01:40 - 00:02:28
+after another just to kind of build out our data lakehouse. Chapter one attaches to the lakehouse, points DuckDB at a catalog file and a parquet folder. Chapter two creates two tables, customers and orders. As it does that, rows get written out as parquet. Every statement records a snapshot in the catalog. And then chapter three will show you the the are. Um, chapter four does time travel. Chapter five is going to involve the schema. Chapter six is going to run a transaction change two tables at once. Um, and chapter seven
+
+00:02:04 - 00:02:54
+will close Duck Lake entirely and open that catalog as an ordinary database and then read the metadata with our own eyes. Um, so first thing we need to do um, is actually build a self-contained environment. So we'll just set we have a quick setup script here, which is just creating a virtual environment, um, installing the DuckDB extensions here. So importing DuckDB. So just and just preloading DuckDB into here. Um, and you know, all this is doing is pre-downloading Duck Lake extension and we're running a
+
+00:02:29 - 00:03:14
+tiny Python snippet that's going to open DuckDB and set that extension directory to DuckDB {slash} extensions and then install Duck Lake. So the extension binary itself lands in the project not in the usual DuckDB in your home folder. Um, and now the repo is going to be completely sealed. Um, and then our next thing to do is we have our makefile, right? And this is really just going to run all of our different setup and demo commands. So it's going to show you running through these different SQL
+
+00:02:51 - 00:03:48
+files that I'm about to get into, um, to actually build out that data lake, right? So kind of, you know, the makefile essentially is you know, setup, demo, shell or you're going to set it up, run our demo environment and we also have make reset for resetting the lakehouse, make clean for uh, nuking it back to a fresh clone. Um, and the rule also says if the Python if virtual my Python's Python doesn't exist, run setup and then all of the other makefiles depend on it. So you have to run the make setup first. Um,
+
+00:03:20 - 00:04:10
+and then we also just have, you know, running the setup scripts that I just showed you, right? So then our data that we're going to be using here, going into this data file is just some, you know, synthetic data around customers um, and their orders. So just typical kind of use case for, you know, a company. Hey, got customers and you got stuff that you're selling them. Um, and then what we have is our generate data scripts here. Um, and what this will do is again, this is just generating that data here. So pretty
+
+00:03:45 - 00:04:37
+simple. Um, again, just building those files that I just showed you, um, but just building it, you know, via Python scripts. You can run this repeatedly. And then we have our demo.py which is going to set up. So first we have running chapter one setup, it's going to install DuckDB Lake, pointed at a SQL catalog and parquet. Um this is the conductor so it doesn't contain a lot of SQL. Um it's just going to run these seven chapter scripts in order so it's just going to run those seven SQL
+
+00:04:11 - 00:05:04
+scripts that I just talked about. So first you know you have main which is obviously the spine um and then going down into so just going through all these files. I'll go through the SQL files in a second but these are just going through all of them and then also showing you a recap file. Um but basically main as this is the important function here, this is just calling all those different SQL files in order um to basically just and with a single connection thread through all of them. So create, load, inspect, time
+
+00:04:38 - 00:05:30
+travel, schema evolution, transactions, metadata reveal and then a recap. Um and the order on the screen is the order of the story. And again you know all these files are literally just running SQL, connecting to Data Lake and then running a SQL running a SQL file. So going into our SQL files, what are we actually doing here? So first we're setting our extension directory to that DuckDB extensions that we installed it in earlier. Then we're installing DuckDB Lake and loading DuckDB Lake. Um so it's
+
+00:05:04 - 00:05:56
+a DuckDB extension so turning your data house into a lake house is just two lines here. Um and then down here all we're doing is the line that is you know kind of this whole concept right? Attach this DuckDB Lake catalog as a lake and so you know make sure you read this prefix DuckDB Lake followed by a path to the DuckDB files. So we're telling DuckDB attach a lake house and keep its catalog all the metadata in this one SQL database file. Then data path lake house data is going to be where the parquet goes and that
+
+00:05:30 - 00:06:30
+single statement is the entire architecture here right? We have the metadata in a SQL file over here, data as a parquet over there. Um and that's that kind of separation of church and state there. So then you know this third option down here use lake right? So this is where we are you know basically saying hey use DuckDB. Make sure you're using these um as in in your making sure you're using all the extra good features around DuckDB." So, then we have our second one. You know, making sure you're using that schema,
+
+00:06:00 - 00:06:47
+right? We have create and load. And so, what we're doing in here is basically just create, you know, this is just equal to create and insert some table data in these tables. So, I'll kind of breeze through it here. We're just creating our two customers and orders tables and entering all that data from those CSVs that we were running earlier. So, nothing really too interesting there. But then, inspect storage. So, this is a question around data lakehouse. It's like, "Hey, where is my stuff
+
+00:06:24 - 00:07:18
+physically?" Right? So, this is answering that question. So, first, lake.table_info. This is a DuckDB function that reports per table how many parquet files back it, how many bytes each parquet file takes. So, it's two tables, one file each right now. And then, you have the metadata, which is going to be lake.snapshots, which will list every version of the lakehouse so far. And this is, you know, kind of snapshots. Zero is the catalog initializing. Then, there's a snapshot for creating customers, one for creating
+
+00:06:50 - 00:07:45
+orders, one for loading each. And every change we made is a row in a table. And the version history is in a folder of files you have to parse. It becomes a query, right? And then, if I actually go back to our demo file, and we go back to lines 41 through 49 here, right? So, after the queries, it's going to actually walk the actual lakehouse data folder and print the real parquet files with the real byte sizes. Lines 42 through 44 showed here. And then, line 48, it's going to print the size the
+
+00:07:18 - 00:08:18
+catalog file itself. So, on screen, you'll see a couple of parquet files holding the data and one one DuckDB file holding all the metadata. Then, if we go into time travel. So, or actually, first, let's go back into this lakehouse.py. So, these are just different shared helpers. And I'll I'll go into this file in more detail in a few minutes. Um but the file listing that we're using here within 295 here. So, list data files, right? This so list data what makes kind of data as
+
+00:07:52 - 00:08:48
+parquet feel true instead of asserted. Um, so I just want to kind of show you that little trick there. Um, but then going back to SQL here, so here's our time travel function. So, this is a big feature why people like lakehouses and DuckDB kind of gets it for free here. So, here we're simulating the next day's load. Um, count now 16 orders, revenue up to 924.3, right? Um, and then the magic is, you know, select count from all these, right? So, clause says me at version four says, "Hey, give me the orders
+
+00:08:20 - 00:09:21
+table as it existed at snapshot four before today's batch." And you get back 12 and 706.919, which is the exact same number as before. Um, and same table, same query, same point in history, and there's no restoring a backup or kind of a separate audit copy. Um, and actually I can show you all these queries being run, um, if I pull up this uh, table here. So, here you can see the results of my make demo file. So, I ran make, uh, demo here. And essentially, you know, created load tables. Where does it live? Here it's
+
+00:08:51 - 00:09:51
+showing you the results of those parquet files. Um, and then down here under time travel, right? Here we have, you know, the current state and also the revenue before so you can see all the different states there. Um, so now going into schema evolution. So, going into 05 here, we now are going to, you know, say hey, schema changes in DuckDB are actually metadata only. Uh, that's kind of the big headline feature here in that no parquet file is ever going to get rewritten. Um, so let me show you what that means is, you know,
+
+00:09:20 - 00:10:11
+if we add two columns to customers, a loyalty tier that your default to bronze, lifetime value that defaults to zero. Existing eight customers didn't have a value for this, so the default gets filled in at read time from the catalog. The old parquet files that don't have those columns are never touched. And then if we rename a column here, uh, the name becomes full name and again the parquet files still remain name inside say name inside of them. Duck Lake just records in the catalog that the column the world calls full
+
+00:09:46 - 00:10:39
+name maps to that data. A rename just then becomes a metadata edit. Um and then down here line 17, we have a select from customers get the full name two new columns all populated. Line 21 again same select using a different version for that changes. Um and then the closer here table info, this is the file count for customers will be exactly what it was before all those alter statements. Same files, same bytes, added column, renamed a column. Duck Lake actually wrote zero data cuz there wasn't any new
+
+00:10:13 - 00:11:14
+data and that's the whole promise of schema evolution. Um and so if we go into uh the schema evolution here, you'll see the file count doesn't actually change, right? We still just have one file for our customer data, um which is exactly the point there. So, now we go on to multi-table transactions. So, how can we do multi-table transactions with a local Duck Lake? So, here what's happening is you know, this is where kind of Duck Lake really shines um and is like think about processing a real order here, you know,
+
+00:10:43 - 00:11:33
+you want to record the sale and update the customer's running total and you want either both to happen or neither. So, you wrap them in a begin transaction and then commit it. Um insert order 1017 into orders and then bump customer three lifetime value promote them to gold, right? To two tables one atomic unit and how do we know it was atomic? We go down here, right? We can look at the newest snapshot and the changes will show both tables move together. So, there's one snapshot two tables and an iceberg
+
+00:11:08 - 00:11:57
+Delta, each table's version on its own. So, cleaning atomic commit across two of them is pretty awkward. Um here a multi-table transaction coordination format doesn't really hand you. So, it's a begin and a commit cuz the catalog is a real database it and real databases are able to do this really easily. Um so then a quick check that we'll run down here is customer three will now show gold and we'll uh show the new lifetime value of 88. So, the sale and customer update land together. Um and then down
+
+00:11:33 - 00:12:25
+here, you know, on the flip side of the rollback of the atomic is also rollbacks. We want to rollback that transaction, we can open a transaction, do something dumb, and then re-tier every customer to platinum, delete every paid order, um, but then instead of committing, we roll it back. Um, and that makes it basically just never happened. Um, so we count the tiers, paid orders, they're still going to be untouched. Cash forgot away cleanly. So now, if you go into the actual example here, um, you can see exactly that
+
+00:11:58 - 00:12:44
+happening. So we're inserting it. One row gets changed, updating customers, both get changed, and then here we're seeing, "Hey, nothing actually gets reverted when we try to run that crazy set." Um, and then finally down here, so we'll get into the last piece, which is, "Hey, you know, how do we actually query this metadata, right? Why is, you know, why are we doing this in the end of the day?" And that is because querying metadata opens up a lot of new use cases and it's
+
+00:12:21 - 00:13:26
+a lot easier. Um, so because this is, and this is kind of the whole point, right? So first, you know, imagine the DuckLake is connection is closed. So in the demo, we've closed this connection actually. Um, so now we're only just going to, uh, you know, only have the metadata connection open, so we're not actually interacting with the DuckLake DB data itself. And then we're going to do a connect uh, in our lakehouse script online, where is it? Online 118 up here. So here what we're going to
+
+00:12:53 - 00:13:41
+do is connect to the catalog raw, um, what I just say plain DuckDB database with no DuckLake extension, right? Um, and then if we go, you know, to our SQL file now, right? So we want, let's say, so, you know, we want to run this against that raw connection now. So the first query is going to be listing every table whose name starts with DuckLake, and you're going to get this great list of 30 tables, and then this is, you know, that pile of metadata files that Iceberg and Delta keep on disk. Um, and
+
+00:13:18 - 00:14:04
+then you want your version history, you can just run a select from DuckLake snapshot, and that's the snapshot log we saw through that fancy function earlier. Um, and then if you want to know every parquet file, you just select from Duck Lake data file and the pointers from logical tables go to physical files. So, it's a table you can query. Um, and then finally, one of the cooler ones is that Duck Lake column filter do and snapshot is null means the current live version of every column. So, you
+
+00:13:41 - 00:14:27
+know, full name, column rename, loyalty tier, lifetime value, all of these are going to show here and every schema change is a plain row that we could have written ourselves. The rename isn't, you know, magic. It's just an update to the metadata table. Um, and that's really kind of the whole thesis of Duck Lake and SQL, right? With the over sharding now. So, you can see all that information prints it out here just as we designed. Um, and that is really everything I had to show you today. I just want to show you
+
+00:14:04 - 00:14:35
+how you can get it started using Duck Lake on your own machine. Um, and really just have a great time doing it. It's really useful tool for, you know, both demoing personal projects, um, and even production use cases. So, I encourage you to check it out and have a great rest of your day. Did you guys have

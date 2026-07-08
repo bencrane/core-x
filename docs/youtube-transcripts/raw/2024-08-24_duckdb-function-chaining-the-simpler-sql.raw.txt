@@ -1,0 +1,23 @@
+00:00:00 - 00:00:52
+this is a SQL query it's quite hard to tell what it does isn't it you have to read from the middle and then go backwards through all the functions to figure out what it's doing in this video I'm going to show you how to make the query easier to read using duct DB's function chaining with the dot operator we'll start with a simple example we'll see a gotcha when applying functions to literals and then we'll move on to a more complicated example where we'll see
+
+00:00:27 - 00:01:30
+how to work around a problem when a function can't be changed let's get started so the idea of function chaining is that we can take function which takes in ARG one AR 2 and AR three and rewrite that as ARG one do function and then AR 2 AR three and so on and so what we learned from this definition is that it will only work if the output from one function can be passed in as the first argument to the next function now luckily for us in duct DB almost all the functions are designed like that let's
+
+00:00:58 - 00:01:46
+launch duck DB and and then we're going to write a query that Returns the name of this YouTube channel now let's say we want to compute the length of that name so the traditional way will be we'll go back to the beginning of the string we'll type in the length function and then we'll press enter and you can see it comes back at 20 characters but wouldn't it be nicer if instead of doing that let's go back and delete that length function from the beginning and we'll call it on the end now something
+
+00:01:22 - 00:02:13
+to keep in mind when using these functions in this way with literals is the literal needs to be in parentheses so let's delete those parens and you can see we get back a syntax error and it's exactly the same if you're working with numbers or floats like you can see in this example but put in back the paren and its Happy Days let's now go back to that query that we saw right at the beginning we'll just work through what it does so we're basically taking numbers between one and 50 in steps of
+
+00:01:47 - 00:02:40
+five where then Computing the square root of a number putting it to the power of three Computing the log we're then casting it to an integer so that we can compute the factorial of the number and then we get our result let's see if we can make that a bit easier to read so we're going to start by getting the range and we'll unest it so that's the first change we can do un Nest afterwards then we're going to select the number and then we're going to call number Square Ro t to the power of three
+
+00:02:14 - 00:03:00
+and log and so you can see already it's a little bit easier to read but now we get a bit stuck because for the cast we can't call cast like as do cast there's no that's not going to work and so we kind of need to go back to the beginning and say cast and then as integer and then dot factorial and we get our result and it's it's not it's not too bad but what happens if we're really into this chaining and we want to keep it chaining all the way through so what we could do
+
+00:02:37 - 00:03:30
+is we could create ourselves a macro or a function as int and do the cast in there now this is obviously quite specific because it only works if you want to cast something as an integer I can't find a function where you can parameterize the casting that you want to do which is kind of frustrating but let's now use the asint so we're going to go back we'll delete the cast we'll put in the as in and so now you can see this is our final function so we got the number we do the square root the power
+
+00:03:03 - 00:03:43
+of three get the logarithm cast it to an integer compute the factorial and if we then put the initial query and this one side by side on the screen I think the chaining has made this query much easier to understand if you want to see more cool SQL Innovations in Duck DB you'll want to check out this video next

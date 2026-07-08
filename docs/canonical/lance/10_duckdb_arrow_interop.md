@@ -13,6 +13,11 @@
 > - https://duckdb.org/2026/05/21/test-driving-lance — DuckDB blog: `lance` extension on DuckDB 1.5.2, pushdown/perf notes
 > - https://docs.pola.rs/api/python/stable/reference/api/polars.scan_pyarrow_dataset.html — `polars.scan_pyarrow_dataset` signature
 > - https://pypi.org/project/pylance/ — current pylance version (8.0.0, 2026-07-01)
+> - https://github.com/lance-format/lance/issues/642 — "[DuckDB] Support predicate pushdown via pyarrow dataset": the intended mapping of a DuckDB `WHERE` clause over a Lance pyarrow dataset to `Dataset.scanner(columns=…, filter="…SQL…")`
+> - https://deepwiki.com/lance-format/lance-duckdb/4.1-scan-operations — `lance` extension scan internals: Filter IR serialization, native FFI scan (`__lance_scan`), index-aware scan-mode selection (contrasted with a plain pyarrow replacement scan)
+>
+> Talk / historical sources (committed clean transcript layer — spoken claims, marked where not independently verified):
+> - docs/youtube-transcripts/clean/2023-06-lance-columnar-format-duckcon3.clean.md — "Bringing AI to DuckDB with Lance Columnar Format for Multi-Modal AI", DuckCon #3, San Francisco, June 2023 (Chang She). Early forward-looking talk; used here only for historical interop context (§10).
 
 Scope: How Lance datasets move data in and out of Apache Arrow and how to read them from DuckDB (both the native `lance` extension and the pyarrow replacement-scan path), Polars, pandas, and — briefly — Spark and Ray.
 
@@ -406,7 +411,7 @@ con.register("stream", reader)      # RecordBatchReaders are replacement-scannab
 con.execute("SELECT region, SUM(revenue) FROM stream GROUP BY region")
 ```
 
-> Footgun (Path B pushdown): DuckDB pushes filters into a pyarrow Dataset as **pyarrow compute expressions**, whereas Lance's own fast filtering expects **SQL-string** filters. Predicates DuckDB pushes through the pyarrow dataset interface do get applied, but they do **not** necessarily light up Lance's scalar/vector indices the way a native `ds.scanner(filter="…SQL…")` or the `lance` extension would. For index-accelerated filtering at scale, prefer Path A (the extension) or pre-filter with `ds.scanner(filter=...)`/`ds.to_batches(filter=...)` in pylance and hand DuckDB the already-narrowed reader.
+> Footgun (Path B pushdown): DuckDB pushes filters into a pyarrow Dataset as **pyarrow compute expressions**, whereas Lance's own fast filtering expects **SQL-string** filters. Predicates DuckDB pushes through the pyarrow dataset interface do get applied, but they do **not** light up Lance's scalar/vector indices the way a native `ds.scanner(filter="…SQL…")` or the `lance` extension would. For index-accelerated filtering at scale, prefer Path A (the extension) or pre-filter with `ds.scanner(filter=...)`/`ds.to_batches(filter=...)` in pylance and hand DuckDB the already-narrowed reader. Full statement of the mechanism, verification status, and prescription: **§4.5**.
 
 ### 4.3 DuckDB → Arrow result conversion (exact API + deprecations)
 
@@ -425,6 +430,44 @@ con.execute("SELECT region, SUM(revenue) FROM stream GROUP BY region")
 ### 4.4 Out-of-core DuckDB against Lance
 
 > Relevance to core-x: at hundreds-of-millions-of-rows, do not `to_table()` a whole Lance dataset into DuckDB. Register the Lance dataset (Path A extension, or Path B replacement scan/`RecordBatchReader`) and let DuckDB stream. Bound memory with `SET memory_limit='…'` and give DuckDB a spill directory with `SET temp_directory='/path/to/spill'` (and `SET max_temp_directory_size='…'` on 1.x) so hash joins/aggregations/sorts that exceed RAM spill to disk instead of OOMing. Projection + SQL-string `WHERE` pushed into the Lance scan (or a pre-narrowed `ds.scanner(filter=…)` reader) is what keeps the scanned byte volume — and therefore the spill — small.
+
+### 4.5 ⚠️ Index-pushdown footgun — a registered Arrow view does NOT engage Lance indices
+
+This is the load-bearing query-optimization fact for structured retrieval over Lance. Read it before designing any DuckDB-over-Lance filter path.
+
+**Mechanism (upstream).** Lance's scalar indices (BTREE / BITMAP / LABEL_LIST / INVERTED-FTS / NGRAM — see [05_scalar_indices.md](05_scalar_indices.md)) and vector/ANN indices (see [06_vector_search.md](06_vector_search.md)) are engaged **only through the Lance Scanner API** — i.e. via `ds.scanner(...)` / `ds.to_table(...)` / `ds.to_batches(...)` with:
+
+- an SQL-**string** `filter=` predicate (this is what the scalar-index / stats-pushdown planner reads; `use_scalar_index=` gates whether the planner may use a scalar index), and
+- for vector search, `nearest=` (plus `prefilter=True` to apply the scalar `filter` **before** the ANN step rather than after).
+
+The verified signatures for these arguments are in §2.1–§2.4 above.
+
+When a `LanceDataset` is instead handed to DuckDB as a **registered Arrow view / pyarrow replacement scan** (Path B, §4.2 — `con.register(name, lance_ds)` or a bare `FROM lance_ds`), the DuckDB scan does **not** engage Lance's scalar or vector indices. DuckDB pushes its `WHERE` down to the pyarrow dataset interface as **pyarrow compute expressions**; those predicates are applied (rows are filtered), but they do not go through the index-accelerated planner path that a native `ds.scanner(filter="…SQL…")` call exercises. Upstream framing: the pyarrow-dataset predicate-pushdown feature (Lance issue [#642](https://github.com/lance-format/lance/issues/642)) is defined as mapping a DuckDB `WHERE a > 1 AND b < 2` to `Dataset.scanner(columns=[…], filter="a > 1 AND b < 2")` — a **filter-application** contract, distinct from index engagement, which the public docs do not assert for the pyarrow-view path.
+
+> Verification status (checked against `lance.org` / `duckdb.org`, 2026-07-08): **Confirmed** — (a) scalar/vector indices are documented as engaged via the scanner `filter=` (SQL string) / `nearest=` / `use_scalar_index=` / `prefilter=` arguments (§2 signatures; [05](05_scalar_indices.md)/[06](06_vector_search.md)); (b) the pyarrow-dataset pushdown contract (issue #642) is filter-application, not index engagement; (c) the DuckDB `lance` **extension** (Path A) is a **separate** native path — per its scan-operation docs it serializes a Filter IR to the Lance Rust FFI (`__lance_scan`) and its optimizer "selects the scan mode based on index availability … to leverage the index," so the extension can use indices where the pyarrow view cannot. **Not cleanly published / ambiguous:** the exact set of predicate shapes that light up each scalar-index type through the extension, and any threshold (e.g. `LIMIT` presence) at which its planner switches to an index-backed scan mode — treat those as version-dependent and confirm at your pinned extension version. Do not assume the pyarrow-view path silently uses an index just because one exists on the column.
+
+**Prescription (structured retrieval over Lance):** push the predicate into the Lance scanner and hand the already-filtered/limited result to DuckDB; use DuckDB for the joins/aggregations over the reduced set. Two concrete forms:
+
+```python
+# Index-accelerated filter in pylance → DuckDB does the joins/aggregations.
+# The SQL-string filter (and optional nearest=/prefilter=) is what engages
+# Lance BTREE/BITMAP/vector indices; DuckDB never sees the unfiltered dataset.
+reader = lance_ds.scanner(
+    columns=["account_id", "revenue", "region"],
+    filter="region = 'NA' AND revenue > 1000000",   # SQL string → scalar-index path
+    use_scalar_index=True,
+).to_reader()                                        # pyarrow.RecordBatchReader
+con.register("narrowed", reader)
+con.execute("""
+    SELECT region, SUM(revenue)
+    FROM narrowed JOIN dims USING (account_id)
+    GROUP BY region
+""")
+```
+
+Or use **Path A (the `lance` extension)** for pure-SQL index-accelerated filtering when on DuckDB 1.5+ (§4.1) — its native scan can leverage indices directly. The failure mode to avoid: registering the raw Lance dataset as an Arrow view and expecting `WHERE indexed_col = …` to be index-accelerated — it will scan-and-filter, not index-seek.
+
+> The terser per-path callouts at §4.2 (DuckDB Path B) and §6 (Polars) are the same mechanism; this section is the consolidated statement.
 
 ---
 
@@ -538,6 +581,19 @@ Other documented ecosystem connectors: Trino, Apache Flink, Daft (`df.write_lanc
 - **`lance_vector_search` parameter spelling (`nprobs` vs `nprobes`):** the extension SQL reference lists `nprobs`; pylance's `nearest` dict uses `nprobes`. Verify per surface before relying on it.
 - **pylance `to_batches` `blob_handling` typing:** source shows `Optional[str]` on `to_batches`/`to_table` but a `Literal["all_binary","blobs_descriptions","all_descriptions"]` on `scanner`; treat those three strings as the accepted values.
 - **`polars.scan_pyarrow_dataset` stability:** upstream flags it **unstable**; the signature above may drift.
+
+---
+
+## 10. Historical context — the pre-extension interop era (2023)
+
+Context for how far the DuckDB ⇄ Lance ⇄ Arrow interop has come. In the **DuckCon #3 talk** (San Francisco, June 2023 — Chang She; `docs/youtube-transcripts/clean/2023-06-lance-columnar-format-duckcon3.clean.md`), given years before the native `lance` DuckDB extension (§4.1) and its Filter IR / index-aware scan existed, the state of type interoperability was described as:
+
+> "Arrow and DuckDB types are maybe 80% interoperable. Unfortunately, right now AI sort of falls into that missing 20%."
+> — DuckCon #3, 2023-06 (`…/2023-06-lance-columnar-format-duckcon3.clean.md`)
+
+That missing ~20% was, per the talk, three buckets: **nested types** (annotations, bounding boxes, labels), **extension types** (images, embeddings, videos, point clouds), and a few **ML-specific scalar types** (e.g. `bf16`, characterized as "fairly easy to add"). The talk also flagged the same push-down seam this file documents at §4.2/§4.5 — that DuckDB pushes predicates down as **PyArrow compute expressions**, which "is not a standard across different Arrow implementations," while Lance (Rust) uses **DataFusion** for predicate push-down — and floated **Substrait** as a possible "long-term interface" for that seam ("but who knows").
+
+These are **talk-reported** framings, not independently verified — the "80% / 20%" split is a spoken round number characterizing 2023-era maturity, and the Substrait direction was an open speculation, not a shipped interface. They are recorded here only as historical baseline: the AI/nested/extension-type gap and the compute-expression push-down seam the speaker anticipated are precisely what the native `lance` extension's Arrow-type coercion (e.g. in-place Float16 buffer rewriting) and Filter-IR-to-Rust-FFI scan path (§4.1, §4.5) later addressed.
 
 ---
 
