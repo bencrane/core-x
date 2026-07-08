@@ -7,9 +7,83 @@ This document is two views of ONE artifact: (§2) the vocabulary axes the `sub_u
 
 ---
 
+## 0. v3 AMENDMENT — the per-UEI BLOB is DEAD (operator-ratified 2026-07-08)
+
+> **This section supersedes §1–§3's blob container.** The vocabulary axes (§2) and the
+> `sub_universe_node` grammar are **unchanged** — only the storage/serve substrate changes.
+> §1–§3 are retained verbatim below as the frozen record of the (now-superseded) blob era;
+> nothing there is deleted. Where §1–§3 say "blob", read §0.
+
+**Why the blob died (reasons of record):**
+
+1. **Denormalization at fleet scale.** A per-target blob copies shared node-grain facts
+   (award-state, demand events, entity, win portfolio) into *every* overlapping target's
+   payload. v1 hit **136 MB**; even the v2 two-tier rescue is multi-TB across 57K targets
+   with overlapping universes.
+2. **The two-tier rescue degraded the time axis.** To hold the size budget, v2 collapsed
+   exact-day event grain into **monthly buckets** — arbitrary N-day windows became
+   month-sum approximations. Exact-day windows are a product requirement; monthly buckets
+   die here.
+3. **Bespoke serve path.** `sub_universe_serve` duplicated executor machinery (fetch +
+   in-memory filter + drilldown) that the standard pinned-target-lane / set-intersect
+   executor already provides.
+
+**Replacement: relational pair-grain precompute.** The blob container is replaced by
+**two Lance datasets**, served later by the standard executor pattern (NOT this doc's scope):
+
+### `gtm_sub_universe_pairs` — (target_uei × node_uei) pair-specific scalars
+- **Grain:** one row per (target_uei, node_uei) — i.e. per node of the target's
+  `sub_universe.v3` universe. **BTREE on `target_uei` AND `node_uei`** (both load-bearing
+  resolution keys).
+- **Carries ONLY pair-specific scalars** — facts that depend on the (target, node) pair and
+  cannot be read from a node-grain mart: `matched_prime_obl_60mo`, `matched_farmout_60mo`
+  (null when undisclosed), `n_matched_combos`, Definition-C `tcf_farmout_60mo` /
+  `tcf_n_combos` (null when no evidence at the target's combos), teaming scalars,
+  `band_fit` (node median chunk across the node's matched target-combo farm-out lanes vs
+  the *target's* p20–p80 band → `node_median_chunk_60mo` + `band_overlap`), and a compact
+  `matched_via_json` (top-5, `matched_via_truncated` flag). Node HQ geo
+  (latitude/longitude/geo_precision) is the ONE per-node hydration retained inline (chunked
+  `gtm_entity_geo` pull; its cost is measured).
+- **Recipe:** `sub_universe_pairs.v1`.
+
+### `gtm_sub_universe_targets` — one row per target
+- **Grain:** one row per target UEI. **BTREE on `uei`**.
+- **Carries:** the `target_analytics` JSON (the pre-call brief, Acts 1–3 — reused verbatim
+  from the blob-era computation: pool over lanes ∩ states ∩ 24mo, named peers, percentiles
+  with p25/p75, lane trends with min-n=5 nulls) + target scalars (`n_nodes`,
+  `n_disclosed`, `n_undisclosed`, `as_of`, `recipe`).
+
+**Node-grain facts are NOT stored per pair.** Award-state, demand events (raw, EXACT-DAY),
+entity enrichment, and win portfolio serve at **query time** from the already-indexed
+node-grain marts (`gtm_prime_demand_events`, `usaspending_fpds_prime_award_state`,
+`gtm_sam_entities`, `gtm_prime_combo_lanes` — all BTREE `uei`). They live once, node-grain,
+never copied per overlapping target. **This restores exact-day time windows** — the raw
+event rows are read at query time, so any N-day / calendar / fiscal window is exact.
+Monthly buckets are dead. (The one measured node-grain hydration cost that killed the blob
+batch — an indexed 16K-row award-state pull at **11.8s** — is precisely what moves to query
+time here, paid once per node, never precomputed per target.)
+
+**Build model — operator-triggered, on-demand, per target.** No batch over 57K, no cron,
+no schedule (operator doctrine 2026-07-08). `build_target(uei)` is invoked per target; the
+two marts **grow monotonically** (rebuild-per-target: delete this target's rows —
+`target_uei = 'X'` on pairs, the target row on targets — then append the fresh set). The
+proving-batch / fleet-wide sweep is retired. `as_of` stamped and disclosed.
+
+**The blob-era files are SUPERSEDED, not deleted.** `sub_universe_full.py` /
+`sub_universe_serve.py` / `build_sub_universe_blobs.py` / the `gtm_sub_universe_blobs`
+dataset remain on disk as the frozen record. New work targets `sub_universe_pairs.py` +
+`build_sub_universe_target.py` + the two datasets above.
+
+**§2 vocabulary + the node grammar are unchanged** — every axis still serves; a scalar
+axis reads the pair row, a node-grain axis reads the node-grain mart at query time. A
+vocabulary change and a schema change are still the same PR.
+
+---
+
 ## 1. Container
 
-> **v2 AMENDMENT (2026-07-07, Phase 3b/4 — implemented & gated).** The blob is now
+> **v2 AMENDMENT (2026-07-07, Phase 3b/4 — implemented & gated). SUPERSEDED by §0
+> (2026-07-08).** The blob is now
 > **two-tier** to hold the single-digit-MB / sub-second-load budget at the high-fan-out
 > tail (v1's flat "raw event grain for every node" hit 136 MB; v2 probe = **8.80 MB**,
 > ~27 ms parse). Changes below are marked **[v2]**; the grammar is otherwise unchanged.
@@ -158,3 +232,5 @@ From `gtm_sam_entities` (BTREE `uei`): `name, cage, physical_city, physical_stat
 | `gtm_sub_universe_blobs` dataset (BTREE uei) + `sub_universe_serve` (fetch_blob / fetch_node_detail) | 4 | **code DONE; proving batch running** — drilldown reads gtm_prime_demand_events / gtm_prime_combo_lanes (BTREE uei) |
 | Predicate engine executing §2 vocabulary | 5 | frozen field map (this doc) — scalar axes over hot nodes; time/plan/set-aside over monthly buckets; row-exact via drilldown |
 | Agency column on `gtm_prime_demand_events` | queued | events mart rebuild (unblocks §2.5.1) |
+| **[v3] `gtm_sub_universe_pairs` + `gtm_sub_universe_targets`** (§0) — pair-grain precompute replacing the blob; `sub_universe_pairs.build_target(uei)` + `build_sub_universe_target.py` | v3 | **DONE** — operator-triggered per-target, monotonic grow; node-grain facts serve at query time from indexed marts (exact-day windows restored) |
+| Standard executor serve path (pinned target lane + set intersects over the two v3 marts) | v3-serve | NOT this scope — replaces `sub_universe_serve` |
