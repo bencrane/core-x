@@ -32,6 +32,17 @@ must not open all ~100 Lance manifests on every query. ``query`` registers ONLY
 the datasets a caller names (resolved from the SQL by ``referenced_datasets``), so
 a two-table join opens two manifests, not the whole plane.
 
+PREFILTERED REGISTRATION (index pushdown for the join lane). A registered
+``LanceDataset`` never engages the Lance scalar indices — DuckDB pushes pyarrow
+compute expressions, not the SQL-string filters the index planner reads
+(docs/canonical/lance/10_duckdb_arrow_interop.md §4.5) — so raw-SQL joins would
+full-scan every leg. ``query`` therefore recovers each dataset's own single-table
+predicates from the SQL (``extract_prefilters``, conservative by construction) or
+takes them explicitly from the caller (``prefilters=``), pushes them through the
+Lance scanner via ``scan_table`` (BTREE/BITMAP-accelerated), and registers the
+pre-shrunk Arrow slice instead of the full dataset. No safe predicate → full
+(lazy) registration, exactly as before.
+
 HQ-X POSTGRES ATTACH (Directive 18). The same shared connection ATTACHes the live
 hq-x control-plane Postgres as the ``hqx`` catalog (``HQX_DB_URL_POOLED``, TLS
 enforced), so an agent can JOIN a Lance R2 dataset against ``hqx.ops.*`` relational
@@ -81,12 +92,16 @@ latency mirror with cadence-matched invalidation, not a per-request re-validatio
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import os
 import re
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from typing import Any, Iterable
 
 log = logging.getLogger("gtm_mcp.database")
@@ -509,6 +524,436 @@ def referenced_datasets(sql: str) -> set[str]:
     return found
 
 
+# ── Prefilter extraction (index pushdown for the raw-SQL join lane) ──────────
+# Registering a LanceDataset as a DuckDB relation applies WHERE predicates but does
+# NOT engage the Lance BTREE/BITMAP scalar indices — DuckDB pushes pyarrow compute
+# expressions, not the SQL-string filters the Lance index planner reads
+# (docs/canonical/lance/10_duckdb_arrow_interop.md §4.5). So a multi-hop join over
+# the raw-SQL lane full-scans every leg off R2. The fix: recover each dataset's own
+# single-table predicates from the query, push them through the Lance scanner
+# (scan_table — the proven index-accelerated slice path), and register the
+# pre-shrunk Arrow slice instead of the full dataset. The conjunct stays in the SQL
+# text, so DuckDB re-applies it over the slice — double application is idempotent,
+# which makes every extraction decision SAFE-BY-SKIP: anything ambiguous simply
+# falls back to full registration, never to wrong rows.
+#
+# Extraction is deliberately conservative. A conjunct is pushed down only when ALL
+# of the following hold, checked against DuckDB's own parse (json_serialize_sql —
+# byte-exact dialect agreement with the engine that will run the query):
+#   * the dataset is referenced EXACTLY ONCE in the whole statement (one registered
+#     relation serves every reference, so per-reference filters must not collide);
+#   * the reference sits in a scope whose FROM tree is inner/cross joins only (an
+#     outer join's null-extended side must not be pre-shrunk), with no SAMPLE;
+#   * the conjunct comes from that scope's WHERE (or an INNER JOIN ON) as a
+#     top-level AND term, references columns of exactly one dataset, and every
+#     column resolves against the dataset's actual Lance schema (case-insensitive,
+#     rendered with the stored casing — also what keeps an unqualified name that
+#     the binder would resolve elsewhere from being misattributed);
+#   * the expression uses only shapes the Lance/DataFusion filter engine accepts
+#     (comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, IS [NOT] NULL, boolean columns,
+#     plain literals), and each column↔literal pairing is type-compatible in BOTH
+#     engines (string↔string, numeric↔numeric, bool↔bool, string↔date/timestamp) —
+#     a mixed-type comparison could coerce differently in DataFusion than DuckDB.
+# CTE names shadow dataset names; hqx.* / schema-qualified refs never match.
+_PREFILTER_ENABLED = os.environ.get("GTM_PREFILTER_ENABLED", "1").strip().lower() not in {
+    "0", "false", "off",
+}
+# Slice-size ceiling: a prefilter that barely shrinks the dataset would materialize a
+# huge Arrow table in RAM where full registration would have streamed — above the
+# ceiling the lane falls back to (lazy) full registration.
+_PREFILTER_MAX_ROWS = int(os.environ.get("GTM_PREFILTER_MAX_ROWS", "200000"))
+
+_EXPLAIN_LEAD = re.compile(r"^\s*EXPLAIN(\s+ANALYZE)?\s+", re.IGNORECASE)
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COMPARE_OPS = {
+    "COMPARE_EQUAL": "=",
+    "COMPARE_NOTEQUAL": "<>",
+    "COMPARE_LESSTHAN": "<",
+    "COMPARE_GREATERTHAN": ">",
+    "COMPARE_LESSTHANOREQUALTO": "<=",
+    "COMPARE_GREATERTHANOREQUALTO": ">=",
+}
+_INT_IDS = {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+            "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"}
+_NUM_IDS = _INT_IDS | {"FLOAT", "DOUBLE", "DECIMAL"}
+
+# Dedicated parse-only DuckDB connection: json_serialize_sql needs no R2 secret, no
+# hqx attach, no catalog — keeping it off the shared connection means extraction is
+# usable (and testable) before/without the full gateway bring-up.
+_parse_lock = threading.Lock()
+_parse_con: Any = None
+
+
+def _parse_sql_json(sql: str) -> dict | None:
+    """DuckDB's own parse of ``sql`` as a JSON AST (json_serialize_sql), or ``None``
+    when it doesn't parse to a single serializable SELECT — the degrade-to-full path."""
+    global _parse_con
+    if _parse_con is None:
+        with _parse_lock:
+            if _parse_con is None:
+                import duckdb
+
+                _parse_con = duckdb.connect(":memory:")
+    cur = _parse_con.cursor()
+    try:
+        raw = cur.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]
+    except Exception:  # noqa: BLE001 — unparseable input degrades to full registration
+        return None
+    finally:
+        cur.close()
+    doc = json.loads(raw)
+    if doc.get("error"):
+        return None
+    stmts = doc.get("statements") or []
+    return stmts[0].get("node") if len(stmts) == 1 else None
+
+
+def _render_const(v: dict | None) -> tuple[str, str] | None:
+    """Render one VALUE_CONSTANT as ``(duckdb_type_id, lance_filter_literal)``.
+    Only literal shapes both engines agree on; anything else → ``None`` (skip)."""
+    if not v or v.get("is_null"):
+        return None
+    tid = (v.get("type") or {}).get("id")
+    val = v.get("value")
+    if tid == "VARCHAR":
+        return tid, "'" + str(val).replace("'", "''") + "'"
+    if tid == "BOOLEAN":
+        return tid, "TRUE" if val else "FALSE"
+    if tid in _INT_IDS:
+        try:
+            return tid, str(int(val))
+        except (TypeError, ValueError):
+            return None
+    if tid in ("FLOAT", "DOUBLE"):
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            return None
+        return (tid, repr(f)) if math.isfinite(f) else None
+    if tid == "DECIMAL":
+        scale = ((v.get("type") or {}).get("type_info") or {}).get("scale", 0)
+        try:
+            if isinstance(val, dict):  # width>18 → hugeint {upper, lower} encoding
+                unscaled = (int(val["upper"]) << 64) + int(val["lower"])
+            else:
+                unscaled = int(val)
+            return tid, format(Decimal(unscaled).scaleb(-int(scale)), "f")
+        except (TypeError, ValueError, KeyError):
+            return None
+    return None
+
+
+def _compat(pa_type: Any, tid: str) -> bool:
+    """True when comparing a column of Arrow type ``pa_type`` with a literal of
+    DuckDB type ``tid`` coerces identically in DuckDB and Lance/DataFusion."""
+    import pyarrow as pa
+
+    t = pa_type.value_type if pa.types.is_dictionary(pa_type) else pa_type
+    if tid == "VARCHAR":
+        return (pa.types.is_string(t) or pa.types.is_large_string(t)
+                or pa.types.is_date(t) or pa.types.is_timestamp(t))
+    if tid == "BOOLEAN":
+        return pa.types.is_boolean(t)
+    if tid in _NUM_IDS:
+        return pa.types.is_integer(t) or pa.types.is_floating(t) or pa.types.is_decimal(t)
+    return False
+
+
+class _Scope:
+    """One SELECT scope: alias → dataset map, sole-relation attribution target, and
+    a lazy per-dataset ``casefolded column → (stored name, arrow type)`` schema map."""
+
+    def __init__(self, alias_map: dict[str, str], sole: str | None, schemas: dict[str, Any]):
+        self.alias_map = alias_map
+        self.sole = sole
+        self._schemas = schemas  # shared across scopes within one extraction call
+
+    def schema(self, name: str) -> dict[str, tuple[str, Any]] | None:
+        if name not in self._schemas:
+            try:
+                sch = open_dataset(name).schema
+                cols: dict[str, tuple[str, Any]] = {}
+                for field in sch:
+                    key = field.name.casefold()
+                    # a casefold collision is unresolvable — poison both
+                    cols[key] = None if key in cols else (field.name, field.type)
+                self._schemas[name] = {k: v for k, v in cols.items() if v}
+            except Exception:  # noqa: BLE001 — unreachable dataset → no pushdown for it
+                self._schemas[name] = None
+        return self._schemas[name]
+
+    def resolve_col(self, node: dict) -> tuple[str, str, Any] | None:
+        """COLUMN_REF → ``(dataset, stored_column_name, arrow_type)`` or ``None``."""
+        parts = node.get("column_names") or []
+        if len(parts) == 1:
+            ds, col = self.sole, parts[0]
+        elif len(parts) == 2:
+            ds, col = self.alias_map.get(parts[0].casefold()), parts[1]
+        else:
+            return None
+        if ds is None:
+            return None
+        sch = self.schema(ds)
+        hit = sch.get(col.casefold()) if sch else None
+        if hit is None or not _IDENT.match(hit[0]):
+            return None
+        return ds, hit[0], hit[1]
+
+
+def _render_side(node: dict, scope: _Scope):
+    """One comparison operand → ``("col", ds, name, arrow_type)`` |
+    ``("const", tid, text)`` | ``None``. A CAST of a VARCHAR literal to a temporal
+    type (how ``DATE '…'`` parses) unwraps to the string literal — both engines
+    coerce an ISO string against a temporal column identically."""
+    cls = node.get("class")
+    if cls == "COLUMN_REF":
+        r = scope.resolve_col(node)
+        return ("col", *r) if r else None
+    if cls == "CONSTANT":
+        r = _render_const(node.get("value"))
+        return ("const", *r) if r else None
+    if cls == "CAST" and not node.get("try_cast"):
+        child = node.get("child") or {}
+        tgt = ((node.get("cast_type") or {}).get("id")) or ""
+        if child.get("class") == "CONSTANT" and tgt in ("DATE", "TIMESTAMP",
+                                                        "TIMESTAMP WITH TIME ZONE"):
+            v = child.get("value") or {}
+            if (v.get("type") or {}).get("id") == "VARCHAR":
+                r = _render_const(v)
+                return ("const", *r) if r else None
+    return None
+
+
+def _render_pred(node: dict, scope: _Scope) -> tuple[str, set[str]] | None:
+    """Render one predicate subtree as a Lance filter string + the datasets it
+    touches. ``None`` = ineligible (any unsupported shape anywhere in the subtree)."""
+    cls, typ = node.get("class"), node.get("type")
+
+    if cls == "CONJUNCTION" and typ in ("CONJUNCTION_AND", "CONJUNCTION_OR"):
+        parts = [_render_pred(ch, scope) for ch in node.get("children") or []]
+        if not parts or any(p is None for p in parts):
+            return None
+        joiner = " AND " if typ == "CONJUNCTION_AND" else " OR "
+        return ("(" + joiner.join(p[0] for p in parts) + ")",
+                set().union(*(p[1] for p in parts)))
+
+    if cls == "COMPARISON" and typ in _COMPARE_OPS:
+        left = _render_side(node.get("left") or {}, scope)
+        right = _render_side(node.get("right") or {}, scope)
+        if left is None or right is None:
+            return None
+        op = _COMPARE_OPS[typ]
+        if left[0] == "col" and right[0] == "col":
+            if left[1] != right[1]:
+                return None
+            return f"{left[2]} {op} {right[2]}", {left[1]}
+        if left[0] == "col" and right[0] == "const":
+            return (f"{left[2]} {op} {right[2]}", {left[1]}) if _compat(left[3], right[1]) else None
+        if left[0] == "const" and right[0] == "col":
+            return (f"{left[2]} {op} {right[2]}", {right[1]}) if _compat(right[3], left[1]) else None
+        return None  # const-vs-const touches no dataset
+
+    if cls == "OPERATOR" and typ in ("COMPARE_IN", "COMPARE_NOT_IN"):
+        children = node.get("children") or []
+        if len(children) < 2 or (children[0].get("class")) != "COLUMN_REF":
+            return None
+        col = scope.resolve_col(children[0])
+        if col is None:
+            return None
+        lits = []
+        for ch in children[1:]:
+            side = _render_side(ch, scope)
+            if side is None or side[0] != "const" or not _compat(col[2], side[1]):
+                return None
+            lits.append(side[2])
+        op = "IN" if typ == "COMPARE_IN" else "NOT IN"
+        return f"{col[1]} {op} ({', '.join(lits)})", {col[0]}
+
+    if cls == "OPERATOR" and typ in ("OPERATOR_IS_NULL", "OPERATOR_IS_NOT_NULL"):
+        children = node.get("children") or []
+        if len(children) != 1 or children[0].get("class") != "COLUMN_REF":
+            return None
+        col = scope.resolve_col(children[0])
+        if col is None:
+            return None
+        suffix = "IS NULL" if typ == "OPERATOR_IS_NULL" else "IS NOT NULL"
+        return f"{col[1]} {suffix}", {col[0]}
+
+    if cls == "OPERATOR" and typ == "OPERATOR_NOT":
+        children = node.get("children") or []
+        inner = _render_pred(children[0], scope) if len(children) == 1 else None
+        return (f"NOT ({inner[0]})", inner[1]) if inner else None
+
+    if cls == "BETWEEN" and typ == "COMPARE_BETWEEN":
+        if (node.get("input") or {}).get("class") != "COLUMN_REF":
+            return None
+        col = scope.resolve_col(node["input"])
+        lo = _render_side(node.get("lower") or {}, scope)
+        hi = _render_side(node.get("upper") or {}, scope)
+        if (col is None or lo is None or hi is None
+                or lo[0] != "const" or hi[0] != "const"
+                or not _compat(col[2], lo[1]) or not _compat(col[2], hi[1])):
+            return None
+        return f"{col[1]} BETWEEN {lo[2]} AND {hi[2]}", {col[0]}
+
+    if cls == "FUNCTION" and node.get("function_name") in ("~~", "!~~"):
+        import pyarrow as pa
+
+        children = node.get("children") or []
+        if len(children) != 2 or children[0].get("class") != "COLUMN_REF":
+            return None
+        col = scope.resolve_col(children[0])
+        pat = _render_side(children[1], scope)
+        if col is None or pat is None or pat[0] != "const" or pat[1] != "VARCHAR":
+            return None
+        t = col[2].value_type if pa.types.is_dictionary(col[2]) else col[2]
+        if not (pa.types.is_string(t) or pa.types.is_large_string(t)):
+            return None
+        op = "LIKE" if node["function_name"] == "~~" else "NOT LIKE"
+        return f"{col[1]} {op} {pat[2]}", {col[0]}
+
+    if cls == "COLUMN_REF":  # bare boolean column used as a predicate
+        import pyarrow as pa
+
+        col = scope.resolve_col(node)
+        if col is None or not pa.types.is_boolean(col[2]):
+            return None
+        return col[1], {col[0]}
+
+    return None
+
+
+def _split_and(expr: dict) -> list[dict]:
+    if expr.get("class") == "CONJUNCTION" and expr.get("type") == "CONJUNCTION_AND":
+        out: list[dict] = []
+        for ch in expr.get("children") or []:
+            out.extend(_split_and(ch))
+        return out
+    return [expr]
+
+
+def _flatten_from(node: dict | None, leaves: list[dict], conds: list[dict]) -> bool:
+    """Flatten a FROM tree into relation leaves + INNER-JOIN ON conditions.
+    ``False`` ⇒ the scope contains a non-inner join (or unknown join form) and must
+    not be harvested — pre-shrinking an outer join's null-extended side is wrong."""
+    if node is None:
+        return True
+    t = node.get("type")
+    if t == "JOIN":
+        if node.get("join_type") != "INNER" or node.get("ref_type") not in ("REGULAR", "CROSS"):
+            return False
+        if not _flatten_from(node.get("left"), leaves, conds):
+            return False
+        if not _flatten_from(node.get("right"), leaves, conds):
+            return False
+        if node.get("condition"):
+            conds.append(node["condition"])
+        return True
+    if t == "CROSS_PRODUCT":
+        return (_flatten_from(node.get("left"), leaves, conds)
+                and _flatten_from(node.get("right"), leaves, conds))
+    leaves.append(node)
+    return True
+
+
+def _harvest_scope(select_node: dict, ctes: frozenset[str], by_fold: dict[str, str],
+                   schemas: dict[str, Any], harvested: dict[str, list[str]]) -> None:
+    if select_node.get("sample"):  # USING SAMPLE runs after WHERE — pre-shrink would resample
+        return
+    leaves: list[dict] = []
+    conds: list[dict] = []
+    if not _flatten_from(select_node.get("from_table"), leaves, conds):
+        return
+    alias_map: dict[str, str | None] = {}
+    for leaf in leaves:
+        if leaf.get("type") != "BASE_TABLE":
+            continue
+        if leaf.get("catalog_name") or leaf.get("schema_name"):
+            continue  # hqx.* / schema-qualified — never a Lance relation
+        if leaf.get("sample") or leaf.get("at_clause"):
+            continue
+        tn = (leaf.get("table_name") or "").casefold()
+        if tn in ctes:
+            continue  # a CTE shadows the dataset name
+        name = by_fold.get(tn)
+        if name is None:
+            continue
+        key = ((leaf.get("alias") or "").casefold()) or tn
+        alias_map[key] = None if key in alias_map else name  # duplicate alias → poison
+    alias_map = {k: v for k, v in alias_map.items() if v}
+    if not alias_map:
+        return
+    # Unqualified columns attribute to a dataset only when it is the scope's ONLY
+    # relation of any kind — otherwise the binder may resolve them elsewhere.
+    sole = next(iter(alias_map.values())) if (len(leaves) == 1 and len(alias_map) == 1) else None
+    scope = _Scope({k: v for k, v in alias_map.items()}, sole, schemas)
+    preds = list(conds)
+    if select_node.get("where_clause"):
+        preds.append(select_node["where_clause"])
+    for pred in preds:
+        for conj in _split_and(pred):
+            rendered = _render_pred(conj, scope)
+            if rendered and len(rendered[1]) == 1:
+                harvested.setdefault(next(iter(rendered[1])), []).append(rendered[0])
+
+
+def _count_dataset_refs(tree: Any, by_fold: dict[str, str], refs: Counter) -> None:
+    """Exhaustive generic walk counting every BASE_TABLE reference to a dataset name —
+    shape-independent, so a reference in any node form is never missed. CTE-shadowed
+    usages over-count, which errs toward NOT prefiltering (the safe direction)."""
+    if isinstance(tree, dict):
+        if (tree.get("type") == "BASE_TABLE" and not tree.get("catalog_name")
+                and not tree.get("schema_name")):
+            name = by_fold.get((tree.get("table_name") or "").casefold())
+            if name is not None:
+                refs[name] += 1
+        for v in tree.values():
+            _count_dataset_refs(v, by_fold, refs)
+    elif isinstance(tree, list):
+        for v in tree:
+            _count_dataset_refs(v, by_fold, refs)
+
+
+def _walk_scopes(obj: Any, ctes: frozenset[str], by_fold: dict[str, str],
+                 schemas: dict[str, Any], harvested: dict[str, list[str]]) -> None:
+    if isinstance(obj, dict):
+        if obj.get("type") == "SELECT_NODE":
+            entries = ((obj.get("cte_map") or {}).get("map")) or []
+            ctes = ctes | {(e.get("key") or "").casefold() for e in entries}
+            _harvest_scope(obj, ctes, by_fold, schemas, harvested)
+        for v in obj.values():
+            _walk_scopes(v, ctes, by_fold, schemas, harvested)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_scopes(v, ctes, by_fold, schemas, harvested)
+
+
+def extract_prefilters(sql: str, datasets: Iterable[str]) -> dict[str, str]:
+    """Recover each dataset's own single-table predicates from ``sql`` as Lance
+    scanner filter strings — ``{dataset_name: filter}`` for exactly the datasets
+    whose conjuncts pass every conservatism gate (see the section comment above).
+    Anything ambiguous is simply absent, and the caller registers the full dataset;
+    a returned filter duplicates a conjunct that REMAINS in the SQL, so applying it
+    at the scan can only shrink the scanned set, never change the result."""
+    by_fold = {n.casefold(): n for n in datasets}
+    if not by_fold:
+        return {}
+    node = _parse_sql_json(_EXPLAIN_LEAD.sub("", sql))
+    if node is None:
+        return {}
+    refs: Counter = Counter()
+    _count_dataset_refs(node, by_fold, refs)
+    harvested: dict[str, list[str]] = {}
+    schemas: dict[str, Any] = {}
+    _walk_scopes(node, frozenset(), by_fold, schemas, harvested)
+    out: dict[str, str] = {}
+    for name, conjuncts in harvested.items():
+        if refs.get(name) == 1 and conjuncts:
+            out[name] = (conjuncts[0] if len(conjuncts) == 1
+                         else " AND ".join(f"({c})" for c in conjuncts))
+    return out
+
+
 def _versions_listing(uri: str) -> list[tuple] | None:
     """Sorted ``(key, etag, size)`` of every object under the dataset's ``_versions/``
     commit log (the Lance manifest dir). The freshness fingerprint AND the swap-window
@@ -749,7 +1194,30 @@ def get_connection():
     return _con
 
 
-def _register_datasets(cur, names: Iterable[str]) -> None:
+def _prefiltered_slice(name: str, flt: str):
+    """Materialize the pre-shrunk Arrow slice for one dataset via ``scan_table`` (the
+    Lance-scanner slice path — BTREE/BITMAP index-accelerated). Returns the pyarrow
+    Table, or ``None`` when the lane must fall back to full registration: the filter
+    fails in the Lance engine (the master safety valve behind every extraction
+    heuristic) or the slice exceeds ``GTM_PREFILTER_MAX_ROWS`` (materializing a
+    barely-shrunk dataset in RAM would be worse than the lazy full scan)."""
+    try:
+        tbl = scan_table(name, filter=flt, limit=_PREFILTER_MAX_ROWS + 1)
+    except Exception as exc:  # noqa: BLE001 — degrade to the full lane, never fail the query
+        log.warning("gtm-mcp: prefilter on %r rejected by Lance (%s); registering full "
+                    "dataset. filter=%r", name, exc, flt)
+        return None
+    if tbl.num_rows > _PREFILTER_MAX_ROWS:
+        log.info("gtm-mcp: prefilter on %r exceeds %d rows; registering full dataset. "
+                 "filter=%r", name, _PREFILTER_MAX_ROWS, flt)
+        return None
+    log.info("gtm-mcp: prefiltered %r → %d rows (filter: %s)", name, tbl.num_rows, flt)
+    return tbl
+
+
+def _register_datasets(cur, names: Iterable[str], *,
+                       extracted: dict[str, str] | None = None,
+                       required: dict[str, str] | None = None) -> None:
     """JIT-bind ONLY the named Lance datasets as same-named DuckDB relations on a
     cursor — the performance gate. The ``LanceDataset`` is registered directly —
     NOT a one-shot ``RecordBatchReader``, which DuckDB exhausts after a single
@@ -758,12 +1226,36 @@ def _register_datasets(cur, names: Iterable[str]) -> None:
     re-scans safely, stays lazy, and can push projections/filters into Lance. Each
     call opens the latest committed version. A name absent from the registry is
     skipped — DuckDB then raises a clear "table not found" for it, never a silent
-    empty."""
+    empty.
+
+    Index pushdown for the join lane: a dataset named in ``extracted`` (predicates
+    recovered from the SQL itself — best-effort, redundant with the SQL) or
+    ``required`` (caller-supplied semantic filters — load-bearing) is registered as
+    the PRE-SHRUNK Arrow slice from the Lance scanner instead of the full dataset,
+    so the scalar index does the narrowing before DuckDB ever scans. An extracted
+    filter that fails degrades silently to full registration (the conjunct is still
+    in the SQL); a required filter that fails RAISES — dropping it would silently
+    widen the caller's result. A materialized Arrow Table re-scans safely (no
+    one-shot-reader footgun)."""
     reg = get_registry()
     for name in names:
         uri = reg.get(name)
         if uri is None:
             continue
+        flt = (required or {}).get(name) or (extracted or {}).get(name)
+        if _PREFILTER_ENABLED and flt:
+            tbl = _prefiltered_slice(name, flt)
+            if tbl is not None:
+                cur.register(name, tbl)
+                continue
+            if name in (required or {}):
+                raise ValueError(
+                    f"dataset_filters[{name!r}] could not be applied (rejected by the "
+                    f"Lance scanner or slice exceeds {_PREFILTER_MAX_ROWS} rows) — "
+                    "narrow the filter, fix its syntax (Lance/DataFusion SQL predicate "
+                    "over the dataset's columns), or drop it. filter="
+                    f"{flt!r}"
+                )
         # Register the warm-cached handle (index resident) — NOT a fresh open. DuckDB
         # re-scans the LanceDataset lazily and pushes projections/filters into Lance.
         cur.register(name, _cached_dataset(uri))
@@ -775,6 +1267,7 @@ def query(
     max_rows: int = MAX_QUERY_ROWS,
     *,
     read_only: bool = True,
+    prefilters: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute raw ANSI SQL with ONLY ``datasets`` bound as Lance relations (plus any
     ``s3://`` transport Parquet the SQL reads directly), and with the attached ``hqx``
@@ -785,9 +1278,33 @@ def query(
     ``read_only`` (default True) enforces the Directive 18 §4 safety rail: a single
     read statement, no mutation/DDL/ATTACH/COPY/extension-load. A query naming
     ``hqx.*`` is served by the attached Postgres and requires the attach to be live —
-    otherwise it fails fast with a clear message instead of a cryptic catalog error."""
+    otherwise it fails fast with a clear message instead of a cryptic catalog error.
+
+    Index pushdown (the join lane): each dataset's own single-table predicates are
+    recovered from the SQL (``extract_prefilters``) and its relation is registered as
+    the pre-shrunk, index-accelerated Arrow slice instead of the full dataset —
+    falling back to full registration whenever nothing safe is extractable.
+    ``prefilters`` (``{dataset: lance_filter}``) lets a caller supply the per-dataset
+    predicate explicitly; unlike extracted filters these are SEMANTIC — the rows the
+    SQL sees for that relation are only those matching the filter — so an
+    inapplicable explicit filter raises rather than silently widening the result.
+    Every key must name a dataset in ``datasets``."""
     if read_only:
         assert_read_only(sql)
+    names = [n for n in datasets]
+    if prefilters:
+        unknown = sorted(set(prefilters) - set(names))
+        if unknown:
+            raise ValueError(
+                f"prefilters name datasets not bound by this query: {unknown}; "
+                "each key must be a dataset the SQL references."
+            )
+    extracted: dict[str, str] = {}
+    if _PREFILTER_ENABLED:
+        try:
+            extracted = extract_prefilters(sql, names)
+        except Exception as exc:  # noqa: BLE001 — extraction is an optimization, never load-bearing
+            log.warning("gtm-mcp: prefilter extraction failed (%s); registering full datasets.", exc)
     con = get_connection()  # builds + attaches hqx on first use; sets _hqx_attached
     if references_postgres(sql) and not _hqx_attached:
         raise RuntimeError(
@@ -796,7 +1313,7 @@ def query(
         )
     cur = con.cursor()
     try:
-        _register_datasets(cur, datasets)
+        _register_datasets(cur, names, extracted=extracted, required=prefilters)
         rel = cur.execute(sql)
         columns = [d[0] for d in rel.description] if rel.description else []
         fetched = rel.fetchmany(max_rows + 1)

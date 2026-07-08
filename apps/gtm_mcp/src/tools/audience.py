@@ -227,7 +227,9 @@ def search_company_by_name(name: str) -> dict[str, Any]:
 
 
 # ── Dynamic audience querying (raw DuckDB SQL) ───────────────────────────────
-def execute_audience_query(sql: str) -> dict[str, Any]:
+def execute_audience_query(
+    sql: str, dataset_filters: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Run arbitrary read-only ANSI SQL over the full Gen-3 Lance plane to build
     audience segments. The datasets are named relations — reference them by name;
     every committed dataset in the sink is available (the registry is discovered
@@ -244,7 +246,18 @@ def execute_audience_query(sql: str) -> dict[str, Any]:
 
     Only the datasets your query references are attached to DuckDB for the call —
     a two-table join opens two Lance manifests, not the ~100-dataset plane — so
-    cross-layer joins stay fast. Raw transport Parquet is also reachable via
+    cross-layer joins stay fast. Each dataset's own single-table WHERE conjuncts
+    (simple comparisons / IN / BETWEEN / LIKE / IS NULL on its columns) are also
+    pushed into the Lance scalar indices automatically, so a selective per-table
+    predicate shrinks the leg BEFORE the join instead of full-scanning it — prefer
+    writing such predicates directly in the SQL. ``dataset_filters`` (optional,
+    ``{dataset_name: filter}``) pushes a predicate explicitly when it can't be
+    expressed as a plain conjunct in the SQL: each filter is a Lance/DataFusion SQL
+    predicate over THAT dataset's columns (e.g. ``{"companies": "primary_naics LIKE
+    '3364%'"}``) and is applied to the dataset before the SQL sees it — a semantic
+    restriction, exactly as if ANDed into that table's WHERE. Keys must name
+    datasets the SQL references; an inapplicable filter errors rather than being
+    silently dropped. Raw transport Parquet is also reachable via
     ``read_parquet('s3://data-sink/...')``. Cross-layer joins are the point — e.g.
     companies ⋈ awards on a domain→UEI bridge to segment contractors by spend.
     The result is capped at 1000 rows (``truncated`` flags overflow). Returns
@@ -252,7 +265,11 @@ def execute_audience_query(sql: str) -> dict[str, Any]:
     """
     # The performance gate: resolve which registered datasets the SQL names, and
     # bind ONLY those (never the whole catalog) before handing the SQL to DuckDB.
-    return database.query(sql, datasets=database.referenced_datasets(sql))
+    return database.query(
+        sql,
+        datasets=database.referenced_datasets(sql),
+        prefilters=dataset_filters,
+    )
 
 
 def register(mcp) -> None:
