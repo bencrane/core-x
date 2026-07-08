@@ -63,6 +63,9 @@ def main() -> int:
     g.add_argument("--uei", help="single target UEI")
     g.add_argument("--ueis-file", help="file of target UEIs, one per line")
     ap.add_argument("--dry", action="store_true", help="build + measure, do not write")
+    ap.add_argument("--recreate", action="store_true",
+                    help="overwrite both datasets at this recipe's schema on the FIRST "
+                         "target (recipe evolution); subsequent targets append")
     args = ap.parse_args()
 
     ueis = _read_ueis(args)
@@ -78,7 +81,8 @@ def main() -> int:
         m = result["meta"]
         n_pairs = len(result["pairs"])
         if not args.dry:
-            w = P.write_target(result, storage_options=so)
+            w = P.write_target(result, storage_options=so,
+                               recreate=(args.recreate and i == 1))
             wrote = (f"  wrote pairs_v{w['pairs_version']}(+{w['pairs_rows']}, "
                      f"total {w['pairs_total_rows']:,}) "
                      f"targets_v{w['targets_version']}(total {w['targets_total_rows']:,})")

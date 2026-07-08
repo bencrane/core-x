@@ -44,7 +44,9 @@ This document is two views of ONE artifact: (§2) the vocabulary axes the `sub_u
   `matched_via_json` (top-5, `matched_via_truncated` flag). Node HQ geo
   (latitude/longitude/geo_precision) is the ONE per-node hydration retained inline (chunked
   `gtm_entity_geo` pull; its cost is measured).
-- **Recipe:** `sub_universe_pairs.v1`.
+- **Recipe:** `sub_universe_pairs.v2` (v1 → v2 at §0.1: uncapped build_mode
+  membership + `family_matched_obl_60mo` / `family_tcf_farmout_60mo` pair columns
+  + `demonstrated_families` and `scopes.pop_counties` on the targets row).
 
 ### `gtm_sub_universe_targets` — one row per target
 - **Grain:** one row per target UEI. **BTREE on `uei`**.

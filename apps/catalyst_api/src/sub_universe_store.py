@@ -92,6 +92,13 @@ RECIPE_ID = "sub_universe.v3"
 CACHE_TTL_S = 6 * 3600
 DEFAULT_LIMIT = 1000
 MAX_LIMIT = 5000
+# §0.1.2 (2026-07-08): MAX_LIMIT is a SERVING/page parameter only — build_mode
+# materializes the FULL membership universe. BUILD_NODE_CAP is the sole build-time
+# truncation: the disclosed mega-universe guard for pathological reseller-class
+# targets. Truncation always rides nodes_truncated=True — never silent. Set from
+# measurement (2026-07-08): a mid-size defense sub (F98…, 3–6 primes) has a true
+# universe of 29,605 nodes — the guard must clear normal targets by a wide margin.
+BUILD_NODE_CAP = 50_000
 MATCHED_VIA_CAP = 25          # combos listed per node (honest total alongside)
 DEFAULT_REPEAT_K = 3
 MVS_MIN_N = 5                 # combo-bearing edges below which no default floor is set
@@ -154,7 +161,9 @@ def _scan_target_edges(uei: str) -> list[dict[str, Any]]:
                   "prime_awardee_name",
                   "prime_award_naics_code", "prime_award_product_or_service_code",
                   "prime_award_parent_piid",
-                  "subaward_primary_place_of_performance_state_code"],
+                  "subaward_primary_place_of_performance_state_code",
+                  # county grain for input 1's baked footprint (freeze §0.1; addendum §4.2)
+                  "sub_place_of_perform_county_code", "sub_place_of_perform_county_name"],
                  f"subawardee_uei = '{uei}'")
 
 
@@ -332,7 +341,14 @@ def _median(vals: list[float]) -> float | None:
 
 
 # ── The recipe ─────────────────────────────────────────────────────────────────
-def execute_sub_universe(body: Any) -> dict[str, Any]:
+def execute_sub_universe(body: Any, *, build_mode: bool = False) -> dict[str, Any]:
+    """Serving (default): quota page at `limit` with full node hydration.
+
+    build_mode (the pair-mart build path, freeze §0.1.2): the FULL membership
+    universe up to BUILD_NODE_CAP — no page quota, and no node-grain hydration the
+    pair writer does not persist (geo / demand events / vehicles / gate_facts are
+    all skipped; the builder hydrates geo itself, chunked). Nodes additionally
+    carry `matched_combos` — the full uncapped combo list — for family rollups."""
     req = validate_request(body)
     uei, limit = req["uei"], req["limit"]
     timings: dict[str, int] = {}
@@ -442,17 +458,27 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
     undisc_ranked = [r for r in ranked if not r[1]]
     n_disclosed_universe = len(disc_ranked)
     n_undisclosed_universe = len(undisc_ranked)
-    # Quota: reserve a slice of the page for undisclosed winners so the frontier
-    # is always visible; backfill unused quota from disclosed (and vice-versa) so
-    # no slot is wasted while either tier has candidates.
-    reserved_undisc = int(limit * UNDISCLOSED_PAGE_QUOTA)
-    d_take = min(len(disc_ranked), limit - min(len(undisc_ranked), reserved_undisc))
-    u_take = min(len(undisc_ranked), limit - d_take)
-    page = disc_ranked[:d_take] + undisc_ranked[:u_take]
+    if build_mode:
+        # §0.1.2: the pair mart materializes membership IN FULL — the serving
+        # quota/limit never touches the build. BUILD_NODE_CAP = mega-guard only.
+        page = ranked[:BUILD_NODE_CAP]
+        d_take = sum(1 for r in page if r[1])
+        u_take = len(page) - d_take
+    else:
+        # Quota: reserve a slice of the page for undisclosed winners so the frontier
+        # is always visible; backfill unused quota from disclosed (and vice-versa) so
+        # no slot is wasted while either tier has candidates.
+        reserved_undisc = int(limit * UNDISCLOSED_PAGE_QUOTA)
+        d_take = min(len(disc_ranked), limit - min(len(undisc_ranked), reserved_undisc))
+        u_take = min(len(undisc_ranked), limit - d_take)
+        page = disc_ranked[:d_take] + undisc_ranked[:u_take]
 
-    geo = {g["uei"]: g for g in _scan_geo([u for u, *_ in page])} if page else {}
+    # build_mode skips BOTH page hydrations — geo is the builder's own chunked
+    # pull, and demand events are node-grain (never persisted per pair).
+    geo = ({g["uei"]: g for g in _scan_geo([u for u, *_ in page])}
+           if page and not build_mode else {})
     demand_by_uei: dict[str, list[dict]] = {}
-    if page:
+    if page and not build_mode:
         for e in _scan_demand_events([u for u, *_ in page]):
             demand_by_uei.setdefault(e["uei"], []).append(e)
     nodes = []
@@ -468,14 +494,24 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
                                     -_f(e[2]["farmout_amt_60mo"]) if e[2] is not None else 0.0,
                                     -e[1]))
         gate_facts: dict[str, dict[str, Any]] = {}
+        matched_combos: list[dict[str, Any]] = []
         matched = []
         for i, (k, obl, fo) in enumerate(entries):
             combo_str = f"{k[0]}x{k[1]}"
-            gate_facts[combo_str] = {
-                "m": (round(_f(fo["median_chunk_60mo"]), 2)
-                      if fo is not None and fo["median_chunk_60mo"] is not None else None),
-                "pb": k in prime_combo_set,
-            }
+            if build_mode:
+                # full uncapped combo list, lean — the family-rollup substrate
+                matched_combos.append({
+                    "naics_code": k[0], "psc_code": k[1],
+                    "prime_obl_60mo": round(obl, 2),
+                    "farmout_amt_60mo": (round(_f(fo["farmout_amt_60mo"]), 2)
+                                         if fo is not None else None),
+                })
+            else:
+                gate_facts[combo_str] = {
+                    "m": (round(_f(fo["median_chunk_60mo"]), 2)
+                          if fo is not None and fo["median_chunk_60mo"] is not None else None),
+                    "pb": k in prime_combo_set,
+                }
             if i >= MATCHED_VIA_CAP:
                 continue
             best_anchor = max(combo_anchor_obl.get(k, {}).items(),
@@ -531,20 +567,15 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
         else:
             target_combo_farmout = None
         stats = caches["pairs_by_prime"].get(cu)
-        g = geo.get(cu)
-        nodes.append({
+        node: dict[str, Any] = {
             "uei": cu,
             "name": stats["prime_name"] if stats else None,
-            "latitude": g["latitude"] if g else None,
-            "longitude": g["longitude"] if g else None,
-            "geo_precision": g["geo_precision"] if g else None,
             "disclosed_sub_buyer": disclosed,
             "matched_farmout_60mo": round(fo_total, 2) if disclosed else None,
             "matched_prime_obl_60mo": round(obl_total, 2),
             "n_matched_combos": len(combos),
             "matched_via": matched,
             "matched_via_truncated": len(entries) > MATCHED_VIA_CAP,
-            "gate_facts": gate_facts,
             "target_combo_farmout": target_combo_farmout,
             # unknown ≠ zero: a prime with no pair rows has UNDISCLOSED teaming,
             # not zero partners — all three fields ride as null
@@ -555,13 +586,24 @@ def execute_sub_universe(body: Any) -> dict[str, Any]:
                         {"n_sub_partners_5y": None,
                          "deepest_repeat_edges_5y": None,
                          "n_partners_ge_3_edges": None}),
-            "demand_events": _demand_summary(demand_by_uei.get(cu, [])),
-            "vehicles": [{"parent_piid": v["parent_piid"],
-                          "farmout_amt_60mo": round(_f(v["farmout_amt_60mo"]), 2),
-                          "last_action_date": _d(v["last_action_date"])}
-                         for v in sorted(caches["vehicles_by_uei"].get(cu, []),
-                                         key=lambda v: -_f(v["farmout_amt_60mo"]))],
-        })
+        }
+        if build_mode:
+            node["matched_combos"] = matched_combos
+        else:
+            g = geo.get(cu)
+            node.update({
+                "latitude": g["latitude"] if g else None,
+                "longitude": g["longitude"] if g else None,
+                "geo_precision": g["geo_precision"] if g else None,
+                "gate_facts": gate_facts,
+                "demand_events": _demand_summary(demand_by_uei.get(cu, [])),
+                "vehicles": [{"parent_piid": v["parent_piid"],
+                              "farmout_amt_60mo": round(_f(v["farmout_amt_60mo"]), 2),
+                              "last_action_date": _d(v["last_action_date"])}
+                             for v in sorted(caches["vehicles_by_uei"].get(cu, []),
+                                             key=lambda v: -_f(v["farmout_amt_60mo"]))],
+            })
+        nodes.append(node)
     timings["universe_ms"] = int((time.monotonic() - t) * 1000)
 
     # form defaults: the MVS floor comes from the target's own combo-bearing

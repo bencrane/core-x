@@ -75,7 +75,9 @@ TARGET_EDGES = [
      "prime_awardee_uei": ANCHOR, "prime_awardee_name": "ANCHOR PRIME",
      "prime_award_naics_code": "541330", "prime_award_product_or_service_code": "R425",
      "prime_award_parent_piid": "VEHICLE9",
-     "subaward_primary_place_of_performance_state_code": "AL"}
+     "subaward_primary_place_of_performance_state_code": "AL",
+     "sub_place_of_perform_county_code": "089",
+     "sub_place_of_perform_county_name": "MADISON"}
     for v in (200_000.0, 250_000.0, 300_000.0, 450_000.0, 600_000.0)
 ]
 
@@ -102,6 +104,11 @@ def _patch(monkeypatch):
     monkeypatch.setattr(P, "_scan_pool", lambda lanes, states, w24: [])
     monkeypatch.setattr(P, "_scan_sub_lanes_for_combos", lambda lanes: [])
     monkeypatch.setattr(P, "_scan_sub_profiles", lambda ueis: [])
+    monkeypatch.setattr(P, "_scan_naics_reference",
+                        lambda: [{"naics_code": "5413", "naics_title": "Engineering Services"}])
+    monkeypatch.setattr(P, "_naics4_titles", None)
+    monkeypatch.setattr(P, "_scan_geo_bulk",
+                        lambda ueis: [dict(g) for g in GEO if g["uei"] in ueis])
     yield
     S.reset_caches_for_tests()
 
@@ -118,7 +125,7 @@ def test_one_pair_row_per_node_full_universe():
     assert r["target"]["n_disclosed"] == 1
     assert r["target"]["n_undisclosed"] == 1
     assert all(p["target_uei"] == TARGET for p in r["pairs"])
-    assert all(p["recipe"] == "sub_universe_pairs.v1" for p in r["pairs"])
+    assert all(p["recipe"] == "sub_universe_pairs.v2" for p in r["pairs"])
 
 
 def test_disclosed_pair_scalars_and_geo():
@@ -150,7 +157,7 @@ def test_no_node_grain_hydration_in_pair_row():
     r = P.build_target(TARGET)
     p = _pair(r, BUYER)
     for forbidden in ("award_state", "demand_events", "entity", "win_portfolio",
-                      "gate_facts", "vehicles"):
+                      "gate_facts", "vehicles", "matched_combos"):
         assert forbidden not in p
     # no scoring
     assert "score" not in p and "rank" not in p
@@ -228,9 +235,105 @@ def test_target_row_carries_analytics_json():
     r = P.build_target(TARGET)
     t = r["target"]
     assert t["uei"] == TARGET
-    assert t["recipe"] == "sub_universe_pairs.v1"
+    assert t["recipe"] == "sub_universe_pairs.v2"
     analytics = json.loads(t["target_analytics"])
     assert "entity" in analytics and "adjacent_market" in analytics and "field" in analytics
     assert analytics["scopes"]["window_months"] == 24
     # timings json parses
     assert isinstance(json.loads(t["timings_ms"]), dict)
+
+
+# ── v2: family rollups (freeze §0.1.3) ────────────────────────────────────────
+def test_family_key_corrected_definition():
+    from apps.catalyst_api.src.psc_families import family_key, psc_family
+    # services / R&D: single letter
+    assert family_key("541330", "R425") == "5413xR"
+    assert family_key("541712", "AC12") == "5417xA"
+    # products: 2-digit FSC GROUP — missiles/aircraft/ships must NOT collapse
+    assert family_key("336414", "1410") == "3364x14"
+    assert family_key("336411", "1510") == "3364x15"
+    assert family_key("336611", "1903") == "3366x19"
+    assert psc_family("5985") == "59"
+    # nulls: absent halves refuse (null ≠ zero)
+    assert family_key(None, "R425") is None
+    assert family_key("541330", "") is None
+    assert family_key("54", "R425") is None
+
+
+def test_pair_family_rollups_disclosed_only():
+    r = P.build_target(TARGET)
+    p = _pair(r, BUYER)
+    fam_obl = json.loads(p["family_matched_obl_60mo"])
+    assert fam_obl == {"5413xR": 3_000_000.0}
+    fam_tcf = json.loads(p["family_tcf_farmout_60mo"])
+    assert fam_tcf == {"5413xR": 2_000_000.0}
+    # undisclosed node: matched families still present (obl is winners-index
+    # evidence), tcf family dict NULL — no disclosed lane at any target combo.
+    u = _pair(r, BUYER3)
+    assert json.loads(u["family_matched_obl_60mo"]) == {"5413xR": 7_000_000.0}
+    assert u["family_tcf_farmout_60mo"] is None
+
+
+def test_family_tcf_sums_within_family_across_target_combos(monkeypatch):
+    # Two disclosed target-combo lanes in DIFFERENT families sum separately;
+    # negative farm-out passes through unclamped (no-scoring doctrine).
+    extra_edge = {"subaward_amount": 300_000.0, "subaward_action_date": "2024-08-01",
+                  "prime_awardee_uei": ANCHOR, "prime_awardee_name": "ANCHOR PRIME",
+                  "prime_award_naics_code": "561730",
+                  "prime_award_product_or_service_code": "S208",
+                  "prime_award_parent_piid": None,
+                  "subaward_primary_place_of_performance_state_code": "AL"}
+    buyer_fo_s208 = {"uei": BUYER, "naics_code": "561730", "psc_code": "S208",
+                     "naics_title": "Landscaping", "psc_title": "Grounds",
+                     "farmout_amt_60mo": -750_000.0, "farmout_amt_lifetime": 900_000.0,
+                     "median_chunk_60mo": None, "median_chunk_lifetime": None,
+                     "p75_chunk_60mo": None, "n_subawards_lifetime": 5,
+                     "n_distinct_subs_60mo": 4, "last_action_date": "2025-04-01"}
+    monkeypatch.setattr(S, "_scan_target_edges",
+                        lambda uei: ([dict(r) for r in TARGET_EDGES] + [dict(extra_edge)])
+                        if uei == TARGET else [])
+    monkeypatch.setattr(S, "_scan_farmout",
+                        lambda: [dict(r) for r in FARMOUT] + [dict(buyer_fo_s208)])
+    S.reset_caches_for_tests()
+    r = P.build_target(TARGET)
+    p = _pair(r, BUYER)
+    fam_tcf = json.loads(p["family_tcf_farmout_60mo"])
+    assert fam_tcf == {"5413xR": 2_000_000.0, "5617xS": -750_000.0}
+
+
+def test_target_row_demonstrated_families_and_counties():
+    r = P.build_target(TARGET)
+    fams = json.loads(r["target"]["demonstrated_families"])
+    assert len(fams) == 1
+    f = fams[0]
+    assert f["family"] == "5413xR"
+    assert f["n_edges"] == 5 and f["total_usd"] == 1_800_000.0
+    assert f["share_pct"] == 100.0
+    assert f["combos"] == ["541330xR425"]
+    # titles: naics4 from the reference seam × static PSC category name
+    assert f["title"] == ("Engineering Services × Professional, Administrative "
+                          "& Management Support")
+    # input 1's county-grain footprint in scopes
+    counties = json.loads(r["target"]["target_analytics"])["scopes"]["pop_counties"]
+    assert counties == [{"state": "AL", "county_code": "089",
+                         "county_name": "MADISON", "sub_usd": 1_800_000.0,
+                         "n_edges": 5}]
+
+
+# ── v2: uncapped build_mode + the mega-guard (freeze §0.1.2) ──────────────────
+def test_build_mode_mega_guard_discloses_truncation(monkeypatch):
+    monkeypatch.setattr(S, "BUILD_NODE_CAP", 1)
+    r = P.build_target(TARGET)
+    assert len(r["pairs"]) == 1                       # guard truncated the build
+    assert r["target"]["nodes_truncated"] is True     # ...and disclosed it
+    assert r["meta"]["nodes_truncated"] is True
+
+
+def test_serving_path_unchanged_by_build_mode():
+    # the serving quota page still hydrates node-grain facts and honors limit
+    out = S.execute_sub_universe({"uei": TARGET, "limit": 1})
+    assert out["meta"]["returned"] == 1
+    node = out["data"][0]
+    for key in ("demand_events", "vehicles", "gate_facts", "latitude"):
+        assert key in node
+    assert "matched_combos" not in node
