@@ -28,6 +28,22 @@ The per-UEI universe is composed from **five named inputs, each with baked defau
 - Declared NAICS/PSC (SAM) of anchors/lookalikes: **facet/display only**, never membership (declared ≠ demonstrated).
 - Vehicle co-holding (literal same parent IDV): **per-node annotation only**, never membership (recall collapses; mega-vehicles invert the signal).
 
+## 1.1 Agency dimension — SERVABLE (supersedes the freeze doc's REFUSED ruling)
+
+The original freeze doc refused the agency axis because `gtm_prime_demand_events` (24mo) carries no agency column. **That refusal is obsolete as of PR #1072:** `gtm_txn_events_slim` carries `awarding_agency_code` with a BTREE (full history), the month rollup has agency in its grain, and `gtm_award_recipient_rollup` does too. Rulings:
+
+- **Agency is a cross-cutting dimension** (like time/geo/deal-economics), available on all three C surfaces:
+  - "primes winning from ⟨DoD/VA/GSA⟩" → S1: pair-mart pinned lane ∩ agency-filtered UEI set from `gtm_txn_events_slim` / `gtm_award_recipient_rollup`.
+  - "subs winning under awards from ⟨agency⟩" → S2: `usaspending_subaward_canonical.prime_award_awarding_agency_code` (indexed, 1.3M rows — direct query-time filter).
+  - S3 flow: agency is a grain column on both Track 1 rollups.
+- **Vocabulary:** port `phrase.v2`'s toptier agency aliases (`dod`, `defense`, `gsa`, `veterans affairs`, …) as-is into the C spec.
+- **Sub-toptier names (Navy, Army, NAVSEA, USACE): still REFUSE by design.** The data carries `awarding_sub_agency_code` columns, so serving them is purely a reviewed sub-tier alias-table addition — a vocabulary cycle, queued, not blocking, not a data build.
+
+## 1.2 Military bases and federal buildings — rulings (operator-reviewed 2026-07-08)
+
+- **Military bases ("work at/around ⟨base⟩"): not v1; path exists and is cheap when wanted.** A base ≈ its county/zip footprint. The county-grain geo work (§4.2) + the existing ZCTA zip-centroid sidecars provide the substrate; the only missing artifact is a small static **base → county/zip reference table** ("Fort Bragg" → Cumberland/Hoke County NC) + vocabulary entries binding base names to geo sets. No new pipeline, no spine work. Queued as a later vocabulary cycle.
+- **Federal office buildings ("near/at federal buildings"): EXCLUDED from the model.** It is a proxy for a signal the system observes directly — awards data IS demand at actual PoP; a building inventory only infers where demand might be, and for the target population (subs with demonstrated federal history) the observed flow fully shadows it. Capability family × PoP already identifies building-bound work (janitorial/security/O&M in a federal-dense county). If it ever appears, it is a map display overlay fed by one small static ingest (GSA IOLP) decided at the design layer — never an input, never a grammar axis.
+
 ## 2. Capability Families — definition and placement
 
 **Definition:** `family_key = NAICS[:4] + 'x' + PSC[:1]`. Example: 541330×R425 and 541380×R408 → `5413xR` ("Engineering/Architectural Services × Professional Support"). Pure string truncation over keys that already exist everywhere — no new source data. One tiny new reference artifact: **family titles** (family_key → display name, low hundreds of rows; derive from `naics_reference` 4-digit titles + PSC category letters; bake as a small Lance table or inline title columns).
