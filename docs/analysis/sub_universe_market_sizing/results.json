@@ -1,0 +1,379 @@
+{
+  "sources": {
+    "uris": {
+      "gtm_sub_profiles": "s3://data-sink/active/gtm_sub_profiles/",
+      "gtm_prime_combo_lanes": "s3://data-sink/active/gtm_prime_combo_lanes/",
+      "gtm_sam_entities": "s3://data-sink/active/gtm_sam_entities/"
+    },
+    "lance_versions": {
+      "gtm_sub_profiles": 2,
+      "gtm_prime_combo_lanes": 4,
+      "gtm_sam_entities": 24
+    }
+  },
+  "definitions": {
+    "target_set": "subs with sub_amt_60mo > 0 (proxy for edge_count_5y>0)",
+    "materiality": "GREATEST(sub_amt_60mo, sum prime_obl_60mo per uei)",
+    "compute_proxy": "n_lanes_lifetime (distinct demonstrated NAICS x PSC)"
+  },
+  "target_set": {
+    "n_targets": 56229,
+    "total_lane_work": 256948
+  },
+  "thresholds": [
+    {
+      "threshold": 0,
+      "targets": 56229,
+      "pct_targets": 100.0,
+      "lane_work": 256948,
+      "pct_work": 100.0
+    },
+    {
+      "threshold": 50000,
+      "targets": 50839,
+      "pct_targets": 90.4,
+      "lane_work": 249565,
+      "pct_work": 97.1
+    },
+    {
+      "threshold": 100000,
+      "targets": 44884,
+      "pct_targets": 79.8,
+      "lane_work": 240885,
+      "pct_work": 93.7
+    },
+    {
+      "threshold": 250000,
+      "targets": 36408,
+      "pct_targets": 64.7,
+      "lane_work": 225523,
+      "pct_work": 87.8
+    },
+    {
+      "threshold": 500000,
+      "targets": 30144,
+      "pct_targets": 53.6,
+      "lane_work": 210982,
+      "pct_work": 82.1
+    },
+    {
+      "threshold": 1000000,
+      "targets": 24251,
+      "pct_targets": 43.1,
+      "lane_work": 193651,
+      "pct_work": 75.4
+    },
+    {
+      "threshold": 5000000,
+      "targets": 13230,
+      "pct_targets": 23.5,
+      "lane_work": 144198,
+      "pct_work": 56.1
+    },
+    {
+      "threshold": 10000000,
+      "targets": 9635,
+      "pct_targets": 17.1,
+      "lane_work": 120071,
+      "pct_work": 46.7
+    }
+  ],
+  "sector_composition_5M": {
+    "pool_n": 13230,
+    "sectors": [
+      {
+        "naics2": "54",
+        "name": "Prof/Sci/Tech svc",
+        "subs": 6790
+      },
+      {
+        "naics2": "33",
+        "name": "Manufacturing",
+        "subs": 3554
+      },
+      {
+        "naics2": "56",
+        "name": "Admin/Support/Waste",
+        "subs": 1269
+      },
+      {
+        "naics2": "23",
+        "name": "Construction",
+        "subs": 852
+      },
+      {
+        "naics2": "42",
+        "name": "Wholesale",
+        "subs": 242
+      },
+      {
+        "naics2": "48",
+        "name": "Transport/Warehouse",
+        "subs": 145
+      },
+      {
+        "naics2": "51",
+        "name": "Information",
+        "subs": 126
+      },
+      {
+        "naics2": "61",
+        "name": "Educational",
+        "subs": 80
+      },
+      {
+        "naics2": "52",
+        "name": "Finance",
+        "subs": 39
+      },
+      {
+        "naics2": "81",
+        "name": "Other services",
+        "subs": 35
+      },
+      {
+        "naics2": "62",
+        "name": "Health care",
+        "subs": 22
+      },
+      {
+        "naics2": "32",
+        "name": "Manufacturing",
+        "subs": 21
+      },
+      {
+        "naics2": "49",
+        "name": "Transport/Warehouse",
+        "subs": 16
+      },
+      {
+        "naics2": "31",
+        "name": "Manufacturing",
+        "subs": 13
+      },
+      {
+        "naics2": "22",
+        "name": "Utilities",
+        "subs": 12
+      },
+      {
+        "naics2": "21",
+        "name": "Mining/Oil/Gas",
+        "subs": 5
+      },
+      {
+        "naics2": "53",
+        "name": "Real estate",
+        "subs": 3
+      },
+      {
+        "naics2": "44",
+        "name": "Retail",
+        "subs": 2
+      },
+      {
+        "naics2": "72",
+        "name": "Accommodation/Food",
+        "subs": 2
+      },
+      {
+        "naics2": "92",
+        "name": "Public admin",
+        "subs": 1
+      },
+      {
+        "naics2": "11",
+        "name": "Agriculture",
+        "subs": 1
+      }
+    ]
+  },
+  "cut_the_top": {
+    "pool_n": 13230,
+    "pool_lane_work": 144198,
+    "rows": [
+      {
+        "remove_top": 100,
+        "subs_left": 13130,
+        "lane_work_left": 127908,
+        "pct_compute_left": 88.7
+      },
+      {
+        "remove_top": 250,
+        "subs_left": 12980,
+        "lane_work_left": 116296,
+        "pct_compute_left": 80.7
+      },
+      {
+        "remove_top": 500,
+        "subs_left": 12730,
+        "lane_work_left": 102858,
+        "pct_compute_left": 71.3
+      },
+      {
+        "remove_top": 1000,
+        "subs_left": 12230,
+        "lane_work_left": 84609,
+        "pct_compute_left": 58.7
+      },
+      {
+        "remove_top": 2000,
+        "subs_left": 11230,
+        "lane_work_left": 61649,
+        "pct_compute_left": 42.8
+      }
+    ]
+  },
+  "breadth_distribution_5M": {
+    "quantiles": {
+      "p50": 5.0,
+      "p90": 25.0,
+      "p99": 85.70999999999913,
+      "max": 582.0
+    },
+    "n_lanes_ge_100": 102,
+    "n_lanes_ge_200": 19
+  },
+  "widest_subs": [
+    {
+      "name": "CARAHSOFT TECHNOLOGY CORP",
+      "n_lanes": 582,
+      "n_primes": 330,
+      "sub_5yr": 1900010881,
+      "primary_naics": "541618"
+    },
+    {
+      "name": "CDW GOVERNMENT LLC",
+      "n_lanes": 447,
+      "n_primes": 288,
+      "sub_5yr": 409538084,
+      "primary_naics": "423430"
+    },
+    {
+      "name": "DELL FEDERAL SYSTEMS L.P",
+      "n_lanes": 363,
+      "n_primes": 219,
+      "sub_5yr": 820819736,
+      "primary_naics": "334111"
+    },
+    {
+      "name": "STERLING COMPUTERS CORPORATION",
+      "n_lanes": 354,
+      "n_primes": 192,
+      "sub_5yr": 576854893,
+      "primary_naics": "334111"
+    },
+    {
+      "name": "DELL MARKETING L.P.",
+      "n_lanes": 353,
+      "n_primes": 215,
+      "sub_5yr": 99036913,
+      "primary_naics": "334111"
+    },
+    {
+      "name": "GLENAIR, INC.",
+      "n_lanes": 303,
+      "n_primes": 192,
+      "sub_5yr": 186327218,
+      "primary_naics": "335929"
+    },
+    {
+      "name": "INSIGHT GLOBAL, LLC",
+      "n_lanes": 302,
+      "n_primes": 182,
+      "sub_5yr": 361912106,
+      "primary_naics": "561320"
+    },
+    {
+      "name": "TEVET LLC",
+      "n_lanes": 267,
+      "n_primes": 153,
+      "sub_5yr": 193518306,
+      "primary_naics": "334515"
+    },
+    {
+      "name": "AVNET INC",
+      "n_lanes": 260,
+      "n_primes": 153,
+      "sub_5yr": 252890108,
+      "primary_naics": "423690"
+    },
+    {
+      "name": "TTI INC.",
+      "n_lanes": 253,
+      "n_primes": 157,
+      "sub_5yr": 152387050,
+      "primary_naics": "423690"
+    },
+    {
+      "name": "SHI INTERNATIONAL CORP",
+      "n_lanes": 248,
+      "n_primes": 171,
+      "sub_5yr": 105361975,
+      "primary_naics": "541519"
+    },
+    {
+      "name": "DLT SOLUTIONS, LLC",
+      "n_lanes": 244,
+      "n_primes": 176,
+      "sub_5yr": 266625441,
+      "primary_naics": "423430"
+    },
+    {
+      "name": "ARROW ELECTRONICS, INC.",
+      "n_lanes": 229,
+      "n_primes": 120,
+      "sub_5yr": 139367285,
+      "primary_naics": "423690"
+    },
+    {
+      "name": "WORLD WIDE TECHNOLOGY LLC",
+      "n_lanes": 221,
+      "n_primes": 167,
+      "sub_5yr": 1293255043,
+      "primary_naics": "541519"
+    },
+    {
+      "name": "CISCO SYSTEMS INC",
+      "n_lanes": 220,
+      "n_primes": 49,
+      "sub_5yr": 59988160,
+      "primary_naics": "334118"
+    },
+    {
+      "name": "BOOZ ALLEN HAMILTON INC",
+      "n_lanes": 218,
+      "n_primes": 249,
+      "sub_5yr": 782575288,
+      "primary_naics": "541512"
+    },
+    {
+      "name": "L3HARRIS TECHNOLOGIES, INC.",
+      "n_lanes": 210,
+      "n_primes": 90,
+      "sub_5yr": 524209009,
+      "primary_naics": "334220"
+    },
+    {
+      "name": "SIRIUS FEDERAL LLC",
+      "n_lanes": 209,
+      "n_primes": 115,
+      "sub_5yr": 71081728,
+      "primary_naics": "334111"
+    },
+    {
+      "name": "CURTISS-WRIGHT DS, INC.",
+      "n_lanes": 206,
+      "n_primes": 106,
+      "sub_5yr": 131928625,
+      "primary_naics": "334111"
+    },
+    {
+      "name": "AEROTEK AFFILIATED SERVICES, INC.",
+      "n_lanes": 190,
+      "n_primes": 123,
+      "sub_5yr": 46746799,
+      "primary_naics": "561320"
+    }
+  ]
+}
