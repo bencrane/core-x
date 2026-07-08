@@ -6,6 +6,8 @@
 
 ---
 
+> **Flat inventory:** [`MANIFEST.md`](MANIFEST.md) — every file in this area (canonical + corpus), path/title/source-basis, no editorial framing.
+
 ## How to use this library
 
 - **Doing Lance work?** Start at [`lance/00_overview.md`](lance/00_overview.md) (packaging + the `pylance` vs `lancedb` split — read it first, it is the #1 source of confusion), then jump to the topic file.
