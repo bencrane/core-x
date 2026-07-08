@@ -49,7 +49,10 @@ BLOB_RECIPE_ID = "sub_universe_blob.v2"   # two-tier: hot blob + mart drilldown;
 EVENT_ROWS_PER_NODE_CAP = 500             # raw rows per node returned on drilldown (serve path cap)
 WIN_PORTFOLIO_CAP = 50                    # portfolio entries per node returned on drilldown
 # ── two-tier trim (Surface-1: single-digit-MB hot blob, sub-second load) ──────
-MATERIAL_CAP = 1500                       # max fully-hydrated (disclosed) nodes per blob
+MATERIAL_CAP = 1000                       # max fully-hydrated (disclosed) nodes per blob
+                                          # (~9.4 KB/material node -> keeps the hot blob
+                                          #  single-digit MB even for the widest universes;
+                                          #  probe 933 material = 8.80 MB)
 MATCHED_VIA_HOT_CAP = 5                   # matched_via combos kept per material node (hot)
 POOL_NAMED_PRIMES_CAP = 100
 PEERS_NAMED_CAP = 100

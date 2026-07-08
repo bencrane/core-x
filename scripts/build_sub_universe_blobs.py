@@ -68,6 +68,26 @@ def select_ueis(limit: int) -> list[str]:
     return picked[:limit]
 
 
+def select_top_by_value(limit: int) -> list[str]:
+    """The top `limit` subawardees by 5yr $ (max of sub-side sub_amt_60mo or
+    prime-side obligations) — the highest-value GTM targets AND the widest
+    universes (the hardest size-budget test). Requires 5yr sub activity."""
+    import duckdb
+    opt = config.r2_storage_options()
+    con = duckdb.connect(); con.execute("SET memory_limit='8GB'; SET threads TO 4;")
+    sp = lance.dataset(config.GTM_SUB_PROFILES_URI, storage_options=opt)
+    pcl = lance.dataset(config.GTM_PRIME_COMBO_LANES_URI, storage_options=opt)
+    con.register("_sp", sp.scanner(columns=["uei", "sub_amt_60mo"]).to_reader())
+    con.register("_pcl", pcl.scanner(columns=["uei", "prime_obl_60mo"]).to_reader())
+    con.execute("CREATE TABLE prime AS SELECT uei, SUM(prime_obl_60mo) p5 FROM _pcl GROUP BY 1")
+    rows = con.execute(f"""
+        SELECT s.uei FROM _sp s LEFT JOIN prime p USING(uei)
+        WHERE COALESCE(s.sub_amt_60mo, 0) > 0
+        ORDER BY GREATEST(COALESCE(s.sub_amt_60mo, 0), COALESCE(p.p5, 0)) DESC
+        LIMIT {limit}""").fetchall()
+    return [r[0] for r in rows]
+
+
 def _build_row(uei: str) -> dict | None:
     try:
         t = time.perf_counter()
