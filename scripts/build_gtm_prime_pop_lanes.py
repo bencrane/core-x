@@ -168,10 +168,20 @@ def verify() -> int:
     raw_side = {k: (n60, round(o60, 2), n24, round(o24, 2))
                 for k, (n60, o60, n24, o24) in raw_side.items()}
 
-    if mart_side != raw_side:
-        miss = {k: (mart_side.get(k), raw_side.get(k))
-                for k in set(mart_side) | set(raw_side)
-                if mart_side.get(k) != raw_side.get(k)}
+    def _cell_ok(m, r):
+        if m is None or r is None:
+            return False
+        # counts exact; dollars within $0.01 absolute or 1e-9 relative — float64
+        # summation order differs between DuckDB's parallel SUM and this
+        # sequential recompute (observed: $0.01 on a $22.9B / 2.09M-action cell)
+        def close(a, b):
+            return abs(a - b) <= max(0.01, 1e-9 * max(abs(a), abs(b)))
+        return m[0] == r[0] and m[2] == r[2] and close(m[1], r[1]) and close(m[3], r[3])
+
+    miss = {k: (mart_side.get(k), raw_side.get(k))
+            for k in set(mart_side) | set(raw_side)
+            if not _cell_ok(mart_side.get(k), raw_side.get(k))}
+    if miss:
         print(f"FAIL reconcile ({len(miss)} (state,county) cells differ): "
               f"{dict(list(miss.items())[:5])}")
         return 1
