@@ -101,9 +101,18 @@ def _attach(path: str, meta: dict) -> None:
     old_con, old_path = S.con, S.path
     S.con, S.path, S.meta = con, path, meta
     if old_con is not None:
-        old_con.close()
-        if old_path and old_path != path and os.path.exists(old_path):
-            os.remove(old_path)
+        # PARK the old connection instead of closing it under live cursors
+        # (queries run on per-request cursors — see sql()); close + delete
+        # after a grace window once in-flight work has drained.
+        def _reap(c=old_con, p=old_path):
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+            if p and p != path and os.path.exists(p):
+                os.remove(p)
+            print(f"[attach] reaped parked artifact {p}")
+        threading.Timer(300, _reap).start()
     print(f"[attach] serving {meta.get('key')} (built {meta.get('built_at')}, "
           f"{len(meta.get('tables', []))} tables)")
 
@@ -136,10 +145,13 @@ def healthz():
 @app.get("/api/v1/tables", dependencies=[Depends(_require_token)])
 def tables():
     _require_ready()
-    with S.lock:
-        rows = S.con.execute(
+    cur = S.con.cursor()  # per-request cursor — concurrent with other queries
+    try:
+        rows = cur.execute(
             "SELECT table_name, dataset, tier, sort_key, lance_version, duck_rows "
             "FROM _sidecar_manifest ORDER BY table_name").fetchall()
+    finally:
+        cur.close()
     cols = ["table_name", "dataset", "tier", "sort_key", "lance_version", "rows"]
     return {"artifact": S.meta.get("key"), "tables": [dict(zip(cols, r)) for r in rows]}
 
@@ -156,22 +168,25 @@ def sql(req: SqlRequest):
         raise HTTPException(status_code=400, detail="statement contains a blocked keyword")
     cap = max(1, min(req.limit or DEFAULT_LIMIT, MAX_LIMIT))
 
-    with S.lock:
-        con = S.con
-        timer = threading.Timer(QUERY_TIMEOUT_S, con.interrupt)
-        timer.start()
-        t0 = time.monotonic()
-        try:
-            cur = con.execute(q)
-            cols = [d[0] for d in cur.description]
-            rows = cur.fetchmany(cap + 1)
-        except duckdb.InterruptException:
-            raise HTTPException(status_code=408, detail=f"query exceeded {QUERY_TIMEOUT_S}s")
-        except duckdb.Error as exc:
-            raise HTTPException(status_code=400, detail=str(exc)[:500])
-        finally:
-            timer.cancel()
-        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+    # Per-request cursor: queries run CONCURRENTLY (FastAPI sync endpoints run in
+    # a threadpool; a duckdb cursor is an independent connection handle). The
+    # global lock is only held by attach swaps, never across a query.
+    cur = S.con.cursor()
+    timer = threading.Timer(QUERY_TIMEOUT_S, cur.interrupt)
+    timer.start()
+    t0 = time.monotonic()
+    try:
+        res = cur.execute(q)
+        cols = [d[0] for d in res.description]
+        rows = res.fetchmany(cap + 1)
+    except duckdb.InterruptException:
+        raise HTTPException(status_code=408, detail=f"query exceeded {QUERY_TIMEOUT_S}s")
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:500])
+    finally:
+        timer.cancel()
+        cur.close()
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
 
     truncated = len(rows) > cap
     return {"columns": cols, "rows": [list(r) for r in rows[:cap]],
@@ -181,12 +196,23 @@ def sql(req: SqlRequest):
 
 @app.post("/api/v1/refresh", dependencies=[Depends(_require_token)])
 def refresh():
-    path, meta = _download_latest()
-    if path == S.path:
-        return {"refreshed": False, "artifact": meta.get("key"), "note": "already current"}
-    with S.lock:
-        _attach(path, meta)
-    return {"refreshed": True, "artifact": meta.get("key")}
+    """Async: kick the download+swap in the background and return immediately —
+    a 31 GiB artifact download must never ride an HTTP request/response
+    (the builder's notify hook timed out doing exactly that)."""
+    def _do():
+        try:
+            path, meta = _download_latest()
+            if path != S.path:
+                with S.lock:
+                    _attach(path, meta)
+            else:
+                print("[refresh] already current")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[refresh] failed: {exc}")
+
+    threading.Thread(target=_do, daemon=True, name="refresh").start()
+    return {"refreshing": True, "serving": S.meta.get("key"),
+            "note": "swap happens in background; poll /healthz for the new artifact stamp"}
 
 
 def _hydrate_forever() -> None:

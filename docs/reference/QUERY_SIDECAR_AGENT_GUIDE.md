@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~708M rows across 40 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~845M rows across 42 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -34,7 +34,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Question | Where |
 |---|---|
 | GTM analytics: entities, awards, transactions-by-recipient, teaming, lanes, capabilities, expiry, people/POC lookups | **Sidecar** |
-| Full transaction row detail (descriptions, base_and_all_options), the 392-col canonical, `gtm_subaward_recipient_code_evidence` | Lance (not in artifact) |
+| Canonical txn columns beyond `txn_rows`' 16-col wire contract, the full 392-col canonical, `gtm_subaward_recipient_code_evidence` | Lance (not in artifact) |
 | Non-GTM domains (EPA, CMS, MSHA, FDIC, SoS, UCC…) | Lance (not in artifact) |
 | Ingest verification / anything needing LIVE data | Lance — the sidecar is a snapshot (see §6) |
 
@@ -64,6 +64,8 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 36 cols; `subaward_amount` is VARCHAR — use `subaward_amount_num` |
 | `subaward_canonical_slim_by_sub` | same rows | subawardee_uei | second copy, sub-side clustering |
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
+| `txn_rows` | 1/FPDS action · 108M | action_date | The 16-col wire contract with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
+| `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id |
 
 ### Rollups & expiry
 | Table | Grain · rows | Sorted |
