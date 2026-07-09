@@ -144,6 +144,15 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "agency_sub_vocab",
      "sort": [], "agency_sub_vocab": True, "aggregate": True,
      "cols": ["awarding_sub_agency_code", "awarding_sub_agency_name"]},
+    # prime-award descriptions (history-tab use case: a UEI's awards + their
+    # requirement descriptions — or the visibly glaring lack thereof). Award
+    # grain from award_canonical, sorted recipient_uei so the tab read prunes.
+    # Per-ACTION text (canonical.transaction_description, 108M) stays gated —
+    # ~2x the growth for mod-timeline detail no workload needs yet.
+    {"ds": "usaspending_award_canonical", "tier": "C", "dest": "award_descriptions",
+     "sort": ["recipient_uei"],
+     "cols": ["generated_unique_award_id", "contract_award_unique_key",
+              "recipient_uei", "award_id_piid", "description"]},
     # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
     # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────
