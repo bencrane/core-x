@@ -1,0 +1,13 @@
+# apps/query_sidecar_api — read-only HTTP-SQL gateway over the query-sidecar
+# artifact (Render Web Service, native Python runtime):
+#   build:  pip install -r apps/query_sidecar_api/requirements.txt
+#   start:  python -m apps.query_sidecar_api.main
+#
+# The service downloads s3://data-sink/query-sidecar/LATEST.json's artifact to
+# local disk at boot and serves SELECT-only SQL against it. It never opens
+# Lance and never writes anything — pylance is deliberately absent.
+
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+duckdb>=1.5,<2     # must be >= the builder's storage version line (builder pins the same range)
+boto3>=1.35        # R2 artifact download (LATEST.json + versioned .duckdb)
