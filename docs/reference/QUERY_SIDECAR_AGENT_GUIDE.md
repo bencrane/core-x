@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~845M rows across 42 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.06B rows across 46 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -66,6 +66,16 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
 | `txn_rows` | 1/FPDS action · 108M | action_date | The 16-col wire contract with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
 | `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id |
+
+### The combo-portrait layer (industry × work × time × geo × agency × sub-out, zoomable)
+
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, `awarding_agency_code`, `awarding_sub_agency_code`, `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
+| `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
+| `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
+| `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
+| `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
 
 ### Rollups & expiry
 | Table | Grain · rows | Sorted |
@@ -140,6 +150,27 @@ WHERE i.code_type='naics' AND i.code='541330'
 -- Teaming: who subs under this prime
 SELECT p.sub_uei, e.legal_business_name FROM gtm_prime_sub_pairs p
 JOIN gtm_sam_entities e ON e.uei = p.sub_uei WHERE p.prime_uei = 'XXX';
+
+-- COMBO PORTRAIT: zoom out (family × FY, national) — one view
+SELECT * FROM v_family_fy WHERE family = '5413xJ' ORDER BY fy;
+
+-- Zoom in (exact combo × county × FY, with the event/plan dials)
+SELECT fy, pop_county_name, sum(obligation) obl,
+       avg((subcontracting_plan IN ('C','D','E','F','G','H'))::INT) plan_share,
+       avg((award_topology = 'vehicle_order')::INT) task_order_share
+FROM txn_events_combo_by_geo
+WHERE pop_state = 'VA' AND naics_code = '541330' AND psc_code LIKE 'J%'
+GROUP BY 1, 2 ORDER BY 1, obl DESC;
+
+-- Sub-out trend: is rising prime work in a category being subbed out more?
+SELECT c.fy, sum(c.obligation) prime_obl,
+       sum(s.sub_amount_total) FILTER (WHERE s.prime_award_unique_key IS NOT NULL) subbed_amt,
+       count(DISTINCT c.award_key) awards,
+       count(DISTINCT s.prime_award_unique_key) subbed_awards
+FROM txn_events_combo c
+LEFT JOIN award_subout_rollup s ON s.prime_award_unique_key = c.award_key
+WHERE c.naics_code LIKE '5413%' AND c.psc_code LIKE 'J%'
+GROUP BY 1 ORDER BY 1;
 ```
 
 ## 5. Performance model

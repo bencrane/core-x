@@ -34,7 +34,7 @@ import boto3
 import duckdb
 import uvicorn
 from botocore.config import Config
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 R2_BUCKET = "data-sink"
@@ -84,6 +84,18 @@ def _download_latest() -> tuple[str, dict]:
     latest = json.loads(s3.get_object(Bucket=R2_BUCKET, Key=LATEST_KEY)["Body"].read())
     os.makedirs(DATA_DIR, exist_ok=True)
     local = os.path.join(DATA_DIR, os.path.basename(latest["key"]))
+    # Pre-clean stale artifacts BEFORE downloading: anything that is neither the
+    # target nor the file currently being served. Without this, artifact growth
+    # across a deploy ENOSPCs the disk (observed live: 23.8 GiB stale + 31.3 GiB
+    # incoming > 50 GB → [Errno 28] retry-loop, service stuck unready).
+    for fn in os.listdir(DATA_DIR):
+        p = os.path.join(DATA_DIR, fn)
+        if fn.endswith(".duckdb") and p not in (local, S.path):
+            try:
+                os.remove(p)
+                print(f"[hydrate] pre-cleaned stale artifact {fn}")
+            except OSError as exc:
+                print(f"[hydrate] could not remove {fn}: {exc}")
     if not (os.path.exists(local) and os.path.getsize(local) == latest.get("file_bytes")):
         t0 = time.monotonic()
         s3.download_file(R2_BUCKET, latest["key"], local)
@@ -137,8 +149,15 @@ def _require_ready() -> None:
 
 
 @app.get("/healthz")
-def healthz():
-    return {"ok": True, "ready": S.con is not None, "artifact": S.meta.get("key"),
+def healthz(response: Response):
+    """Readiness-gated: 503 until the artifact is attached. With Render's
+    healthCheckPath pointed here, deploys become ZERO-DOWNTIME — the old
+    instance keeps serving until the new one has hydrated (kills the
+    'recycled, re-hydrating' window callers used to see)."""
+    ready = S.con is not None
+    if not ready:
+        response.status_code = 503
+    return {"ok": True, "ready": ready, "artifact": S.meta.get("key"),
             "built_at": S.meta.get("built_at"), "tables": len(S.meta.get("tables", []))}
 
 
