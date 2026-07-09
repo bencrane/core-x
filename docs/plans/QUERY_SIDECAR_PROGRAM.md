@@ -54,3 +54,26 @@ Same-container ceilings (Phase 2, warm NVMe): 4.7–134 ms per family. Productio
 ## PR trail
 
 #1087 (Phase 0 manifest) → #1088 (Phase 1 builder + artifact) → #1089 (Phase 2 benchmark + Tier C promotion) → #1090 (Phase 3 service) → #1091 (background hydration fix) → #1092 (Phase 4 executor + flip) → this doc + Trigger task + refresh hook (Phase 5).
+
+---
+
+## Bundle cycle addendum (2026-07-09, post-program)
+
+Executed on operator go: everything remaining folds into the sidecar.
+
+1. **`txn_rows` (108M × 16, sorted `action_date`)** — the exact transactions wire contract
+   (`TRANSACTION_RESULT_COLUMNS`) projected from the canonical, canonical column names. The
+   executor's last `NotServable` tier is gone: **every phrase.v2 family now executes on the
+   sidecar**, including bare `actions …` row queries.
+2. **`usaspending_award_pop_centroids` (30.7M, sorted `state_code, zip5`)** — per-award
+   place-of-performance points; enables ad-hoc geo SQL (bounding-box + haversine) and
+   PoP-grain geometry.
+3. **Concurrent queries** — query_sidecar_api runs per-request DuckDB cursors (no global query
+   lock); artifact refresh parks the old connection 300 s instead of closing under live
+   cursors, then reaps it and the old file.
+4. **`sidecar_sql` / `sidecar_tables` on gtm-mcp** — console agents get the fast lane natively
+   (env on the Render service; auto-deploys with `apps/gtm_mcp/**`).
+5. Agent guide + `sidecar-query` skill updated (42 tables, ~845M rows).
+
+Recipe-store wiring (sub_universe_store / subout_store) deliberately NOT bundled: their reads
+are point-lookups + boot caches, already fast; re-evaluate on felt latency, not preemptively.

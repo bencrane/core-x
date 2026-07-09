@@ -108,6 +108,22 @@ MANIFEST: list[dict] = [
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
     {"ds": "gtm_entity_inferred_primeable_codes", "tier": "C", "sort": ["code_type", "code"]},
     {"ds": "gtm_entity_inferred_subbable_codes", "tier": "C", "sort": ["code_type", "code"]},
+    # transactions ROW serving (bundle cycle): the exact 16-column wire contract
+    # (market_registry.TRANSACTION_RESULT_COLUMNS) projected from the canonical —
+    # closes the last NotServable tier. Every transactions filter column is
+    # among the 16, so compiled predicates run verbatim. Sorted by action_date
+    # (every phrase carries a time window).
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "sort": ["action_date"],
+     "dest": "txn_rows", "cols": [
+         "contract_transaction_unique_key", "contract_award_unique_key", "award_id_piid",
+         "recipient_uei", "recipient_name", "action_date", "action_type_code",
+         "action_type_description", "subcontracting_plan", "subcontracting_plan_desc",
+         "federal_action_obligation", "base_and_all_options_value", "naics_code",
+         "product_or_service_code", "awarding_agency_code", "awarding_agency_name"]},
+    # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
+    # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
+    # spatial predicates prune row groups.
+    {"ds": "usaspending_award_pop_centroids", "tier": "C", "sort": ["state_code", "zip5"]},
     # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
     # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────

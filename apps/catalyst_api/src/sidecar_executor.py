@@ -53,6 +53,7 @@ _T_INFERRED = {
 }
 _T_AWARD_STATE = "usaspending_fpds_prime_award_state"
 _T_TXN_SLIM = "gtm_txn_events_slim"
+_T_TXN_ROWS = "txn_rows"  # 16-col wire-contract projection (bundle cycle) — canonical column names
 
 # events_slim column mapping for transactions-collapse predicates: the compiled
 # predicate speaks canonical-txn column names; the slim projection renames two.
@@ -174,11 +175,14 @@ def execute_table_query(spec, filters: list[dict[str, Any]], limit: int | None,
                         today: "dt_date | None" = None) -> dict[str, Any]:
     from . import market_store
 
-    if spec.source != "prime_awards":
-        raise NotServable(f"table rows for {spec.source} stay on the Lance path")
+    # txn_rows carries the exact 16-column wire contract with CANONICAL column
+    # names, so compiled predicates run verbatim on both row sources.
+    table = {"prime_awards": _T_AWARD_STATE, "transactions": _T_TXN_ROWS}.get(spec.source)
+    if table is None:
+        raise NotServable(f"table rows for {spec.source} not mapped to a sidecar table")
     predicate, executed = market_store.compile_table_filters(spec, filters, today)
     cap = max(1, min(limit or market_store.MARKET_DEFAULT_LIMIT, market_store.MARKET_HARD_ROW_CAP))
-    total = int(_one(_sql(f"SELECT count(*) FROM {_T_AWARD_STATE} WHERE {predicate}", 1)))
+    total = int(_one(_sql(f"SELECT count(*) FROM {table} WHERE {predicate}", 1)))
     rows: list[dict[str, Any]] = []
     if total:
         cols = ", ".join(f"t.{c}" for c in spec.result_columns)
@@ -187,7 +191,7 @@ def execute_table_query(spec, filters: list[dict[str, Any]], limit: int | None,
         if spec.geometry == "recipient_hq":
             geo_cols = ", g.latitude AS latitude, g.longitude AS longitude, g.geo_precision AS geo_precision"
             join = f" LEFT JOIN {_T_GEO} g ON g.uei = t.recipient_uei"
-        q = (f"SELECT {cols}{geo_cols} FROM {_T_AWARD_STATE} t{join} "
+        q = (f"SELECT {cols}{geo_cols} FROM {table} t{join} "
              f"WHERE {predicate} LIMIT {cap}")
         rows = _jsonable(_rows(_sql(q, cap)))
     return {"rows": rows, "total": total, "returned": len(rows),
