@@ -77,3 +77,27 @@ Executed on operator go: everything remaining folds into the sidecar.
 
 Recipe-store wiring (sub_universe_store / subout_store) deliberately NOT bundled: their reads
 are point-lookups + boot caches, already fast; re-evaluate on felt latency, not preemptively.
+
+## Combo-portrait addendum (2026-07-09)
+
+Operator requirement: prime-award NAICS×PSC combos at varying granularity, through time,
+crossed with sub-out behavior, geos (state AND county), agencies, and action/plan/topology
+dials — "dial into a precise portrait and zoom out, with ease and quick."
+
+Shipped as **one fact + one rollup + views** (no per-level precompute — zoom is a
+`substr()` GROUP BY over the same sorted table):
+
+- `txn_events_combo` (108M, canonical⋈award_state at build, sorted combo-first) — every
+  dial as a column: fy, action_type_code, subcontracting_plan, award_topology,
+  award_type_code, pop_state/county fips+name, agency + sub-agency codes, obligation.
+- `txn_events_combo_by_geo` — same rows sorted (pop_state, pop_county_fips, action_date)
+  for geo-anchored pruning. Agency-anchored sweeps remain seconds-class scans (a third
+  copy is unwarranted until felt).
+- `award_subout_rollup` (~1M) — award-grain sub-out measures; join on award_key.
+- `agency_sub_vocab` — sub-agency code→name.
+- Views `v_combo_fy`, `v_family_fy`, `v_award_subout` bake the standard portraits.
+
+Also folded: **zero-downtime deploys** — /healthz is readiness-gated (503 until hydrated)
+and the Render service's healthCheckPath points at it, so instance recycles/deploys keep
+the old instance serving until the new one is ready (kills the "re-hydrating, polling"
+window in-session agents hit).
