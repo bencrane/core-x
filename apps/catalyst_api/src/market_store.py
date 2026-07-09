@@ -391,6 +391,27 @@ def to_entity_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     return features, plottable
 
 
+def _try_sidecar(fn_name: str, *args) -> "tuple[bool, dict[str, Any] | None]":
+    """Attempt the query-sidecar executor (Phase 4 wiring, flag-gated via
+    QUERY_SIDECAR_EXECUTE). Returns (served, result). NotServable → (False, None)
+    silently — deliberate tiering (e.g. transactions row queries stay on Lance).
+    Any other failure logs and falls back, so this lane can never be worse than
+    the Lance path. MapCompileError re-raises (validation semantics unchanged)."""
+    from . import sidecar_executor
+
+    if not sidecar_executor.enabled():
+        return False, None
+    try:
+        return True, getattr(sidecar_executor, fn_name)(*args)
+    except sidecar_executor.NotServable:
+        return False, None
+    except MapCompileError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — availability fallback, never a hard fail
+        print(f"[sidecar] {fn_name} failed ({type(exc).__name__}: {exc}); falling back to Lance")
+        return False, None
+
+
 def execute_entity_query(
     filters: list[dict[str, Any]], limit: int | None, today: "dt_date | None" = None
 ) -> dict[str, Any]:
@@ -398,6 +419,9 @@ def execute_entity_query(
     ``{rows, total, returned, capped, executed}``; ``total`` is the EXACT match count
     (set-intersection size, or count_rows pushdown on the single-table fast paths).
     Raises ``MapCompileError`` (→ 422) on any off-registry filter."""
+    served, result = _try_sidecar("execute_entity_query", filters, limit, today)
+    if served:
+        return result
     predicates, lanes, inferred, executed = compile_market_filters(filters, today)
     cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
 
@@ -526,6 +550,9 @@ def execute_table_query(
     require_filter grains) → exact ``count_rows`` total → streamed limit scan of the
     result projection → optional recipient-HQ geometry hydration. Returns the same
     ``{rows, total, returned, capped, executed}`` contract as the entity executor."""
+    served, result = _try_sidecar("execute_table_query", spec, filters, limit, today)
+    if served:
+        return result
     predicate, executed = compile_table_filters(spec, filters, today)
     cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
     uri = TABLE_GRAIN_URIS[spec.source]()
@@ -567,6 +594,9 @@ def execute_table_collapse(
     tiebreak), capped by ``limit``. Returns ``{rows, total_rows,
     distinct_recipients, returned, capped, scanned_rows, scan_capped, executed}`` —
     ``distinct_recipients`` is exact iff ``scan_capped`` is false."""
+    served, result = _try_sidecar("execute_table_collapse", spec, filters, limit, today)
+    if served:
+        return result
     predicate, executed = compile_table_filters(spec, filters, today)
     cap = max(1, min(limit or MARKET_DEFAULT_LIMIT, MARKET_HARD_ROW_CAP))
     money_col, date_col = _COLLAPSE_COLUMNS[spec.source]
