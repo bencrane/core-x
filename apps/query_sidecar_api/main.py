@@ -122,14 +122,20 @@ class SqlRequest(BaseModel):
 app = FastAPI(title="query-sidecar-api", docs_url=None, redoc_url=None)
 
 
+def _require_ready() -> None:
+    if S.con is None:
+        raise HTTPException(status_code=503, detail="hydrating — artifact download in progress")
+
+
 @app.get("/healthz")
 def healthz():
-    return {"ok": S.con is not None, "artifact": S.meta.get("key"),
+    return {"ok": True, "ready": S.con is not None, "artifact": S.meta.get("key"),
             "built_at": S.meta.get("built_at"), "tables": len(S.meta.get("tables", []))}
 
 
 @app.get("/api/v1/tables", dependencies=[Depends(_require_token)])
 def tables():
+    _require_ready()
     with S.lock:
         rows = S.con.execute(
             "SELECT table_name, dataset, tier, sort_key, lance_version, duck_rows "
@@ -140,6 +146,7 @@ def tables():
 
 @app.post("/api/v1/sql", dependencies=[Depends(_require_token)])
 def sql(req: SqlRequest):
+    _require_ready()
     q = req.sql.strip().rstrip(";").strip()
     if ";" in q:
         raise HTTPException(status_code=400, detail="single statement only")
@@ -182,13 +189,22 @@ def refresh():
     return {"refreshed": True, "artifact": meta.get("key")}
 
 
-def _boot() -> None:
-    if not _TOKEN:
-        raise RuntimeError("QUERY_SIDECAR_TOKEN unset — refusing to boot an open SQL endpoint")
-    path, meta = _download_latest()
-    _attach(path, meta)
+def _hydrate_forever() -> None:
+    """Background hydration: the port binds immediately (Render port-scan
+    requirement); endpoints 503 until the artifact is attached. Retries on
+    transient R2 failures rather than dying."""
+    while S.con is None:
+        try:
+            path, meta = _download_latest()
+            with S.lock:
+                _attach(path, meta)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[hydrate] failed ({exc}); retrying in 30s")
+            time.sleep(30)
 
 
 if __name__ == "__main__":
-    _boot()
+    if not _TOKEN:
+        raise RuntimeError("QUERY_SIDECAR_TOKEN unset — refusing to boot an open SQL endpoint")
+    threading.Thread(target=_hydrate_forever, daemon=True, name="hydrate").start()
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
