@@ -192,3 +192,23 @@ tight; you have `elapsed_ms` in every response.
    silently falling back to a spine scan — absence is signal for the next manifest revision.
 4. `gtm_txn_events_slim` renames: `obligation` (not federal_action_obligation), `psc_code`
    (not product_or_service_code), `uei` (not recipient_uei).
+
+## 7. Gap reporting (demand capture — MANDATORY when you fall back)
+
+Whenever you answer a data question WITHOUT the sidecar (Lance scan, pylance probe,
+catalyst endpoint, DuckDB-over-Lance, or a degraded answer), append an entry AS YOU GO to
+`docs/sidecar_gaps/SIDECAR_GAP_REPORT_<YYYY-MM-DD>-<short-slug>.md` (one file per
+session/topic; header = date + `/healthz` artifact stamp + topic). Five fields, exact:
+
+1. **Intent** — the question in plain English, as asked.
+2. **Why not the sidecar** — `missing table` / `missing column(s)` / `wrong grain` /
+   `missing sort (too slow unpruned)` / `freshness required` / `didn't know it was there`
+   — plus the specific dataset/columns involved.
+3. **What I ran instead** — exact query/scan, dataset hit, ONLY the columns actually needed.
+4. **Cost** — wall time; rows scanned vs returned.
+5. **Recurrence** — one-off vs recurring shape (honest).
+
+Footer: rank gaps by recurrence × cost. Report demand only — no solutions. The promotion
+cycle gates every entry (promote / routing fix / correctly-on-Lance) and archives the file
+to `docs/sidecar_gaps/processed/` with a Disposition. This is how the artifact grows —
+silent fallbacks are lost demand signal.
