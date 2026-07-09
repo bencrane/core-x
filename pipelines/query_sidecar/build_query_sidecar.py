@@ -100,6 +100,16 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_award_recipient_rollup", "tier": "B", "sort": ["uei"]},
     {"ds": "gtm_award_expiry_months", "tier": "B", "sort": ["uei", "end_month"]},
     {"ds": "gtm_prime_pop_lanes", "tier": "B", "sort": ["uei"]},
+    # ── Tier C — benchmark-promoted giants (Phase 2 verdicts) ────────────────
+    # award-grain rows + exact expiring: 96s live-lane -> ms-class local; also
+    # removes the expiry_months month-grain approximation on two-lane phrases.
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "sort": ["current_end_date"]},
+    # inferred-code semi-join legs: sorted by (code_type, code) so a code
+    # predicate prunes to a handful of row groups instead of a 263M/160M scan.
+    {"ds": "gtm_entity_inferred_primeable_codes", "tier": "C", "sort": ["code_type", "code"]},
+    {"ds": "gtm_entity_inferred_subbable_codes", "tier": "C", "sort": ["code_type", "code"]},
+    # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
+    # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────
     {"ds": "gtm_prime_sub_pairs", "tier": "D", "sort": ["prime_uei"]},
     {"ds": "gtm_prime_sub_pairs", "tier": "D", "sort": ["sub_uei"],
@@ -294,7 +304,7 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
     ephemeral_disk=524_288,  # 512 GiB local NVMe: DuckDB spill + the output file
     timeout=60 * 60 * 12,
 )
-def build(tiers: str = "A,B,D", publish: bool = True, smoke: bool = False,
+def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
           trigger_callback_url: str | None = None) -> dict:
     """Build the query-sidecar .duckdb for the requested tiers; publish blue-green to R2."""
     import duckdb
@@ -423,7 +433,7 @@ def initdb():
 
 
 @app.local_entrypoint()
-def run(tiers: str = "A,B,D"):
+def run(tiers: str = "A,B,C,D"):
     result = build.remote(tiers=tiers, publish=True, smoke=False, trigger_callback_url=None)
     print(json.dumps({k: v for k, v in result.items() if k != "parity"}, indent=1))
 
