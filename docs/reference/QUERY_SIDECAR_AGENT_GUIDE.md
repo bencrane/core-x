@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.09B rows across 47 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.17B rows across 48 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -61,7 +61,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|---|---|
 | `gtm_txn_events_slim` | 1/FPDS action · 108M | uei, action_date | Columns: uei, action_date, action_type_code (A–Y mod events), subcontracting_plan, naics_code, psc_code, awarding_agency_code, **obligation** (≠ federal_action_obligation), action_key, award_key |
 | `usaspending_fpds_prime_award_state` | 1/contract_award_unique_key · 83M | current_end_date | 43 cols: award_topology, recipient_uei/name, life_to_date_obligated, current_end_date (expiry queries prune HARD on this), naics/psc, agency, PIIDs. DESCRIBE it |
-| `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 36 cols; `subaward_amount` is VARCHAR — use `subaward_amount_num` |
+| `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 38 cols incl. `subaward_description`, `prime_award_base_transaction_description`, `subawardee_business_types` (designation flags); `subaward_amount` is VARCHAR — use `subaward_amount_num` |
 | `subaward_canonical_slim_by_sub` | same rows | subawardee_uei | second copy, sub-side clustering |
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
 | `txn_rows` | 1/FPDS action · 108M | action_date | The 16-col wire contract with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
@@ -71,11 +71,12 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 
 | Table | Grain · rows | Sorted | Semantics |
 |---|---|---|---|
-| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, `awarding_agency_code`, `awarding_sub_agency_code`, `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
+| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
 | `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
 | `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
-| `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` (+ PIID, both award keys). **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side equivalent: `subaward_canonical_slim.subaward_description` |
+| `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
+| `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action `subcontracting_plan` per award (`latest_plan`, `latest_action_date`, `actions`) — award-grain plan state for arbitrary/closed populations, one pruned join |
 | `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
 
 ### Rollups & expiry
