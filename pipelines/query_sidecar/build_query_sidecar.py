@@ -298,7 +298,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
 
 
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("query-sidecar")],  # refresh-hook bearer (Phase 5)
     memory=131_072,          # 128 GiB — the >100M-row sort precedent (cms_medicare giant)
     cpu=8.0,
     ephemeral_disk=524_288,  # 512 GiB local NVMe: DuckDB spill + the output file
@@ -384,6 +385,7 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
                               ContentType="application/json")
                 latest_updated = True
                 print(f"[publish] LATEST.json -> {r2_key}")
+                _notify_refresh()
     except Exception as exc:  # noqa: BLE001
         status, error_message = "error", str(exc)[:2000]
         raise
@@ -400,6 +402,28 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
 
     return {"status": status, "r2_key": r2_key, "file_bytes": file_bytes,
             "tables": len(parity), "parity": parity}
+
+
+def _notify_refresh() -> None:
+    """Best-effort: tell query-sidecar-api to hot-swap to the new artifact
+    (Phase 5 refresh loop). Never fails the build — the service also picks up
+    LATEST on its next boot; this just closes the loop immediately."""
+    import json as _json
+    import urllib.request
+
+    url = os.environ.get("QUERY_SIDECAR_URL")
+    token = os.environ.get("QUERY_SIDECAR_TOKEN")
+    if not (url and token):
+        print("[refresh] QUERY_SIDECAR_URL/TOKEN unset; skipping serving refresh")
+        return
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/v1/refresh", data=b"{}", method="POST",
+            headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as resp:  # noqa: S310 — config-controlled host
+            print(f"[refresh] serving endpoint: {_json.loads(resp.read())}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[refresh] non-fatal: {exc}")
 
 
 def _post_callback(url: str, status: str, parity: list[dict]) -> None:
