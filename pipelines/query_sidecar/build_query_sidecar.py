@@ -83,6 +83,11 @@ _SUBAWARD_COLS = [
     "prime_award_primary_place_of_performance_state_code",
     "prime_award_primary_place_of_performance_country_code",
     "subaward_description",
+    # gap-pass-1 E3b/E6: the prime award's base description alongside each
+    # subaward (diagnostic tabs read both sides in one pass), and the FSRS
+    # designation flags (designation-pulse shapes).
+    "prime_award_base_transaction_description",
+    "subawardee_business_types",
 ]
 
 MANIFEST: list[dict] = [
@@ -152,7 +157,15 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_award_canonical", "tier": "C", "dest": "award_descriptions",
      "sort": ["recipient_uei"],
      "cols": ["generated_unique_award_id", "contract_award_unique_key",
-              "recipient_uei", "award_id_piid", "description"]},
+              "recipient_uei", "award_id_piid", "description",
+              # gap-pass-1 E4: solicitation join keys for the PDF-handoff workstream
+              "solicitation_identifier", "solicitation_date"]},
+    # gap-pass-1 E2: award-grain "carries a subcontracting plan" latest-state for
+    # arbitrary/closed populations (plan lives at txn grain; this pins the
+    # latest-action plan flag per award).
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_plan_state",
+     "sort": ["contract_award_unique_key"], "plan_state": True, "aggregate": True,
+     "cols": ["contract_award_unique_key", "subcontracting_plan", "action_date"]},
     # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
     # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────
@@ -212,6 +225,9 @@ _COMBO_SRC_COLS = [
     "recipient_uei", "contract_award_unique_key", "action_date", "action_type_code",
     "subcontracting_plan", "award_type_code", "naics_code", "product_or_service_code",
     "awarding_agency_code", "awarding_sub_agency_code",
+    # gap-pass-1 E7: funding side (who PAYS vs who signs) — names resolve via the
+    # existing agency_vocab / agency_sub_vocab joins (shared code space).
+    "funding_agency_code", "funding_sub_agency_code",
     "primary_place_of_performance_state_code", "pop_county_fips", "pop_county_name",
     "federal_action_obligation",
 ]
@@ -233,6 +249,8 @@ SELECT
     t.product_or_service_code                         AS psc_code,
     t.awarding_agency_code,
     t.awarding_sub_agency_code,
+    t.funding_agency_code,
+    t.funding_sub_agency_code,
     t.primary_place_of_performance_state_code         AS pop_state,
     t.pop_county_fips,
     t.pop_county_name,
@@ -254,6 +272,18 @@ FROM src
 WHERE prime_award_unique_key IS NOT NULL
 GROUP BY 1
 ORDER BY prime_award_unique_key
+"""
+
+_PLAN_STATE_SQL = """
+CREATE TABLE award_plan_state AS
+SELECT contract_award_unique_key,
+       arg_max(subcontracting_plan, action_date)  AS latest_plan,
+       max(action_date)                           AS latest_action_date,
+       count(*)                                   AS actions
+FROM src
+WHERE contract_award_unique_key IS NOT NULL
+GROUP BY 1
+ORDER BY contract_award_unique_key
 """
 
 _AGENCY_SUB_VOCAB_SQL = """
@@ -455,6 +485,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
                 con.execute(_AGENCY_SUB_VOCAB_SQL)
             elif spec.get("subout_rollup"):
                 con.execute(_SUBOUT_ROLLUP_SQL)
+            elif spec.get("plan_state"):
+                con.execute(_PLAN_STATE_SQL)
             else:
                 extra = spec.get("extra_select")
                 select = "SELECT *" + (f", {extra}" if extra else "")
