@@ -124,6 +124,26 @@ MANIFEST: list[dict] = [
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
     {"ds": "usaspending_award_pop_centroids", "tier": "C", "sort": ["state_code", "zip5"]},
+    # ── combo-portrait layer ──────────────────────────────────────────────────
+    # ONE fact, every dial: combo (substr rollups), time (action_date + fy),
+    # action codes, subk plan, topology (award_state join at build), geo
+    # (pop state/county), agency/sub-agency. Sorted combo-first; geo-sorted
+    # second copy below so county/state-anchored questions prune too.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "txn_events_combo",
+     "sort": ["naics_code", "psc_code", "action_date"], "combo_fact": True},
+    {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_geo",
+     "sort": ["pop_state", "pop_county_fips", "action_date"],
+     "from_table": "txn_events_combo"},
+    # award-grain sub-out rollup: joins the fact/award_state on award key —
+    # "is this combo/geo/agency getting subbed out more or less".
+    {"ds": "usaspending_subaward_canonical", "tier": "C", "dest": "award_subout_rollup",
+     "sort": ["prime_award_unique_key"], "subout_rollup": True, "aggregate": True,
+     "cols": ["prime_award_unique_key", "subawardee_uei", "subaward_amount",
+              "subaward_action_date"]},
+    # sub-agency vocab (code -> majority name), same dedup rule as agency_vocab.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "agency_sub_vocab",
+     "sort": [], "agency_sub_vocab": True, "aggregate": True,
+     "cols": ["awarding_sub_agency_code", "awarding_sub_agency_name"]},
     # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
     # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────
@@ -178,6 +198,72 @@ WHERE rn = 1
 ORDER BY code
 """
 
+# combo-fact source columns (verified present on the canonical 2026-07-09)
+_COMBO_SRC_COLS = [
+    "recipient_uei", "contract_award_unique_key", "action_date", "action_type_code",
+    "subcontracting_plan", "award_type_code", "naics_code", "product_or_service_code",
+    "awarding_agency_code", "awarding_sub_agency_code",
+    "primary_place_of_performance_state_code", "pop_county_fips", "pop_county_name",
+    "federal_action_obligation",
+]
+
+# LEFT JOIN preserves the canonical's row count (award_state is 1 row/key), so
+# the exact-parity gate still applies to the fact. Federal FY: Oct+ -> year+1.
+_COMBO_FACT_SQL = """
+CREATE TABLE txn_events_combo AS
+SELECT
+    t.recipient_uei                                   AS uei,
+    t.contract_award_unique_key                       AS award_key,
+    t.action_date,
+    (year(t.action_date) + CASE WHEN month(t.action_date) >= 10 THEN 1 ELSE 0 END)::SMALLINT AS fy,
+    t.action_type_code,
+    t.subcontracting_plan,
+    a.award_topology,
+    t.award_type_code,
+    t.naics_code,
+    t.product_or_service_code                         AS psc_code,
+    t.awarding_agency_code,
+    t.awarding_sub_agency_code,
+    t.primary_place_of_performance_state_code         AS pop_state,
+    t.pop_county_fips,
+    t.pop_county_name,
+    t.federal_action_obligation                       AS obligation
+FROM src t
+LEFT JOIN src_aw a ON a.contract_award_unique_key = t.contract_award_unique_key
+ORDER BY t.naics_code, t.product_or_service_code, t.action_date
+"""
+
+_SUBOUT_ROLLUP_SQL = """
+CREATE TABLE award_subout_rollup AS
+SELECT prime_award_unique_key,
+       count(*)                                       AS sub_ct,
+       count(DISTINCT subawardee_uei)                 AS distinct_subs,
+       sum(TRY_CAST(subaward_amount AS DOUBLE))       AS sub_amount_total,
+       min(subaward_action_date)                      AS first_sub_date,
+       max(subaward_action_date)                      AS last_sub_date
+FROM src
+WHERE prime_award_unique_key IS NOT NULL
+GROUP BY 1
+ORDER BY prime_award_unique_key
+"""
+
+_AGENCY_SUB_VOCAB_SQL = """
+CREATE TABLE agency_sub_vocab AS
+WITH pairs AS (
+    SELECT awarding_sub_agency_code AS code, awarding_sub_agency_name AS name, count(*) AS n
+    FROM src
+    WHERE awarding_sub_agency_code IS NOT NULL AND awarding_sub_agency_code <> ''
+      AND awarding_sub_agency_name IS NOT NULL AND awarding_sub_agency_name <> ''
+    GROUP BY 1, 2
+)
+SELECT code, name
+FROM (SELECT code, name,
+             row_number() OVER (PARTITION BY code ORDER BY n DESC, name) AS rn
+      FROM pairs)
+WHERE rn = 1
+ORDER BY code
+"""
+
 _VIEWS: dict[str, str] = {
     # entity universe: identity + behavior posture + HQ geo, one row/uei
     "v_entity_universe": """
@@ -191,6 +277,51 @@ _VIEWS: dict[str, str] = {
     "v_prime_sub_edges": """
         CREATE VIEW v_prime_sub_edges AS
         SELECT * FROM gtm_prime_sub_pairs
+    """,
+    # combo portrait: combo × FY with the standard measure set (prime $, actions,
+    # recipients, plan-attached share, task-order share). Add pop_state /
+    # pop_county_fips / awarding_agency_code to the GROUP BY ad hoc for geo/agency
+    # cuts — the fact carries every dial.
+    "v_combo_fy": """
+        CREATE VIEW v_combo_fy AS
+        SELECT naics_code, psc_code, fy,
+               sum(obligation)                                        AS prime_obl,
+               count(*)                                               AS actions,
+               count(DISTINCT uei)                                    AS recipients,
+               count(DISTINCT award_key)                              AS awards,
+               avg(CASE WHEN subcontracting_plan IN ('C','D','E','F','G','H')
+                        THEN 1.0 ELSE 0.0 END)                        AS plan_attached_share,
+               avg(CASE WHEN award_topology = 'vehicle_order'
+                        THEN 1.0 ELSE 0.0 END)                        AS task_order_share
+        FROM txn_events_combo
+        GROUP BY 1, 2, 3
+    """,
+    # family grain (NAICS4 × PSC first letter — the market-grammar family key)
+    "v_family_fy": """
+        CREATE VIEW v_family_fy AS
+        SELECT substr(naics_code, 1, 4) || 'x' || substr(psc_code, 1, 1) AS family,
+               fy,
+               sum(obligation)           AS prime_obl,
+               count(*)                  AS actions,
+               count(DISTINCT uei)       AS recipients,
+               count(DISTINCT award_key) AS awards
+        FROM txn_events_combo
+        GROUP BY 1, 2
+    """,
+    # sub-out portrait at award grain: award_state × sub-out rollup — "is this
+    # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
+    "v_award_subout": """
+        CREATE VIEW v_award_subout AS
+        SELECT a.contract_award_unique_key, a.recipient_uei, a.naics_code,
+               a.product_or_service_code AS psc_code, a.awarding_agency_code,
+               a.award_topology, a.first_action_date, a.last_action_date,
+               a.current_end_date, a.life_to_date_obligated,
+               s.sub_ct, s.distinct_subs, s.sub_amount_total,
+               s.first_sub_date, s.last_sub_date,
+               (s.sub_ct IS NOT NULL) AS is_subbed_out
+        FROM usaspending_fpds_prime_award_state a
+        LEFT JOIN award_subout_rollup s
+               ON s.prime_award_unique_key = a.contract_award_unique_key
     """,
 }
 
@@ -276,30 +407,57 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
     import lance
 
     name, dest = spec["ds"], spec.get("dest", spec["ds"])
-    ds = lance.dataset(f"{LANCE_BASE}{name}/", storage_options=so)
-    pinned_version = ds.version
-    lance_rows = ds.count_rows()
 
-    cols = spec.get("cols")
-    scanner = ds.scanner(columns=cols, batch_size=READ_BATCH_ROWS)
-    reader = scanner.to_reader()          # single-pass — consumed exactly once by the CTAS
-    con.register("src", reader)
-
-    t0 = time.monotonic()
-    if spec.get("agency_vocab"):
-        con.execute(_AGENCY_VOCAB_SQL)
-    else:
-        extra = spec.get("extra_select")
-        select = "SELECT *" + (f", {extra}" if extra else "")
+    if spec.get("from_table"):
+        # Local resort of an already-built table (second sort copy) — no R2 read.
+        src_table = spec["from_table"]
+        pinned_version = -1
+        lance_rows = con.execute(f'SELECT count(*) FROM "{src_table}"').fetchone()[0]
+        t0 = time.monotonic()
         order = ", ".join(spec["sort"])
-        con.execute(f'CREATE TABLE "{dest}" AS {select} FROM src ORDER BY {order}')
-    con.unregister("src")
+        con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
+    else:
+        ds = lance.dataset(f"{LANCE_BASE}{name}/", storage_options=so)
+        pinned_version = ds.version
+        lance_rows = ds.count_rows()
+
+        t0 = time.monotonic()
+        if spec.get("combo_fact"):
+            # canonical txn ⋈ award_state(topology) at build; LEFT JOIN preserves
+            # the txn row count (award_state is 1 row/contract_award_unique_key),
+            # so exact parity still gates this fact.
+            aw = lance.dataset(f"{LANCE_BASE}usaspending_fpds_prime_award_state/",
+                               storage_options=so)
+            con.register("src_aw", aw.scanner(
+                columns=["contract_award_unique_key", "award_topology"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.register("src", ds.scanner(
+                columns=_COMBO_SRC_COLS, batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute(_COMBO_FACT_SQL)
+            con.unregister("src")
+            con.unregister("src_aw")
+        else:
+            reader = ds.scanner(columns=spec.get("cols"),
+                                batch_size=READ_BATCH_ROWS).to_reader()  # single-pass
+            con.register("src", reader)
+            if spec.get("agency_vocab"):
+                con.execute(_AGENCY_VOCAB_SQL)
+            elif spec.get("agency_sub_vocab"):
+                con.execute(_AGENCY_SUB_VOCAB_SQL)
+            elif spec.get("subout_rollup"):
+                con.execute(_SUBOUT_ROLLUP_SQL)
+            else:
+                extra = spec.get("extra_select")
+                select = "SELECT *" + (f", {extra}" if extra else "")
+                order = ", ".join(spec["sort"])
+                con.execute(f'CREATE TABLE "{dest}" AS {select} FROM src ORDER BY {order}')
+            con.unregister("src")
 
     duck_rows = con.execute(f'SELECT count(*) FROM "{dest}"').fetchone()[0]
     elapsed = round(time.monotonic() - t0, 1)
-    # Aggregate tables (e.g. agency_vocab) REDUCE the source — their row count
-    # can never equal the source count; parity there is non-emptiness.
-    aggregate = bool(spec.get("agency_vocab"))
+    # Aggregate tables REDUCE the source — their row count can never equal the
+    # source count; parity there is non-emptiness.
+    aggregate = bool(spec.get("agency_vocab") or spec.get("aggregate"))
     row = {
         "table": dest, "dataset": name, "tier": spec["tier"],
         "sort": ",".join(spec.get("sort", [])) or None,
@@ -376,7 +534,7 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
                 "INSERT INTO _sidecar_manifest VALUES (?,?,?,?,?,?,?,?)",
                 [(p["table"], p["dataset"], p["tier"], p["sort"], p["lance_version"],
                   p["lance_rows"], p["duck_rows"], p["seconds"]) for p in parity])
-            if "A" in wanted and "D" in wanted:
+            if {"A", "C", "D"} <= wanted:  # views span all three tiers' tables
                 for _vname, vsql in _VIEWS.items():
                     con.execute(vsql)
             con.execute("CHECKPOINT")
