@@ -13,9 +13,16 @@ the manifest grows only where demand is proven.
   Recurrence (one-off vs recurring, honestly).
 - **Header:** date, sidecar artifact stamp from /healthz, session topic.
   **Footer:** gaps ranked by recurrence × cost. Demand only — no proposed solutions.
-- **Lifecycle:** the promotion cycle (`/sidecar-gaps process`) gates each entry —
+- **Lifecycle:** the build cycle (`/sidecar-gaps` Mode 2) gates each entry —
   promote (manifest edit + parity-gated rebuild) / routing fix (guide/skill) /
   correctly-on-Lance (freshness/coverage) — appends a **Disposition** section, and moves
   the file to `processed/`.
+- **Adjacency sweep (mandatory when a build fires):** a rebuild is a committed fixed
+  cost; before it runs, every join/projection in scope is swept for the columns a
+  consumer will ask for in the same session (attribution, type codes, names, sibling
+  columns), and the next 2–3 analyst questions are simulated against the post-build
+  artifact. Demand evidence gates STRUCTURAL growth (tables/grains/sort copies);
+  column-grain adds riding a paid-for build ship opportunistically. One build per
+  cycle — "that column needs another rebuild" is a failed cycle.
 
 Schema authority: docs/reference/QUERY_SIDECAR_AGENT_GUIDE.md §Gap reporting.

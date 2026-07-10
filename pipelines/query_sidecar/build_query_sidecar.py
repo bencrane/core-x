@@ -19,6 +19,30 @@ Doctrine (docs/reference/03_modal_compute.md):
 - ops ledger row written on terminal state (success AND failure), never masks
   the build; manual runs skip the Trigger callback.
 
+Build-correctness doctrine (each rule bought with a wasted build, 2026-07-09/10):
+- JOIN CONDITIONS ARE PURE EQUALITY KEYS. A probe-side predicate mixed into an
+  ON clause (x = y AND a.flag = 'v') planned as a blockwise nested-loop join
+  at 83M x 83M — zero-CPU "hang", three builds lost before py-spy --native
+  showed PhysicalBlockwiseNLJoin. Fold probe-side gates into CASE-derived
+  keys; EXPLAIN-gate every new join in the fixture (assert no NL join).
+- Every special-case manifest flag MUST have a dispatch branch in _build_one;
+  _preflight() asserts this and runs at build start. An unwired flag silently
+  falls through to the generic copy (108M-row "aggregate").
+- Fixture-test new special-case SQL through the DISPATCH path, not by calling
+  the SQL constant directly — and EXPLAIN the plan at fixture time; a 4-row
+  fixture executes a pathological plan instantly.
+- Self-join inputs materialize locally (stream -> plain CTAS temp) before
+  joining — hygiene that keeps join/sort independent of Arrow-stream pacing.
+- Launch with `modal run --detach`: a non-detached app dies with its local
+  client (one DNS blip killed a healthy build).
+
+Promotion doctrine (operator-directed, 2026-07-09): the demand-evidence gate
+applies to STRUCTURAL growth (new tables/grains/sort copies — recurring cost).
+Column-grain adds riding a projection/join the build already performs ship
+opportunistically whenever the adjacent question is foreseeable — a rebuild is
+a committed fixed cost; columns are free during it and cost a full new cycle
+after it. See the sidecar-gaps skill (Mode 2) for the adjacency sweep.
+
 Parity: every mart's DuckDB count must equal ds.count_rows() at the PINNED Lance
 version read at build start. Any mismatch fails the run before publish.
 
@@ -95,6 +119,11 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_entity_behavior_rollup", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_sam_entities", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_entity_code_lanes", "tier": "A", "sort": ["uei", "code"]},
+    # gap-pass-3 E1: per-firm ranked prime code signature (see _SIGNATURE_SQL).
+    # Local from_table build off code_lanes — MUST follow it in the manifest.
+    {"ds": "gtm_prime_code_signature", "tier": "A",
+     "sort": ["uei", "code_type", "rank_lifetime"],
+     "from_table": "gtm_entity_code_lanes", "signature": True, "aggregate": True},
     {"ds": "gtm_entity_geo", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_naics_psc_pairs", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "naics_reference", "tier": "A", "sort": ["naics_code"]},
@@ -106,9 +135,22 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_award_expiry_months", "tier": "B", "sort": ["uei", "end_month"]},
     {"ds": "gtm_prime_pop_lanes", "tier": "B", "sort": ["uei"]},
     # ── Tier C — benchmark-promoted giants (Phase 2 verdicts) ────────────────
+    # gap-pass-2 E2: award-grain ordering windows (see _ORDERING_WINDOWS_SQL) —
+    # MUST build before usaspending_fpds_prime_award_state, which joins it.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_ordering_windows",
+     "sort": ["contract_award_unique_key"], "ordering_windows": True, "aggregate": True,
+     "cols": ["contract_award_unique_key", "ordering_period_end_date", "action_date"]},
     # award-grain rows + exact expiring: 96s live-lane -> ms-class local; also
     # removes the expiry_months month-grain approximation on two-lane phrases.
-    {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "sort": ["current_end_date"]},
+    # gap-pass-2 E2: parent_window build widens it with own + resolved-parent
+    # ordering/end-window columns (see _PARENT_WINDOW_SQL).
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "sort": ["current_end_date"],
+     "parent_window": True},
+    # gap-pass-3 E1 residual: open-window position substrate (see
+    # _POSITION_ORDERS_SQL) — local build off award_state, must follow it.
+    {"ds": "gtm_position_orders", "tier": "C", "sort": ["contract_award_unique_key"],
+     "from_table": "usaspending_fpds_prime_award_state", "position_orders": True,
+     "aggregate": True},
     # inferred-code semi-join legs: sorted by (code_type, code) so a code
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
     {"ds": "gtm_entity_inferred_primeable_codes", "tier": "C", "sort": ["code_type", "code"]},
@@ -149,6 +191,10 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "agency_sub_vocab",
      "sort": [], "agency_sub_vocab": True, "aggregate": True,
      "cols": ["awarding_sub_agency_code", "awarding_sub_agency_name"]},
+    # gap-pass-2 E1: PoP country vocab (code -> majority name), same dedup rule.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "country_vocab",
+     "sort": [], "country_vocab": True, "aggregate": True,
+     "cols": ["primary_place_of_performance_country_code", "pop_country_name"]},
     # prime-award descriptions (history-tab use case: a UEI's awards + their
     # requirement descriptions — or the visibly glaring lack thereof). Award
     # grain from award_canonical, sorted recipient_uei so the tab read prunes.
@@ -229,6 +275,12 @@ _COMBO_SRC_COLS = [
     # existing agency_vocab / agency_sub_vocab joins (shared code space).
     "funding_agency_code", "funding_sub_agency_code",
     "primary_place_of_performance_state_code", "pop_county_fips", "pop_county_name",
+    # gap-pass-2 E1: PoP country (ISO3) — overseas vs unstated split on the
+    # no-US-state bucket; names resolve via country_vocab.
+    "primary_place_of_performance_country_code",
+    # gap-pass-2 adjacency: the set-aside dial ("how much of this market is
+    # set-aside") — rides the build already paid for.
+    "type_of_set_aside_code",
     "federal_action_obligation",
 ]
 
@@ -254,6 +306,8 @@ SELECT
     t.primary_place_of_performance_state_code         AS pop_state,
     t.pop_county_fips,
     t.pop_county_name,
+    t.primary_place_of_performance_country_code       AS pop_country_code,
+    t.type_of_set_aside_code,
     t.federal_action_obligation                       AS obligation
 FROM src t
 LEFT JOIN src_aw a ON a.contract_award_unique_key = t.contract_award_unique_key
@@ -284,6 +338,125 @@ FROM src
 WHERE contract_award_unique_key IS NOT NULL
 GROUP BY 1
 ORDER BY contract_award_unique_key
+"""
+
+# gap-pass-2 E1: PoP country code -> majority name (same dedup rule as the
+# agency vocabs; collapses source variants like "UNITED STATES OF AMERICA").
+_COUNTRY_VOCAB_SQL = """
+CREATE TABLE country_vocab AS
+WITH pairs AS (
+    SELECT primary_place_of_performance_country_code AS code,
+           pop_country_name AS name, count(*) AS n
+    FROM src
+    WHERE primary_place_of_performance_country_code IS NOT NULL
+      AND primary_place_of_performance_country_code <> ''
+      AND pop_country_name IS NOT NULL AND pop_country_name <> ''
+    GROUP BY 1, 2
+)
+SELECT code, name
+FROM (SELECT code, name,
+             row_number() OVER (PARTITION BY code ORDER BY n DESC, name) AS rn
+      FROM pairs)
+WHERE rn = 1
+ORDER BY code
+"""
+
+# gap-pass-2 E2: ordering-window state lives at txn grain on the canonical only
+# (~4.5M rows carry a value); this pins the latest-action value per award.
+# Standalone serving table AND the build input for award_state's parent-window
+# columns (_PARENT_WINDOW_SQL below) — its manifest entry must precede that one.
+_ORDERING_WINDOWS_SQL = """
+CREATE TABLE award_ordering_windows AS
+SELECT contract_award_unique_key,
+       arg_max(ordering_period_end_date, action_date) AS ordering_period_end_date,
+       max(action_date)                               AS latest_action_date
+FROM src
+WHERE contract_award_unique_key IS NOT NULL
+  AND ordering_period_end_date IS NOT NULL
+GROUP BY 1
+ORDER BY contract_award_unique_key
+"""
+
+# gap-pass-2 E2: the position/active-ladder primitive — every award row carries
+# its own ordering-window end plus the RESOLVED parent's window state AND
+# attribution (whose vehicle, what instrument), killing the per-query double
+# self-join on the 83M-row table. Parent attribution columns ride the same join
+# opportunistically: the rebuild is paid for, the join is already happening,
+# and "agency behind the parent instrument" is the adjacent question every
+# agency-lens read asks next. All joins are 1:1 (award_state is 1 row/key;
+# award_ordering_windows is GROUP BY key; the parent join is gated on
+# parent_match_flag='resolved' so 'self' rows stay NULL), so the exact
+# row-count parity gate still applies. Two hard-won rules live in this SQL:
+# (1) Join keys are PURE equalities — the probe-side gate
+#     (parent_match_flag='resolved') is folded into a CASE-derived key.
+#     A mixed ON clause (probe-side filter AND equality) degraded the plan to
+#     a blockwise nested-loop join (83M x 83M) that presented as a zero-CPU
+#     hang and ate three builds before py-spy --native exposed
+#     PhysicalBlockwiseNLJoin (2026-07-09/10). The fixture's EXPLAIN gate
+#     asserts every join in this plan is a hash join.
+# (2) Inputs are local tables (stream -> plain CTAS temp first) — keeps the
+#     join/sort pipeline independent of Arrow-stream pacing.
+_PARENT_ATTRS_COLS = [
+    "contract_award_unique_key", "current_end_date", "potential_end_date",
+    "awarding_agency_code", "awarding_sub_agency_code",
+    "idv_type_code", "award_type_code", "type_of_set_aside_code",
+]
+
+_PARENT_WINDOW_SQL = """
+CREATE TABLE usaspending_fpds_prime_award_state AS
+SELECT a.*,
+       o.ordering_period_end_date,
+       po.ordering_period_end_date   AS parent_ordering_period_end_date,
+       p.current_end_date            AS parent_current_end_date,
+       p.potential_end_date          AS parent_potential_end_date,
+       p.awarding_agency_code        AS parent_awarding_agency_code,
+       p.awarding_sub_agency_code    AS parent_awarding_sub_agency_code,
+       p.idv_type_code               AS parent_idv_type_code,
+       p.award_type_code             AS parent_award_type_code,
+       p.type_of_set_aside_code      AS parent_type_of_set_aside_code
+FROM award_state_base a
+LEFT JOIN award_ordering_windows o
+       ON o.contract_award_unique_key = a.contract_award_unique_key
+LEFT JOIN parent_attrs p
+       ON p.contract_award_unique_key
+        = (CASE WHEN a.parent_match_flag = 'resolved' THEN a.parent_award_key_resolved END)
+LEFT JOIN award_ordering_windows po
+       ON po.contract_award_unique_key
+        = (CASE WHEN a.parent_match_flag = 'resolved' THEN a.parent_award_key_resolved END)
+ORDER BY a.current_end_date
+"""
+
+# gap-pass-3 E1 residual (measured post-v8: the position ladder stayed 17-22s
+# because ANY join with an 83M-row side saturates the 2-thread/1.5GB serving
+# box): the snapshot position substrate — every order whose own or resolved-
+# parent ordering window is open AT BUILD DATE, narrow. The ladder becomes
+# ring-keys (320k) ⋈ this (17M x 4 cols) — small-box-friendly. "Open" is
+# as-of the artifact build date (snapshot semantics, like everything here).
+_POSITION_ORDERS_SQL = """
+CREATE TABLE gtm_position_orders AS
+SELECT contract_award_unique_key, recipient_uei, parent_award_key_resolved,
+       coalesce(parent_ordering_period_end_date, ordering_period_end_date) AS window_end
+FROM usaspending_fpds_prime_award_state
+WHERE coalesce(parent_ordering_period_end_date, ordering_period_end_date) >= current_date
+ORDER BY contract_award_unique_key
+"""
+
+# gap-pass-3 E1: per-firm ranked code signature off the prime record — the
+# allocation workload's rank/top-N over code lanes precomputed once, for both
+# windows and both code types; floors/top-N remain query-time dials so the
+# (still-moving) methodology never bakes in. Built from the already-loaded
+# lanes table — no R2 read. Filtered to side='prime' -> aggregate parity.
+_SIGNATURE_SQL = """
+CREATE TABLE gtm_prime_code_signature AS
+SELECT uei, code_type, code,
+       obl_12mo, obl_24mo, obl_60mo, obl_lifetime, action_ct, last_action_date,
+       rank() OVER (PARTITION BY uei, code_type ORDER BY obl_24mo DESC, code)     AS rank_24mo,
+       rank() OVER (PARTITION BY uei, code_type ORDER BY obl_lifetime DESC, code) AS rank_lifetime,
+       obl_24mo     / NULLIF(sum(obl_24mo)     OVER (PARTITION BY uei, code_type), 0) AS share_24mo,
+       obl_lifetime / NULLIF(sum(obl_lifetime) OVER (PARTITION BY uei, code_type), 0) AS share_lifetime
+FROM gtm_entity_code_lanes
+WHERE side = 'prime'
+ORDER BY uei, code_type, rank_lifetime
 """
 
 _AGENCY_SUB_VOCAB_SQL = """
@@ -347,6 +520,40 @@ _VIEWS: dict[str, str] = {
         FROM txn_events_combo
         GROUP BY 1, 2
     """,
+    # gap-pass-3 E4: vintage-aware reference names — the active row when one
+    # exists, else the most recent vintage (codes retired from the current
+    # vintage still carry historical award dollars; a bare is_active join
+    # returns NULL names for them).
+    "v_psc_names": """
+        CREATE VIEW v_psc_names AS
+        SELECT psc_code, psc_name, is_active, source_vintage
+        FROM (SELECT psc_code, psc_name, is_active, source_vintage,
+                     row_number() OVER (PARTITION BY psc_code
+                                        ORDER BY is_active DESC, source_vintage DESC) AS rn
+              FROM psc_reference)
+        WHERE rn = 1
+    """,
+    "v_naics_names": """
+        CREATE VIEW v_naics_names AS
+        SELECT naics_code, naics_title, source_vintage
+        FROM (SELECT naics_code, naics_title, source_vintage,
+                     row_number() OVER (PARTITION BY naics_code
+                                        ORDER BY source_vintage DESC) AS rn
+              FROM naics_reference)
+        WHERE rn = 1
+    """,
+    # gap-pass-3 E3: SAM declarations, unnested from the LIST columns (the
+    # *_counter/*_string near-duplicates are ingest artifacts — using them
+    # produced a retracted figure; this view makes the correct read the easy
+    # one).
+    "v_sam_declared_codes": """
+        CREATE VIEW v_sam_declared_codes AS
+        SELECT uei, is_active, 'naics' AS code_type, unnest(naics_codes) AS code
+        FROM sam_master_entities WHERE naics_codes IS NOT NULL
+        UNION ALL
+        SELECT uei, is_active, 'psc', unnest(psc_codes)
+        FROM sam_master_entities WHERE psc_codes IS NOT NULL
+    """,
     # sub-out portrait at award grain: award_state × sub-out rollup — "is this
     # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
     "v_award_subout": """
@@ -384,6 +591,27 @@ CREATE TABLE IF NOT EXISTS ops.query_sidecar_runs (
 CREATE INDEX IF NOT EXISTS query_sidecar_runs_status_idx ON ops.query_sidecar_runs (status);
 CREATE INDEX IF NOT EXISTS query_sidecar_runs_recorded_idx ON ops.query_sidecar_runs (recorded_at DESC);
 """
+
+
+_SPEC_STRUCTURAL_KEYS = {"ds", "tier", "sort", "cols", "dest", "extra_select",
+                         "aggregate", "from_table"}
+
+
+def _preflight() -> None:
+    """Assert every special-case manifest flag has a dispatch branch in
+    _build_one. An unwired flag falls through to the generic CTAS silently —
+    caught live 2026-07-09 (award_ordering_windows built as a 108M-row copy)."""
+    import inspect
+
+    src = inspect.getsource(_build_one)
+    unwired = sorted({
+        f'{spec.get("dest", spec["ds"])}: {flag}'
+        for spec in MANIFEST
+        for flag in set(spec) - _SPEC_STRUCTURAL_KEYS
+        if f'spec.get("{flag}")' not in src
+    })
+    if unwired:
+        raise RuntimeError(f"manifest flags without a _build_one branch: {unwired}")
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -448,13 +676,19 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
     name, dest = spec["ds"], spec.get("dest", spec["ds"])
 
     if spec.get("from_table"):
-        # Local resort of an already-built table (second sort copy) — no R2 read.
+        # Local build off an already-built table (second sort copy or derived
+        # rollup) — no R2 read.
         src_table = spec["from_table"]
         pinned_version = -1
         lance_rows = con.execute(f'SELECT count(*) FROM "{src_table}"').fetchone()[0]
         t0 = time.monotonic()
-        order = ", ".join(spec["sort"])
-        con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
+        if spec.get("signature"):
+            con.execute(_SIGNATURE_SQL)
+        elif spec.get("position_orders"):
+            con.execute(_POSITION_ORDERS_SQL)
+        else:
+            order = ", ".join(spec["sort"])
+            con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
     else:
         ds = lance.dataset(f"{LANCE_BASE}{name}/", storage_options=so)
         pinned_version = ds.version
@@ -475,6 +709,22 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_COMBO_FACT_SQL)
             con.unregister("src")
             con.unregister("src_aw")
+        elif spec.get("parent_window"):
+            # award_state ⋈ itself (resolved parent) ⋈ award_ordering_windows
+            # (already built — manifest order guarantees it). Streams feed
+            # plain CTAS materializations; the join+sort runs over local
+            # tables with pure-equality keys (see _PARENT_WINDOW_SQL note).
+            con.register("src_parent", ds.scanner(
+                columns=_PARENT_ATTRS_COLS,
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE parent_attrs AS SELECT * FROM src_parent")
+            con.unregister("src_parent")
+            con.register("src", ds.scanner(batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE award_state_base AS SELECT * FROM src")
+            con.unregister("src")
+            con.execute(_PARENT_WINDOW_SQL)
+            con.execute("DROP TABLE parent_attrs")
+            con.execute("DROP TABLE award_state_base")
         else:
             reader = ds.scanner(columns=spec.get("cols"),
                                 batch_size=READ_BATCH_ROWS).to_reader()  # single-pass
@@ -483,6 +733,10 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
                 con.execute(_AGENCY_VOCAB_SQL)
             elif spec.get("agency_sub_vocab"):
                 con.execute(_AGENCY_SUB_VOCAB_SQL)
+            elif spec.get("country_vocab"):
+                con.execute(_COUNTRY_VOCAB_SQL)
+            elif spec.get("ordering_windows"):
+                con.execute(_ORDERING_WINDOWS_SQL)
             elif spec.get("subout_rollup"):
                 con.execute(_SUBOUT_ROLLUP_SQL)
             elif spec.get("plan_state"):
@@ -525,6 +779,7 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
     """Build the query-sidecar .duckdb for the requested tiers; publish blue-green to R2."""
     import duckdb
 
+    _preflight()
     started_at = dt.datetime.now(dt.timezone.utc)
     stamp = started_at.strftime("%Y%m%dT%H%M%SZ")
     wanted = {t.strip().upper() for t in tiers.split(",") if t.strip()}

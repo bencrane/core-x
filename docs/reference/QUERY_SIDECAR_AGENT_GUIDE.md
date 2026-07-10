@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.17B rows across 48 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.20B rows across 52 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -21,8 +21,12 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
   -d '{"sql": "SELECT count(*) FROM gtm_txn_events_slim WHERE uei = '\''ABC123DEF456'\''", "limit": 1000}'
 ```
 
-- `POST /api/v1/sql` `{"sql", "limit"?}` — ONE statement, `SELECT`/`WITH`/`DESCRIBE`/`SHOW` only.
-  Default limit 1000, max 50000, 120 s timeout, rows returned as `{columns, rows, elapsed_ms}`.
+- `POST /api/v1/sql` `{"sql", "limit"?, "require_artifact"?}` — ONE statement,
+  `SELECT`/`WITH`/`DESCRIBE`/`SHOW` only. Default limit 1000, max 50000, 120 s timeout,
+  rows returned as `{columns, rows, elapsed_ms, artifact, instance}`.
+  **Multi-statement analyses that must reconcile to the dollar:** pin
+  `require_artifact` to the first response's `artifact`; a 409 means the snapshot
+  moved mid-session — re-run the batch against the new stamp instead of mixing states.
 - `GET /api/v1/tables` (bearer) — live table catalog: every table with source dataset, tier,
   sort key, pinned Lance version, row count.
 - `DESCRIBE <table>` (via the sql endpoint) — full column list for any table. **Introspect
@@ -53,6 +57,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Table | Grain · rows | Sorted | Semantics |
 |---|---|---|---|
 | `gtm_entity_code_lanes` | 1/(uei, side, code_type, code) · 1.7M | uei, code | DEMONSTRATED: side='prime' (primed in) or 'sub' (subbed under); code_type 'naics'\|'psc'; obl_12/24/60mo/lifetime, action_ct |
+| `gtm_prime_code_signature` | 1/(uei, code_type, code), prime side only · 1.18M | uei, code_type, rank_lifetime | The allocation/signature primitive: per-firm ranked prime record — `rank_24mo`, `rank_lifetime`, `share_24mo`, `share_lifetime` precomputed per (uei, code_type); floors/top-N applied at query time (`WHERE rank_lifetime <= 5 AND share_lifetime >= 0.05`). Never re-derive ranks with window functions over code lanes |
 | `gtm_entity_inferred_primeable_codes` | 1/(uei, code_type, code) · 263M | code_type, code | INFERRED could-prime (cooccurrence evidence). Filter by code first — that's the sort |
 | `gtm_entity_inferred_subbable_codes` | 1/(uei, code_type, code) · 160M | code_type, code | mirror, could-sub |
 
@@ -60,7 +65,9 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Table | Grain · rows | Sorted | Notes |
 |---|---|---|---|
 | `gtm_txn_events_slim` | 1/FPDS action · 108M | uei, action_date | Columns: uei, action_date, action_type_code (A–Y mod events), subcontracting_plan, naics_code, psc_code, awarding_agency_code, **obligation** (≠ federal_action_obligation), action_key, award_key |
-| `usaspending_fpds_prime_award_state` | 1/contract_award_unique_key · 83M | current_end_date | 43 cols: award_topology, recipient_uei/name, life_to_date_obligated, current_end_date (expiry queries prune HARD on this), naics/psc, agency, PIIDs. DESCRIBE it |
+| `usaspending_fpds_prime_award_state` | 1/contract_award_unique_key · 83M | current_end_date | 52 cols: award_topology, recipient_uei/name, life_to_date_obligated, current_end_date (expiry queries prune HARD on this), naics/psc, agency, PIIDs, **window state** (own `ordering_period_end_date` + resolved-parent `parent_ordering_period_end_date`/`parent_current_end_date`/`parent_potential_end_date`) **and parent attribution** (`parent_awarding_agency_code`/`parent_awarding_sub_agency_code` = whose vehicle, `parent_idv_type_code`/`parent_award_type_code` = what instrument, `parent_type_of_set_aside_code`). Parent cols populated only when `parent_match_flag='resolved'`; 'self'/'dangling' rows stay NULL. Position/active ladders and "agency behind the parent instrument" are ONE pass, never a self-join. DESCRIBE it |
+| `award_ordering_windows` | 1/award with an ordering window · 982k | contract_award_unique_key | `ordering_period_end_date` (latest-action `arg_max`) + `latest_action_date` — IDV/vehicle ordering-window universe ("which vehicles' windows close in N days") |
+| `gtm_position_orders` | 1/order with OPEN window (as of build date) · ~17M | contract_award_unique_key | The position-ladder substrate: contract_award_unique_key, recipient_uei, parent_award_key_resolved, `window_end` (own-else-parent ordering end). **Position rungs join ring keys to THIS, never to the 83M award_state** — any 83M-side join saturates the 2-thread serving box (measured 17–22s) |
 | `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 38 cols incl. `subaward_description`, `prime_award_base_transaction_description`, `subawardee_business_types` (designation flags); `subaward_amount` is VARCHAR — use `subaward_amount_num` |
 | `subaward_canonical_slim_by_sub` | same rows | subawardee_uei | second copy, sub-side clustering |
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
@@ -71,13 +78,14 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 
 | Table | Grain · rows | Sorted | Semantics |
 |---|---|---|---|
-| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
+| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, **`pop_country_code`** (ISO3 — splits the no-US-state bucket into overseas vs unstated; names via `country_vocab`), **`type_of_set_aside_code`** (the set-aside dial), `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
 | `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
 | `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
 | `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action `subcontracting_plan` per award (`latest_plan`, `latest_action_date`, `actions`) — award-grain plan state for arbitrary/closed populations, one pruned join |
 | `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
+| `v_psc_names` / `v_naics_names` / `v_sam_declared_codes` | views | — | Vintage-safe reference names (active-else-latest, 1 row/code); SAM declarations unnested to (uei, is_active, code_type, code) |
 
 ### Rollups & expiry
 | Table | Grain · rows | Sorted |
@@ -107,11 +115,11 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_sam_people` | 1/(uei, name_key) · 2.3M | uei |
 | `gtm_sam_person_contactability` | 1/sam_person_id · 152k | sam_person_id |
 | `sam_pocs` | 1/(uei, role, slot) · 8.1M | uei |
-| `sam_master_entities` | 1/uei SAM registration master · 1.5M | uei |
+| `sam_master_entities` | 1/uei SAM registration master · 1.5M | uei | ⚠ declaration columns: use the LIST columns `naics_codes`/`psc_codes` (VARCHAR[]) — or `v_sam_declared_codes`, which unnests them. The `*_counter`/`*_string` near-duplicates are raw ingest artifacts; counting on them produced a retracted figure (84% vs the true ~21% PSC declaration rate). Measured semantics: NAICS declarations near-universal among registrants, PSC sparse/optional |
 | `people_canonical` | 1/canonical_person_id · 132k | canonical_person_id |
 | `firmographics_blitz` | 1/domain · 255k | domain_norm |
 | `federal_sites_lance` | 1/federal site · 300k | state_code, zip5 |
-| `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` | code refs · 2.1k/6.1k/321k/75 | code |
+| `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` · `country_vocab` | code refs · 2.1k/6.1k/321k/75/~250 | code | ⚠ vintages: both reference tables carry multiple `source_vintage` rows per code; `psc_reference WHERE is_active` returns NULL names for retired-vintage codes that still carry award dollars. **Display names: join `v_psc_names` / `v_naics_names`** (active-else-latest-vintage, one row per code) |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
 
 ## 4. Query patterns (proven shapes)
@@ -173,6 +181,37 @@ FROM txn_events_combo c
 LEFT JOIN award_subout_rollup s ON s.prime_award_unique_key = c.award_key
 WHERE c.naics_code LIKE '5413%' AND c.psc_code LIKE 'J%'
 GROUP BY 1 ORDER BY 1;
+
+-- POSITION LADDER (agency-lens): firms with an IDV seat whose ordering window is
+-- open at snapshot, carrying <agency> orders in a PSC ring — ONE pass, no self-join.
+-- NOTE: Navy '1700' is a SUB-agency code (top-tier DoD = '097'); ring on
+-- awarding_sub_agency_code. Join gtm_position_orders (17M narrow, open-window
+-- only), NOT the 83M award_state — big-side joins saturate the serving box.
+SELECT count(DISTINCT p.recipient_uei)
+FROM txn_events_combo c
+JOIN gtm_position_orders p ON p.contract_award_unique_key = c.award_key
+WHERE c.awarding_sub_agency_code = '1700'
+  AND (substr(c.psc_code,1,1) IN ('J','N') OR substr(c.psc_code,1,2) = '42');  -- the ring
+
+-- Overseas vs unstated: name the no-US-state bucket (geo map legend / market share)
+SELECT coalesce(v.name, 'UNSTATED') AS country,
+       count(DISTINCT c.award_key) awards, sum(c.obligation) obl
+FROM txn_events_combo c
+LEFT JOIN country_vocab v ON v.code = c.pop_country_code
+WHERE c.pop_state IS NULL AND c.awarding_agency_code = '1700'
+GROUP BY 1 ORDER BY obl DESC;
+
+-- Signature allocation seed: each receiver's top-5 prime PSC lanes with shares —
+-- ranks are PRECOMPUTED; floors/top-N are query-time dials
+SELECT uei, code, share_24mo, v.psc_name
+FROM gtm_prime_code_signature s
+LEFT JOIN v_psc_names v ON v.psc_code = s.code
+WHERE s.uei IN (/* receiver set */) AND s.code_type = 'psc'
+  AND s.rank_24mo <= 5 AND s.obl_24mo > 0;
+
+-- Declaration coverage of a firm set (never count the *_counter/*_string columns)
+SELECT code_type, count(DISTINCT uei) declaring_firms
+FROM v_sam_declared_codes WHERE uei IN (/* set */) GROUP BY 1;
 ```
 
 ## 5. Performance model
@@ -188,6 +227,9 @@ tight; you have `elapsed_ms` in every response.
 1. **Snapshot, not live.** `/healthz` → `artifact` stamp; `_sidecar_meta`/`_sidecar_manifest`
    carry the build time and per-table pinned Lance versions. Rebuild:
    `modal run pipelines/query_sidecar/build_query_sidecar.py::run` (auto-refreshes serving).
+   Serving instances converge on the newest artifact within ~60 s of a publish (LATEST
+   poll); across that window, cross-statement totals can mix states — pin
+   `require_artifact` (§1) when numbers must reconcile.
 2. **Read-only by construction** — write/DDL statements are rejected; don't try.
 3. **Not everything is here** (§2). If a needed table/column is absent, say so rather than
    silently falling back to a spine scan — absence is signal for the next manifest revision.
