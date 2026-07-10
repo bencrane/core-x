@@ -239,6 +239,33 @@ MANIFEST: list[dict] = [
      "extra_select": "TRY_CAST(subaward_amount AS DOUBLE) AS subaward_amount_num"},
     {"ds": "federal_sites_lance", "tier": "D", "sort": ["state_code", "zip5"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
+    # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
+    # Demand: SIDECAR_GAP_REPORT_2026-07-10-funding-tab-pdl-match (PDL bridge) +
+    # operator-recorded next-questions (icypeas/LinkedIn coverage on the same
+    # populations). "Does population X have PDL / LinkedIn / scraped-profile
+    # coverage" becomes one pruned statement. pdl_companies (raw twin of
+    # normalized, 35M) deliberately excluded — linkedin_slug carries the URL.
+    {"ds": "bridge_sam_pdl", "tier": "D", "sort": ["uei"]},
+    {"ds": "pdl_normalized_companies", "tier": "D", "sort": ["pdl_company_id"]},
+    {"ds": "icypeas_company_scrapes", "tier": "D", "sort": ["uei"],
+     "cols": ["uei", "company_linkedin_url", "name", "domain", "li_source",
+              "source_class", "money24_usd", "in_dsbs", "status", "linkedin_url",
+              "website", "domain_norm", "industry", "headcount_range",
+              "employee_count", "country", "batch_label", "scraped_at"]},  # -raw_result
+    {"ds": "icypeas_dsbs_company_profiles", "tier": "D", "sort": ["uei"]},
+    {"ds": "icypeas_person_profiles", "tier": "D", "sort": ["uei"],
+     "cols": ["file_id", "file_name", "order_idx", "sam_person_id", "uei",
+              "input_url", "icypeas_item_id", "status", "found",
+              "person_linkedin_url_norm", "drained_at"]},  # -raw, -li blobs
+    {"ds": "icypeas_person_profile_scrapes", "tier": "D",
+     "sort": ["person_linkedin_url_norm"]},
+    {"ds": "bridge_dsbs_pdl_linkedin", "tier": "D", "sort": ["uei"]},
+    {"ds": "dsbs_poc_linkedin", "tier": "D", "sort": ["uei"]},
+    {"ds": "exa_person_linkedin_candidates", "tier": "D", "sort": ["uei"],
+     "cols": ["sam_person_id", "uei", "first_name", "last_name", "company_name",
+              "company_domain", "aff_used", "query", "exa_linkedin_url",
+              "exa_title", "is_in_profile", "n_results", "cost_usd",
+              "searched_at", "source_batch", "query_variant"]},  # -raw_results_json
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
