@@ -73,7 +73,7 @@ from . import market_registry, market_store
 from .lance_store import MapCompileError
 from .psc_work_language import WORK_NOUNS, WORK_VERBS
 
-COMPILER_VERSION = "phrase.v4"   # v4: $ on companies+event = per-firm event-window Σ$; hydrated rows carry event_amt_total, Σ$-ordered
+COMPILER_VERSION = "phrase.v5"   # v5: comparator symbols, 'new funding', explicit 'lifetime $' window (no silent default)
 
 PHRASE_MAX_CHARS = 400
 DEFAULT_STEP_LIMIT = 1_000            # emitted bodies use the engine's hard row cap
@@ -101,6 +101,7 @@ EVENTS: dict[str, str] = {
     "additional work": "A",
     "funding action": "C",
     "funded": "C",
+    "new funding": "C",
     "change order": "D",
     "change orders": "D",
     "terminated for default": "E",
@@ -526,10 +527,19 @@ def _bind(tokens: list[str], today: dt_date) -> list[dict[str, Any]]:
             i += 2
             continue
 
-        # MONEY: "over/above/at least $X" → >= ; "under/below $X" → <= .
-        if tok in ("over", "above", "under", "below") or \
+        # MONEY WINDOW qualifier (v5): 'lifetime' pins the $ clause to the
+        # entity lifetime rollup — the only way to get a firm-size floor.
+        if tok == "lifetime":
+            _add([tok], "money_window", None, "lifetime")
+            i += 1
+            continue
+
+        # MONEY: "over/above/at least/>/>= $X" → >= ; "under/below/</<= $X" → <=
+        # (strict > and < are served as the inclusive op and disclosed as such —
+        # on continuous dollars the distinction is not load-bearing).
+        if tok in ("over", "above", "under", "below", ">", ">=", "<", "<=") or \
                 (tok == "at" and i + 1 < n and tokens[i + 1] == "least"):
-            cmp_op = "<=" if tok in ("under", "below") else ">="
+            cmp_op = "<=" if tok in ("under", "below", "<", "<=") else ">="
             j = i + (2 if tok == "at" else 1)
             mtok = tokens[j] if j < n else ""
             m = _MONEY_RE.match(mtok)
@@ -681,6 +691,8 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
     psc = [b for b in bindings if b["axis"] == "psc"]
     times = [b for b in bindings if b["axis"] == "time"]
     moneys = [b for b in bindings if b["axis"] == "money"]
+    money_lifetime = any(b["axis"] == "money_window" and b["value"] == "lifetime"
+                         for b in bindings)
     agencies = [b for b in bindings if b["axis"] == "agency"]
     quals = [b for b in bindings if b["axis"] == "entity_qualifier"]
     states = [b for b in bindings if b["axis"] == "state"]
@@ -748,13 +760,14 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
                                          "collapse": "recipients",
                                          "filters": step1_filters,
                                          "limit": DEFAULT_STEP_LIMIT}
-                if moneys and not award_lane:
+                if moneys and not award_lane and not money_lifetime:
                     # phrase.v4: a $ amount on a companies+event phrase
                     # thresholds the PER-COMPANY event-window Σ$ (the
                     # collapse's amt_total) — "over $5m that were just funded"
                     # means $5M of NEW money in the window, however many
                     # actions it arrived in. Per-action deltas remain the
-                    # 'actions' subject's semantics (EX13).
+                    # 'actions' subject's semantics (EX13); 'lifetime $'
+                    # rides the entity step instead (v5).
                     step1["amt_thresholds"] = [
                         {"op": b["op"], "value": b["value"]} for b in moneys]
                 plan.append(step1)
@@ -789,6 +802,12 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
                                       "value": 1})
             for b in states:
                 step2_filters.append(_state_filter(b))
+            if money_lifetime:
+                # v5: 'lifetime over $X' is the explicit firm-size floor —
+                # it rides the entity step even when event lanes are open.
+                for b in moneys:
+                    step2_filters.append({"field": "prime_obl_lifetime",
+                                          "op": b["op"], "value": b["value"]})
             plan.append({"grain": "entity", "filters": step2_filters,
                          "limit": DEFAULT_STEP_LIMIT})
         else:
@@ -810,6 +829,13 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
             if moneys:
                 basis = "sub" if any(b["axis"] == "money_basis" for b in bindings) \
                     else "prime"
+                if basis == "prime" and not money_lifetime:
+                    # v5: no silent lifetime default — the $ window is said
+                    # out loud or the phrase refuses with both fixes named.
+                    raise MapCompileError(
+                        "phrase refused: say the $ window — 'lifetime over $5m' "
+                        "for a firm-size floor, or add a time window ('over $5m "
+                        "in the last 2 years') for fresh-money totals")
                 field = "sub_amt_lifetime" if basis == "sub" else "prime_obl_lifetime"
                 for b in moneys:
                     filters.append({"field": field, "op": b["op"], "value": b["value"]})

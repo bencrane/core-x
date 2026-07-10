@@ -517,7 +517,7 @@ def test_compile_and_execute_envelope(monkeypatch):
     out = phrase_compiler.compile_and_execute(
         {"phrase": "sub-only companies with inferred primeable 541330"},
         today=TODAY)
-    assert out["meta"]["compilerVersion"] == "phrase.v4"
+    assert out["meta"]["compilerVersion"] == "phrase.v5"
     assert out["meta"]["refused"] is None
     assert out["meta"]["grain"] == "entity"
     assert out["data"]["rows"] == [{"uei": "UEIA11111111"}]
@@ -618,3 +618,36 @@ def test_v4_execute_thresholds_the_collapse_sum_and_carries_amounts(monkeypatch)
     assert rows[0]["event_amt_total"] == 6_000_000.0
     assert rows[0]["event_match_ct"] == 4
     assert rows[1]["event_amt_total"] == 1_500_000.0
+
+
+# ── phrase.v5: comparator symbols, 'new funding', explicit $ windows ───────────
+
+def test_v5_comparator_symbol_after_event_binds_sum_threshold():
+    plan = _plan("construction companies that just received additional work > $2m")
+    assert plan[0]["amt_thresholds"] == [{"op": ">=", "value": 2_000_000.0}]
+    assert {"field": "action_type_code", "op": "=", "value": "A"} in plan[0]["filters"]
+
+
+def test_v5_new_funding_event_alias():
+    plan = _plan("construction companies that just received new funding > $500k")
+    assert {"field": "action_type_code", "op": "=", "value": "C"} in plan[0]["filters"]
+    assert plan[0]["amt_thresholds"] == [{"op": ">=", "value": 500_000.0}]
+
+
+def test_v5_lifetime_qualifier_is_the_explicit_firm_size_floor():
+    plan = _plan("companies lifetime over $5m that primed in 236220")
+    assert {"field": "prime_obl_lifetime", "op": ">=", "value": 5_000_000.0} \
+        in plan[0]["filters"]
+
+
+def test_v5_bare_money_without_window_refuses_naming_both_fixes():
+    with pytest.raises(MapCompileError, match="lifetime over"):
+        phrase_compiler.compile_phrase(
+            "companies over $10m that primed in 236220", today=TODAY)
+
+
+def test_v5_lifetime_money_with_event_rides_the_entity_step():
+    plan = _plan("construction companies lifetime over $10m that were just funded")
+    assert "amt_thresholds" not in plan[0]
+    assert {"field": "prime_obl_lifetime", "op": ">=", "value": 10_000_000.0} \
+        in plan[-1]["filters"]
