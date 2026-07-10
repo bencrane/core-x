@@ -523,3 +523,52 @@ def test_compile_and_execute_envelope(monkeypatch):
     assert out["data"]["rows"] == [{"uei": "UEIA11111111"}]
     with pytest.raises(MapCompileError, match="unknown body key"):
         phrase_compiler.compile_and_execute({"phrase": "x", "mode": "y"}, today=TODAY)
+
+
+# ── WORK LANGUAGE (vocabulary cycle 2026-07-10, operator-directed) ─────────────
+# "to? <verb> <noun>" binds the PSC axis from the frozen generated vocabulary
+# (psc_work_language.py) — either spelling of the axis works: the plain-English
+# work phrase or the PSC literal. Aliases are split from the official titles,
+# so no slash-laden title string is ever required.
+
+def test_work_language_to_verb_noun_binds_psc_in_list():
+    plan = phrase_compiler.compile_phrase(
+        "companies funded to repair bridges in the last 90 days", today=TODAY)
+    psc = [b for b in plan["bindings"] if b["axis"] == "psc"]
+    assert psc and psc[0]["op"] == "in" and psc[0]["value"] == ["Z2LB"]
+
+
+def test_work_language_binds_without_the_to_token():
+    plan = phrase_compiler.compile_phrase(
+        "companies funded repair bridges last 90 days", today=TODAY)
+    psc = [b for b in plan["bindings"] if b["axis"] == "psc"]
+    assert psc and psc[0]["value"] == ["Z2LB"]
+
+
+def test_work_language_head_noun_alias_from_split_title():
+    # 'runways' is a split/head alias of 'AIRPORT RUNWAYS AND TAXIWAYS'
+    plan = phrase_compiler.compile_phrase(
+        "companies that just received additional work to build runways",
+        today=TODAY)
+    psc = [b for b in plan["bindings"] if b["axis"] == "psc"]
+    assert psc and psc[0]["value"] == ["Y1BD"]
+
+
+def test_work_language_wrong_verb_for_noun_refuses_naming_served_verbs():
+    with pytest.raises(MapCompileError, match="served with: supply"):
+        phrase_compiler.compile_phrase("companies to build dredges", today=TODAY)
+
+
+def test_work_language_verb_without_known_noun_falls_through():
+    # 'run' is a verb synonym but no noun alias follows — the block must be a
+    # no-op, so the refusal is the ordinary unbound-token one on 'run' itself
+    # (identical to pre-cycle behavior), never a work-language refusal
+    with pytest.raises(MapCompileError, match="'run' — not in the phrase vocabulary"):
+        phrase_compiler.compile_phrase("companies that run widgets", today=TODAY)
+
+
+def test_work_language_psc_literal_still_binds_the_same_axis():
+    plan = phrase_compiler.compile_phrase(
+        "companies funded in Y1AA last 90 days", today=TODAY)
+    psc = [b for b in plan["bindings"] if b["axis"] == "psc"]
+    assert psc and psc[0]["value"] in (["Y1AA"], "Y1AA")
