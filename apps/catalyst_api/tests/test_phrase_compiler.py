@@ -517,7 +517,7 @@ def test_compile_and_execute_envelope(monkeypatch):
     out = phrase_compiler.compile_and_execute(
         {"phrase": "sub-only companies with inferred primeable 541330"},
         today=TODAY)
-    assert out["meta"]["compilerVersion"] == "phrase.v2"
+    assert out["meta"]["compilerVersion"] == "phrase.v3"
     assert out["meta"]["refused"] is None
     assert out["meta"]["grain"] == "entity"
     assert out["data"]["rows"] == [{"uei": "UEIA11111111"}]
