@@ -73,7 +73,7 @@ from . import market_registry, market_store
 from .lance_store import MapCompileError
 from .psc_work_language import WORK_NOUNS, WORK_VERBS
 
-COMPILER_VERSION = "phrase.v3"   # v3: work-language vocabulary (to <verb> <noun> -> PSC in-list)
+COMPILER_VERSION = "phrase.v4"   # v4: $ on companies+event = per-firm event-window Σ$; hydrated rows carry event_amt_total, Σ$-ordered
 
 PHRASE_MAX_CHARS = 400
 DEFAULT_STEP_LIMIT = 1_000            # emitted bodies use the engine's hard row cap
@@ -739,17 +739,25 @@ def compile_phrase(phrase: str, today: "dt_date | None" = None) -> dict[str, Any
                 for b in agencies:
                     step1_filters.append({"field": "awarding_agency_code",
                                           "op": "=", "value": b["value"]})
-                if not award_lane:
-                    for b in moneys:
-                        step1_filters.append({"field": "federal_action_obligation",
-                                              "op": b["op"], "value": b["value"]})
                 step1_filters += _time_filter("action_date")
                 if not step1_filters:
                     raise MapCompileError(
                         "phrase refused: companies-pipeline needs at least one event/"
                         "code/time clause (the transaction grain requires a filter)")
-                plan.append({"grain": "transaction", "collapse": "recipients",
-                             "filters": step1_filters, "limit": DEFAULT_STEP_LIMIT})
+                step1: dict[str, Any] = {"grain": "transaction",
+                                         "collapse": "recipients",
+                                         "filters": step1_filters,
+                                         "limit": DEFAULT_STEP_LIMIT}
+                if moneys and not award_lane:
+                    # phrase.v4: a $ amount on a companies+event phrase
+                    # thresholds the PER-COMPANY event-window Σ$ (the
+                    # collapse's amt_total) — "over $5m that were just funded"
+                    # means $5M of NEW money in the window, however many
+                    # actions it arrived in. Per-action deltas remain the
+                    # 'actions' subject's semantics (EX13).
+                    step1["amt_thresholds"] = [
+                        {"op": b["op"], "value": b["value"]} for b in moneys]
+                plan.append(step1)
             if award_lane:
                 # Topology honesty rides ALWAYS on the companies award lane: the
                 # collapse Σ$ must never mix vehicle wrappers with real money, and
@@ -927,14 +935,35 @@ def execute_plan(plan: list[dict[str, Any]],
                 "result": market_store.execute_table_query(
                     spec, step1["filters"], step1["limit"], today)}
 
+    def _amt_ok(amt: float, th: dict[str, Any]) -> bool:
+        op, v = th["op"], th["value"]
+        if op == ">=":
+            return amt >= v
+        if op == "<=":
+            return amt <= v
+        if op == "between":
+            return v[0] <= amt <= v[1]
+        raise MapCompileError(f"unsupported $ op {op!r} on the event lane")
+
     collapses: list[dict[str, Any]] = []
     lane_ueis: list[list[str]] = []
+    lane1_amounts: dict[str, dict[str, Any]] = {}
     for st in plan[:-1]:
         spec = market_registry.TABLE_GRAINS[st["grain"]]
         collapsed = market_store.execute_table_collapse(
             spec, st["filters"], st["limit"], today)
+        lane_rows = collapsed["rows"]
+        if st.get("amt_thresholds"):
+            # phrase.v4: threshold the per-company event-window Σ$
+            lane_rows = [r for r in lane_rows
+                         if all(_amt_ok(r["amt_total"], th)
+                                for th in st["amt_thresholds"])]
+            collapsed = {**collapsed, "rows": lane_rows,
+                         "distinct_recipients": len(lane_rows)}
         collapses.append(collapsed)
-        lane_ueis.append([r["uei"] for r in collapsed["rows"]])
+        lane_ueis.append([r["uei"] for r in lane_rows])
+        if not lane1_amounts:
+            lane1_amounts = {r["uei"]: r for r in lane_rows}
     common = set(lane_ueis[0])
     for lane in lane_ueis[1:]:
         common &= set(lane)
@@ -961,7 +990,17 @@ def execute_plan(plan: list[dict[str, Any]],
             u = r.get("uei")
             if u and u not in seen:
                 seen.add(u)
+                # phrase.v4: every hydrated company carries the event-lane
+                # measures — the fresh money and how many actions carried it.
+                lane = lane1_amounts.get(u)
+                if lane is not None and "amt_total" in lane:
+                    r = {**r, "event_amt_total": lane["amt_total"],
+                         "event_match_ct": lane.get("match_ct")}
                 rows.append(r)
+    # phrase.v4: the response order IS the lane-1 Σ$ order (freshest money
+    # first), not chunk-union order.
+    _pos = {u: k for k, u in enumerate(ueis)}
+    rows.sort(key=lambda r: _pos.get(r.get("uei"), len(_pos)))
     step2["filters"][0] = {"field": "uei", "op": "in", "value": ueis}
     return {"steps": [*collapses, None], "resolved_ueis": ueis,
             "resolved_step2": step2,

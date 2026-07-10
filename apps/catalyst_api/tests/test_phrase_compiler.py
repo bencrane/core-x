@@ -517,7 +517,7 @@ def test_compile_and_execute_envelope(monkeypatch):
     out = phrase_compiler.compile_and_execute(
         {"phrase": "sub-only companies with inferred primeable 541330"},
         today=TODAY)
-    assert out["meta"]["compilerVersion"] == "phrase.v3"
+    assert out["meta"]["compilerVersion"] == "phrase.v4"
     assert out["meta"]["refused"] is None
     assert out["meta"]["grain"] == "entity"
     assert out["data"]["rows"] == [{"uei": "UEIA11111111"}]
@@ -572,3 +572,49 @@ def test_work_language_psc_literal_still_binds_the_same_axis():
         "companies funded in Y1AA last 90 days", today=TODAY)
     psc = [b for b in plan["bindings"] if b["axis"] == "psc"]
     assert psc and psc[0]["value"] in (["Y1AA"], "Y1AA")
+
+
+# ── phrase.v4: $ on companies+event = per-firm event-window Σ$ ─────────────────
+# "over $5m that were just funded" means $5M of NEW money in the window,
+# however many actions carried it — never a per-action floor (that stays the
+# 'actions' subject's semantics, EX13) and never a lifetime firm-size floor.
+# Hydrated rows carry event_amt_total / event_match_ct, Σ$-ordered.
+
+def test_v4_money_on_companies_event_emits_amt_threshold_not_action_filter():
+    plan = _plan("construction companies over $5m that were just funded")
+    step1 = plan[0]
+    assert step1["grain"] == "transaction" and step1["collapse"] == "recipients"
+    assert step1["amt_thresholds"] == [{"op": ">=", "value": 5_000_000.0}]
+    assert not any(f["field"] == "federal_action_obligation"
+                   for f in step1["filters"])
+
+
+def test_v4_execute_thresholds_the_collapse_sum_and_carries_amounts(monkeypatch):
+    compiled = phrase_compiler.compile_phrase(
+        "construction companies over $1m that were just funded", today=TODAY)
+
+    def fake_collapse(spec, filters, limit, today=None):
+        return {"rows": [
+            {"uei": "UEIBIG0000001", "match_ct": 4, "amt_total": 6_000_000.0},
+            {"uei": "UEIMID0000002", "match_ct": 10, "amt_total": 1_500_000.0},
+            {"uei": "UEISML0000003", "match_ct": 1, "amt_total": 900_000.0},
+        ], "total_rows": 15, "distinct_recipients": 3, "returned": 3,
+            "capped": False, "scanned_rows": 15, "scan_capped": False,
+            "executed": {}}
+
+    monkeypatch.setattr(market_store, "execute_table_collapse", fake_collapse)
+    monkeypatch.setattr(market_store, "execute_entity_query",
+                        lambda filters, limit, today=None: {
+                            # reversed order: the merge must re-sort by lane Σ$
+                            "rows": [{"uei": u} for u in
+                                     reversed(filters[0]["value"])],
+                            "total": len(filters[0]["value"]),
+                            "returned": len(filters[0]["value"]),
+                            "capped": False, "executed": {}})
+    out = phrase_compiler.execute_plan(compiled["plan"], today=TODAY)
+    rows = out["result"]["rows"]
+    # 900k firm dropped by the $1m Σ$ threshold; order = Σ$ desc
+    assert [r["uei"] for r in rows] == ["UEIBIG0000001", "UEIMID0000002"]
+    assert rows[0]["event_amt_total"] == 6_000_000.0
+    assert rows[0]["event_match_ct"] == 4
+    assert rows[1]["event_amt_total"] == 1_500_000.0
