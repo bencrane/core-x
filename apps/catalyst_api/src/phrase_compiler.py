@@ -71,8 +71,9 @@ from typing import Any, Callable
 
 from . import market_registry, market_store
 from .lance_store import MapCompileError
+from .psc_work_language import WORK_NOUNS, WORK_VERBS
 
-COMPILER_VERSION = "phrase.v2"
+COMPILER_VERSION = "phrase.v3"   # v3: work-language vocabulary (to <verb> <noun> -> PSC in-list)
 
 PHRASE_MAX_CHARS = 400
 DEFAULT_STEP_LIMIT = 1_000            # emitted bodies use the engine's hard row cap
@@ -349,6 +350,36 @@ def _bind(tokens: list[str], today: dt_date) -> list[dict[str, Any]]:
             _add(span.split(), "action_type", "=", letter)
             i += len(span.split())
             continue
+
+        # WORK LANGUAGE (vocabulary cycle 2026-07-10, operator-directed):
+        # "to? <verb> <noun>" -> PSC in-list from the frozen generated
+        # vocabulary (psc_work_language.py). Verb-led and fall-through-safe:
+        # a verb token binds ONLY when a known noun alias follows — otherwise
+        # this block is a no-op and the token falls through to the rules
+        # below ('run', 'support', 'test' are common prose). PSC literals
+        # remain the other accepted spelling of the same axis.
+        _wl_i = i
+        if tokens[_wl_i] == "to" and _wl_i + 1 < n:
+            _wl_i += 1
+        _wl_verb_class = WORK_VERBS.get(tokens[_wl_i])
+        if _wl_verb_class is not None:
+            _wl_span = None
+            for ln in range(min(4, n - _wl_i - 1), 0, -1):
+                cand = " ".join(tokens[_wl_i + 1:_wl_i + 1 + ln])
+                if cand in WORK_NOUNS:
+                    _wl_span = cand
+                    break
+            if _wl_span is not None:
+                per_verb = WORK_NOUNS[_wl_span]
+                codes = per_verb.get(_wl_verb_class)
+                if codes is None:
+                    _refuse(f"{tokens[_wl_i]} {_wl_span}",
+                            f"no PSC for that verb+noun — '{_wl_span}' is served "
+                            f"with: {', '.join(sorted(per_verb))}")
+                span_toks = tokens[i:_wl_i + 1 + len(_wl_span.split())]
+                _add(span_toks, "psc", "in", sorted(codes))
+                i += len(span_toks)
+                continue
 
         # SUBK-PLAN phrases.
         hit = _multiword(PLAN_PHRASES, 4)
