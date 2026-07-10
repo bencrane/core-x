@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.20B rows across 52 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 61 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -39,6 +39,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|
 | GTM analytics: entities, awards, transactions-by-recipient, teaming, lanes, capabilities, expiry, people/POC lookups | **Sidecar** |
 | Per-ACTION description text (`transaction_description`), canonical txn columns beyond `txn_rows`' 16, the full 392-col canonical, `gtm_subaward_recipient_code_evidence` | Lance (not in artifact). Award-grain descriptions ARE here: `award_descriptions` |
+| Enrichment identity coverage: PDL match, LinkedIn URLs, icypeas profiles (see §3 Identity/enrichment) | **Sidecar** |
 | Non-GTM domains (EPA, CMS, MSHA, FDIC, SoS, UCC…) | Lance (not in artifact) |
 | Ingest verification / anything needing LIVE data | Lance — the sidecar is a snapshot (see §6) |
 
@@ -108,6 +109,16 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_subbed_under_to_primed_in_cooccurrence` | code × code matrix · 589k | subbed_under_code |
 | `gtm_sub_profiles` · `govcon_subawardee_profiles` | 1/sub uei · 105k · 25k | uei / sub_uei |
 | `gtm_sub_universe_pairs` / `_targets` | pair-grain recipe precompute · 30k | target_uei |
+
+### Identity / enrichment layer (gap-pass-4: "does population X have coverage" in one statement)
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `bridge_sam_pdl` | 1/uei matched · 802k | uei | SAM↔PDL identity bridge: uei, duns, pdl_company_id, normalized_domain — THE coverage join for "what % of this firm set has a PDL match" |
+| `pdl_normalized_companies` | 1/pdl_company_id · 35.4M | pdl_company_id | Canonical PDL company: names, normalized_domain, **linkedin_slug** (the company LinkedIn URL), locality/region/country, industry, employee_size_range, year_founded. Hydrate matches via the bridge; domain-anchored matching joins `normalized_domain` (unsorted — seconds-class scan) |
+| `icypeas_company_scrapes` / `icypeas_dsbs_company_profiles` | 1/uei scraped · 6.6k / 5.8k | uei | Scraped company LinkedIn profiles (URL, headcount, industry, description); raw blobs excluded |
+| `icypeas_person_profiles` / `icypeas_person_profile_scrapes` | 14.8k / 9.5k | uei / person_linkedin_url_norm | Person-profile scrape ledger (status/found per input) and the scraped profile content (title, summary, company block, education); raw blobs excluded |
+| `bridge_dsbs_pdl_linkedin` | 1/uei · 53k | uei | DSBS→PDL/LinkedIn resolution (best_domain + matched pdl id + company_linkedin_url) |
+| `dsbs_poc_linkedin` · `exa_person_linkedin_candidates` | 821 · 33k | uei | Person-side LinkedIn resolution candidates (raw JSON excluded) |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |
@@ -212,6 +223,16 @@ WHERE s.uei IN (/* receiver set */) AND s.code_type = 'psc'
 -- Declaration coverage of a firm set (never count the *_counter/*_string columns)
 SELECT code_type, count(DISTINCT uei) declaring_firms
 FROM v_sam_declared_codes WHERE uei IN (/* set */) GROUP BY 1;
+
+-- Enrichment coverage funnel: PDL / LinkedIn / profile coverage of a firm set, one pass
+SELECT count(*) firms,
+       count(b.pdl_company_id)                       pdl_matched,
+       count(p.linkedin_slug)                        with_linkedin,
+       count(ic.uei)                                 icypeas_scraped
+FROM (SELECT DISTINCT uei FROM gtm_sam_entities WHERE /* population */) f
+LEFT JOIN bridge_sam_pdl b USING(uei)
+LEFT JOIN pdl_normalized_companies p ON p.pdl_company_id = b.pdl_company_id
+LEFT JOIN icypeas_company_scrapes ic USING(uei);
 ```
 
 ## 5. Performance model
