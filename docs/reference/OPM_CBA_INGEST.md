@@ -120,3 +120,35 @@ from landing this SoR. Identify the slice by filtering `opm_cba_index` on
 `agency_name='Department of Defense'` + filename/subagency NAF/exchange/MWR/commissary tokens
 (broad keyword regex over-matches — e.g. "exchange" hits *Securities and Exchange Commission* — so
 gate on the DoD agency).
+
+## NAF cycle outcome: `naf_cba_coverage` (landed 2026-07-11)
+
+**The wage-appendix hypothesis was measured and rejected.** Full 89-PDF scan of the DoD NAF
+slice: **73/89 (82%) explicitly defer base pay to the DoD NAF Wage Schedule Division survey
+process** — i.e. they ADOPT the standard NAF schedule that IS `naf_wage_rates`; only 4/89
+contain any rate table. Negotiated dollar content (shift/night/Sunday differentials, commission,
+allowances) exists as thin heterogeneous prose in ~a dozen CBAs (~22 carry any `$` figure) — not
+a structured appendix. Extraction would have produced a near-empty dataset.
+
+**What shipped instead — the coverage crosswalk** (`pipelines/opm/naf_cba_coverage.py`):
+
+    opm_cba_index ──(naf_cba_coverage)──▶ naf_wage_area_geography ──▶ naf_wage_rates
+    (who is organized, under which union)   (installation → wage_area)   (wage_area → $/hr)
+
+Deterministic, filename-primary reverse-dictionary match against the 555-installation NAF geo
+vocabulary. Tiers: T1 full geo name in filename (26) · T2 distinctive filename place-token —
+incl. the same-wage-area collapse rule for tokens like NORFOLK that hit several facilities all
+in one wage area (33) · T3 full geo name in the CBA's recognition article, first 3,500 chars
+only, flagged low-confidence (11) · T4 AAFES/DeCA enterprise master agreements, agency scope
+(5) · T5 honest unmatched — redacted union-only filenames, HQ elements, overseas
+(Naples/Sigonella), true wage-area ambiguity like PORTSMOUTH VA-vs-NH (16).
+
+| dataset | rows | result |
+|---|--:|---|
+| `s3://data-sink/active/naf_cba_coverage/` | 92 (one per cba_id × wage_area) | **70/91 CBAs bound (77%)** to 54 wage areas + 5 enterprise; **all 54 wage_areas resolve in `naf_wage_rates`** (e2e verified: Fort Bragg NAGE → wa 108 → 1,960 current rate rows) |
+
+Indexes: BTREE `cba_id`,`wage_area`; BITMAP `match_tier`,`naf_employer`,`labor_union_name`.
+Ledger: `ops.opm_cba_runs` (`dataset='naf_cba_coverage'`, coverage carries tier distribution).
+Precision was audited row-by-row across three iterations; every earlier false positive
+(generic Navy facility names, boilerplate tokens like MASTER/USMC, KINGS BAY→Kings Point,
+Bangor ME vs WA) is either fixed or falls to honest T5.
