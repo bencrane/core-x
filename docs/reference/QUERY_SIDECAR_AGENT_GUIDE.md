@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 63 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 67 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -86,6 +86,9 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
 | `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action `subcontracting_plan` per award (`latest_plan`, `latest_action_date`, `actions`) — award-grain plan state for arbitrary/closed populations, one pruned join |
+| `naics_psc_labor_profile` / `naics_psc_deliverable` | 1/(naics, psc) · 16.3k / 21k | naics_code, psc_code | The combo-grain LANGUAGE layers: `work_summary` + labor-play/OEWS mapping; `what_was_done` + work_type/regime/confidence — plain-language rendering joins these onto any sidecar code set (letters, on-page copy). Complements the code-grain to-verb vocabulary in the phrase compiler |
+| `naics_psc_labor_profile_categories` | 1/(naics, psc, rank) · 54k | naics_code, psc_code, rank | Ranked SOC/SCA occupational categories per combo (the "additional ___" candidates), wage medians, growth |
+| `naics_psc_vertical_map` | 1/(naics, psc) · 279 | naics_code, psc_code | Curated vertical + **equipment_intensity** + regime per anchor combo |
 | `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
 | `v_psc_names` / `v_naics_names` / `v_sam_declared_codes` | views | — | Vintage-safe reference names (active-else-latest, 1 row/code); SAM declarations unnested to (uei, is_active, code_type, code) |
 
@@ -287,7 +290,10 @@ tight; you have `elapsed_ms` in every response.
 2. **Read-only by construction** — write/DDL statements are rejected; don't try.
 3. **Not everything is here** (§2). If a needed table/column is absent, say so rather than
    silently falling back to a spine scan — absence is signal for the next manifest revision.
-4. `gtm_txn_events_slim` renames: `obligation` (not federal_action_obligation), `psc_code`
+4. SQL parse quirk: a bare column alias immediately after a closing `)` fails — write
+   `) AS alias`. Sub-PoP county codes are 3-digit-in-state; prime PoP county fips are
+   5-digit — stitch with the state FIPS before joining the two.
+5. `gtm_txn_events_slim` renames: `obligation` (not federal_action_obligation), `psc_code`
    (not product_or_service_code), `uei` (not recipient_uei).
 
 ## 7. Gap reporting (demand capture — MANDATORY when you fall back)

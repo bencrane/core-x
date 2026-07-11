@@ -127,6 +127,15 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_entity_geo", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_naics_psc_pairs", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "naics_reference", "tier": "A", "sort": ["naics_code"]},
+    # ── combo-grain language layers (gap-pass-5: two independent sessions hit
+    # the same gap — plain-language rendering joins these onto sidecar code
+    # sets). vertical_map rides the sweep (equipment_intensity dial, 279 rows);
+    # naics_psc_labor_dim deliberately skipped (flattened dup of profile⋈cats).
+    {"ds": "naics_psc_labor_profile", "tier": "A", "sort": ["naics_code", "psc_code"]},
+    {"ds": "naics_psc_deliverable", "tier": "A", "sort": ["naics_code", "psc_code"]},
+    {"ds": "naics_psc_labor_profile_categories", "tier": "A",
+     "sort": ["naics_code", "psc_code", "rank"]},
+    {"ds": "naics_psc_vertical_map", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "psc_reference", "tier": "A", "sort": ["psc_code"]},
     # ── Tier B — Cycle B rollups (built-but-unwired; this is their serving lane)
     {"ds": "gtm_txn_events_slim", "tier": "B", "sort": ["uei", "action_date"]},
