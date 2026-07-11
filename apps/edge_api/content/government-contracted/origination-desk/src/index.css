@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,600;0,700;0,800;0,900;1,600;1,700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-gov-cream: #F7F7F5;
+  --color-gov-navy: #0F172A;
+  --color-gov-gold: #B89C6A;
+  
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Playfair Display', Georgia, serif;
+}
+
+body {
+  background-color: var(--color-gov-cream);
+  color: var(--color-gov-navy);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer utilities {
+  .border-b-grid {
+    border-bottom: 1px solid var(--color-gov-navy);
+  }
+  .border-t-grid {
+    border-top: 1px solid var(--color-gov-navy);
+  }
+  .border-x-grid {
+    border-left: 1px solid var(--color-gov-navy);
+    border-right: 1px solid var(--color-gov-navy);
+  }
+  .border-r-grid {
+    border-right: 1px solid var(--color-gov-navy);
+  }
+  .border-l-grid {
+    border-left: 1px solid var(--color-gov-navy);
+  }
+  
+  .dark-border-b-grid {
+    border-bottom: 1px solid var(--color-gov-cream);
+  }
+  .dark-border-r-grid {
+    border-right: 1px solid var(--color-gov-cream);
+  }
+}
