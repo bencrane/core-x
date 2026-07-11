@@ -809,3 +809,176 @@ def filings() -> None:
     import json
 
     print(json.dumps(build_filings.remote(), indent=2, default=str))
+
+
+# =========================================================================== #
+# sam_ucc_lenders — the LENDER-side surface (operator-directed 2026-07-10).
+# Lender grain over sam_ucc_filings' secured parties, classified against the
+# FDIC/NCUA name authorities + curated masks:
+#   bank_or_cu | filing_agent | government_sba | non_bank
+# plus in_efc (name-matched membership in equipment_finance_candidates — the
+# incumbent-vs-whitespace reconciliation; that dataset is another lane's and
+# is READ-ONLY here). Name-normalization is intentionally simple/deterministic
+# (upper, strip punctuation + suffix tokens); the recon doc's finding stands:
+# lender NATURE beyond these brackets is green-field.
+# =========================================================================== #
+
+LENDERS_DATASET_URI = os.environ.get("SAM_UCC_LENDERS_URI", "s3://data-sink/active/sam_ucc_lenders/")
+LENDERS_FEED = "sam_ucc_lenders"
+LENDERS_ROW_FLOOR = 5_000
+FDIC_URI = os.environ.get("FDIC_INSTITUTIONS_URI", "s3://data-sink/active/fdic_institutions/")
+NCUA_URI = os.environ.get("NCUA_CREDIT_UNIONS_URI", "s3://data-sink/active/ncua_credit_unions/")
+EFC_URI = os.environ.get("EQUIPMENT_FINANCE_CANDIDATES_URI",
+                         "s3://data-sink/active/equipment_finance_candidates/")
+
+_LK = ("trim(regexp_replace(regexp_replace(upper({x}), '[^A-Z0-9 ]', '', 'g'), "
+       "' (INC|LLC|LP|LLP|CORP|CORPORATION|CO|COMPANY|NA|NATIONAL ASSOCIATION|"
+       "ASSOCIATION|LTD|THE)$', '', 'g'))")
+
+_AGENT_RE = ("(CORPORATION SERVICE|CT CORPORATION|C T CORPORATION|LIEN SOLUTIONS|"
+             "WOLTERS KLUWER|UCC DIRECT|CAPITOL SERVICES|PARACORP|INCORP|"
+             "FIRST CORPORATE SOL|NATIONAL REGISTERED AGENT|AS REPRESENTATIVE)")
+_BANK_RE = "(BANK|BANCORP|CREDIT UNION|FCU|SAVINGS)"
+_SBA_RE = "(SMALL BUSINESS ADMIN|U S SBA|^SBA |US SBA)"
+
+
+def build_lenders_sql() -> str:
+    lk = _LK.format(x="lender")
+    lk_fd = _LK.format(x="name")
+    lk_cu = _LK.format(x="credit_union_name")
+    lk_ef = _LK.format(x="company_name")
+    return f"""
+    WITH lenders AS (
+        SELECT trim(unnest(string_split(secured_parties, '; '))) AS lender,
+               uei, ucc_state, is_active_financing, first_filing_date
+        FROM fil_src WHERE filing_class = 'financing' AND secured_parties IS NOT NULL
+    ),
+    norm AS (
+        SELECT {lk} AS lender_key, lender, uei, ucc_state, is_active_financing,
+               first_filing_date
+        FROM lenders WHERE length(lender) > 3
+    ),
+    banks AS (SELECT DISTINCT {lk_fd} AS lender_key FROM fd_src),
+    cus AS (SELECT DISTINCT {lk_cu} AS lender_key FROM cu_src),
+    efcs AS (SELECT DISTINCT {lk_ef} AS lender_key FROM efc_src)
+    SELECT n.lender_key,
+           any_value(n.lender)                          AS lender_name,
+           CASE
+             WHEN regexp_matches(n.lender_key, '{_AGENT_RE}') THEN 'filing_agent'
+             WHEN regexp_matches(n.lender_key, '{_SBA_RE}')   THEN 'government_sba'
+             WHEN max(CASE WHEN b.lender_key IS NOT NULL OR c.lender_key IS NOT NULL
+                           THEN 1 ELSE 0 END) = 1
+                  OR regexp_matches(n.lender_key, '{_BANK_RE}') THEN 'bank_or_cu'
+             ELSE 'non_bank'
+           END                                          AS lender_class,
+           (max(CASE WHEN e.lender_key IS NOT NULL THEN 1 ELSE 0 END) = 1)
+                                                        AS in_efc,
+           count(DISTINCT n.uei)                        AS sam_firms,
+           count(*)                                     AS filings,
+           sum(n.is_active_financing::INT)              AS active_filings,
+           count(DISTINCT CASE WHEN n.ucc_state = 'CA' THEN n.uei END) AS ca_firms,
+           count(DISTINCT CASE WHEN n.ucc_state = 'CO' THEN n.uei END) AS co_firms,
+           min(n.first_filing_date)                     AS first_filing_date,
+           max(n.first_filing_date)                     AS last_filing_date
+    FROM norm n
+    LEFT JOIN banks b USING (lender_key)
+    LEFT JOIN cus c USING (lender_key)
+    LEFT JOIN efcs e USING (lender_key)
+    GROUP BY n.lender_key
+    """
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=1800, memory=32768, cpu=8.0,
+)
+def build_lenders() -> dict:
+    import datetime as dt
+
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    so = _r2_storage_options()
+    status, error = "error", None
+    metrics = {"rows": 0, "distinct_uei": 0, "with_active_lien": 0,
+               "officer_confirmed": 0, "ca_rows": 0, "co_rows": 0}
+    global FEED, DATASET_URI
+    feed_prev, uri_prev = FEED, DATASET_URI
+    try:
+        os.makedirs(SPILL_DIR, exist_ok=True)
+        con = _new_con()
+        try:
+            def scan(uri, cols):
+                return lance.dataset(uri, storage_options=so).scanner(columns=cols).to_reader()
+            con.register("fil_src", scan(FILINGS_DATASET_URI, [
+                "secured_parties", "uei", "ucc_state", "filing_class",
+                "is_active_financing", "first_filing_date"]))
+            con.register("fd_src", scan(FDIC_URI, ["name"]))
+            con.register("cu_src", scan(NCUA_URI, ["credit_union_name"]))
+            con.register("efc_src", scan(EFC_URI, ["company_name"]))
+            con.execute(f"CREATE TEMP TABLE lend AS {build_lenders_sql()}")
+            for r in ("fil_src", "fd_src", "cu_src", "efc_src"):
+                con.unregister(r)
+            row = con.execute("""
+                SELECT count(*), count(*) FILTER (WHERE lender_class = 'non_bank'),
+                       count(*) FILTER (WHERE active_filings > 0),
+                       count(*) FILTER (WHERE in_efc),
+                       count(*) FILTER (WHERE ca_firms > 0),
+                       count(*) FILTER (WHERE co_firms > 0)
+                FROM lend""").fetchone()
+            metrics = dict(zip(["rows", "distinct_uei", "with_active_lien",
+                                "officer_confirmed", "ca_rows", "co_rows"],
+                               [int(v) for v in row]))
+            # semantics of the reused slots: distinct_uei=non_bank lenders,
+            # with_active_lien=lenders w/ active book, officer_confirmed=in_efc
+            table = con.sql("SELECT * FROM lend").to_arrow_table()
+        finally:
+            con.close()
+        print(f"materialized: {metrics}")
+        if metrics["rows"] < LENDERS_ROW_FLOOR:
+            raise RuntimeError(f"row floor: {metrics['rows']} < {LENDERS_ROW_FLOOR}")
+        if metrics["officer_confirmed"] == 0:
+            raise RuntimeError("efc reconciliation matched zero candidates — check name norm")
+        if not (metrics["ca_rows"] > 0 and metrics["co_rows"] > 0):
+            raise RuntimeError("both states must be present")
+
+        try:
+            v_before = lance.dataset(LENDERS_DATASET_URI, storage_options=so).version
+        except Exception:  # noqa: BLE001
+            v_before = None
+        lance.write_dataset(table, LENDERS_DATASET_URI, mode="overwrite",
+                            data_storage_version=DATA_STORAGE_VERSION,
+                            max_rows_per_file=MAX_ROWS_PER_FILE, storage_options=so)
+        ds = lance.dataset(LENDERS_DATASET_URI, storage_options=so)
+        for col in ("lender_key", "lender_name"):
+            ds.create_scalar_index(col, index_type="BTREE")
+        for col in ("lender_class", "in_efc"):
+            ds.create_scalar_index(col, index_type="BITMAP")
+        ds = lance.dataset(LENDERS_DATASET_URI, storage_options=so)
+        if ds.count_rows() != metrics["rows"]:
+            if v_before is not None:
+                lance.dataset(LENDERS_DATASET_URI, storage_options=so, version=v_before).restore()
+            raise RuntimeError("post-write rowcount mismatch")
+        print(f"post-write gates PASS — {metrics['rows']:,} lenders")
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        FEED, DATASET_URI = LENDERS_FEED, LENDERS_DATASET_URI
+        try:
+            _record_run(metrics=metrics, status=status, error=error,
+                        started_at=started_at, completed_at=completed_at)
+        finally:
+            FEED, DATASET_URI = feed_prev, uri_prev
+
+    if status != "success":
+        raise RuntimeError(f"sam_ucc_lenders build failed: {error}")
+    return {"feed": LENDERS_FEED, "dataset": LENDERS_DATASET_URI, **metrics}
+
+
+@app.local_entrypoint()
+def lenders() -> None:
+    import json
+
+    print(json.dumps(build_lenders.remote(), indent=2, default=str))
