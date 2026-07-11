@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 71 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 78 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -42,6 +42,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Per-ACTION description text (`transaction_description`), canonical txn columns beyond `txn_rows`' 16, the full 392-col canonical, `gtm_subaward_recipient_code_evidence` | Lance (not in artifact). Award-grain descriptions ARE here: `award_descriptions` |
 | Enrichment identity coverage: PDL match, LinkedIn URLs, icypeas profiles (see §3 Identity/enrichment) | **Sidecar** |
 | Secured-debt posture: UCC liens, lenders, collateral, win-then-borrow timing (CA/CO; see §3 Debt/UCC) | **Sidecar** |
+| Labor wage floor/market + union exposure: SCA/DBA WD rates per county, OEWS state wage envelope, SCA↔SOC bridge, CBA expiry by uei (see §3 Labor) | **Sidecar** |
 | Non-GTM domains (EPA, CMS, MSHA, FDIC, SoS, UCC…) | Lance (not in artifact) |
 | Ingest verification / anything needing LIVE data | Lance — the sidecar is a snapshot (see §6) |
 
@@ -138,6 +139,21 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `fdic_institutions` | 1/bank · 27.8k | name | Slim authority: name, cert, active, city/state, webaddr, asset |
 | `ncua_credit_unions` | 1/CU · 4.3k | credit_union_name | Slim authority: name, charter, location, members, total_assets |
 | `equipment_finance_candidates` | 1/candidate · 429 | company_name | The GTM candidate list (name, domain, LinkedIn; verdict unset — another lane's dataset, read-only here). Reconcile: join `sam_ucc_lenders.in_efc` or name-match |
+
+### Labor occupation-grain layer (gap-pass-6: market-vs-floor wage, per-county, + union exposure)
+
+The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_psc_labor_profile_categories`) → SCA/SOC bridge → wage (statutory **floor** via WD rates + county coverage + FIPS crosswalk; **market** via `soc_state_wage`) → uei union exposure. Every market-vs-floor wage answer for a staffing GTM pitch lives here.
+
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `sam_wd_rates_structured` | 1/(wd_id, occupation_code, classification) · 522k | wd_id, occupation_code | The priced statutory **floor**: parsed SCA/DBA wage determination rates. `wage_rate`, `fringe`, `fringe_is_pct`, `hw_rate`, `hw_rates_all`, `wd_type`, `revision_number`, `classification_title`, `footnote_ref`. Probe `wd_id` (the sort) or `occupation_code` |
+| `sam_wd_county_coverage` | 1/(wd_id, county) · 33k | wd_id | Which counties a WD covers: `state_code`, `state_name`, `county_code`, `county_name`. The hop that binds a WD's rates to geography |
+| `sam_county_fips_crosswalk` | 1/(state, county) · 3.3k | state_code, sam_county_name | `(state_code, sam_county_name)` → `county_fips` (98.5% resolved). `sam_is_city_flag`, `gazetteer_name`, `resolution_status`. Bridges WD locality to award-spine PoP county FIPS |
+| `soc_state_wage` | 1/(soc_code, state) · 35k | soc_code, prim_state | The **market** half: OEWS state wage envelope per SOC. `a_median`/`a_pct25`/`a_pct75` (annual), `h_median`/`h_pct25`/`h_pct75` (hourly), `tot_emp`, `a_mean`, `state_fips`, `soc_vintage` |
+| `sca_soc_crosswalk` | 1/occupation_code · 424 | occupation_code | The bridge both halves meet on: SCA `occupation_code` → `soc_code` with `tier`/`method`/`confidence`/`dominance_ratio`/`primary_dollar_weight`. Also carries `occupation_title`/`family_code`/`family_title` (its own name layer) |
+| `dol_sca_occupations` | 1/occupation_code · 502 | occupation_code | SCA occupation taxonomy — the name/display layer (analog of `v_psc_names` for PSC): `occupation_title`, `occupation_definition`, `family_code`, `family_title`, `edition` |
+| `olms_cba_crosswalk` | 1/(doc_id) uei-matched · 4.8k | uei | Union exposure column for any target list: `uei` → `union_name`, `exp_date` (CBA expiration), `emp_name`, `tier`/`score`/`on_spine`/`is_active`/`geo_corroborated`. Join warm award tables on `uei` for §4(c) successorship exposure |
+| `v_wd_county_rates` | view | — | The county-priced floor in one SELECT: `sam_wd_rates_structured` ⋈ `sam_wd_county_coverage` ⋈ `sam_county_fips_crosswalk`. Columns: wd_id, revision_number, wd_type, occupation_code, classification_title, wage_rate, fringe, fringe_is_pct, hw_rate, state_code, state_name, county_name, county_fips, resolution_status. Predicates on wd_id / occupation_code / county_fips prune the underlying sorted tables |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |
@@ -278,6 +294,29 @@ FROM (SELECT DISTINCT uei FROM gtm_sam_entities WHERE /* population */) f
 LEFT JOIN bridge_sam_pdl b USING(uei)
 LEFT JOIN pdl_normalized_companies p ON p.pdl_company_id = b.pdl_company_id
 LEFT JOIN icypeas_company_scrapes ic USING(uei);
+
+-- LABOR MARKET-VS-FLOOR SPREAD: for an SCA occupation, the statutory floor per
+-- county alongside the OEWS state market envelope. Bridge (occ→soc) meets both halves.
+SELECT x.occupation_code, o.occupation_title, x.soc_code,
+       f.county_name, f.county_fips, f.wage_rate AS floor_hourly, f.fringe,
+       w.h_pct25 AS mkt_p25, w.h_median AS mkt_median, w.h_pct75 AS mkt_p75
+FROM sca_soc_crosswalk x
+JOIN dol_sca_occupations o ON o.occupation_code = x.occupation_code
+JOIN v_wd_county_rates f ON f.occupation_code = x.occupation_code
+LEFT JOIN soc_state_wage w ON w.soc_code = x.soc_code AND w.prim_state = f.state_code
+WHERE x.occupation_code = '23130' AND f.state_code = 'VA';
+
+-- COUNTY-PRICED STATUTORY FLOOR for a given WD (the recurring Entry-2 shape)
+SELECT occupation_code, classification_title, wage_rate, fringe, hw_rate,
+       county_name, county_fips
+FROM v_wd_county_rates WHERE wd_id = 'XXX' ORDER BY occupation_code;
+
+-- UNION EXPOSURE column for a target list: incumbent workforce unionized + CBA expiry
+SELECT e.legal_business_name, c.union_name, c.exp_date, c.is_active
+FROM (SELECT DISTINCT uei FROM gtm_entity_code_lanes
+       WHERE side='prime' AND code_type='naics' AND code='561720') f
+JOIN gtm_sam_entities e USING(uei)
+JOIN olms_cba_crosswalk c USING(uei);   -- inner join = union-exposed subset only
 ```
 
 ## 5. Performance model
