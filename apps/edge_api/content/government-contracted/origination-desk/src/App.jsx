@@ -2,72 +2,84 @@ import React from 'react';
 
 function App() {
   return (
-    <div className="min-h-screen bg-gov-cream text-gov-navy font-sans selection:bg-gov-navy selection:text-gov-cream">
-      {/* Block 1: Navigation & Header */}
-      <nav className="border-b-grid">
-        <div className="max-w-[1440px] mx-auto px-6 grid grid-cols-1 lg:grid-cols-12 h-auto lg:h-24 items-center">
-          <div className="col-span-1 lg:col-span-4 font-serif font-black text-2xl tracking-tighter uppercase py-6 lg:py-0 text-center lg:text-left border-b lg:border-b-0 border-gov-navy lg:border-transparent">
+    <div className="min-h-screen bg-[#fafafa] text-slate-900 font-sans selection:bg-slate-900 selection:text-white">
+      {/* Navigation */}
+      <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="font-serif font-semibold text-xl tracking-tight text-slate-900">
             Government Contracted
           </div>
-          <div className="col-span-1 lg:col-span-5 flex flex-col lg:flex-row justify-center space-y-4 lg:space-y-0 lg:space-x-8 text-sm font-semibold tracking-widest uppercase py-6 lg:py-0 border-b lg:border-b-0 border-gov-navy lg:border-transparent text-center">
-            <a href="#network" className="hover:text-gov-gold transition-colors">The Network</a>
-            <a href="#infrastructure" className="hover:text-gov-gold transition-colors">Execution Infrastructure</a>
-            <a href="#originators" className="hover:text-gov-gold transition-colors">Originators</a>
+          <div className="hidden md:flex space-x-8 text-sm font-medium text-slate-600">
+            <a href="#network" className="hover:text-slate-900 transition-colors">The Network</a>
+            <a href="#infrastructure" className="hover:text-slate-900 transition-colors">Infrastructure</a>
+            <a href="#originators" className="hover:text-slate-900 transition-colors">Originators</a>
           </div>
-          <div className="col-span-1 lg:col-span-3 flex justify-center lg:justify-end py-6 lg:py-0">
-            <button className="bg-gov-navy text-gov-cream px-8 py-4 text-xs font-bold uppercase tracking-widest hover:bg-gov-gold hover:text-gov-navy transition-colors border border-gov-navy">
-              Initiate Deployment Protocol
+          <div>
+            <button className="bg-slate-900 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-800 transition-all shadow-sm">
+              Initiate Deployment
             </button>
           </div>
         </div>
       </nav>
 
-      {/* Block 2: The Hero (The Catalyst) */}
-      <header className="border-b-grid border-b-[2px]">
-        <div className="max-w-[1440px] mx-auto">
-          <div className="grid grid-cols-12 lg:border-x-grid border-gov-navy lg:mx-6">
-            <div className="col-span-12 lg:col-span-8 p-8 md:p-12 lg:p-20 border-b-grid lg:border-b-0 lg:border-r-grid">
-              <h1 className="font-serif font-black text-5xl md:text-6xl lg:text-[5.5rem] leading-[0.9] tracking-tight text-gov-navy uppercase">
-                You Won the Award.<br />
-                <span className="text-gov-gold block mt-2">Now You Have a Deficit.</span>
-              </h1>
-            </div>
-            <div className="col-span-12 lg:col-span-4 p-8 md:p-12 lg:p-20 flex flex-col justify-end bg-white lg:bg-transparent">
-              <p className="font-sans font-medium text-lg lg:text-xl leading-relaxed text-gov-navy border-l-4 border-gov-gold pl-6">
-                <strong>Government Contracted</strong> is an event-driven origination desk. We engineer the capital, surety, and labor supply chains for federal prime contractors experiencing immediate, catalyst-driven execution demands.
-              </p>
-            </div>
+      {/* Hero Section */}
+      <header className="relative pt-24 pb-32 overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-b from-slate-50 to-white -z-10"></div>
+        <div className="max-w-5xl mx-auto px-6 text-center">
+          <div className="inline-flex items-center px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-medium mb-8 border border-slate-200">
+            <span className="w-2 h-2 rounded-full bg-amber-500 mr-2"></span>
+            Event-Driven Origination Desk
+          </div>
+          <h1 className="font-serif font-medium text-5xl md:text-7xl leading-tight tracking-tight text-slate-900 mb-6 text-balance mx-auto">
+            You won the award.<br />
+            <span className="text-slate-500">Now you have a deficit.</span>
+          </h1>
+          <p className="font-sans text-lg md:text-xl text-slate-600 max-w-3xl mx-auto leading-relaxed mb-10 text-balance">
+            We engineer the capital, surety, and labor supply chains for federal prime contractors experiencing immediate, catalyst-driven execution demands.
+          </p>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <button className="w-full sm:w-auto bg-slate-900 text-white px-8 py-3.5 rounded-lg font-medium hover:bg-slate-800 transition-all shadow-md hover:shadow-lg">
+              Submit Task Order Deficit
+            </button>
+            <button className="w-full sm:w-auto bg-white text-slate-700 px-8 py-3.5 rounded-lg font-medium border border-slate-200 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm">
+              Explore Infrastructure
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Block 3: The Mechanism (Dark Section) */}
-      <section className="bg-gov-navy text-gov-cream border-b-grid">
-        <div className="max-w-[1440px] mx-auto lg:border-x border-gov-cream lg:mx-6 border-opacity-20">
-          <div className="grid grid-cols-1 lg:grid-cols-3">
+      {/* Mechanism Section */}
+      <section className="py-24 bg-slate-900 text-white relative">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-16">
+            <h2 className="font-serif text-3xl md:text-4xl font-medium mb-4">Fulfillment Infrastructure</h2>
+            <p className="text-slate-400 max-w-2xl mx-auto">We operate a closed network of specialized lenders, bonded sureties, and vetted labor originators.</p>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {/* Node 1 */}
-            <div className="p-8 md:p-12 lg:p-16 border-b border-gov-cream border-opacity-20 lg:border-b-0 lg:border-r hover:bg-[#15213d] transition-colors">
-              <div className="font-mono text-xs font-bold text-gov-cream opacity-50 mb-4 tracking-widest">NODE 01</div>
-              <h3 className="font-serif font-bold text-gov-gold text-3xl uppercase tracking-tight mb-6">Execution<br/>Labor</h3>
-              <p className="font-sans text-lg leading-relaxed text-gray-300 font-light">
+            <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-8 backdrop-blur-sm hover:bg-slate-800 transition-colors">
+              <div className="font-mono text-xs text-amber-500 mb-6 tracking-wider uppercase font-semibold">Node 01</div>
+              <h3 className="font-serif text-2xl mb-4">Execution Labor</h3>
+              <p className="text-slate-400 leading-relaxed">
                 Precision routing of W-2 human capital mapped strictly to localized SCA/DBA statutory wage floors and socioeconomic pass-through requirements.
               </p>
             </div>
             
             {/* Node 2 */}
-            <div className="p-8 md:p-12 lg:p-16 border-b border-gov-cream border-opacity-20 lg:border-b-0 lg:border-r hover:bg-[#15213d] transition-colors">
-              <div className="font-mono text-xs font-bold text-gov-cream opacity-50 mb-4 tracking-widest">NODE 02</div>
-              <h3 className="font-serif font-bold text-gov-gold text-3xl uppercase tracking-tight mb-6">Project<br/>Capital</h3>
-              <p className="font-sans text-lg leading-relaxed text-gray-300 font-light">
+            <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-8 backdrop-blur-sm hover:bg-slate-800 transition-colors">
+              <div className="font-mono text-xs text-amber-500 mb-6 tracking-wider uppercase font-semibold">Node 02</div>
+              <h3 className="font-serif text-2xl mb-4">Project Capital</h3>
+              <p className="text-slate-400 leading-relaxed">
                 Mobilization financing, payroll float, and federal factor facilities structured specifically against your active SAM.gov award obligations.
               </p>
             </div>
             
             {/* Node 3 */}
-            <div className="p-8 md:p-12 lg:p-16 hover:bg-[#15213d] transition-colors">
-              <div className="font-mono text-xs font-bold text-gov-cream opacity-50 mb-4 tracking-widest">NODE 03</div>
-              <h3 className="font-serif font-bold text-gov-gold text-3xl uppercase tracking-tight mb-6">Surety &<br/>Bonding</h3>
-              <p className="font-sans text-lg leading-relaxed text-gray-300 font-light">
+            <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-8 backdrop-blur-sm hover:bg-slate-800 transition-colors">
+              <div className="font-mono text-xs text-amber-500 mb-6 tracking-wider uppercase font-semibold">Node 03</div>
+              <h3 className="font-serif text-2xl mb-4">Surety & Bonding</h3>
+              <p className="text-slate-400 leading-relaxed">
                 Immediate routing for mandated bid, performance, and payment bonds matched to your exact NAICS profile and award ceiling.
               </p>
             </div>
@@ -75,86 +87,65 @@ function App() {
         </div>
       </section>
 
-      {/* Block 4: The Authority / Footer (The Filter) */}
-      <section className="bg-gov-cream">
-        <div className="max-w-[1440px] mx-auto">
-          <div className="lg:border-x-grid lg:mx-6">
-            <div className="grid grid-cols-12 border-b-grid">
-              <div className="col-span-12 lg:col-span-8 p-8 md:p-12 lg:p-20 border-b-grid lg:border-b-0 lg:border-r-grid">
-                <h2 className="font-serif font-black text-4xl md:text-5xl lg:text-[4.5rem] leading-[1] uppercase tracking-tighter mb-8 text-gov-navy">
-                  We Do Not Sell Software.<br />
-                  <span className="text-gov-gold">We Deploy Infrastructure.</span>
-                </h2>
-                <p className="font-sans text-xl lg:text-2xl font-medium leading-relaxed max-w-3xl border-l-4 border-gov-navy pl-6">
-                  We operate a closed network of specialized lenders, bonded sureties, and vetted labor originators. We only engage when a verified federal award triggers a structural deficit.
-                </p>
-              </div>
-              <div className="col-span-12 lg:col-span-4 p-8 md:p-12 lg:p-20 flex flex-col justify-center bg-[#eaeaea] lg:bg-transparent">
-                <div className="text-xs font-bold tracking-widest uppercase mb-4 text-gov-navy opacity-70">Intake Protocol Restrictions</div>
-                <div className="font-serif text-3xl md:text-4xl font-black uppercase tracking-tight leading-tight">Active Award Holders Only</div>
-              </div>
-            </div>
-            
-            {/* Action Block */}
-            <div className="p-6 md:p-12 lg:p-24 flex flex-col items-center justify-center min-h-[50vh] bg-gov-cream relative overflow-hidden">
-              {/* Grid background effect */}
-              <div className="absolute inset-0 opacity-[0.03]" style={{backgroundImage: 'linear-gradient(var(--color-gov-navy) 1px, transparent 1px), linear-gradient(90deg, var(--color-gov-navy) 1px, transparent 1px)', backgroundSize: '40px 40px'}}></div>
+      {/* Form / Intake Section */}
+      <section className="py-24 bg-[#fafafa]">
+        <div className="max-w-4xl mx-auto px-6">
+          <div className="bg-white rounded-3xl p-8 md:p-12 shadow-sm border border-slate-200/60 relative overflow-hidden">
+            <div className="max-w-2xl relative z-10">
+              <h2 className="font-serif text-3xl font-medium mb-2">Initialize Deployment</h2>
+              <p className="text-slate-500 mb-8">We only engage when a verified federal award triggers a structural deficit.</p>
               
-              <div className="w-full max-w-3xl border-2 border-gov-navy p-8 md:p-12 lg:p-16 bg-white relative z-10 shadow-[8px_8px_0px_0px_rgba(15,23,42,1)]">
-                {/* Decorative brutalist corner markers */}
-                <div className="absolute top-2 left-2 w-4 h-4 border-t-4 border-l-4 border-gov-navy"></div>
-                <div className="absolute top-2 right-2 w-4 h-4 border-t-4 border-r-4 border-gov-navy"></div>
-                <div className="absolute bottom-2 left-2 w-4 h-4 border-b-4 border-l-4 border-gov-navy"></div>
-                <div className="absolute bottom-2 right-2 w-4 h-4 border-b-4 border-r-4 border-gov-navy"></div>
-                
-                <h3 className="font-serif font-black text-3xl md:text-4xl uppercase tracking-tighter text-center mb-2">Submit Task Order Deficit</h3>
-                <p className="text-center text-sm font-semibold uppercase tracking-widest mb-10 text-gov-navy opacity-60">System Ready for Award Verification</p>
-                
-                <form className="space-y-8" onSubmit={(e) => e.preventDefault()}>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-3">
-                      <label className="block text-xs font-bold uppercase tracking-widest">SAM.gov Award ID (PIID)</label>
-                      <input type="text" className="w-full border-b-2 border-gov-navy bg-transparent pb-3 font-mono text-base focus:outline-none focus:border-gov-gold placeholder-gray-300 transition-colors rounded-none" placeholder="e.g. W9128F21C0012" />
-                    </div>
-                    <div className="space-y-3">
-                      <label className="block text-xs font-bold uppercase tracking-widest">UEI (Unique Entity ID)</label>
-                      <input type="text" className="w-full border-b-2 border-gov-navy bg-transparent pb-3 font-mono text-base focus:outline-none focus:border-gov-gold placeholder-gray-300 transition-colors rounded-none" placeholder="12-character alphanumeric" />
-                    </div>
+              <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-slate-700">SAM.gov Award ID (PIID)</label>
+                    <input 
+                      type="text" 
+                      className="w-full border border-slate-300 rounded-lg bg-white px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-slate-400 transition-all placeholder:text-slate-400" 
+                      placeholder="e.g. W9128F21C0012" 
+                    />
                   </div>
-                  
-                  <div className="space-y-3">
-                    <label className="block text-xs font-bold uppercase tracking-widest">Primary Deficit Category</label>
-                    <select className="w-full border-2 border-gov-navy bg-transparent p-4 font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-gov-gold appearance-none rounded-none cursor-pointer">
-                      <option>-- SELECT CATEGORY --</option>
-                      <option>PROJECT CAPITAL (MOBILIZATION/FLOAT)</option>
-                      <option>SURETY & BONDING</option>
-                      <option>EXECUTION LABOR (SCA/DBA)</option>
-                    </select>
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-slate-700">UEI (Unique Entity ID)</label>
+                    <input 
+                      type="text" 
+                      className="w-full border border-slate-300 rounded-lg bg-white px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-slate-400 transition-all placeholder:text-slate-400" 
+                      placeholder="12-character alphanumeric" 
+                    />
                   </div>
-                  
-                  <button type="button" className="w-full bg-gov-navy text-gov-cream font-black text-lg uppercase tracking-widest py-6 hover:bg-gov-gold hover:text-gov-navy transition-all border-2 border-gov-navy mt-6 active:translate-y-1 active:shadow-none shadow-[4px_4px_0px_0px_rgba(184,156,106,1)]">
-                    Verify Award & Initialize
-                  </button>
-                </form>
-              </div>
-            </div>
-            
-            {/* Footer Base */}
-            <div className="border-t-grid p-8 grid grid-cols-1 md:grid-cols-3 gap-4 items-center bg-gov-navy text-gov-cream">
-              <div className="text-center md:text-left text-xs font-bold uppercase tracking-widest opacity-80">
-                &copy; {new Date().getFullYear()} Government Contracted
-              </div>
-              <div className="text-center text-xs font-mono tracking-wider text-gov-gold flex justify-center items-center">
-                <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
-                SYSTEMS OPERATIONAL
-              </div>
-              <div className="text-center md:text-right text-xs font-bold uppercase tracking-widest opacity-80">
-                Authorized Access Only
-              </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Primary Deficit Category</label>
+                  <select className="w-full border border-slate-300 rounded-lg bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-slate-400 transition-all">
+                    <option value="">Select category...</option>
+                    <option>Project Capital (Mobilization/Float)</option>
+                    <option>Surety & Bonding</option>
+                    <option>Execution Labor (SCA/DBA)</option>
+                  </select>
+                </div>
+                
+                <button type="button" className="bg-slate-900 text-white font-medium rounded-lg px-6 py-3.5 hover:bg-slate-800 transition-all w-full shadow-sm mt-4">
+                  Verify Award & Initialize
+                </button>
+              </form>
             </div>
           </div>
         </div>
       </section>
+      
+      {/* Footer */}
+      <footer className="border-t border-slate-200 bg-white py-12">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-slate-500">
+          <div>
+            &copy; {new Date().getFullYear()} Government Contracted. All rights reserved.
+          </div>
+          <div className="flex items-center font-mono text-xs text-slate-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-2"></span>
+            SYSTEMS OPERATIONAL
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
