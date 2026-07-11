@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 61 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 63 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -40,6 +40,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | GTM analytics: entities, awards, transactions-by-recipient, teaming, lanes, capabilities, expiry, people/POC lookups | **Sidecar** |
 | Per-ACTION description text (`transaction_description`), canonical txn columns beyond `txn_rows`' 16, the full 392-col canonical, `gtm_subaward_recipient_code_evidence` | Lance (not in artifact). Award-grain descriptions ARE here: `award_descriptions` |
 | Enrichment identity coverage: PDL match, LinkedIn URLs, icypeas profiles (see §3 Identity/enrichment) | **Sidecar** |
+| Secured-debt posture: UCC liens, lenders, collateral, win-then-borrow timing (CA/CO; see §3 Debt/UCC) | **Sidecar** |
 | Non-GTM domains (EPA, CMS, MSHA, FDIC, SoS, UCC…) | Lance (not in artifact) |
 | Ingest verification / anything needing LIVE data | Lance — the sidecar is a snapshot (see §6) |
 
@@ -119,6 +120,12 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `icypeas_person_profiles` / `icypeas_person_profile_scrapes` | 14.8k / 9.5k | uei / person_linkedin_url_norm | Person-profile scrape ledger (status/found per input) and the scraped profile content (title, summary, company block, education); raw blobs excluded |
 | `bridge_dsbs_pdl_linkedin` | 1/uei · 53k | uei | DSBS→PDL/LinkedIn resolution (best_domain + matched pdl id + company_linkedin_url) |
 | `dsbs_poc_linkedin` · `exa_person_linkedin_candidates` | 821 · 33k | uei | Person-side LinkedIn resolution candidates (raw JSON excluded) |
+
+### Debt / UCC layer (CA + CO; SAM∩UCC via the SoS crosswalk hub)
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `sam_ucc_debtor_overlap` | 1/(uei, sos_entity_key) · 87k | uei | "Carries debt?" — n_ucc_financing, n_active_ucc_liens, `has_active_lien`, `has_tax_lien` (involuntary liens kept SEPARATE from "taking $"), officer corroboration, `overlap_confidence` (very_high…low). CA/CO registrants only — coverage is the federal∩state-registered intersection, not all debtors |
+| `sam_ucc_filings` | 1/(uei, ucc_state, filing_id) · 376k | uei, first_filing_date | "When / from whom / against what" — first/last filing dates (recency = fresh borrowing), lapse/terminated, `filing_class` financing\|tax_or_judgment, `is_active_financing`, `is_lease` (CA Lessee/Lessor = true equipment leases), **`secured_parties`** (who holds the paper), `collateral_text` (CO). Interleaves with `gtm_txn_events_slim` on uei for award→borrow sequencing |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |
@@ -223,6 +230,32 @@ WHERE s.uei IN (/* receiver set */) AND s.code_type = 'psc'
 -- Declaration coverage of a firm set (never count the *_counter/*_string columns)
 SELECT code_type, count(DISTINCT uei) declaring_firms
 FROM v_sam_declared_codes WHERE uei IN (/* set */) GROUP BY 1;
+
+-- WIN-THEN-BORROW timing trigger: firms with fresh money now, a history of
+-- borrowing after winning, and no new filing since the award (the loan window).
+-- ALWAYS pre-prune the 108M event stream to the debt-layer UEIs first — the
+-- unbounded interval join saturates the serving box; pruned it runs ~5s.
+WITH debt_ueis AS (SELECT DISTINCT uei FROM sam_ucc_filings),
+evts AS (SELECT t.uei, t.action_date, t.action_type_code, t.obligation
+         FROM gtm_txn_events_slim t JOIN debt_ueis USING(uei)),
+fresh AS (
+  SELECT uei, sum(obligation) new_money, max(action_date) last_award
+  FROM evts WHERE action_type_code IN ('A','C','G')
+    AND action_date >= current_date - 90
+  GROUP BY 1 HAVING sum(obligation) >= 250000),
+borrow_hist AS (
+  SELECT f.uei, count(*) paired
+  FROM sam_ucc_filings f JOIN evts t
+    ON t.uei = f.uei AND f.first_filing_date BETWEEN t.action_date AND t.action_date + 90
+  WHERE f.filing_class = 'financing' GROUP BY 1 HAVING count(*) >= 2)
+SELECT e.legal_business_name, fr.new_money, b.paired, o.has_active_lien
+FROM fresh fr JOIN borrow_hist b USING(uei)
+JOIN gtm_sam_entities e USING(uei)
+LEFT JOIN (SELECT uei, max(has_active_lien) has_active_lien
+           FROM sam_ucc_debtor_overlap GROUP BY 1) o USING(uei)
+WHERE NOT EXISTS (SELECT 1 FROM sam_ucc_filings x
+                  WHERE x.uei = fr.uei AND x.first_filing_date > fr.last_award)
+ORDER BY fr.new_money DESC;
 
 -- Enrichment coverage funnel: PDL / LinkedIn / profile coverage of a firm set, one pass
 SELECT count(*) firms,

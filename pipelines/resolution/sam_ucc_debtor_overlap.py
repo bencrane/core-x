@@ -537,3 +537,275 @@ def build(dry_run: bool = False) -> None:
         return
     print(json.dumps(build_overlap.remote(trigger_callback_url=None), indent=2, default=str))
     print(json.dumps(verify_overlap.remote(), indent=2, default=str))
+
+
+# =========================================================================== #
+# sam_ucc_filings — the FILING-GRAIN companion (UCC debt-layer cycle,
+# operator-directed 2026-07-10). One row per (uei, ucc_state, filing_id) for
+# every SAM entity the capstone resolves: filing dates (recency), lapse/
+# termination state, financing vs tax/judgment class, CA lease designation,
+# SECURED-PARTY names (who holds the paper), CO collateral text (what is
+# encumbered). The overlap table answers "carries debt?"; this answers
+# "when, from whom, against what" — and interleaves with the award event
+# stream (gtm_txn_events_slim) for win-then-borrow sequencing.
+# =========================================================================== #
+
+FILINGS_DATASET_URI = os.environ.get("SAM_UCC_FILINGS_URI", "s3://data-sink/active/sam_ucc_filings/")
+FILINGS_FEED = "sam_ucc_filings"
+FILINGS_ROW_FLOOR = 30_000
+FILINGS_BTREE = ["uei", "filing_id"]
+FILINGS_BITMAP = ["ucc_state", "filing_class", "is_active_financing", "is_lease"]
+
+CA_SECURED_URI = os.environ.get("CA_UCC_SECURED_URI", "s3://data-sink/active/ca_ucc/secured_parties/")
+CO_SECURED_URI = os.environ.get("UCC_CO_SECURED_URI", "s3://data-sink/active/ucc_co_secured_parties/")
+CO_COLLATERAL_URI = os.environ.get("UCC_CO_COLLATERAL_URI", "s3://data-sink/active/ucc_co_collateral/")
+
+
+def build_filings_sql() -> str:
+    """Filing-grain compose. Reads cu_src, cs_src, ca_deb_src, ca_fil_src,
+    ca_sp_src, co_deb_src, co_txn_src, co_sp_src, co_col_src. All join keys
+    are pure equalities (builder doctrine)."""
+    return """
+    WITH cu AS (
+        SELECT ucc_debtor_key, sos_entity_key FROM cu_src WHERE is_canonical
+    ),
+    cs AS (
+        SELECT sos_entity_key, uei FROM cs_src WHERE is_canonical AND uei IS NOT NULL
+    ),
+    firm AS (
+        SELECT DISTINCT cu.ucc_debtor_key, cu.sos_entity_key, cs.uei
+        FROM cu JOIN cs ON cs.sos_entity_key = cu.sos_entity_key
+    ),
+    ca_fil AS (
+        SELECT ucc1_num,
+               min(filing_date) AS first_filing_date,
+               max(filing_date) AS last_filing_date,
+               max(lapse_date)  AS lapse_date,
+               max(CASE WHEN filing_type = 'UCC' THEN 1 ELSE 0 END) AS is_financing,
+               max(CASE WHEN filing_type LIKE '%Tax Lien' OR filing_type = 'Judgment Lien'
+                        THEN 1 ELSE 0 END) AS is_tax,
+               max(CASE WHEN action_type = 'Termination' THEN 1 ELSE 0 END) AS terminated,
+               max(CASE WHEN alt_designation_type IN ('Lessee', 'Lessor') THEN 1 ELSE 0 END) AS is_lease
+        FROM ca_fil_src WHERE ucc1_num IS NOT NULL GROUP BY 1
+    ),
+    ca_sp AS (
+        SELECT ucc1_num,
+               count(DISTINCT org_name)                            AS n_secured_parties,
+               left(string_agg(DISTINCT org_name, '; '), 500)      AS secured_parties
+        FROM ca_sp_src WHERE ucc1_num IS NOT NULL AND org_name IS NOT NULL GROUP BY 1
+    ),
+    ca_rows AS (
+        SELECT f2.uei, f2.sos_entity_key, 'CA' AS ucc_state, d.ucc1_num AS filing_id,
+               fil.first_filing_date, fil.last_filing_date, fil.lapse_date,
+               fil.is_financing, fil.is_tax, fil.terminated, fil.is_lease,
+               sp.n_secured_parties, sp.secured_parties,
+               CAST(NULL AS VARCHAR) AS collateral_text
+        FROM ca_deb_src d
+        JOIN firm f2
+          ON f2.ucc_debtor_key = 'CA:' || d.normalized_legal_name || '|' || coalesce(d.zip_code, '')
+        JOIN ca_fil fil ON fil.ucc1_num = d.ucc1_num
+        LEFT JOIN ca_sp sp ON sp.ucc1_num = d.ucc1_num
+        WHERE d.normalized_legal_name IS NOT NULL
+    ),
+    co_fil AS (
+        SELECT file_id,
+               min(filing_date) AS first_filing_date,
+               max(filing_date) AS last_filing_date,
+               max(lapse_date)  AS lapse_date,
+               max(CASE WHEN filing_type IN ('ucc', 'efs') THEN 1 ELSE 0 END) AS is_financing,
+               max(CASE WHEN filing_type LIKE 'lien_%' THEN 1 ELSE 0 END)     AS is_tax,
+               max(CASE WHEN termination_flag THEN 1 ELSE 0 END)              AS terminated,
+               0                                                              AS is_lease
+        FROM co_txn_src WHERE file_id IS NOT NULL GROUP BY 1
+    ),
+    co_sp AS (
+        SELECT file_id,
+               count(DISTINCT coalesce(organization_name, party_name_normalized)) AS n_secured_parties,
+               left(string_agg(DISTINCT coalesce(organization_name, party_name_normalized), '; '), 500)
+                                                                                  AS secured_parties
+        FROM co_sp_src
+        WHERE file_id IS NOT NULL
+          AND coalesce(organization_name, party_name_normalized) IS NOT NULL
+        GROUP BY 1
+    ),
+    co_col AS (
+        SELECT file_id,
+               left(string_agg(DISTINCT coalesce(collateral_description_normalized,
+                                                 collateral_description), ' | '), 500) AS collateral_text
+        FROM co_col_src
+        WHERE file_id IS NOT NULL
+          AND coalesce(collateral_description_normalized, collateral_description) IS NOT NULL
+        GROUP BY 1
+    ),
+    co_rows AS (
+        SELECT f2.uei, f2.sos_entity_key, 'CO' AS ucc_state, d.file_id AS filing_id,
+               fil.first_filing_date, fil.last_filing_date, fil.lapse_date,
+               fil.is_financing, fil.is_tax, fil.terminated, fil.is_lease,
+               sp.n_secured_parties, sp.secured_parties, col.collateral_text
+        FROM co_deb_src d
+        JOIN firm f2
+          ON f2.ucc_debtor_key = 'CO:' || d.normalized_legal_name || '|' || coalesce(d.zip_code, '')
+        JOIN co_fil fil ON fil.file_id = d.file_id
+        LEFT JOIN co_sp sp ON sp.file_id = d.file_id
+        LEFT JOIN co_col col ON col.file_id = d.file_id
+        WHERE d.normalized_legal_name IS NOT NULL
+    ),
+    u AS (SELECT * FROM ca_rows UNION ALL SELECT * FROM co_rows)
+    SELECT uei, ucc_state, filing_id,
+           any_value(sos_entity_key)          AS sos_entity_key,
+           min(first_filing_date)             AS first_filing_date,
+           max(last_filing_date)              AS last_filing_date,
+           max(lapse_date)                    AS lapse_date,
+           CASE WHEN max(is_financing) = 1 THEN 'financing'
+                WHEN max(is_tax) = 1 THEN 'tax_or_judgment'
+                ELSE 'other' END              AS filing_class,
+           (max(terminated) = 1)              AS terminated,
+           (max(is_financing) = 1 AND max(terminated) = 0
+            AND max(lapse_date) >= CURRENT_DATE) AS is_active_financing,
+           (max(is_lease) = 1)                AS is_lease,
+           max(n_secured_parties)             AS n_secured_parties,
+           any_value(secured_parties)         AS secured_parties,
+           any_value(collateral_text)         AS collateral_text
+    FROM u
+    GROUP BY uei, ucc_state, filing_id
+    """
+
+
+def _materialize_filings(con):
+    import lance
+
+    so = _r2_storage_options()
+
+    def scan(uri, cols):
+        return lance.dataset(uri, storage_options=so).scanner(columns=cols).to_reader()
+
+    con.register("cu_src", scan(CROSSWALK_UCC_SOS_URI,
+                                ["ucc_debtor_key", "sos_entity_key", "is_canonical"]))
+    con.register("cs_src", scan(CROSSWALK_SOS_SAM_URI,
+                                ["sos_entity_key", "uei", "is_canonical"]))
+    con.register("ca_deb_src", scan(CA_DEBTORS_URI, ["normalized_legal_name", "zip_code", "ucc1_num"]))
+    con.register("ca_fil_src", scan(CA_FILINGS_URI, [
+        "ucc1_num", "filing_type", "filing_date", "lapse_date", "action_type",
+        "alt_designation_type"]))
+    con.register("ca_sp_src", scan(CA_SECURED_URI, ["ucc1_num", "org_name"]))
+    con.register("co_deb_src", scan(CO_DEBTORS_URI, ["normalized_legal_name", "zip_code", "file_id"]))
+    con.register("co_txn_src", scan(CO_TXN_URI, [
+        "file_id", "filing_type", "filing_date", "lapse_date", "termination_flag"]))
+    con.register("co_sp_src", scan(CO_SECURED_URI,
+                                   ["file_id", "organization_name", "party_name_normalized"]))
+    con.register("co_col_src", scan(CO_COLLATERAL_URI, [
+        "file_id", "collateral_description", "collateral_description_normalized"]))
+    con.execute(f"CREATE TEMP TABLE filings AS {build_filings_sql()}")
+    for r in ("cu_src", "cs_src", "ca_deb_src", "ca_fil_src", "ca_sp_src",
+              "co_deb_src", "co_txn_src", "co_sp_src", "co_col_src"):
+        con.unregister(r)
+
+    row = con.execute("""
+        SELECT count(*)                                                     AS rows,
+               count(DISTINCT uei)                                          AS distinct_uei,
+               count(*) FILTER (WHERE is_active_financing)                  AS with_active_lien,
+               count(*) FILTER (WHERE secured_parties IS NOT NULL)          AS officer_confirmed,
+               count(*) FILTER (WHERE ucc_state = 'CA')                     AS ca_rows,
+               count(*) FILTER (WHERE ucc_state = 'CO')                     AS co_rows,
+               count(*) FILTER (WHERE uei IS NULL OR filing_id IS NULL)     AS orphans
+        FROM filings
+    """).fetchone()
+    keys = ["rows", "distinct_uei", "with_active_lien", "officer_confirmed",
+            "ca_rows", "co_rows", "orphans"]
+    metrics = {k: int(v) for k, v in zip(keys, row)}
+    table = con.sql("SELECT * FROM filings").to_arrow_table()
+    return table, metrics
+
+
+def assert_filings_gates(m: dict) -> list[str]:
+    checks: list[str] = []
+
+    def gate(ok: bool, label: str) -> None:
+        checks.append(f"{'PASS' if ok else 'FAIL'}  {label}")
+        if not ok:
+            raise RuntimeError(f"PRE-WRITE GATE FAILED → {label}\n" + "\n".join(checks))
+
+    gate(m["rows"] >= FILINGS_ROW_FLOOR, f"1 row floor: {m['rows']:,} >= {FILINGS_ROW_FLOOR:,}")
+    gate(m["orphans"] == 0, f"2 no orphan keys: {m['orphans']}")
+    gate(m["distinct_uei"] > 0, f"3 distinct uei: {m['distinct_uei']:,}")
+    gate(m["ca_rows"] > 0 and m["co_rows"] > 0,
+         f"4 both states present: CA={m['ca_rows']:,} CO={m['co_rows']:,}")
+    gate(m["officer_confirmed"] > 0, f"5 secured-party coverage nonzero: {m['officer_confirmed']:,}")
+    return checks
+
+
+@app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    timeout=60 * 60, memory=65536, cpu=8.0,
+)
+def build_filings() -> dict:
+    import datetime as dt
+
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    so = _r2_storage_options()
+    status, error = "error", None
+    metrics = {"rows": 0, "distinct_uei": 0, "with_active_lien": 0,
+               "officer_confirmed": 0, "ca_rows": 0, "co_rows": 0}
+    global FEED, DATASET_URI
+    feed_prev, uri_prev = FEED, DATASET_URI
+    try:
+        os.makedirs(SPILL_DIR, exist_ok=True)
+        con = _new_con()
+        try:
+            table, metrics = _materialize_filings(con)
+        finally:
+            con.close()
+        print(f"materialized: {metrics}")
+        for line in assert_filings_gates(metrics):
+            print("  ", line)
+
+        try:
+            v_before = lance.dataset(FILINGS_DATASET_URI, storage_options=so).version
+        except Exception:  # noqa: BLE001
+            v_before = None
+        print(f"v_before = {v_before}")
+
+        lance.write_dataset(table, FILINGS_DATASET_URI, mode="overwrite",
+                            data_storage_version=DATA_STORAGE_VERSION,
+                            max_rows_per_file=MAX_ROWS_PER_FILE, storage_options=so)
+        ds = lance.dataset(FILINGS_DATASET_URI, storage_options=so)
+        for col in FILINGS_BTREE:
+            ds.create_scalar_index(col, index_type="BTREE")
+            print(f"  BTREE ✓ {col}")
+        for col in FILINGS_BITMAP:
+            ds.create_scalar_index(col, index_type="BITMAP")
+            print(f"  BITMAP ✓ {col}")
+
+        ds = lance.dataset(FILINGS_DATASET_URI, storage_options=so)
+        committed = ds.count_rows()
+        if committed != metrics["rows"]:
+            if v_before is not None:
+                lance.dataset(FILINGS_DATASET_URI, storage_options=so, version=v_before).restore()
+            raise RuntimeError(f"post-write rowcount {committed} != {metrics['rows']}")
+        print(f"post-write gates PASS — committed={committed:,}")
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    finally:
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        # ledger reuse: same ops table, distinct feed name; the
+        # officer_confirmed slot carries secured-party coverage here.
+        FEED, DATASET_URI = FILINGS_FEED, FILINGS_DATASET_URI
+        try:
+            _record_run(metrics=metrics, status=status, error=error,
+                        started_at=started_at, completed_at=completed_at)
+        finally:
+            FEED, DATASET_URI = feed_prev, uri_prev
+
+    if status != "success":
+        raise RuntimeError(f"sam_ucc_filings build failed: {error}")
+    return {"feed": FILINGS_FEED, "dataset": FILINGS_DATASET_URI, **metrics}
+
+
+@app.local_entrypoint()
+def filings() -> None:
+    import json
+
+    print(json.dumps(build_filings.remote(), indent=2, default=str))
