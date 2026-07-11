@@ -8,7 +8,8 @@ rows) for a question `gtm_txn_events_slim` answers in 50 ms.
 
 Provenance: built by [pipelines/query_sidecar/build_query_sidecar.py](../../pipelines/query_sidecar/build_query_sidecar.py)
 from the frozen manifest ([SIDECAR_PHASE0_MART_MANIFEST.md](../plans/SIDECAR_PHASE0_MART_MANIFEST.md));
-program record + runbook: [QUERY_SIDECAR_PROGRAM.md](../plans/QUERY_SIDECAR_PROGRAM.md).
+program record + runbook: [QUERY_SIDECAR_PROGRAM.md](../plans/QUERY_SIDECAR_PROGRAM.md);
+full-stack onboarding (platform-app → phrase → this artifact): [PHRASE_QUERY_STACK_ONBOARDING.md](PHRASE_QUERY_STACK_ONBOARDING.md).
 
 ---
 
