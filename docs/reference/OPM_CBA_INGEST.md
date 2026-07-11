@@ -73,7 +73,7 @@ doppler run -p core-x -c prd -- uv run --with pylance --with pyarrow --with requ
 |---|--:|---|
 | `s3://data-sink/active/opm_cba_index/` | 1,248 | BTREE `id`,`agency_name`; BITMAP `labor_union_name`,`document_type` |
 | `s3://data-sink/active/opm_cba_documents/` | 1,248 | BTREE `id`,`sha256`; BITMAP `content_type`,`fetch_status`,`document_type` |
-| `s3://data-sink/active/opm_cba_blobs/{id}.pdf` | 1,243 objects (~1.78 GB) | — |
+| `s3://data-sink/active/opm_cba_blobs/{id}.pdf` | 1,245 objects (~1.79 GB) | — |
 
 `opm_cba_index` also carries `file_size` (verbatim human string) + `file_size_bytes` (derived) and
 `bus_codes` (list<string>, present on all 1,248). `id` joins index↔documents↔blobs.
@@ -81,10 +81,31 @@ Ledger: `ops.opm_cba_runs` (auto-surfaced by `scripts/data-factory-catalog.py`; 
 
 ## Coverage & known gaps
 
-- **1,243 / 1,248 blobs fetched.** The **5 misses are all DoD / National Guard Bureau** state-guard
-  agreements whose `fileUrl` **404s on OPM's server** (the index lists them; the attachment endpoint
-  returns 404). Recorded as terminal `fetch_status='http_404'` — a `--resume` will not retry them.
-  This is an upstream OPM gap, not a crawl failure.
+- **1,245 / 1,248 blobs present** (1,243 from OPM + 2 alt-source recovered; see below). The original
+  **5 misses were all DoD / National Guard Bureau** state-guard technician CBAs whose *entire document
+  record* 404s on OPM — both the attachment **and** the `GET /cba/api/documents/{id}` metadata endpoint
+  return 404. These are **orphaned index rows**: OPM unpublished the records (all recently expired,
+  2024–25) but left the search-index entries. Confirmed not a filename/encoding bug. Not in the Wayback
+  Machine either — the `fileUrl`s are dynamic UUID attachment paths crawlers never enumerate.
+
+### Alt-source recovery (2 of 5)
+
+The NG technician CBAs are public records (EO-13836 / 5 U.S.C. §7114); the parties post their own copies.
+Recovered from authoritative public sources, byte-verified, and landed at the same `{id}.pdf` blob key
+with **honest alt-source provenance** — `fetch_status='fetched_alt_source'`, `source='recovered:<url>'`
+(the index's dead OPM `fileUrl` is left intact as the accurate record of what OPM publishes):
+
+| id | state / union | recovered from | bytes |
+|---|---|---|--:|
+| `b5fa6636-…` | AZ ACT-71 | `dema.az.gov` (state Dept. of Emergency & Military Affairs) | 5,388,915 |
+| `7123a0cc-…` | CA CAARNG-LIUNA | `local1776.org` CDN (the union party) | 1,623,595 |
+
+**3 remain `http_404`** — AK (ACT-84), GA (ACT), IN (ACT-72). No public direct-PDF exists (only FLRA
+case decisions and different-vintage docs); recovery would require FOIA to NGB / the state TAG or a
+request to the ACT chapter. **Recommendation: not worth pursuing** — all three are expired, outside the
+NAF slice, and contribute nothing to this corpus's wage-appendix value; the `http_404` rows are honest.
+(Recovery of AZ used a browser-context fetch to clear the `dema.az.gov` Imperva WAF, which hard-blocks
+non-JS clients; the byte stream was sha256-verified against the browser-side digest.)
 - Server returns attachments as `application/octet-stream`; `file_ext` resolves to `pdf` from the
   filename (all 1,243 blobs are verified `%PDF-`). The manifest records the honest upstream
   `content_type`.
