@@ -237,6 +237,11 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_subaward_canonical", "tier": "D", "sort": ["subawardee_uei"],
      "cols": _SUBAWARD_COLS, "dest": "subaward_canonical_slim_by_sub",
      "extra_select": "TRY_CAST(subaward_amount AS DOUBLE) AS subaward_amount_num"},
+    # ── UCC debt layer (operator-directed cycle 2026-07-10): "carries debt?"
+    # (overlap, uei grain) + "when / from whom / against what" (filing grain,
+    # dated — interleaves with the award event stream for win-then-borrow).
+    {"ds": "sam_ucc_debtor_overlap", "tier": "D", "sort": ["uei"]},
+    {"ds": "sam_ucc_filings", "tier": "D", "sort": ["uei", "first_filing_date"]},
     {"ds": "federal_sites_lance", "tier": "D", "sort": ["state_code", "zip5"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
     # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
