@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 67 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 71 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -129,6 +129,14 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|---|---|
 | `sam_ucc_debtor_overlap` | 1/(uei, sos_entity_key) · 87k | uei | "Carries debt?" — n_ucc_financing, n_active_ucc_liens, `has_active_lien`, `has_tax_lien` (involuntary liens kept SEPARATE from "taking $"), officer corroboration, `overlap_confidence` (very_high…low). CA/CO registrants only — coverage is the federal∩state-registered intersection, not all debtors |
 | `sam_ucc_filings` | 1/(uei, ucc_state, filing_id) · 376k | uei, first_filing_date | "When / from whom / against what" — first/last filing dates (recency = fresh borrowing), lapse/terminated, `filing_class` financing\|tax_or_judgment, `is_active_financing`, `is_lease` (CA Lessee/Lessor = true equipment leases), **`secured_parties`** (who holds the paper), `collateral_text` (CO). Interleaves with `gtm_txn_events_slim` on uei for award→borrow sequencing |
+
+### Lender surface (CA/CO secured parties, classified)
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `sam_ucc_lenders` | 1/normalized lender · ~17k | lender_key | Secured parties on SAM-firm financing filings, classified `lender_class` = bank_or_cu (FDIC/NCUA authority match + token) \| filing_agent \| government_sba \| **non_bank**; `in_efc` = name-matched to equipment_finance_candidates (incumbent vs whitespace); sam_firms/filings/active_filings, CA/CO firm splits, first/last filing dates. Known residual: vendor/trade creditors (equipment makers filing their own paper) classify non_bank — curate on use |
+| `fdic_institutions` | 1/bank · 27.8k | name | Slim authority: name, cert, active, city/state, webaddr, asset |
+| `ncua_credit_unions` | 1/CU · 4.3k | credit_union_name | Slim authority: name, charter, location, members, total_assets |
+| `equipment_finance_candidates` | 1/candidate · 429 | company_name | The GTM candidate list (name, domain, LinkedIn; verdict unset — another lane's dataset, read-only here). Reconcile: join `sam_ucc_lenders.in_efc` or name-match |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |

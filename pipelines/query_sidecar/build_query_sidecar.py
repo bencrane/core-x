@@ -251,6 +251,21 @@ MANIFEST: list[dict] = [
     # dated — interleaves with the award event stream for win-then-borrow).
     {"ds": "sam_ucc_debtor_overlap", "tier": "D", "sort": ["uei"]},
     {"ds": "sam_ucc_filings", "tier": "D", "sort": ["uei", "first_filing_date"]},
+    # lender-surface cycle (operator-directed 2026-07-10): the classified
+    # lender grain + the FDIC/NCUA name authorities (bracket sources) + the
+    # equipment-finance candidate list (read-only reconciliation target).
+    {"ds": "sam_ucc_lenders", "tier": "D", "sort": ["lender_key"]},
+    {"ds": "fdic_institutions", "tier": "D", "sort": ["name"],
+     "cols": ["name", "cert", "active", "city", "stalp", "stname", "zip",
+              "webaddr", "asset", "charter"]},
+    {"ds": "ncua_credit_unions", "tier": "D", "sort": ["credit_union_name"],
+     "cols": ["credit_union_name", "charter_number", "city_mailing_address",
+              "state_mailing_address", "zip_code_mailing_address",
+              "credit_union_type", "members", "total_assets"]},
+    {"ds": "equipment_finance_candidates", "tier": "D", "sort": ["company_name"],
+     "cols": ["record_id", "company_name", "company_domain", "domain_norm",
+              "linkedin_url", "linkedin_url_norm", "verdict", "source",
+              "landed_at"]},  # -raw_payload
     {"ds": "federal_sites_lance", "tier": "D", "sort": ["state_code", "zip5"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
     # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
