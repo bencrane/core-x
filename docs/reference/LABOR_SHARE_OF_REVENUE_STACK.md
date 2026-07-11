@@ -87,10 +87,11 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
 
 ## Design notes / deliberate deviations
 
-- **BEA `bea_industry_code` lands NULL.** The GDPbyIndustry *summary* workbooks expose only Line
-  + Name (no alphanumeric industry code column), so `bea_industry_line` is the stable per-table
-  join key and is BTREE-indexed alongside `industry_name`. The NAICS↔BEA concordance is the
-  downstream composition step, deliberately out of scope.
+- **BEA `bea_industry_code` lands NULL in `bea_industry_value_added`.** The GDPbyIndustry
+  *summary* workbooks expose only Line + Name (no alphanumeric industry code column), so
+  `bea_industry_line` is the stable per-table join key, BTREE-indexed alongside `industry_name`.
+  The BEA↔NAICS bridge is landed as a **separate concordance asset** (see below) rather than
+  back-filled in place — no spine mutation, bridge pattern.
 - **BEA raw rows keep all years (1997+)**, not just recent — raw-stays-lossless. This puts the
   dataset at ~14.3K rows vs the directive's ~4–8K estimate; still trivially small. Derived
   `comp_share` rows are limited to the latest 3 common years per the directive.
@@ -98,10 +99,32 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
   total compensation (01) and wages & salaries (02) → 48 candidate series, all landed. Detailed
   4-digit-NAICS subcells (e.g. Aircraft manufacturing, Nursing care) are excluded by design.
 
+## BEA↔NAICS concordance (`bea_naics_concordance`)
+
+Resolves the BEA `bea_industry_code` NULL and bridges BEA GDP-by-Industry lines onto the NAICS
+grain. Module [`pipelines/reference/materialize_bea_naics_concordance.py`](../../pipelines/reference/materialize_bea_naics_concordance.py),
+SoR `s3://data-sink/active/bea_naics_concordance/`.
+
+- **Source (keyless static):** BEA "Industry and Commodity Codes and NAICS Concordance"
+  `www.bea.gov/sites/default/files/2023-10/BEA-Industry-and-Commodity-Codes-and-NAICS-Concordance.xlsx`,
+  sheet `NAICS Codes`. Each row maps one 2017 NAICS code up through BEA's five levels —
+  Sector (21) → **Summary (71)** → Underlying Summary (138) → Detail (402) → GO Detail (414).
+- **Landed:** 499 rows · 471 distinct NAICS (levels 2–6) · 73 summary codes · 406 detail codes ·
+  23 sectors. `naics_code_clean` (digits-only) + `naics_level` are derived; the `*` multi-I-O
+  marker is preserved verbatim and flagged in `naics_multi_io`. BTREE `naics_code_clean`,
+  `bea_summary_code`; BITMAP `bea_sector_code`, `naics_level`.
+- **How it resolves the join:** `bea_industry_value_added.industry_name` → `bea_summary_desc`
+  (or `bea_u_summary_desc`/`bea_detail_desc`) → `bea_summary_code` (the BEA industry code); and
+  `naics_code` is the NAICS-grain bridge (a 6-digit award NAICS rolls up by prefix, e.g.
+  `5415`→541511–541519). **81/102 landed BEA names bind directly — i.e. 100 % of the mappable
+  industries;** the 21 that don't are non-NAICS aggregates by construction (economy totals like
+  `Gross domestic product`/`Private industries`, government rows like `National defense`/`State
+  and local`, and special composites like the ICT-producing aggregate).
+
 ## Ledger
 
-`ops.labor_share_runs` (HQX, `HQX_DB_URL_POOLED`) — one terminal-state row per dataset per run;
-an audit-write failure warns, never masks a good load.
+`ops.labor_share_runs` (HQX, `HQX_DB_URL_POOLED`) — one terminal-state row per dataset per run
+(incl. `bea_naics_concordance`); an audit-write failure warns, never masks a good load.
 
 ## Re-run
 
