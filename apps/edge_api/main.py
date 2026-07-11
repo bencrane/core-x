@@ -65,6 +65,9 @@ from .src.routers.capital_providers_v1 import router as capital_providers_router
 from .src.routers.existing_claygent_payloads_v1 import router as existing_claygent_payloads_router
 from .src.routers.equipment_provider_v1 import router as equipment_provider_router
 from .src.routers.equipment_finance_candidates_v1 import router as equipment_finance_candidates_router
+from .src.routers.combo_work_summary_equipment_needs_v1 import (
+    router as combo_work_summary_equipment_needs_router,
+)
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.title_normalize_v1 import router as title_normalize_router
@@ -249,6 +252,12 @@ app.include_router(equipment_provider_router)
 # candidates (name + domain + linkedin_url + verdict). Bridges via domain_norm AND linkedin_url_norm.
 app.include_router(equipment_finance_candidates_router)
 
+# combo-work-summary-equipment-needs: raw landing of LLM equipment-needs verdicts at the
+# NAICS x PSC combo grain (Clay/GPT upstream). Body {naics_code, psc_code, raw_payload, model_id?,
+# source?}; raw_payload stored verbatim as jsonb — no projection, no comma-splitting, no taxonomy
+# normalization at land time. UPSERT on (naics_code, psc_code, model_id). Service-token gated.
+app.include_router(combo_work_summary_equipment_needs_router)
+
 # epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
 # + reasoning + stepsTaken). Bridges to firmographics_blitz via domain_norm. Service-token gated.
@@ -414,6 +423,7 @@ def _info() -> dict:
             "existing_claygent_payloads": True,  # /api/v1/existing-claygent-payloads/land (universal jsonb sink, discriminated)
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
+            "combo_work_summary_equipment_needs": True,  # /api/v1/combo-work-summary-equipment-needs/land (combo-grain LLM equipment verdicts, UPSERT)
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
