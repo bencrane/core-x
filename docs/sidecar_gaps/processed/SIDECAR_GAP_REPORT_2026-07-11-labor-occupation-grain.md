@@ -105,3 +105,64 @@ volume ≈ 560k rows / ~40 MB — negligible against the 1.23B-row artifact.
 `govcon_labor_demand` (20k) and `sam_labor_poc_people` (29k) sit on the same
 subgraph's edge (award-linked demand, uei-keyed POC) — sweep candidates if the
 gate passes them.
+---
+
+## Disposition (gap-pass-6 — build cycle, 2026-07-11)
+
+Probed every claimed schema against the Lance SoR before gating. All six ranked
+entries **promoted** as a single connected subgraph; the mandatory adjacency sweep
+added one join-side table (`sam_wd_county_coverage`) and one baked view
+(`v_wd_county_rates`). Sweep candidates `govcon_labor_demand` / `sam_labor_poc_people`
+**parked** (rationale below). One build fired: `ap-ElUaHfPVUCfQJ5glRo208O`.
+
+### Schema corrections (report guess → probed truth)
+- `sam_wd_rates_structured`: grain is (wd_id × occupation_code × classification);
+  fringe carried as `fringe` + `fringe_is_pct` + `hw_rate`/`hw_rates_all` (report said
+  "fringe/hw_rate"). ✓ columns exist.
+- `sca_soc_crosswalk`: carries its OWN name layer (`occupation_title`, `family_code`,
+  `family_title`) in addition to `soc_title` — the SCA-side display columns overlap
+  `dol_sca_occupations`. Both kept (occupations table is the fuller taxonomy w/ definition).
+- `olms_cba_crosswalk`: 4,844 rows, uei-keyed, `union_name` + `exp_date` present. ✓
+- county hop: report's Entry-2 ran rates × `sam_wd_county_coverage` × `sam_county_fips_crosswalk`
+  — coverage was implicit in the fallback; promoted explicitly (it IS the demanded shape).
+
+### Build scope block (written BEFORE the build)
+| Table | Rows | Source | Rationale |
+|---|---|---|---|
+| `sam_wd_rates_structured` | 522k | demand (Entry 2, rank 1) | the priced statutory floor |
+| `sam_wd_county_coverage` | 33k | **adjacency (join-side)** | the wd→county hop Entry 2's own join used; without it the floor has no geography |
+| `sam_county_fips_crosswalk` | 3.3k | demand (Entry 3, rank 1) | binds WD locality → award-spine PoP county FIPS |
+| `soc_state_wage` | 35k | demand (Entry 4, rank 2) | the market half of the spread |
+| `sca_soc_crosswalk` | 424 | demand (Entry 1, rank 3) | the bridge both halves meet on |
+| `dol_sca_occupations` | 502 | demand (Entry 6, rank 4) | SCA name/display layer |
+| `olms_cba_crosswalk` | 4.8k | demand (Entry 5, rank 5) | uei-keyed union exposure |
+| `v_wd_county_rates` (view) | — | **adjacency (next-question)** | the county-priced floor in one SELECT — the recurring Entry-2 shape, no re-derivation |
+
+**Next-question simulation** (each answerable post-build):
+- "floor vs market for this SCA occ in this county" → `sca_soc_crosswalk` ⋈ `v_wd_county_rates` ⋈ `soc_state_wage` (§4 pattern shipped).
+- "name this SCA code" → `dol_sca_occupations` / `sca_soc_crosswalk`.
+- "is this target list unionized, when do CBAs expire" → `olms_cba_crosswalk` on uei (§4 pattern shipped).
+- "join the floor to the award spine's PoP county" → `county_fips` bridges to `txn_events_combo_by_geo.pop_county_fips`.
+
+**Parked (structural-gated, no demand yet):**
+- `govcon_labor_demand` (20.6k) — award/solicitation-linked labor-category demand
+  extractions (headcount, clearance, wage_floor). On the subgraph's edge but no gap
+  entry exercised it this session; promote when a solicitation-demand question recurs.
+- `sam_labor_poc_people` (29.5k) — uei-keyed staffing POC people. Overlaps the existing
+  identity/people layer (`gtm_sam_people`, `sam_pocs`); no distinct demand shape yet.
+
+### Measured deltas (serving, before → after)
+| Entry shape | Before (Lance fallback) | After (serving) |
+|---|---|---|
+| E1 ranked SCA↔SOC for a combo | ~20s cold pylance | **2.8 ms** |
+| E2 county-priced floor for a WD (`v_wd_county_rates`) | ~60s 3-table Lance pull | **10.5 ms** |
+| E4 SOC state wage envelope | ~15–30s pylance | **1.8 ms** |
+| E5 uei union exposure for a list | ~90s cache-to-parquet | **1.7 ms** |
+| Composite market-vs-floor spread (E1⋈E2⋈E4, the whole thought) | prior sessions never assembled it in one place | **10.4 ms** |
+
+Composite verified end-to-end: Carpenter Maintenance (SCA 23130 → SOC 47-2031),
+floor $23.43/hr in Caroline County VA (FIPS 51033) alongside the OEWS market envelope
+(p25 $22.34 / median $26.77 / p75 $29.49) — the exact market-vs-floor answer, one statement.
+
+Artifact: `query_sidecar_20260711T170353Z.duckdb`, **78 tables** (71 → 78), 45.19 GiB.
+All seven new marts parity=OK against pinned Lance versions (522k/35k/33k/4.8k/3.3k/502/424).

@@ -295,6 +295,21 @@ MANIFEST: list[dict] = [
               "company_domain", "aff_used", "query", "exa_linkedin_url",
               "exa_title", "is_in_profile", "n_results", "cost_usd",
               "searched_at", "source_batch", "query_variant"]},  # -raw_results_json
+    # ── labor occupation-grain layer (gap-pass-6: SIDECAR_GAP_REPORT
+    # 2026-07-11-labor-occupation-grain). One connected subgraph: award
+    # (naics,psc) -> combo labor layer -> sca/soc -> wage (floor:
+    # wd_rates via county_coverage + fips crosswalk; market: soc_state_wage)
+    # -> uei union exposure. county_coverage rides Entry 2's own fallback
+    # join (the county hop is part of the demanded shape). ~600k rows total.
+    {"ds": "sam_wd_rates_structured", "tier": "D",
+     "sort": ["wd_id", "occupation_code"]},
+    {"ds": "sam_wd_county_coverage", "tier": "D", "sort": ["wd_id"]},
+    {"ds": "sam_county_fips_crosswalk", "tier": "D",
+     "sort": ["state_code", "sam_county_name"]},
+    {"ds": "soc_state_wage", "tier": "D", "sort": ["soc_code", "prim_state"]},
+    {"ds": "sca_soc_crosswalk", "tier": "D", "sort": ["occupation_code"]},
+    {"ds": "dol_sca_occupations", "tier": "D", "sort": ["occupation_code"]},
+    {"ds": "olms_cba_crosswalk", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
@@ -609,6 +624,23 @@ _VIEWS: dict[str, str] = {
         UNION ALL
         SELECT uei, is_active, 'psc', unnest(psc_codes)
         FROM sam_master_entities WHERE psc_codes IS NOT NULL
+    """,
+    # gap-pass-6 adjacency rider: the county-priced statutory floor in one
+    # SELECT — rates x county coverage x FIPS crosswalk (the exact recurring
+    # Entry-2 shape). Predicates on wd_id / occupation_code / county_fips
+    # prune the underlying sorted tables.
+    "v_wd_county_rates": """
+        CREATE VIEW v_wd_county_rates AS
+        SELECT r.wd_id, r.revision_number, r.wd_type,
+               r.occupation_code, r.classification_title,
+               r.wage_rate, r.fringe, r.fringe_is_pct, r.hw_rate,
+               c.state_code, c.state_name, c.county_name,
+               f.county_fips, f.resolution_status
+        FROM sam_wd_rates_structured r
+        JOIN sam_wd_county_coverage c ON c.wd_id = r.wd_id
+        LEFT JOIN sam_county_fips_crosswalk f
+               ON f.state_code = c.state_code
+              AND f.sam_county_name = c.county_name
     """,
     # sub-out portrait at award grain: award_state × sub-out rollup — "is this
     # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
