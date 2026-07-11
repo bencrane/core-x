@@ -57,3 +57,24 @@ first-touch** vs the ~52s export + Lance-pull + local-join chain.
 
 **Disk flag (escalated):** artifact 45.16 GiB; blue-green peak ~90 GiB vs the 100 GB
 Render disk. Grow the disk BEFORE the next artifact growth — this is no longer advisory.
+
+---
+
+## Addendum — Entry 2 (appended by a second session AFTER gap-pass-4 archived this file)
+
+1. **Intent:** plain-language work phrases for the top combos per identity bucket
+   (tab-07 "In Plain Language") — 78 (naics, psc) pairs.
+2. **Why not the sidecar:** missing tables — `naics_psc_deliverable` (20,998,
+   what_was_done_v2) and `naics_psc_labor_profile` (16,291, work_summary), Lance-only.
+3. **What I ran instead:** lance open of both datasets, to_table() into DuckDB,
+   join against a 78-pair CSV (naics_code, psc_code, what_was_done, work_summary).
+4. **Cost:** ~60 s wall, two full-dataset pulls (37k rows) vs 78 rows needed.
+5. **Recurrence:** recurring — every consumable/story section at combo grain.
+
+### Addendum disposition (gap-pass-5)
+
+**Promoted** — served by the combo-language layer (4 tables) shipped in gap-pass-5;
+full disposition in `SIDECAR_GAP_REPORT_2026-07-10-shedding-combo-outreach.md`.
+Process note: entries appended to ARCHIVED reports risk being missed — new demand
+goes in a NEW dated file (README convention); this one was caught because the
+shedding report cross-referenced it.
