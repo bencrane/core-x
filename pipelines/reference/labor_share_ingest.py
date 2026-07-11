@@ -34,6 +34,10 @@ strings + suppression/noise flags preserved; derived ratios are ADDITIONAL colum
     concordance is deliberately OUT OF SCOPE (downstream composition work).
 
   STREAM 3 — BLS ECEC (--stream ecec)  →  active/bls_ecec_costs/  +  active/bls_ecec_burden/
+    ⚠ SUPERSEDED for costs/burden (2026-07-11): pipelines/reference/ecec_full_universe.py
+    rebuilds both datasets from the full CM flat-file universe (7,998 series, full history,
+    R2 landing snapshot — no API). Do NOT re-run this stream; it would clobber the full
+    universe with the 48-series/2020+ slice. Kept for provenance.
     BLS Public Data API v2 POST (keyless; 25 series/query, 500/day — the download.bls.gov flat
     files 403 even with a browser UA, so the API is the only path). ECEC series ID format
     (authoritative, bls.gov/ecec/factsheets/ecec-series-id-guide.htm):

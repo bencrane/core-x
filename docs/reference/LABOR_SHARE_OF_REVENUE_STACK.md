@@ -28,8 +28,8 @@ discounting) is a **follow-on** directive — out of scope here.
 |---|---|---:|---|
 | `census_susb_naics_payroll_receipts` | naics × size_class | 32,200 | `payroll_share = annual_payroll_k / receipts_k` |
 | `bea_industry_value_added` | table × industry_line × component × year | 14,272 | `comp_share_of_output = CoE / gross_output` (285 derived rows) |
-| `bls_ecec_costs` | series_id × year × period | 1,200 | — |
-| `bls_ecec_burden` | ownership × industry_group | 24 | `burden_multiplier = total_comp / wages_salaries` |
+| `bls_ecec_costs` | series_id × year × period | 627,050 | — (full universe; see ECEC section below) |
+| `bls_ecec_burden` | ownership × industry_group × occupation_group × subcell | 321 | `burden_multiplier = total_comp / wages_salaries` |
 
 All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `bea_industry_line`
 + `industry_name`; `series_id`; `industry_group`), BITMAP on low-cardinality categoricals.
@@ -47,10 +47,17 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
      taxes_on_production_less_subsidies / gross_operating_surplus.
    - `GrossOutput.xlsx::TGO105-A` "Gross Output by Industry" [$M, 1997–2025] — the denominator.
    The `io-annual/IOUse_*Summary.xlsx` path is dead (returns text/html) — avoided.
-3. **BLS ECEC** — Public Data API v2 POST `api.bls.gov/publicAPI/v2/timeseries/data/` (keyless,
-   25 series/query). `download.bls.gov` flat files 403 even with a browser UA — API is the only
-   route. Series ID format (authoritative, `bls.gov/ecec/factsheets/ecec-series-id-guide.htm`):
-   `CM·U·<owner:1>·<estimate:2>·<industry:4>·<occupation:3>·<subcell:3>·<datatype:1>`.
+3. **BLS ECEC — full universe (2026-07-11 rebuild)** — the CM time-series flat-file snapshot at
+   `s3://data-sink/landing/bls/time-series/cm/` (operator-landed, byte-exact vs `download.bls.gov`,
+   which TLS-blocks programmatic clients). `cm.series.txt` (7,998 series, 15 cols) joined to
+   `cm.data.1.AllData.txt` (627,050 observations, full history from 2004); all 8 dim codes decoded
+   via the `cm.*` mapping files. Module
+   [`pipelines/reference/ecec_full_universe.py`](../../pipelines/reference/ecec_full_universe.py)
+   — supersedes the original 48-series/2020+ API slice from `labor_share_ingest --stream ecec`.
+   Series ID format (authoritative, `bls.gov/ecec/factsheets/ecec-series-id-guide.htm`):
+   `CM·U·<owner:1>·<estimate:2>·<industry:6>·<occupation:6>·<subcell:2>·<datatype:1>` (area 5-digit
+   in the catalog columns). Owners: civilian 824 / private 6,642 / state-local 532 series;
+   28 estimate components (total comp, wages, health, retirement, leave, …).
 
 ## Key formulas & verified constants
 
@@ -61,9 +68,11 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
   trimmed industry_name (single economy-wide alias: value-added "Gross domestic product" ↔ gross
   output "All industries"), latest 3 common years (2022–2024, CoE is published through 2024).
   Economy 2024: 15,049,121 / 50,736,556 = **0.296613**.
-- **ECEC burden_multiplier** = `total_comp / wages_salaries` per (ownership, industry_group) at
-  the latest common quarter. Economy-private (all industries): **1.4294**. Anchor
-  `CMU2010000000000D` (private, total comp, all industries) 2025 Q04 = **46.15** (exact).
+- **ECEC burden_multiplier** = `total_comp / wages_salaries` (estimate 01/02, datatype D, area
+  99999 national, NSA) per (ownership × industry_group × occupation_group × subcell) at the
+  latest common quarter. Economy-private (all industries × all occ × all workers): **1.429448**
+  @ 2026 Q01 (matches prior slice's 1.4294). Anchor `CMU2010000000000D` 2025 Q04 = **46.15**,
+  2026 Q01 = **46.60** (exact).
 
 ## Validation gate results (directive §8 — all pass)
 
@@ -79,11 +88,23 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
 | BEA per-industry share | (0, 1), never > 1 | min 0.009004 / max 0.644585 |
 | BEA industry lines / year | ≥ 60 | 97 |
 | BEA latest year | ≥ 2023 | 2025 |
-| ECEC series succeeded | all REQUEST_SUCCEEDED | 48/48 (0 dropped) |
-| ECEC anchor 2025 Q04 | 46.15 ±0.5 | 46.15 |
-| ECEC every burden_multiplier | [1.15, 1.65] | 1.2352 – 1.581 |
-| ECEC economy-private multiplier | [1.35, 1.50] | 1.4294 |
-| ops.labor_share_runs | 4 rows `status='success'` | ✓ |
+| ops.labor_share_runs | rows `status='success'` | ✓ |
+
+### ECEC full-universe rebuild gates (2026-07-11 directive — all pass, hard-fail in module)
+
+| Check | Bound | Value |
+|---|---|---|
+| cm.series parse | exactly 7,998 series, 15 cols, 0 dropped | 7,998 / 15 / 0 |
+| AllData join | every obs series_id ∈ catalog; joined == data rows | 627,050 == 627,050, 0 orphans |
+| Dim resolution | 0 unresolved codes across 8 mapping files | 0 |
+| Anchor `CMU2010000000000D` | 2025 Q04 == 46.15, 2026 Q01 == 46.60 exact | 46.15 / 46.60 |
+| Economy-private multiplier | [1.35, 1.50] and ±0.01 of 1.4294 @ 2026 Q01 | 1.429448 @ 2026 Q01 |
+| All burden rows | [1.05, 1.90] | 1.1668 – 1.7709 (321 rows) |
+| Costs row count | ≥ 400,000 | 627,050 |
+| Ledger | success rows both datasets | ✓ |
+
+Non-numeric observation values: 5,257 (footnote-suppressed) → `value` NULL, verbatim string kept
+in additive `value_raw`.
 
 ## Design notes / deliberate deviations
 
@@ -95,9 +116,12 @@ All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `b
 - **BEA raw rows keep all years (1997+)**, not just recent — raw-stays-lossless. This puts the
   dataset at ~14.3K rows vs the directive's ~4–8K estimate; still trivially small. Derived
   `comp_share` rows are limited to the latest 3 common years per the directive.
-- **ECEC industry set** = the 24 published major industry groups (private ownership), each for
-  total compensation (01) and wages & salaries (02) → 48 candidate series, all landed. Detailed
-  4-digit-NAICS subcells (e.g. Aircraft manufacturing, Nursing care) are excluded by design.
+- **ECEC = full published universe** (2026-07-11 rebuild): all 7,998 series, all owners, all
+  estimate components, detailed industries/occupations, size/union/region subcells, full history.
+  Prior-slice columns kept name/type-compatible; codes AND decoded texts both land (raw lossless).
+  Burden restricted to datatype D · area 99999 · NSA; the prior 24 private-industry combos
+  reappear within tolerance (economy-private 1.4294 exact match). `cm.aspect.txt` (RSEs) and any
+  seasonal-adjustment handling beyond landing the code verbatim are out of scope.
 
 ## BEA↔NAICS concordance (`bea_naics_concordance`)
 
@@ -131,6 +155,9 @@ SoR `s3://data-sink/active/bea_naics_concordance/`.
 ```bash
 doppler run -p core-x -c prd -- uv run --with pylance --with pyarrow --with duckdb \
   --with requests --with boto3 --with openpyxl --with 'psycopg[binary]' \
-  python -m pipelines.reference.labor_share_ingest --stream all --smoke   # throwaway URIs first
-... python -m pipelines.reference.labor_share_ingest --stream all                  # full overwrite
+  python -m pipelines.reference.labor_share_ingest --stream susb   # or bea (ecec stream superseded)
+
+# ECEC full universe (costs + burden) — reads the CM flat files from R2 landing:
+doppler run -p core-x -c prd -- uv run --with pylance --with pyarrow --with boto3 \
+  --with 'psycopg[binary]' python -m pipelines.reference.ecec_full_universe --smoke  # then full (no flag)
 ```
