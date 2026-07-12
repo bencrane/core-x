@@ -35,8 +35,9 @@ Plain underscore runs / ruled lines, fields dropped by hand in the editor:
   Rare Structure LLC / Benjamin J. Crane / Managing Director). Principal column: entity blank + ruled
   signature line + Name + Title + Date blanks.
 
-Source-draft notes: the stray `a {` fragment after the d/b/a in the source preamble was dropped (looked
-like a truncated state/entity-type clause — reinstate as a blank if one belongs there). The
+Source-draft notes: the preamble follows the house form (`…is entered into by Rare Structure LLC (the
+"Operator") and the participating entity, ____ d/b/a ____, hereby defined as the "Principal"`); the
+source draft's stray `a {` state/entity-type fragment was dropped entirely by operator decision. The
 `{{OPERATOR_*}}` handlebars were baked to the pre-set Rare Structure LLC signatory per house convention.
 
 ## Layout
