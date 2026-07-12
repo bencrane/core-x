@@ -1,4 +1,4 @@
-"""Deterministic AGGREGATE phrase mode — phrase-agg.v1 (POST /api/v1/market/phrase).
+"""Deterministic AGGREGATE phrase mode — phrase-agg.v2 (POST /api/v1/market/phrase).
 
 The retrieval grammar (phrase_compiler) answers "WHICH rows match"; this module
 answers "HOW MUCH, grouped by what" — the demo/portrait surface. Same doctrine,
@@ -7,24 +7,34 @@ separate closed grammar: the opener token ``total`` routes the phrase here
 span longest-matches a closed vocabulary, and any unbound token refuses the
 whole phrase naming the token. Zero LLM. Same phrase + artifact → same bars.
 
-v1 GRAMMAR — exactly one production, everything else refuses:
+v2 GRAMMAR — exactly two productions, everything else refuses:
 
-    total <measure> <group> <window>
+    total <measure> <group> <window>                            (v1 · portrait)
+    total active <measure> near <zip5> within <N> miles by equipment   (v2 · yard)
 
-    measure  awarded | award value | obligated | obligations | spend
-             → sum(prime_obl) over the combo×FY portrait
-    group    by industry | across industries
-             → NAICS sector rollup (2-digit, 31-33/44-45/48-49 merged)
-    window   fy23 to fy25 | fy2023 to fy2025 | fy24        (REQUIRED)
+    measure  awarded | awards | award value | obligated | obligations | spend
+             v1 → sum(prime_obl) over the combo×FY portrait
+             v2 → sum(total_obligation) over open awards
+    group    by industry | across industries       (v1: NAICS sector rollup)
+             by equipment | across equipment       (v2: equipment-need bucket)
+    window   fy23 to fy25 | fy2023 to fy2025 | fy24    (v1 REQUIRED; v2 refused —
+             active awards are point-in-time, not FY-windowed)
+    active   v2 scope: open awards (gtm_open_awards), place-of-performance
+    near     v2 anchor: 5-digit zip → award-PoP centroid (refuses unknown zips)
+    within   v2 radius: '<N> miles' haversine from the anchor (REQUIRED)
+    equipment scope: the curated NAICS×PSC heavy-iron combos
+             (naics_psc_equipment_needs WHERE in_scope), bucketed
     connectives: from, in, of, the, federal, $  — consumed, disclosed, never semantic
 
-Execution: ONE GROUP BY on the sidecar's ``v_combo_fy`` (combo×FY baked
-portrait). Results are cached in-process keyed by the normalized phrase —
-the response is deterministic w.r.t. the artifact, and the artifact stamp is
-carried in the response meta so a stale cache is visible, never silent.
+Execution: v1 is ONE GROUP BY on the sidecar's ``v_combo_fy``; v2 is a centroid
+point-lookup + ONE bbox/haversine GROUP BY on ``gtm_open_awards`` joined to the
+equipment-combo verdicts. Results are cached in-process keyed by the normalized
+phrase — the response is deterministic w.r.t. the artifact, and the artifact
+stamp is carried in the response meta so a stale cache is visible, never silent.
 """
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -33,11 +43,12 @@ from typing import Any
 from .lance_store import MapCompileError
 from . import sidecar_executor
 
-AGG_COMPILER_VERSION = "phrase-agg.v1"
+AGG_COMPILER_VERSION = "phrase-agg.v2"
 
 # ── closed vocabularies ────────────────────────────────────────────────────────
 MEASURES: dict[str, str] = {
     "awarded": "prime_obl_sum",
+    "awards": "prime_obl_sum",
     "award value": "prime_obl_sum",
     "obligated": "prime_obl_sum",
     "obligations": "prime_obl_sum",
@@ -46,6 +57,8 @@ MEASURES: dict[str, str] = {
 GROUPS: dict[str, str] = {
     "by industry": "industry",
     "across industries": "industry",
+    "by equipment": "equipment",
+    "across equipment": "equipment",
 }
 CONNECTIVES = {"from", "in", "of", "the", "federal", "$"}
 
@@ -78,6 +91,11 @@ SECTOR_LABELS: dict[str, str] = {
 _FY_RE = re.compile(r"^fy(\d{2}|\d{4})$")
 _FY_MIN, _FY_MAX = 2008, 2035
 
+_ZIP_RE = re.compile(r"^\d{5}$")
+_RADIUS_RE = re.compile(r"^\d{1,3}(\.\d+)?$")
+_RADIUS_MIN, _RADIUS_MAX = 1.0, 500.0
+_MILE_TOKENS = {"miles", "mile", "mi"}
+
 
 def is_aggregate_phrase(phrase: Any) -> bool:
     """The mode router: an aggregate phrase OPENS with the reserved token
@@ -106,7 +124,8 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
     bindings: list[dict[str, Any]] = [
         {"tokens": ["total"], "axis": "mode", "op": None, "value": "aggregate"}]
     spec: dict[str, Any] = {"measure": None, "group_by": None,
-                            "fy_lo": None, "fy_hi": None}
+                            "fy_lo": None, "fy_hi": None,
+                            "active": False, "zip": None, "radius_mi": None}
     i, n = 1, len(tokens)
 
     def _multiword(vocab: dict[str, str], max_len: int = 2) -> tuple[str, str] | None:
@@ -118,6 +137,48 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
 
     while i < n:
         tok = tokens[i]
+
+        # v2 scope: 'active' — open awards, point-in-time.
+        if tok == "active":
+            if spec["active"]:
+                raise MapCompileError("phrase refused: 'active' bound twice")
+            spec["active"] = True
+            bindings.append({"tokens": ["active"], "axis": "scope",
+                             "op": None, "value": "open_awards"})
+            i += 1
+            continue
+
+        # v2 anchor: 'near <zip5>'.
+        if tok == "near":
+            if i + 1 >= n or not _ZIP_RE.match(tokens[i + 1]):
+                raise MapCompileError(
+                    "phrase refused: 'near' expects a 5-digit zip — say 'near 79925'")
+            if spec["zip"] is not None:
+                raise MapCompileError("phrase refused: more than one anchor zip")
+            spec["zip"] = tokens[i + 1]
+            bindings.append({"tokens": tokens[i:i + 2], "axis": "anchor",
+                             "op": "zip_centroid", "value": spec["zip"]})
+            i += 2
+            continue
+
+        # v2 radius: 'within <N> miles'.
+        if tok == "within":
+            if (i + 2 >= n or not _RADIUS_RE.match(tokens[i + 1])
+                    or tokens[i + 2] not in _MILE_TOKENS):
+                raise MapCompileError(
+                    "phrase refused: 'within' expects '<N> miles' — say 'within 50 miles'")
+            radius = float(tokens[i + 1])
+            if not (_RADIUS_MIN <= radius <= _RADIUS_MAX):
+                raise MapCompileError(
+                    f"phrase refused: radius {tokens[i + 1]} outside "
+                    f"{_RADIUS_MIN:g}-{_RADIUS_MAX:g} miles")
+            if spec["radius_mi"] is not None:
+                raise MapCompileError("phrase refused: more than one radius")
+            spec["radius_mi"] = radius
+            bindings.append({"tokens": tokens[i:i + 3], "axis": "radius",
+                             "op": "haversine_mi", "value": radius})
+            i += 3
+            continue
 
         hit = _multiword(MEASURES)
         if hit is not None:
@@ -187,10 +248,37 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
     if spec["measure"] is None:
         raise MapCompileError("phrase refused: no measure — say 'total awarded …'")
     if spec["group_by"] is None:
-        raise MapCompileError("phrase refused: no group axis — say '… by industry'")
-    if spec["fy_lo"] is None:
-        raise MapCompileError("phrase refused: no fiscal window — say '… fy23 to "
-                              "fy25' (an unbounded aggregate is not served)")
+        raise MapCompileError("phrase refused: no group axis — say '… by industry' "
+                              "or (active) '… by equipment'")
+
+    if spec["active"]:
+        # v2 · yard production: active + near + within + by equipment; no window.
+        if spec["fy_lo"] is not None:
+            raise MapCompileError(
+                "phrase refused: active awards are point-in-time — drop the "
+                "fiscal window")
+        if spec["zip"] is None:
+            raise MapCompileError(
+                "phrase refused: active mode needs an anchor — say 'near <zip5>'")
+        if spec["radius_mi"] is None:
+            raise MapCompileError(
+                "phrase refused: active mode needs a radius — say 'within 50 miles'")
+        if spec["group_by"] != "equipment":
+            raise MapCompileError(
+                "phrase refused: active mode serves 'by equipment' only")
+    else:
+        # v1 · portrait production: measure + industry + window; no geo.
+        if spec["zip"] is not None or spec["radius_mi"] is not None:
+            raise MapCompileError(
+                "phrase refused: 'near'/'within' require active scope — open "
+                "with 'total active …'")
+        if spec["group_by"] == "equipment":
+            raise MapCompileError(
+                "phrase refused: 'by equipment' requires active scope — open "
+                "with 'total active …'")
+        if spec["fy_lo"] is None:
+            raise MapCompileError("phrase refused: no fiscal window — say '… fy23 to "
+                                  "fy25' (an unbounded aggregate is not served)")
     return {"bindings": bindings, "spec": spec}
 
 
@@ -209,6 +297,67 @@ def _sector_sql(spec: dict[str, Any]) -> str:
         "GROUP BY 1")
 
 
+def _centroid_sql(zip5: str) -> str:
+    # zip5 is regex-pinned to \d{5} at compile — safe to inline.
+    return ("SELECT count(*) AS pops, avg(latitude) AS lat, avg(longitude) AS lon "
+            f"FROM usaspending_award_pop_centroids WHERE zip5 = '{zip5}'")
+
+
+def _local_equipment_sql(lat: float, lon: float, radius_mi: float) -> str:
+    # Same anchor math as the equipment-yard deck: bbox prefilter (index-friendly)
+    # then exact haversine. Scope = curated heavy-iron NAICS×PSC combo verdicts.
+    dlat = radius_mi / 68.97
+    dlon = radius_mi / (69.17 * math.cos(math.radians(lat)))
+    hav = (f"3958.8*2*asin(sqrt(pow(sin(radians(latitude-{lat})/2),2)"
+           f"+cos(radians({lat}))*cos(radians(latitude))"
+           f"*pow(sin(radians(longitude-({lon}))/2),2)))")
+    return (
+        "SELECT e.primary_bucket AS bucket, count(*) AS awards, "
+        "sum(a.total_obligation) AS obl "
+        "FROM gtm_open_awards a "
+        "JOIN naics_psc_equipment_needs e ON a.naics_code = e.naics_code "
+        "AND a.product_or_service_code = e.psc_code AND e.in_scope "
+        f"WHERE a.latitude BETWEEN {lat - dlat:.3f} AND {lat + dlat:.3f} "
+        f"AND a.longitude BETWEEN {lon - dlon:.3f} AND {lon + dlon:.3f} "
+        f"AND {hav} <= {radius_mi:g} "
+        "GROUP BY 1")
+
+
+def _bucket_label(bucket: str) -> str:
+    return bucket.replace("_", " ").title().replace(" And ", " & ")
+
+
+def _execute_active_equipment(spec: dict[str, Any]) -> dict[str, Any]:
+    cent = sidecar_executor._sql(_centroid_sql(spec["zip"]), limit=1)
+    crow = dict(zip(cent["columns"], cent["rows"][0])) if cent["rows"] else {}
+    if not crow.get("pops"):
+        raise MapCompileError(
+            f"phrase refused: zip {spec['zip']} — no award place-of-performance "
+            "centroid on record")
+    lat, lon = float(crow["lat"]), float(crow["lon"])
+
+    payload = sidecar_executor._sql(
+        _local_equipment_sql(lat, lon, float(spec["radius_mi"])), limit=100)
+    cols = payload["columns"]
+    bars = []
+    for row in payload["rows"]:
+        r = dict(zip(cols, row))
+        if not r["bucket"]:
+            continue
+        bars.append({"key": r["bucket"], "label": _bucket_label(r["bucket"]),
+                     "total": round(r["obl"] or 0.0, 2), "count": int(r["awards"])})
+    bars.sort(key=lambda b: -b["total"])
+    return {
+        "bars": bars,
+        "matched_rows": sum(b["count"] for b in bars),
+        "total_groups": len(bars),
+        "anchor": {"zip": spec["zip"], "lat": round(lat, 5), "lon": round(lon, 5),
+                   "radius_mi": float(spec["radius_mi"])},
+        "artifact": payload.get("artifact"),
+        "elapsed_ms": payload.get("elapsed_ms"),
+    }
+
+
 def execute_aggregate(spec: dict[str, Any], phrase: str) -> dict[str, Any]:
     if not sidecar_executor.enabled():
         raise MapCompileError(
@@ -220,6 +369,12 @@ def execute_aggregate(spec: dict[str, Any], phrase: str) -> dict[str, Any]:
         hit = _CACHE.get(key)
         if hit and now - hit["at"] < _CACHE_TTL_S:
             return hit["result"]
+
+    if spec["active"]:
+        result = _execute_active_equipment(spec)
+        with _CACHE_LOCK:
+            _CACHE[key] = {"at": now, "result": result}
+        return result
 
     payload = sidecar_executor._sql(_sector_sql(spec), limit=100)
     cols = payload["columns"]
@@ -260,18 +415,28 @@ def compile_and_execute(body: Any) -> dict[str, Any]:
     compiled = compile_aggregate(phrase)
     spec = compiled["spec"]
     executed = execute_aggregate(spec, phrase)
-    window = (f"FY{spec['fy_lo'] % 100:02d}" if spec["fy_lo"] == spec["fy_hi"]
-              else f"FY{spec['fy_lo'] % 100:02d}–FY{spec['fy_hi'] % 100:02d}")
+    if spec["active"]:
+        plan = [{"grain": "aggregate",
+                 "source": "gtm_open_awards×naics_psc_equipment_needs",
+                 "measure": "active_obl_sum", "group_by": spec["group_by"],
+                 "fy": None, "anchor": executed["anchor"]}]
+        title = (f"Active equipment-scope awards · {spec['zip']} · "
+                 f"{spec['radius_mi']:g} mi")
+    else:
+        window = (f"FY{spec['fy_lo'] % 100:02d}" if spec["fy_lo"] == spec["fy_hi"]
+                  else f"FY{spec['fy_lo'] % 100:02d}–FY{spec['fy_hi'] % 100:02d}")
+        plan = [{"grain": "aggregate", "source": "v_combo_fy",
+                 "measure": spec["measure"], "group_by": spec["group_by"],
+                 "fy": [spec["fy_lo"], spec["fy_hi"]]}]
+        title = f"Total awarded by industry · {window}"
     return {
         "meta": {
             "compilerVersion": AGG_COMPILER_VERSION,
             "mode": "aggregate",
             "phrase": phrase,
             "bindings": compiled["bindings"],
-            "plan": [{"grain": "aggregate", "source": "v_combo_fy",
-                      "measure": spec["measure"], "group_by": spec["group_by"],
-                      "fy": [spec["fy_lo"], spec["fy_hi"]]}],
-            "title": f"Total awarded by industry · {window}",
+            "plan": plan,
+            "title": title,
             "unitLabel": "USD obligated",
             "matchedRows": executed["matched_rows"],
             "totalGroups": executed["total_groups"],
