@@ -53,6 +53,10 @@ ITEM_TITLES: dict[int, str] = {
 
 IMAGE_ONLY_CHARS_PER_PAGE = 80   # below this avg → scanned/image PDF, bracket out
 TIER1_OK_THRESHOLD = 10          # >= this many items found → no metered fallback
+MIN_SECTION_GAP = 1000           # a real Part 2A body section exceeds this; TOC rows
+                                 # are far shorter — used to bound the TOC region
+COLLAPSE_TAIL_FRAC = 0.5         # one item holding > this share of body text, with
+COLLAPSE_CORE_CHARS = 2000       # items 4/5/8 under this, = a TOC-decoy collapse
 
 # Anchor A: "Item N" at line start; reject sub-question refs ("Item 8.A").
 # The lookahead must reject only dot-IMMEDIATELY-followed-by-alnum ("8.A"),
@@ -159,6 +163,38 @@ def _title_anchors(text: str) -> list[tuple[int, int]]:
     return out
 
 
+MIN_TOC_RUN = 6                  # >= this many consecutive small-gap anchors = a TOC block
+TOC_FRONT_FRAC = 0.25            # only the front of the doc holds a TOC; guards real content
+
+
+def _toc_spans(text: str, cands: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
+    """Locate table-of-contents regions so their decoy 'Item N' rows can be dropped.
+
+    A brochure's TOC lists Items 1..18 as a dense run of header-looking lines only a
+    few dozen chars apart. When those rows lack dot-leaders / trailing page numbers,
+    ``_is_toc_row`` misses them and the TOC forms a complete ascending anchor chain
+    that the longest-increasing-chain selector locks onto — collapsing every real
+    section after the TOC's last item into a single tail item. Real sections sit
+    thousands of chars apart, so a TOC is identifiable by density alone, independent
+    of any heading: a front-of-document run of >= MIN_TOC_RUN consecutive anchors each
+    within MIN_SECTION_GAP of the next. Returns the [start, end) span(s) to exclude;
+    the first substantial section (the anchor after the run) is preserved.
+    """
+    if not cands:
+        return []
+    front = TOC_FRONT_FRAC * len(text)
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(cands)
+    while i < n:
+        j = i
+        while j + 1 < n and (cands[j + 1][0] - cands[j][0]) < MIN_SECTION_GAP:
+            j += 1
+        if j - i + 1 >= MIN_TOC_RUN and cands[i][0] <= front:
+            spans.append((cands[i][0], cands[j][0] + 1))  # through the run's last anchor
+        i = j + 1
+    return spans
+
+
 def _outline_anchors(doc: fitz.Document, page_offsets: list[int]) -> dict[int, int]:
     """Anchor C: PDF bookmarks mapped to items → char offset of their page."""
     out: dict[int, int] = {}
@@ -204,8 +240,34 @@ def split_items(text: str, doc: "fitz.Document | None" = None) -> tuple[dict[int
         return {}, {}
     cands.sort(key=lambda c: (c[0], c[2]))          # by position; A before B/C at ties
 
-    # Longest strictly-increasing chain on item number (weighted: A=3, B=2, C=1
-    # so the true header run beats an equally long chain of weaker anchors).
+    items, sources = _chain_items(text, cands)
+
+    # TOC-decoy repair, attempted ONLY when the first pass leaves the core strategy/fee
+    # items (4/5/8) starved — the signature of a dense TOC run winning the chain and
+    # dumping every real section into one tail item. Brochures that split cleanly have
+    # substantial 4/5/8 and never reach here. The re-split is a no-op unless a TOC run
+    # is actually found, and is adopted only if it grows the core body — so a lenient
+    # trigger cannot corrupt a doc that had no decoy TOC. Zero-downside by construction.
+    core = lambda it: sum(len(it.get(i, "")) for i in (4, 5, 8))
+    if core(items) < COLLAPSE_CORE_CHARS:
+        spans = _toc_spans(text, cands)
+        stripped = [c for c in cands if not any(lo <= c[0] < hi for lo, hi in spans)]
+        if spans and stripped:
+            items2, sources2 = _chain_items(text, stripped)
+            if core(items2) > core(items):
+                items, sources = items2, sources2
+    return items, sources
+
+
+def _chain_items(text: str, cands: list[tuple[int, int, str]]) -> tuple[dict[int, str], dict[int, str]]:
+    """Select the best anchor chain and slice item bodies between consecutive anchors.
+
+    Longest strictly-increasing chain on item number, weighted A=3, B=2, C=1 so the
+    true header run beats an equally long chain of weaker anchors. Body of each anchor
+    is the text up to the next anchor in the chain.
+    """
+    if not cands:
+        return {}, {}
     W = {"A": 3, "B": 2, "C": 1}
     best_w = [0.0] * len(cands)
     prev = [-1] * len(cands)
@@ -245,5 +307,16 @@ def parse_brochure(pdf_path: str) -> BrochureParse:
             return r
         r.items, r.anchor_source = split_items(text, doc)
     r.confidence = len(r.items)
-    r.needs_fallback = r.confidence < TIER1_OK_THRESHOLD
+    r.needs_fallback = r.confidence < TIER1_OK_THRESHOLD or _is_collapsed(r.items)
     return r
+
+
+def _is_collapsed(items: dict[int, str]) -> bool:
+    """Detect a TOC-decoy collapse the item count alone misses: one item holding
+    the bulk of the body while the core strategy/fee items (4/5/8) are starved."""
+    if not items:
+        return False
+    total = sum(len(v) for v in items.values()) or 1
+    tail = max(len(v) for v in items.values())
+    core = sum(len(items.get(i, "")) for i in (4, 5, 8))
+    return tail / total > COLLAPSE_TAIL_FRAC and core < COLLAPSE_CORE_CHARS
