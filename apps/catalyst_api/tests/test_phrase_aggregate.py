@@ -23,7 +23,8 @@ def test_total_opener_routes_to_aggregate_mode():
 def test_flagship_total_awarded_by_industry_fy23_to_fy25():
     c = phrase_aggregate.compile_aggregate("total awarded by industry fy23 to fy25")
     assert c["spec"] == {"measure": "prime_obl_sum", "group_by": "industry",
-                         "fy_lo": 2023, "fy_hi": 2025}
+                         "fy_lo": 2023, "fy_hi": 2025,
+                         "active": False, "zip": None, "radius_mi": None}
     axes = [b["axis"] for b in c["bindings"]]
     assert axes == ["mode", "measure", "group_by", "window"]
 
@@ -114,3 +115,83 @@ def test_cache_serves_second_call_without_sql(monkeypatch):
     phrase_aggregate.compile_and_execute(body)
     phrase_aggregate.compile_and_execute(body)
     assert len(calls) == 1
+
+
+# ── v2 · the yard production (the demo's click 2) ─────────────────────────────
+def test_flagship_active_equipment_near_zip():
+    c = phrase_aggregate.compile_aggregate(
+        "total active awards near 79925 within 50 miles by equipment")
+    assert c["spec"]["active"] is True
+    assert c["spec"]["zip"] == "79925"
+    assert c["spec"]["radius_mi"] == 50.0
+    assert c["spec"]["group_by"] == "equipment"
+    assert c["spec"]["fy_lo"] is None
+    axes = [b["axis"] for b in c["bindings"]]
+    assert axes == ["mode", "scope", "measure", "anchor", "radius", "group_by"]
+
+
+@pytest.mark.parametrize("phrase,match", [
+    # active-mode omissions each name the fix
+    ("total active awards within 50 miles by equipment", "near <zip5>"),
+    ("total active awards near 79925 by equipment", "within 50 miles"),
+    ("total active awards near 79925 within 50 miles by industry",
+     "'by equipment' only"),
+    ("total active awards near 79925 within 50 miles by equipment fy24",
+     "point-in-time"),
+    # v2 vocabulary without active scope refuses back to the v1 form
+    ("total awards near 79925 within 50 miles by equipment fy24", "active scope"),
+    ("total awarded by equipment fy24", "active scope"),
+    # malformed anchor / radius
+    ("total active awards near elpaso within 50 miles by equipment", "5-digit zip"),
+    ("total active awards near 79925 within fifty miles by equipment", "<N> miles"),
+    ("total active awards near 79925 within 900 miles by equipment", "outside"),
+])
+def test_v2_refusals_name_the_token_or_fix(phrase, match):
+    with pytest.raises(MapCompileError, match=match):
+        phrase_aggregate.compile_aggregate(phrase)
+
+
+def test_v2_execute_anchors_and_buckets(monkeypatch):
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "enabled", lambda: True)
+    seen = []
+
+    def fake_sql(sql, limit):
+        seen.append(sql)
+        if "usaspending_award_pop_centroids" in sql:
+            return {"columns": ["pops", "lat", "lon"],
+                    "rows": [[42, 31.77, -106.32]],
+                    "artifact": "test-artifact", "elapsed_ms": 1.0}
+        return {"columns": ["bucket", "awards", "obl"],
+                "rows": [["earthmoving_and_excavation", 7, 25.5e6],
+                         ["paving_and_roadwork", 12, 60.0e6],
+                         [None, 3, 1.0e6]],       # unbucketed residue dropped
+                "artifact": "test-artifact", "elapsed_ms": 2.0}
+
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "_sql", fake_sql)
+    phrase_aggregate._CACHE.clear()
+    out = phrase_aggregate.compile_and_execute(
+        {"phrase": "total active awards near 79925 within 50 miles by equipment"})
+    assert len(seen) == 2
+    assert "zip5 = '79925'" in seen[0]
+    assert "gtm_open_awards" in seen[1] and "in_scope" in seen[1]
+    bars = out["data"]["bars"]
+    assert [b["key"] for b in bars] == ["paving_and_roadwork",
+                                        "earthmoving_and_excavation"]
+    assert bars[1]["label"] == "Earthmoving & Excavation"
+    assert out["meta"]["matchedRows"] == 19
+    assert out["meta"]["plan"][0]["anchor"]["zip"] == "79925"
+    assert out["meta"]["plan"][0]["fy"] is None
+    assert out["meta"]["title"] == "Active equipment-scope awards · 79925 · 50 mi"
+
+
+def test_v2_unknown_zip_refuses(monkeypatch):
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "enabled", lambda: True)
+    monkeypatch.setattr(
+        phrase_aggregate.sidecar_executor, "_sql",
+        lambda sql, limit: {"columns": ["pops", "lat", "lon"],
+                            "rows": [[0, None, None]],
+                            "artifact": "a", "elapsed_ms": 1.0})
+    phrase_aggregate._CACHE.clear()
+    with pytest.raises(MapCompileError, match="00000"):
+        phrase_aggregate.compile_and_execute(
+            {"phrase": "total active awards near 00000 within 50 miles by equipment"})
