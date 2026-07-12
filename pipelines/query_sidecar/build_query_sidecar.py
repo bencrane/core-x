@@ -136,6 +136,12 @@ MANIFEST: list[dict] = [
     {"ds": "naics_psc_labor_profile_categories", "tier": "A",
      "sort": ["naics_code", "psc_code", "rank"]},
     {"ds": "naics_psc_vertical_map", "tier": "A", "sort": ["naics_code", "psc_code"]},
+    # equipment-needs cycle (2026-07-11): the combo->equipment-needs verdicts
+    # (LLM proposed_equipment_needs + the deterministic heavy-iron slice:
+    # in_scope / equipment_buckets / primary_bucket). 1 row/combo, sorted
+    # (naics, psc) so a combo predicate prunes AND it co-clusters with every
+    # other naics_psc_* mart + txn_events_combo for the demand join.
+    {"ds": "naics_psc_equipment_needs", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "psc_reference", "tier": "A", "sort": ["psc_code"]},
     # ── Tier B — Cycle B rollups (built-but-unwired; this is their serving lane)
     {"ds": "gtm_txn_events_slim", "tier": "B", "sort": ["uei", "action_date"]},
@@ -159,6 +165,17 @@ MANIFEST: list[dict] = [
     # _POSITION_ORDERS_SQL) — local build off award_state, must follow it.
     {"ds": "gtm_position_orders", "tier": "C", "sort": ["contract_award_unique_key"],
      "from_table": "usaspending_fpds_prime_award_state", "position_orders": True,
+     "aggregate": True},
+    # equipment-needs cycle (2026-07-11): combo-grain award-lifecycle-state mart —
+    # active/terminated/expired splits aggregated at (naics, psc) off the 82.8M
+    # award_state table (local, no R2 read; must follow award_state). "Active"
+    # ($, awards, distinct primes) is the geo product's denominator; the total +
+    # terminated + expired splits and ceiling-headroom ride the SAME group-by
+    # scan so "what share is active" / "how many primes" / "headroom" need no new
+    # cycle. Aggregate -> non-empty parity. Sorted (naics, psc) for the demand join.
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "dest": "combo_award_active_state",
+     "sort": ["naics_code", "psc_code"],
+     "from_table": "usaspending_fpds_prime_award_state", "combo_active": True,
      "aggregate": True},
     # inferred-code semi-join legs: sorted by (code_type, code) so a code
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
@@ -266,6 +283,20 @@ MANIFEST: list[dict] = [
      "cols": ["record_id", "company_name", "company_domain", "domain_norm",
               "linkedin_url", "linkedin_url_norm", "verdict", "source",
               "landed_at"]},  # -raw_payload
+    # equipment-needs cycle (2026-07-11): supply-side shop profiles. Classifier
+    # (is_equipment_provider verdict, 4,700; NOT unique on domain — 201 dupes,
+    # deduped in v_equipment_supply), scraped inventory (matchmaking, 1/domain),
+    # and the award-overlap capability score (golden_overlap, 1/domain, firm_domain
+    # == domain_norm). All key on domain -> join firmographics_blitz for name/geo,
+    # and supported/qualified PSC lists join combo demand on the shared PSC taxonomy.
+    {"ds": "equipment_provider", "tier": "D", "sort": ["domain_norm"],
+     "cols": ["record_id", "company_domain", "domain_norm", "is_equipment_provider",
+              "mode", "confidence", "reasoning", "steps_taken", "evidence_url",
+              "evidence_snippet", "source", "landed_at", "materialized_at"]},  # -raw_payload
+    {"ds": "equipment_matchmaking", "tier": "D", "sort": ["domain_norm"],
+     "cols": ["domain_norm", "supported_pscs", "verified_inventory_matches",
+              "matched_psc_count", "materialized_at"]},  # -justification_payload
+    {"ds": "equipment_rental_golden_overlap", "tier": "D", "sort": ["firm_domain"]},
     {"ds": "federal_sites_lance", "tier": "D", "sort": ["state_code", "zip5"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
     # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
@@ -512,6 +543,36 @@ WHERE coalesce(parent_ordering_period_end_date, ordering_period_end_date) >= cur
 ORDER BY contract_award_unique_key
 """
 
+# equipment-needs cycle (2026-07-11): combo-grain award-lifecycle-state mart.
+# Pure GROUP BY over the local award_state table (no join -> no NL-join risk).
+# "Active" = days_to_expiry > 0 AND is_terminated = FALSE (report's definition).
+# active-only was the demand; total/terminated/expired splits + distinct primes +
+# current-value + ceiling-headroom ride the SAME scan (FILTER aggregates) so the
+# adjacent "what share is active / how many primes / headroom" questions need no
+# rebuild. Snapshot semantics (as-of the award_state build_date), like the ladder.
+_COMBO_ACTIVE_SQL = """
+CREATE TABLE combo_award_active_state AS
+SELECT
+    naics_code,
+    product_or_service_code                                                                   AS psc_code,
+    count(*)                                                                                   AS award_ct,
+    count(DISTINCT recipient_uei)                                                              AS recipients,
+    sum(total_dollars_obligated_snapshot)                                                      AS obligated_total,
+    count(*)                              FILTER (WHERE days_to_expiry > 0 AND is_terminated = FALSE) AS active_award_ct,
+    count(DISTINCT recipient_uei)         FILTER (WHERE days_to_expiry > 0 AND is_terminated = FALSE) AS active_recipients,
+    sum(total_dollars_obligated_snapshot) FILTER (WHERE days_to_expiry > 0 AND is_terminated = FALSE) AS active_obligated,
+    sum(current_total_value_of_award)     FILTER (WHERE days_to_expiry > 0 AND is_terminated = FALSE) AS active_current_value,
+    sum(remaining_ceiling_headroom)       FILTER (WHERE days_to_expiry > 0 AND is_terminated = FALSE) AS active_ceiling_headroom,
+    count(*)                              FILTER (WHERE is_terminated = TRUE)                         AS terminated_award_ct,
+    sum(total_dollars_obligated_snapshot) FILTER (WHERE is_terminated = TRUE)                         AS terminated_obligated,
+    count(*)                              FILTER (WHERE is_expired_no_followon = TRUE)                AS expired_no_followon_ct
+FROM usaspending_fpds_prime_award_state
+WHERE naics_code IS NOT NULL AND naics_code <> ''
+  AND product_or_service_code IS NOT NULL AND product_or_service_code <> ''
+GROUP BY 1, 2
+ORDER BY naics_code, product_or_service_code
+"""
+
 # gap-pass-3 E1: per-firm ranked code signature off the prime record — the
 # allocation workload's rank/top-N over code lanes precomputed once, for both
 # windows and both code types; floors/top-N remain query-time dials so the
@@ -641,6 +702,53 @@ _VIEWS: dict[str, str] = {
         LEFT JOIN sam_county_fips_crosswalk f
                ON f.state_code = c.state_code
               AND f.sam_county_name = c.county_name
+    """,
+    # equipment-needs cycle (2026-07-11): phrase-grain vocabulary explode —
+    # proposed_equipment_needs is a comma-joined string; this makes the recurring
+    # "roll up the raw equipment vocabulary / per-combo phrase profile" read the
+    # easy one (mirrors v_sam_declared_codes). Trimmed, casing preserved.
+    "v_equipment_needs_phrases": """
+        CREATE VIEW v_equipment_needs_phrases AS
+        SELECT naics_code, psc_code, primary_bucket, in_scope,
+               trim(unnest(string_to_array(proposed_equipment_needs, ','))) AS phrase
+        FROM naics_psc_equipment_needs
+        WHERE proposed_equipment_needs IS NOT NULL AND proposed_equipment_needs <> ''
+    """,
+    # equipment-needs cycle: the product surface — combo active-award-$ ⋈ the
+    # equipment-needs verdict on (naics, psc). "Active $ of [bucket]-needing work"
+    # is a single GROUP BY over this (filter list_contains(equipment_buckets, ...)
+    # or primary_bucket / in_scope). LEFT JOIN keeps every combo; combos with no
+    # verdict carry NULL bucket. Both sides 1/combo, co-sorted (naics, psc).
+    "v_combo_active_equipment": """
+        CREATE VIEW v_combo_active_equipment AS
+        SELECT c.*, e.in_scope, e.primary_bucket, e.equipment_buckets,
+               e.core_phrase_count, e.other_phrase_count, e.confidence AS needs_confidence
+        FROM combo_award_active_state c
+        LEFT JOIN naics_psc_equipment_needs e
+               ON e.naics_code = c.naics_code AND e.psc_code = c.psc_code
+    """,
+    # equipment-needs cycle: supply-side shop profile in one read — the classifier
+    # verdict (deduped to the best row/domain: is_equipment_provider TRUE first,
+    # then latest materialized_at) ⋈ scraped inventory ⋈ award-overlap capability
+    # score. supported_pscs / qualified_pscs join combo demand on the shared PSC
+    # taxonomy; domain_norm joins firmographics_blitz for name/geo.
+    "v_equipment_supply": """
+        CREATE VIEW v_equipment_supply AS
+        WITH prov AS (
+            SELECT * EXCLUDE (_rn) FROM (
+                SELECT p.*, row_number() OVER (
+                    PARTITION BY domain_norm
+                    ORDER BY is_equipment_provider DESC NULLS LAST, materialized_at DESC) AS _rn
+                FROM equipment_provider p)
+            WHERE _rn = 1)
+        SELECT prov.*,
+               m.supported_pscs, m.verified_inventory_matches, m.matched_psc_count,
+               g.qualified_pscs, g.qualified_psc_count, g.qualified_value_exposure,
+               g.capability_capture_ratio, g.qualified_nearby_award_count,
+               g.all_nearby_award_count
+        FROM prov
+        LEFT JOIN equipment_matchmaking m ON m.domain_norm = prov.domain_norm
+        LEFT JOIN equipment_rental_golden_overlap g ON g.firm_domain = prov.domain_norm
     """,
     # sub-out portrait at award grain: award_state × sub-out rollup — "is this
     # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
@@ -774,6 +882,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_SIGNATURE_SQL)
         elif spec.get("position_orders"):
             con.execute(_POSITION_ORDERS_SQL)
+        elif spec.get("combo_active"):
+            con.execute(_COMBO_ACTIVE_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
