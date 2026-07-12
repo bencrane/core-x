@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federal Equipment Economy — El Paso 79925</title>
+<style>
+  :root {
+    --bg:#0d1117; --surface:#161b22; --panel:#1c2330; --border:#2d3748;
+    --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --baseline:#383835;
+    /* categorical — fixed slot per bucket, validated on #161b22 dark surface */
+    --b-cranes:#3987e5; --b-power:#199e70; --b-earth:#c98500; --b-trucks:#008300; --b-aerial:#9085e9;
+    --accent:#3987e5; --seq:#256abf; --hot:#e66767;
+    --sans:-apple-system,"Segoe UI",system-ui,sans-serif; --mono:ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0}
+  html{scroll-snap-type:y mandatory}
+  body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
+  section{min-height:100vh;scroll-snap-align:start;display:flex;flex-direction:column;justify-content:center;
+    padding:48px 8vw;max-width:1280px;margin:0 auto}
+  .kicker{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:14px}
+  h1{font-size:44px;line-height:1.15;font-weight:800;margin-bottom:12px}
+  h2{font-size:30px;line-height:1.2;font-weight:750;margin-bottom:8px}
+  .lede{font-size:17px;color:var(--ink2);max-width:640px;margin-bottom:28px}
+  .hero{font-size:88px;font-weight:800;line-height:1;margin:10px 0 6px;letter-spacing:-.02em}
+  .hero small{font-size:40px;color:var(--ink2);font-weight:650}
+  .herosub{color:var(--muted);font-size:15px;margin-bottom:26px}
+  .tiles{display:flex;gap:14px;flex-wrap:wrap;margin:18px 0}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 22px;min-width:170px}
+  .tile .v{font-size:30px;font-weight:750}
+  .tile .l{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .chart{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 22px;margin-top:10px}
+  .chart h3{font-size:14px;font-weight:700;margin-bottom:2px}
+  .chart .sub{font-size:12px;color:var(--muted);margin-bottom:14px}
+  svg text{font-family:var(--sans)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--ink2)}
+  .legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+  .foot{position:fixed;bottom:14px;right:18px;font:11px var(--mono);color:var(--muted);background:#0d1117cc;
+    padding:4px 10px;border-radius:6px;border:1px solid var(--border);z-index:5}
+  .navhint{position:fixed;bottom:14px;left:18px;font-size:11.5px;color:var(--muted);z-index:5}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;
+    padding:6px 10px;border-bottom:1px solid var(--baseline)}
+  td{padding:7px 10px;border-bottom:1px solid #21283355;color:var(--ink2)}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;color:var(--ink)}
+  td.name{color:var(--ink);font-weight:600}
+  .tip{position:fixed;pointer-events:none;background:#0a0e14;border:1px solid var(--border);border-radius:8px;
+    padding:8px 12px;font-size:12.5px;z-index:10;display:none;max-width:320px;box-shadow:0 6px 24px #0009}
+  .tip b{color:var(--ink)} .tip .d{color:var(--ink2)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+  @media(max-width:900px){.two{grid-template-columns:1fr}.hero{font-size:56px}}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:10px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .card .codes{font:11px var(--mono);color:var(--muted)}
+  .card .what{font-size:13.5px;margin:6px 0;color:var(--ink)}
+  .card .needs{font-size:12px;color:var(--ink2)}
+  .card .m{font-size:18px;font-weight:750;margin-top:6px}
+  .bucket-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="tip" id="tip"></div>
+<div class="foot" id="stamp">loading…</div>
+<div class="navhint">↑ ↓ or scroll · each section = one named sidecar query</div>
+
+<!-- 0 · TITLE -->
+<section>
+  <div class="kicker">Live from the platform · not a slide deck</div>
+  <h1>The Federal Equipment Economy,<br>read from the top of the market<br>down to one yard in El Paso.</h1>
+  <p class="lede">Every number on every screen that follows is a named, versioned query against a pinned
+  snapshot of 108M federal contract actions — nothing hardcoded. The same engine answers live questions.</p>
+</section>
+
+<!-- 1 · ACT 1: NATIONAL -->
+<section>
+  <div class="kicker">Act 1 · The market</div>
+  <h2>Federal contracting runs on equipment.</h2>
+  <div class="hero" id="nat-hero"></div>
+  <div class="herosub">active obligations on federal awards whose work demonstrably requires heavy equipment — classified per (industry × work-type) combination, five demand buckets</div>
+  <div class="tiles" id="nat-tiles"></div>
+  <div class="chart"><h3>Active equipment-dependent obligations by demand bucket</h3>
+    <div class="sub">national · open awards · $B</div><div id="c-buckets"></div></div>
+</section>
+
+<!-- 2 · ACT 1b: STATES -->
+<section>
+  <div class="kicker">Act 1 · Where it lives</div>
+  <h2 id="states-h2">And no state carries more of it than Texas.</h2>
+  <p class="lede">Equipment-heavy obligations since FY24, by place of performance.</p>
+  <div class="chart"><h3>Equipment-dependent federal obligations by state · FY24–present</h3>
+    <div class="sub">place of performance · $B · top 15</div><div id="c-states"></div></div>
+</section>
+
+<!-- 3 · ACT 2: TX COUNTIES -->
+<section>
+  <div class="kicker">Act 2 · The state</div>
+  <h2>Inside Texas, the work clusters hard.</h2>
+  <p class="lede" id="county-lede"></p>
+  <div class="chart"><h3>Equipment-dependent obligations by Texas county · FY24–present</h3>
+    <div class="sub">place of performance · $M · top 15</div><div id="c-counties"></div></div>
+</section>
+
+<!-- 4 · ACT 3: LOCAL HEADLINE -->
+<section>
+  <div class="kicker">Act 3 · Your yard</div>
+  <h2>Within 50 miles of 79925:</h2>
+  <div class="hero" id="loc-hero"></div>
+  <div class="herosub">obligated on open federal awards, right now, whose work needs the iron on your lot</div>
+  <div class="tiles" id="loc-tiles"></div>
+  <div class="chart"><h3>Local open-award obligations by demand bucket</h3>
+    <div class="sub">within 50 mi of the yard · $M · equipment-scope vs everything else</div><div id="c-locbuckets"></div></div>
+</section>
+
+<!-- 5 · RADAR MAP -->
+<section>
+  <div class="kicker">Act 3 · On the map</div>
+  <h2>Every open equipment-heavy award around the yard.</h2>
+  <p class="lede">Yard at center. Rings at 10 / 25 / 50 miles. Size = obligation. Hover any award.</p>
+  <div class="chart" style="max-width:820px"><div id="c-radar"></div>
+    <div class="legend" id="radar-legend"></div></div>
+</section>
+
+<!-- 6 · EXPIRY -->
+<section>
+  <div class="kicker">Act 3 · The clock</div>
+  <h2 id="expiry-h2"></h2>
+  <p class="lede">Expiring awards mean re-competes, demobilization, remobilization — every one is an equipment event.</p>
+  <div class="chart"><h3>Local equipment-heavy obligations by period-of-performance end month</h3>
+    <div class="sub">next 24 months · $M</div><div id="c-expiry"></div></div>
+</section>
+
+<!-- 7 · THE WORK -->
+<section>
+  <div class="kicker">Act 3 · The work itself</div>
+  <h2>What the work actually is — in plain English.</h2>
+  <p class="lede">Each card is an (industry × work-type) combination with local open money on it, with the
+  machine-classified equipment demand behind it.</p>
+  <div class="cards" id="work-cards"></div>
+</section>
+
+<!-- 8 · WHO -->
+<section>
+  <div class="kicker">Act 3 · The buyers of iron</div>
+  <div class="two">
+    <div>
+      <h2>Who holds the work…</h2>
+      <div class="chart"><h3>Largest local equipment-heavy awards</h3>
+        <div class="sub">within 50 mi · open awards</div><div id="t-awards"></div></div>
+    </div>
+    <div>
+      <h2>…and who just took new money.</h2>
+      <div class="chart"><h3>Fresh federal money · last 90 days</h3>
+        <div class="sub">firms holding local equipment-heavy work · new obligations on equipment-scope work · $M</div>
+        <div id="t-fresh"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 · CLOSE -->
+<section>
+  <div class="kicker">The close</div>
+  <h2>Every screen you just saw is a query.<br>Ask a different question — it answers live.</h2>
+  <p class="lede">Different radius, different bucket, a specific agency, a specific prime — the engine that built
+  this presentation is the product. Nothing was made for this meeting except the zip code.</p>
+</section>
+
+<script>
+const BUCKET = {
+  material_handling_cranes: {c:"var(--b-cranes)", label:"Material handling & cranes"},
+  industrial_power_support: {c:"var(--b-power)",  label:"Industrial power & support"},
+  heavy_earthmoving_civil:  {c:"var(--b-earth)",  label:"Heavy earthmoving & civil"},
+  trucks_heavy_haul:        {c:"var(--b-trucks)", label:"Trucks & heavy haul"},
+  aerial_access:            {c:"var(--b-aerial)", label:"Aerial access"},
+  other_federal_work:       {c:"#4a5568",         label:"Other federal work (context)"},
+};
+const fmt$ = (v,unit) => unit==="B" ? (v>=1000?"$"+(v/1000).toFixed(2)+"T":"$"+v.toFixed(0)+"B")
+                                    : (v>=1000?"$"+(v/1000).toFixed(1)+"B":"$"+v.toFixed(0)+"M");
+const tip = document.getElementById("tip");
+function showTip(e, html){ tip.innerHTML = html; tip.style.display="block";
+  tip.style.left = Math.min(e.clientX+14, innerWidth-340)+"px"; tip.style.top = (e.clientY+14)+"px"; }
+function hideTip(){ tip.style.display="none"; }
+
+// generic horizontal bar chart: rows = [[label, value, colorOrNull, hoverHTML]]
+function hbar(el, rows, {unit="M", highlight=null, color="var(--seq)"}={}) {
+  const W=760, rowH=30, H=rows.length*rowH+6, max=Math.max(...rows.map(r=>r[1]));
+  const lw=190, bw=W-lw-90;
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img">`;
+  rows.forEach((r,i)=>{
+    const y=i*rowH+4, w=Math.max(2, r[1]/max*bw);
+    const hot = highlight && r[0]===highlight;
+    const fill = r[2] || (hot ? "var(--hot)" : color);
+    s+=`<text x="${lw-10}" y="${y+14}" text-anchor="end" font-size="12" fill="${hot?'var(--ink)':'var(--ink2)'}" font-weight="${hot?700:400}">${r[0]}</text>`;
+    s+=`<rect class="bar" data-i="${i}" x="${lw}" y="${y}" width="${w}" height="18" rx="4" fill="${fill}"/>`;
+    s+=`<text x="${lw+w+8}" y="${y+14}" font-size="12" fill="var(--ink)" font-weight="600" font-variant-numeric="tabular-nums">${fmt$(r[1],unit)}</text>`;
+  });
+  s+=`</svg>`;
+  el.innerHTML=s;
+  el.querySelectorAll(".bar").forEach(b=>{
+    const r=rows[+b.dataset.i];
+    b.addEventListener("mousemove",e=>showTip(e, r[3]||`<b>${r[0]}</b><div class="d">${fmt$(r[1],unit)}</div>`));
+    b.addEventListener("mouseleave",hideTip);
+  });
+}
+
+// vertical month bars
+function vbar(el, rows, {unit="M"}={}) {
+  const W=920, H=260, n=rows.length, max=Math.max(...rows.map(r=>r[1]));
+  const pad=44, bw=Math.min(40,(W-pad-10)/n-4);
+  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">`;
+  [0,.5,1].forEach(f=>{ const y=H-36-(H-64)*f;
+    s+=`<line x1="${pad}" x2="${W-6}" y1="${y}" y2="${y}" stroke="var(--grid)" stroke-width="1"/>`;
+    s+=`<text x="${pad-6}" y="${y+4}" text-anchor="end" font-size="10.5" fill="var(--muted)" font-variant-numeric="tabular-nums">${fmt$(max*f,unit)}</text>`;});
+  rows.forEach((r,i)=>{
+    const x=pad+8+i*((W-pad-14)/n), h=Math.max(2,r[1]/max*(H-64)), y=H-36-h;
+    s+=`<rect class="bar" data-i="${i}" x="${x}" y="${y}" width="${bw}" height="${h}" rx="4" fill="var(--seq)"/>`;
+    if(r[1]/max>0.35) s+=`<text x="${x+bw/2}" y="${y-6}" text-anchor="middle" font-size="10.5" fill="var(--ink)" font-weight="600">${fmt$(r[1],unit)}</text>`;
+    s+=`<text x="${x+bw/2}" y="${H-20}" text-anchor="middle" font-size="10" fill="var(--muted)">${r[0].slice(2).replace("-","·")}</text>`;});
+  s+=`<line x1="${pad}" x2="${W-6}" y1="${H-36}" y2="${H-36}" stroke="var(--baseline)" stroke-width="1"/></svg>`;
+  el.innerHTML=s;
+  el.querySelectorAll(".bar").forEach(b=>{const r=rows[+b.dataset.i];
+    b.addEventListener("mousemove",e=>showTip(e,`<b>${r[0]}</b><div class="d">${fmt$(r[1],unit)} across ${r[2]} award${r[2]>1?"s":""}</div>`));
+    b.addEventListener("mouseleave",hideTip);});
+}
+
+fetch("snapshot_79925.json").then(r=>r.json()).then(S=>{
+  const R=n=>{const q=S.results[n]; return q.rows.map(row=>Object.fromEntries(q.columns.map((c,i)=>[c,row[i]])));};
+  document.getElementById("stamp").textContent =
+    `artifact ${S.artifact.split("_").pop().replace(".duckdb","")} · anchor ${S.anchor.zip} (${S.anchor.lat}, ${S.anchor.lon}) · r=${S.anchor.radius}mi`;
+
+  // Act 1 national
+  const nb=R("national_buckets");
+  const natTotal=nb.reduce((a,r)=>a+r.active_obl_b,0);
+  document.getElementById("nat-hero").innerHTML=`$${(natTotal/1000).toFixed(2)}<small>T</small>`;
+  document.getElementById("nat-tiles").innerHTML =
+    `<div class="tile"><div class="v">${nb.reduce((a,r)=>a+r.awards,0).toLocaleString()}</div><div class="l">open awards, equipment-dependent scope</div></div>`+
+    `<div class="tile"><div class="v">${nb.reduce((a,r)=>a+r.firms,0).toLocaleString()}</div><div class="l">contractors holding them</div></div>`+
+    `<div class="tile"><div class="v">5</div><div class="l">equipment demand buckets, machine-classified</div></div>`;
+  hbar(document.getElementById("c-buckets"),
+    nb.map(r=>[BUCKET[r.primary_bucket].label, r.active_obl_b, BUCKET[r.primary_bucket].c,
+      `<b>${BUCKET[r.primary_bucket].label}</b><div class="d">${fmt$(r.active_obl_b,"B")} active · ${r.awards.toLocaleString()} awards · ${r.firms.toLocaleString()} firms</div>`]),
+    {unit:"B"});
+
+  // states
+  const st=R("national_states");
+  hbar(document.getElementById("c-states"), st.map(r=>[r.pop_state, r.obl_b, null, null]), {unit:"B", highlight:"TX"});
+
+  // counties
+  const co=R("state_counties");
+  const epIdx=co.findIndex(r=>r.pop_county_name==="EL PASO");
+  document.getElementById("county-lede").textContent =
+    `El Paso county carries ${fmt$(co[epIdx]?.obl_m??0,"M")} of equipment-heavy federal work since FY24 — `+
+    `#${epIdx+1} in the state, anchored by Fort Bliss.`;
+  hbar(document.getElementById("c-counties"), co.map(r=>[r.pop_county_name, r.obl_m, null,
+    `<b>${r.pop_county_name}</b><div class="d">${fmt$(r.obl_m,"M")} · ${r.firms} firms</div>`]), {unit:"M", highlight:"EL PASO"});
+
+  // Act 3 headline
+  const lb=R("local_buckets");
+  const eq=lb.filter(r=>r.bucket!=="other_federal_work");
+  const eqTotal=eq.reduce((a,r)=>a+r.obl_m,0);
+  const so=R("local_subout")[0];
+  const ex=R("local_expiry");
+  const ex12=ex.slice(0,12).reduce((a,r)=>a+r.obl_m,0);
+  document.getElementById("loc-hero").innerHTML=`$${(eqTotal/1000).toFixed(2)}<small>B</small>`;
+  document.getElementById("loc-tiles").innerHTML =
+    `<div class="tile"><div class="v">${so.awards}</div><div class="l">open equipment-heavy awards</div></div>`+
+    `<div class="tile"><div class="v">${eq.reduce((a,r)=>a+r.firms,0)}</div><div class="l">contractors holding them</div></div>`+
+    `<div class="tile"><div class="v">${fmt$(ex12,"M")}</div><div class="l">expiring within 12 months</div></div>`+
+    `<div class="tile"><div class="v">${fmt$(so.subbed_m,"M")}</div><div class="l">already flowing to subs</div></div>`;
+  hbar(document.getElementById("c-locbuckets"),
+    lb.map(r=>[BUCKET[r.bucket].label, r.obl_m, BUCKET[r.bucket].c,
+      `<b>${BUCKET[r.bucket].label}</b><div class="d">${fmt$(r.obl_m,"M")} · ${r.awards} awards · ${r.firms} firms</div>`]), {unit:"M"});
+
+  // radar
+  const aw=R("local_awards");
+  (function(){
+    const W=780,H=640,cx=W/2,cy=H/2,R50=280;
+    const px=a=>cx+(a.longitude-S.anchor.lon)*69.17*Math.cos(S.anchor.lat*Math.PI/180)/50*R50;
+    const py=a=>cy-(a.latitude-S.anchor.lat)*68.97/50*R50;
+    let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">`;
+    [10,25,50].forEach(r=>{const rr=r/50*R50;
+      s+=`<circle cx="${cx}" cy="${cy}" r="${rr}" fill="none" stroke="var(--grid)" stroke-width="1"/>`;
+      s+=`<text x="${cx+4}" y="${cy-rr-4}" font-size="10.5" fill="var(--muted)">${r} mi</text>`;});
+    const maxO=Math.max(...aw.map(a=>a.obl_m));
+    aw.slice().sort((a,b)=>b.obl_m-a.obl_m).forEach((a,i)=>{
+      const r=Math.max(4, Math.sqrt(a.obl_m/maxO)*26);
+      s+=`<circle class="pt" data-i="${i}" cx="${px(a).toFixed(1)}" cy="${py(a).toFixed(1)}" r="${r.toFixed(1)}"
+        fill="${BUCKET[a.primary_bucket].c}" fill-opacity="0.82" stroke="var(--surface)" stroke-width="2"/>`;});
+    s+=`<circle cx="${cx}" cy="${cy}" r="7" fill="var(--hot)" stroke="var(--ink)" stroke-width="2"/>`;
+    s+=`<text x="${cx}" y="${cy+24}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)">YOUR YARD · 79925</text>`;
+    s+=`</svg>`;
+    const el=document.getElementById("c-radar"); el.innerHTML=s;
+    const sorted=aw.slice().sort((a,b)=>b.obl_m-a.obl_m);
+    el.querySelectorAll(".pt").forEach(p=>{const a=sorted[+p.dataset.i];
+      p.addEventListener("mousemove",e=>showTip(e,`<b>${a.recipient_name}</b>
+        <div class="d">${fmt$(a.obl_m,"M")} · ${a.dist_mi} mi · ends ${a.pop_end??"—"}</div>
+        <div class="d">${a.what_was_done??a.naics_code+" × "+a.psc_code}</div>
+        <div class="d" style="color:${BUCKET[a.primary_bucket].c}">● ${BUCKET[a.primary_bucket].label}</div>`));
+      p.addEventListener("mouseleave",hideTip);});
+    document.getElementById("radar-legend").innerHTML =
+      Object.entries(BUCKET).filter(([k])=>k!=="other_federal_work" && aw.some(a=>a.primary_bucket===k))
+      .map(([k,v])=>`<span><span class="sw" style="background:${v.c}"></span>${v.label}</span>`).join("");
+  })();
+
+  // expiry
+  const exNext6=ex.slice(0,6).reduce((a,r)=>a+r.obl_m,0);
+  document.getElementById("expiry-h2").textContent=`${fmt$(exNext6,"M")} of it hits an end date within six months.`;
+  vbar(document.getElementById("c-expiry"), ex.map(r=>[r.end_month, r.obl_m, r.awards]));
+
+  // work cards
+  const wk=R("local_work_language");
+  document.getElementById("work-cards").innerHTML = wk.slice(0,9).map(r=>{
+    const b=BUCKET[r.primary_bucket];
+    const needs=(r.equipment_needs||"").split(",").slice(0,4).map(s=>s.trim()).join(" · ");
+    return `<div class="card"><div class="codes"><span class="bucket-dot" style="background:${b.c}"></span>${r.naics_code} × ${r.psc_code} · ${r.awards} award${r.awards>1?"s":""}</div>
+      <div class="what">${r.what_was_done??"—"}</div>
+      <div class="needs">${needs}</div>
+      <div class="m">${fmt$(r.obl_m,"M")}</div></div>`;}).join("");
+
+  // tables
+  document.getElementById("t-awards").innerHTML = `<table><tr><th>Contractor</th><th>Work</th><th style="text-align:right">Obl.</th><th>Ends</th><th style="text-align:right">Mi</th></tr>`+
+    aw.slice().sort((a,b)=>b.obl_m-a.obl_m).slice(0,10).map(a=>
+      `<tr><td class="name">${a.recipient_name}</td><td>${(a.what_was_done??a.naics_code+"×"+a.psc_code).slice(0,52)}</td>
+       <td class="num">${fmt$(a.obl_m,"M")}</td><td>${a.pop_end??"—"}</td><td class="num">${a.dist_mi}</td></tr>`).join("")+`</table>`;
+  const fr=R("local_fresh_money");
+  document.getElementById("t-fresh").innerHTML = `<table><tr><th>Contractor</th><th style="text-align:right">Actions</th><th style="text-align:right">New $ · 90d</th></tr>`+
+    fr.slice(0,10).map(f=>`<tr><td class="name">${f.recipient_name}</td><td class="num">${f.actions}</td><td class="num">${fmt$(f.fresh_obl_m,"M")}</td></tr>`).join("")+`</table>`;
+});
+
+// keyboard slide nav
+const secs=[...document.querySelectorAll("section")];
+addEventListener("keydown",e=>{
+  const back=["ArrowUp","ArrowLeft","PageUp"].includes(e.key);
+  const fwd=["ArrowDown","ArrowRight"," ","PageDown"].includes(e.key);
+  if(!back && !fwd) return;
+  e.preventDefault();
+  const cur=secs.reduce((best,s,i)=>Math.abs(s.offsetTop-scrollY)<Math.abs(secs[best].offsetTop-scrollY)?i:best,0);
+  const next=Math.max(0,Math.min(secs.length-1,cur+(fwd?1:-1)));
+  secs[next].scrollIntoView({behavior:"smooth"});
+});
+</script>
+</body>
+</html>
