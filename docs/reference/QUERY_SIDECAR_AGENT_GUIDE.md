@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 83 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 85 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -180,6 +180,13 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `federal_sites_lance` | 1/federal site · 300k | state_code, zip5 |
 | `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` · `country_vocab` | code refs · 2.1k/6.1k/321k/75/~250 | code | ⚠ vintages: both reference tables carry multiple `source_vintage` rows per code; `psc_reference WHERE is_active` returns NULL names for retired-vintage codes that still carry award dollars. **Display names: join `v_psc_names` / `v_naics_names`** (active-else-latest-vintage, one row per code) |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
+
+### VA veteran demand-side cluster (county-grain, FIPS-keyed)
+Demand denominator for the VA C&P exam lane (naics `621111` × psc `Q403`): rank where clinician-staffing demand outruns local medical-labor supply. Both key on 5-char county `fips` → join `txn_events_combo_by_geo.pop_county_fips` (the award-spine geo grain) or SAM `physical_state`. VA `state` is the full name ("Alabama"); for 2-letter joins derive via `substr(fips,1,2)` → `sam_county_fips_crosswalk`.
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `va_vetpop_county_total` | 1/(fips, snapshot_year) · 98k | fips, snapshot_year | Veteran population per county, **31 projection years FY2023→FY2053** (VetPop2023). `veterans_total`, `county_state`, `state`. Filter `snapshot_year=2023` for the current denominator; range it for the per-county veteran **trend**. FY2023 national = 18,266,748 |
+| `va_disability_comp_county` | 1/(fiscal_year, fips) · 16k | fips, fiscal_year | Disability-compensation **recipients** by county, FY2019/21/23/24/25 — the PACT-Act-driven exam-demand signal. `recipients` + SCD-severity bands `scd_0_20`…`scd_100` (higher rating → re-exam intensity) + `age_17_44`/`age_45_64`/`age_65_plus` + `male`/`female`. 8 "Unknown"/foreign rows carry null `fips` (kept so totals stay whole — filter `fips IS NOT NULL` for county joins). Parked Lance-only: `va_vetpop_county` (781k age×sex×year population detail) |
 
 ## 4. Query patterns (proven shapes)
 
@@ -361,6 +368,20 @@ SELECT s.domain_norm, s.is_equipment_provider, s.matched_psc_count, s.capability
 FROM v_equipment_supply s, crane_pscs c
 WHERE list_contains(s.supported_pscs, c.psc_code)
 GROUP BY ALL ORDER BY s.capability_capture_ratio DESC NULLS LAST;
+```
+
+**(g) VA exam-demand geography — veteran density × disability recipients, per county.** The exam lane (`621111`×`Q403`) has no real place-of-performance; rank demand by where veterans live. Both VA tables key on `fips` → the same county grain as `txn_events_combo_by_geo`:
+```sql
+SELECT v.fips, v.county_state, v.veterans_total,
+       d.recipients, d.scd_100 AS severe_recipients
+FROM va_vetpop_county_total v
+LEFT JOIN va_disability_comp_county d
+  ON v.fips = d.fips AND d.fiscal_year = 2025
+WHERE v.snapshot_year = 2023
+ORDER BY d.recipients DESC NULLS LAST;
+-- cross to local medical-labor supply: join gtm_sam_entities on physical_state
+-- (2-letter) via substr(v.fips,1,2) → sam_county_fips_crosswalk.state_code, or
+-- to award geography directly on txn_events_combo_by_geo.pop_county_fips = v.fips.
 ```
 
 ## 5. Performance model
