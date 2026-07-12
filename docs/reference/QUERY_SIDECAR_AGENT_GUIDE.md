@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 78 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 83 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -91,7 +91,10 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `naics_psc_labor_profile` / `naics_psc_deliverable` | 1/(naics, psc) · 16.3k / 21k | naics_code, psc_code | The combo-grain LANGUAGE layers: `work_summary` + labor-play/OEWS mapping; `what_was_done` + work_type/regime/confidence — plain-language rendering joins these onto any sidecar code set (letters, on-page copy). Complements the code-grain to-verb vocabulary in the phrase compiler |
 | `naics_psc_labor_profile_categories` | 1/(naics, psc, rank) · 54k | naics_code, psc_code, rank | Ranked SOC/SCA occupational categories per combo (the "additional ___" candidates), wage medians, growth |
 | `naics_psc_vertical_map` | 1/(naics, psc) · 279 | naics_code, psc_code | Curated vertical + **equipment_intensity** + regime per anchor combo |
+| `naics_psc_equipment_needs` | 1/(naics, psc) · 9,693 | naics_code, psc_code | **Equipment demand per combo.** LLM verdict `proposed_equipment_needs` (comma-joined phrases; explode via `v_equipment_needs_phrases`) + `reasoning`/`confidence`, and the deterministic heavy-iron slice: `in_scope` (5,729 true), `equipment_buckets` (LIST — `list_contains(...,'material_handling_cranes')`), `primary_bucket` (industrial_power_support\|material_handling_cranes\|heavy_earthmoving_civil\|trucks_heavy_haul\|aerial_access; NULL when out-of-scope), `core_phrase_count`/`other_phrase_count`. Join combo demand ($/geo) on (naics, psc) |
+| `combo_award_active_state` | 1/(naics, psc) · ~20k | naics_code, psc_code | **Combo-grain award-lifecycle mart** (snapshot, from the 83M award_state). Active (`days_to_expiry>0 AND is_terminated=FALSE`) split — `active_award_ct`, `active_recipients`, `active_obligated`, `active_current_value`, `active_ceiling_headroom` — alongside totals (`award_ct`, `recipients`, `obligated_total`) and the `terminated_*`/`expired_no_followon_ct` denominators. "Active $ where the work needs [bucket]" = this ⋈ `naics_psc_equipment_needs` (or `v_combo_active_equipment`). Zoom to family via `substr()` re-aggregation |
 | `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
+| `v_combo_active_equipment` / `v_equipment_needs_phrases` | views | — | Product surface: `combo_award_active_state` ⋈ equipment verdict on (naics, psc) — "active $ of [bucket]-needing work" is one GROUP BY; and the phrase-grain vocabulary explode of `proposed_equipment_needs` (per-combo phrase profile / head coverage) |
 | `v_psc_names` / `v_naics_names` / `v_sam_declared_codes` | views | — | Vintage-safe reference names (active-else-latest, 1 row/code); SAM declarations unnested to (uei, is_active, code_type, code) |
 
 ### Rollups & expiry
@@ -139,6 +142,16 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `fdic_institutions` | 1/bank · 27.8k | name | Slim authority: name, cert, active, city/state, webaddr, asset |
 | `ncua_credit_unions` | 1/CU · 4.3k | credit_union_name | Slim authority: name, charter, location, members, total_assets |
 | `equipment_finance_candidates` | 1/candidate · 429 | company_name | The GTM candidate list (name, domain, LinkedIn; verdict unset — another lane's dataset, read-only here). Reconcile: join `sam_ucc_lenders.in_efc` or name-match |
+
+### Equipment supply (the shop side of the equipment GTM — classify · inventory · award-overlap)
+Keyed on domain; join `firmographics_blitz` on `domain_norm` for name/geo. The `supported_pscs`/`qualified_pscs` LISTs join combo demand (`naics_psc_equipment_needs`, `combo_award_active_state`) on the shared PSC taxonomy — supply ⋈ demand.
+
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `equipment_provider` | 1/(record) · 4,700 (**not** unique on domain — 4,499 domains; dedup via `v_equipment_supply`) | domain_norm | Classifier verdict: `is_equipment_provider` (2,269 true), `mode`, `confidence`, `reasoning`/`steps_taken`/`evidence_url`/`evidence_snippet` (the evidence trail); raw_payload excluded |
+| `equipment_matchmaking` | 1/domain · 3,096 | domain_norm | Scraped inventory → PSC: `verified_inventory_matches` (LIST of inventory phrases), `supported_pscs` (LIST), `matched_psc_count`. "Which shops carry [PSC/bucket]" = `list_contains(supported_pscs, ...)` |
+| `equipment_rental_golden_overlap` | 1/firm · 879 | firm_domain | Award-overlap capability score (`firm_domain` == domain_norm): `qualified_pscs` (LIST), `qualified_psc_count`, `qualified_value_exposure`, `capability_capture_ratio` (qualified vs all nearby award count), `qualified_nearby_award_count`/`all_nearby_award_count` |
+| `v_equipment_supply` | view | — | Shop profile in one read: `equipment_provider` (deduped to best row/domain — is_equipment_provider TRUE first, then latest `materialized_at`) ⋈ inventory ⋈ golden-overlap on domain |
 
 ### Labor occupation-grain layer (gap-pass-6: market-vs-floor wage, per-county, + union exposure)
 
@@ -317,6 +330,37 @@ FROM (SELECT DISTINCT uei FROM gtm_entity_code_lanes
        WHERE side='prime' AND code_type='naics' AND code='561720') f
 JOIN gtm_sam_entities e USING(uei)
 JOIN olms_cba_crosswalk c USING(uei);   -- inner join = union-exposed subset only
+
+-- EQUIPMENT DEMAND × ACTIVE $: national active obligated $ by heavy-iron bucket
+-- (the geo product's national roll; add a geo/agency predicate to localize)
+SELECT primary_bucket,
+       sum(active_obligated)   AS active_obl,
+       sum(active_award_ct)    AS active_awards,
+       sum(obligated_total)    AS all_obl
+FROM v_combo_active_equipment
+WHERE in_scope                               -- the heavy-iron slice
+GROUP BY 1 ORDER BY active_obl DESC;
+
+-- ONE specific bucket, active $ + how many primes hold a seat (LIST membership)
+SELECT sum(active_obligated) active_obl, sum(active_recipients) primes
+FROM v_combo_active_equipment
+WHERE list_contains(equipment_buckets, 'material_handling_cranes');
+
+-- EQUIPMENT VOCABULARY rollup: distinct phrases + head coverage across in-scope combos
+SELECT lower(phrase) AS phrase, count(*) instances,
+       count(DISTINCT naics_code || psc_code) combos
+FROM v_equipment_needs_phrases WHERE in_scope
+GROUP BY 1 ORDER BY instances DESC LIMIT 200;
+
+-- SUPPLY ⋈ DEMAND on the shared PSC taxonomy: shops whose inventory covers a
+-- PSC that carries active crane-needing demand (the matchmaking join)
+WITH crane_pscs AS (
+  SELECT DISTINCT psc_code FROM v_combo_active_equipment
+   WHERE list_contains(equipment_buckets, 'material_handling_cranes') AND active_obligated > 0)
+SELECT s.domain_norm, s.is_equipment_provider, s.matched_psc_count, s.capability_capture_ratio
+FROM v_equipment_supply s, crane_pscs c
+WHERE list_contains(s.supported_pscs, c.psc_code)
+GROUP BY ALL ORDER BY s.capability_capture_ratio DESC NULLS LAST;
 ```
 
 ## 5. Performance model
