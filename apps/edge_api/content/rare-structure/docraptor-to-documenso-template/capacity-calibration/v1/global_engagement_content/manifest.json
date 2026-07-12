@@ -1,0 +1,13 @@
+{
+  "rare_structure_capacity_calibration": {
+    "slug": "rare_structure_capacity_calibration",
+    "name": "Rare Structure — Strategic Origination & Capacity Calibration Agreement",
+    "archetype": "capacity_calibration",
+    "document": "rare_structure_capacity_calibration.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}
