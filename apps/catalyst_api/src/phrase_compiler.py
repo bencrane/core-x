@@ -1041,6 +1041,12 @@ def compile_and_execute(body: Any, today: "dt_date | None" = None) -> dict[str, 
     """The route entry: validate the envelope, compile, execute, disclose."""
     if not isinstance(body, dict):
         raise MapCompileError("request body must be an object")
+    # AGGREGATE MODE (phrase-agg.v1): the reserved opener 'total' routes the
+    # phrase to the aggregate grammar — 'total' is not retrieval vocabulary,
+    # so no existing phrase changes meaning. Same doctrine, separate grammar.
+    from . import phrase_aggregate
+    if phrase_aggregate.is_aggregate_phrase(body.get("phrase")):
+        return phrase_aggregate.compile_and_execute(body)
     unknown = set(body) - {"phrase"}
     if unknown:
         raise MapCompileError(f"unknown body key(s) {sorted(unknown)!r}")
