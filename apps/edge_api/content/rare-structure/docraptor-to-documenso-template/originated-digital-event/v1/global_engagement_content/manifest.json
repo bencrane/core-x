@@ -1,0 +1,13 @@
+{
+  "rare_structure_originated_digital_event": {
+    "slug": "rare_structure_originated_digital_event",
+    "name": "Rare Structure — Strategic Origination Agreement (Originated Digital Event)",
+    "archetype": "originated_digital_event",
+    "document": "rare_structure_originated_digital_event.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}
