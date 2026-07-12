@@ -32,6 +32,11 @@ Indexes: BTREE `fips` (+ `state` on vetpop detail) on all; BITMAP on `age_group,
 - **GDX (VA expenditure geography) — deferred.** The data.va.gov GDX JSON resources (`qhqa-74yq`, `2hnn-8vkt`) return a single collapsed `geographic_distribution_of` column — malformed via the API. Revisit only if a clean source surfaces.
 - **VA facility locations — out of scope.** VA Facilities API is keyed (HTTP 401); `federal_sites_lance` already covers site inventory.
 
-## Sidecar-promotion note
+## Sidecar promotion — disposition (2026-07-12, operator-directed)
 
-Small (all three < 800K rows) and they cross directly to the GTM geo marts (`txn_events_combo_by_geo`, `gtm_entity_geo`) on `fips`/`state`. Warranted candidates for query-sidecar promotion if per-geography market-page builds query them repeatedly — `va_vetpop_county_total` (denominator) and `va_disability_comp_county` (demand signal) are the two to promote; the full age/sex projection detail can stay Lance-only.
+`va_vetpop_county_total` + `va_disability_comp_county` **promoted** to the query-sidecar (build stamp `20260712T224718Z`, 83→85 tables). Both are plain sorted copies (tier D): `va_vetpop_county_total` sorted `fips, snapshot_year`; `va_disability_comp_county` sorted `fips, fiscal_year`. Guide catalog + §4 pattern (g) updated in the same PR.
+
+- **Adjacency sweep (shipped as free riders via `SELECT *`):** disability SCD-severity bands (`scd_0_20`…`scd_100`), age bands, and sex — the analyst's next-question columns (severity → re-exam intensity; age → exam propensity); and vetpop's full **31 projection years** (FY2023→FY2053) so the per-county veteran *trend* is one statement, not a rebuild.
+- **Parked structural:** `va_vetpop_county` (781k age×sex×year population **detail**) stays Lance-only — disability already carries age/sex at county grain for the demand signal; no demand for population-by-age structure, and it is 8× the row weight recurring every rebuild.
+- **State-abbr note:** VA `state` is full-name; the canonical join is county `fips` (matches `txn_events_combo_by_geo.pop_county_fips`). 2-letter state derives via `substr(fips,1,2)` → `sam_county_fips_crosswalk` (served) — not bloating the VA tables.
+- **Measured:** the veteran-density × disability-recipients × severity cross (§4 pattern g) serves in **~6 ms** on the warm endpoint, vs. a full pylance/DuckDB Lance read (creds + engine spin-up, seconds) pre-promotion.

@@ -346,6 +346,18 @@ MANIFEST: list[dict] = [
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
     {"ds": "sam_master_entities", "tier": "D", "sort": ["uei"]},
     {"ds": "people_canonical", "tier": "D", "sort": ["canonical_person_id"]},
+    # ── VA veteran demand-side cluster (operator-directed cycle 2026-07-12;
+    # PR #1141 ingest). County-grain (5-char FIPS) demand denominator for the
+    # VA C&P exam lane (naics 621111 × psc Q403): rank where clinician-staffing
+    # demand outruns local medical-labor supply. Both key on fips → join
+    # txn_events_combo_by_geo.pop_county_fips (served) / SAM physical_state.
+    # Adjacency sweep: disability carries scd severity bands + age + sex (the
+    # next-question columns, ride free via SELECT *); vetpop_total keeps the
+    # 31 projection years (FY2023-2053) so the per-county veteran TREND is one
+    # statement. Parked structural: va_vetpop_county (781k age×sex×year detail)
+    # — no demand yet, 8× the row weight, recurs every rebuild.
+    {"ds": "va_vetpop_county_total", "tier": "D", "sort": ["fips", "snapshot_year"]},
+    {"ds": "va_disability_comp_county", "tier": "D", "sort": ["fips", "fiscal_year"]},
 ]
 
 # agency vocab: deduped (code, name) off usaspending_award_canonical — mirrors
