@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phrase Explorer — phrase.v5</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d3748;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950;
+    --red: #f85149; --amber: #d29922; --purple: #bc8cff; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; color: var(--accent); }
+  .sub { color: var(--dim); margin-bottom: 20px; font-size: 13px; }
+  .sub code { font-family: var(--mono); color: var(--purple); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab { padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--dim); cursor: pointer; font-size: 13px; font-weight: 600; }
+  .tab.on { color: var(--text); border-color: var(--accent); background: var(--panel2); }
+  .page { display: none; } .page.on { display: block; }
+
+  /* ── composer ── */
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .panel.off { opacity: .32; pointer-events: none; }
+  .panel .why { font-size: 11.5px; color: var(--dim); margin-bottom: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; font-size: 12.5px; font-family: var(--mono); }
+  .chip:hover { border-color: var(--accent); }
+  .chip.sel { background: var(--accent); border-color: var(--accent); color: #05101f; font-weight: 700; }
+  .chip.subj.sel { background: var(--purple); border-color: var(--purple); }
+  .phrasebox { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; position: sticky; top: 12px; }
+  .phrase { font-family: var(--mono); font-size: 16px; min-height: 28px; margin: 8px 0 14px; }
+  .phrase .t { padding: 2px 6px; border-radius: 5px; margin-right: 4px; display: inline-block; margin-bottom: 4px; }
+  .t.subject { background: #3b2a5e; color: var(--purple); }
+  .t.event, .t.action_type { background: #14331f; color: var(--green); }
+  .t.naics, .t.psc, .t.sector, .t.worklang { background: #0e2a44; color: var(--accent); }
+  .t.time, .t.time_ahead { background: #3a2c10; color: var(--amber); }
+  .t.money { background: #142e2a; color: #56d4bc; }
+  .t.entity, .t.state, .t.agency, .t.active { background: #33202a; color: #ff9bc0; }
+  .bindings { font-family: var(--mono); font-size: 12px; }
+  .bindings .row { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #21283355; }
+  .bindings .ax { color: var(--dim); min-width: 110px; }
+  .planbox { margin-top: 12px; }
+  .planbox pre { background: #0a0e14; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; overflow-x: auto; color: #9fb3c8; }
+  .lanes { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  .lane { font-size: 11.5px; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); color: var(--dim); }
+  .lane.on { border-color: var(--green); color: var(--green); }
+  .warn { border-left: 3px solid var(--red); background: #f851490f; padding: 8px 12px; border-radius: 0 8px 8px 0; font-size: 12.5px; color: #ffb3ad; margin-top: 10px; }
+  .copybtn { margin-top: 10px; padding: 6px 14px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; font-size: 12px; }
+  .copybtn:hover { border-color: var(--accent); }
+
+  /* ── gallery ── */
+  .gcols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .gcard { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; cursor: pointer; }
+  .gcard:hover { border-color: var(--accent); }
+  .gcard .p { font-family: var(--mono); font-size: 13px; }
+  .gcard .n { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+  .ok .p::before { content: "✅ "; } .no .p::before { content: "⛔ "; }
+  .no .p { color: #ffb3ad; }
+  .gh { font-size: 13px; font-weight: 700; margin: 14px 0 8px; }
+  .gh.okh { color: var(--green); } .gh.noh { color: var(--red); }
+
+  /* ── semantics ── */
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: var(--accent); }
+  td code { font-family: var(--mono); color: var(--purple); font-size: 12px; }
+  .means { color: var(--green); } .notcol { color: #ffb3ad; }
+  @media (max-width: 900px) { .grid, .gcols { grid-template-columns: 1fr; } .phrasebox { position: static; } }
+</style>
+</head>
+<body>
+<h1>Phrase Explorer</h1>
+<p class="sub">The deterministic NL query surface — compiler <code>phrase.v5</code>, closed grammar, zero LLM. Every chip below is <b>real vocabulary</b> from <code>apps/catalyst_api/src/phrase_compiler.py</code>. Pick a subject; only clauses legal on that grain stay lit. The compiler is the arbiter — this page composes, it never fakes compilation.</p>
+
+<div class="tabs">
+  <button class="tab on" data-p="compose">🧩 Composer</button>
+  <button class="tab" data-p="gallery">📚 Pinned examples</button>
+  <button class="tab" data-p="semantics">⚠️ Semantics traps</button>
+</div>
+
+<!-- ═══ COMPOSER ═══ -->
+<div class="page on" id="compose">
+<div class="grid">
+<div>
+  <div class="panel" id="p-subject">
+    <h2>1 · Subject <span style="color:var(--red);font-size:11px">(required — fixes the grain)</span></h2>
+    <div class="why">First subject token decides everything downstream.</div>
+    <div class="chips" id="c-subject"></div>
+  </div>
+  <div class="panel" id="p-sector">
+    <h2>2 · Industry / codes</h2>
+    <div class="why">Sector aliases → frozen NAICS sets. Or literal <code>naics 236220</code> / <code>psc R499</code>. On bare <b>companies</b> a code needs a capability context.</div>
+    <div class="chips" id="c-sector"></div>
+  </div>
+  <div class="panel" id="p-event">
+    <h2>3 · Event <span style="color:var(--dim);font-size:11px">(FPDS action types — opens the transaction lane)</span></h2>
+    <div class="chips" id="c-event"></div>
+  </div>
+  <div class="panel" id="p-work">
+    <h2>4 · Work language <span style="color:var(--dim);font-size:11px">(verb + noun → PSC set)</span></h2>
+    <div class="chips" id="c-work"></div>
+  </div>
+  <div class="panel" id="p-money">
+    <h2>5 · Money</h2>
+    <div class="why">With an event = per-firm Σ$ in window. <code>lifetime</code> = firm-size floor. Bare $ on companies with no event/window <b>refuses</b>.</div>
+    <div class="chips" id="c-money"></div>
+  </div>
+  <div class="panel" id="p-time">
+    <h2>6 · Time window</h2>
+    <div class="chips" id="c-time"></div>
+  </div>
+  <div class="panel" id="p-state">
+    <h2>7 · Entity qualifiers <span style="color:var(--dim);font-size:11px">(companies only)</span></h2>
+    <div class="why"><code>in VA</code> = firm HQ state, never place of performance. OR/IN states unreachable (reserved tokens).</div>
+    <div class="chips" id="c-state"></div>
+  </div>
+  <div class="panel" id="p-agency">
+    <h2>8 · Agency <span style="color:var(--dim);font-size:11px">(toptier only — navy/army/usace refuse)</span></h2>
+    <div class="chips" id="c-agency"></div>
+  </div>
+</div>
+
+<div class="phrasebox">
+  <h2>Your phrase</h2>
+  <div class="phrase" id="phrase"><span style="color:var(--dim)">pick a subject →</span></div>
+  <div class="lanes" id="lanes"></div>
+  <div class="bindings" id="bindings"></div>
+  <div class="planbox"><pre id="plan"></pre></div>
+  <div id="warns"></div>
+  <button class="copybtn" id="copy">copy curl → POST /api/v1/market/phrase</button>
+</div>
+</div>
+</div>
+
+<!-- ═══ GALLERY ═══ -->
+<div class="page" id="gallery">
+  <p class="sub">Every phrase below is <b>pinned verbatim</b> in <code>tests/test_phrase_compiler.py</code> — these are the acceptance fixtures, not marketing copy. Click any ✅ phrase to load it into the composer view.</p>
+  <div class="gcols">
+    <div><div class="gh okh">✅ Compiles</div><div id="g-ok"></div></div>
+    <div><div class="gh noh">⛔ Refuses (by design — with the reason)</div><div id="g-no"></div></div>
+  </div>
+</div>
+
+<!-- ═══ SEMANTICS ═══ -->
+<div class="page" id="semantics">
+  <p class="sub">The clauses that mean something different from what you'd guess. Learn these before writing phrases.</p>
+  <table>
+    <tr><th>Clause</th><th class="means">Means</th><th class="notcol">Not</th></tr>
+    <tr><td><code>over $5m</code> + an event</td><td class="means">per-firm Σ$ of matched events in the window ("$5m of new money")</td><td class="notcol">per-action floor · firm size</td></tr>
+    <tr><td><code>$</code> on <code>actions …</code></td><td class="means">per-action floor (federal_action_obligation)</td><td class="notcol">firm sum</td></tr>
+    <tr><td><code>lifetime over $5m</code></td><td class="means">explicit firm-size floor (prime_obl_lifetime)</td><td class="notcol">anything windowed</td></tr>
+    <tr><td>bare <code>$</code> on companies, no event/window</td><td class="means"><b>refuses</b> and names both fixes</td><td class="notcol">silent lifetime default (dead since v5)</td></tr>
+    <tr><td><code>construction</code> / sector words</td><td class="means">NAICS of the award <i>actions</i> (or demonstrated lanes via <code>primed in</code>)</td><td class="notcol">SAM registration primary_naics</td></tr>
+    <tr><td><code>in VA</code></td><td class="means">firm HQ state (entity step)</td><td class="notcol">place of performance</td></tr>
+    <tr><td><code>navy</code> / <code>army</code> / <code>usace</code></td><td class="means"><b>refuses</b> — phrase reaches toptier only (dod, gsa…)</td><td class="notcol">served (the raw-SQL sidecar lane handles sub-tier fine)</td></tr>
+    <tr><td><code>to repair bridges</code></td><td class="means">PSC in-list from the 2,562-alias work-language vocabulary</td><td class="notcol">fuzzy matching</td></tr>
+    <tr><td><code>or</code></td><td class="means">merges values on the SAME axis only (<code>236220 or 237310</code>, <code>VA or MD</code>)</td><td class="notcol">cross-axis OR / NOT (refuse)</td></tr>
+    <tr><td><code>va</code></td><td class="means">the state (fixed precedence)</td><td class="notcol">Veterans Affairs — say <code>veterans affairs</code></td></tr>
+    <tr><td><code>just</code> / <code>recently</code></td><td class="means">90-day window when no other time clause binds</td><td class="notcol">filler</td></tr>
+    <tr><td>event + <code>expiring within N days</code></td><td class="means">TWO lanes — UEI sets INTERSECT (AND)</td><td class="notcol">either/or</td></tr>
+  </table>
+</div>
+
+<script>
+// ── vocabulary (verbatim from phrase_compiler.py) ──
+const SUBJECTS = {
+  companies: {grain:"entity"}, awards:{grain:"prime_award"}, orders:{grain:"prime_award"},
+  vehicles:{grain:"prime_award", vehicle:true}, actions:{grain:"transaction"}, mods:{grain:"transaction"},
+};
+const SECTORS = {
+  construction:"30 NAICS (sector-23 leaves)", "it services":"541511/12/13/19", engineering:"541330",
+  "security services":"561612 561621 541690", janitorial:"561720 561210", landscaping:"561730",
+  "naics 236220":"literal", "naics 5416*":"prefix → all 6-digit leaves", "psc R499":"literal",
+};
+const EVENTS = {
+  "new funding":"C", "additional work":"A", "change order":"D", "terminated for default":"E",
+  "terminated for convenience":"F", "exercised an option":"G", "definitized":"H", "novated":"J",
+  "closed out":"K", "re-represented":"R", "subk plan added":"Y",
+};
+// natural-phrase render prefixes — all compiler CONNECTIVES, so the copied phrase still compiles
+const EVENT_PREFIX = {"new funding":"received", "additional work":"received", "change order":"received a",
+  "terminated for default":"were", "terminated for convenience":"were", "subk plan added":"had"};
+const WORK = ["to repair bridges","to build runways","to build dredges","to maintain roads","to construct hospitals"];
+const MONEY = ["over $500k","over $5m","over $10m","under $1m","> $2m","at least $250k","lifetime over $5m","sub income over $5m"];
+const TIME = ["in the last 90 days","last quarter","last year","last 2 years","in 2024","in fy25","since march 2025","just (=90d)","expiring within 90 days","expiring within 180 days","active"];
+const STATEQ = ["in VA","in VA or MD","in TX","in dsbs","sam active","sub-only","also sub","primed in 236220","delivered subs under naics 236220","inferred primeable 541330"];
+const AGENCY = ["from dod","from gsa","from dhs","from doe","from usda","from hhs","from veterans affairs","from army corps"];
+
+// per-grain legality: which panels stay lit
+const LEGAL = {
+  entity:      new Set(["sector","event","work","money","time","state","agency"]),
+  prime_award: new Set(["sector","work","money","time","agency"]),
+  transaction: new Set(["sector","event","work","money","time","agency"]),
+};
+const AXCLASS = {sector:"naics", event:"event", work:"worklang", money:"money", time:"time", state:"entity", agency:"agency"};
+
+const state = {subject:null, sel:{}};   // sel: panel -> Set of chips
+
+function chip(txt, panel, extra) {
+  const b = document.createElement("button");
+  b.className = "chip" + (panel==="subject"?" subj":"");
+  b.textContent = txt; b.dataset.panel = panel; b.dataset.v = txt;
+  if (extra) b.title = extra;
+  b.onclick = () => toggle(panel, txt, b);
+  return b;
+}
+function fill(id, items, panel) {
+  const el = document.getElementById(id);
+  (Array.isArray(items)?items:Object.keys(items)).forEach(k => {
+    const extra = Array.isArray(items) ? null : items[k];
+    el.appendChild(chip(k, panel, typeof extra === "string" ? extra : null));
+  });
+}
+fill("c-subject", SUBJECTS, "subject");
+fill("c-sector", SECTORS, "sector");
+fill("c-event", EVENTS, "event");
+fill("c-work", WORK, "work");
+fill("c-money", MONEY, "money");
+fill("c-time", TIME, "time");
+fill("c-state", STATEQ, "state");
+fill("c-agency", AGENCY, "agency");
+
+function toggle(panel, v, btn) {
+  if (panel === "subject") {
+    document.querySelectorAll("#c-subject .chip").forEach(c => c.classList.remove("sel"));
+    if (state.subject === v) { state.subject = null; } else { state.subject = v; btn.classList.add("sel"); }
+    state.sel = {}; document.querySelectorAll(".chip.sel:not(.subj)").forEach(c=>c.classList.remove("sel"));
+  } else {
+    state.sel[panel] = state.sel[panel] || new Set();
+    if (state.sel[panel].has(v)) { state.sel[panel].delete(v); btn.classList.remove("sel"); }
+    else {
+      // single-select for money basis sanity & subject-like panels; multi for the rest
+      if (panel==="event"||panel==="time"||panel==="money"||panel==="work") {
+        state.sel[panel].clear();
+        document.querySelectorAll(`#c-${panel} .chip`).forEach(c=>c.classList.remove("sel"));
+      }
+      state.sel[panel].add(v); btn.classList.add("sel");
+    }
+  }
+  render();
+}
+
+function render() {
+  const g = state.subject ? SUBJECTS[state.subject].grain : null;
+  // dim illegal panels
+  ["sector","event","work","money","time","state","agency"].forEach(p => {
+    const legal = g && LEGAL[g].has(p);
+    document.getElementById("p-"+p).classList.toggle("off", !legal);
+    if (!legal && state.sel[p]) { state.sel[p].clear();
+      document.querySelectorAll(`#c-${p} .chip`).forEach(c=>c.classList.remove("sel")); }
+  });
+
+  const ph = document.getElementById("phrase");
+  if (!state.subject) { ph.innerHTML = '<span style="color:var(--dim)">pick a subject →</span>';
+    document.getElementById("bindings").innerHTML=""; document.getElementById("plan").textContent="";
+    document.getElementById("lanes").innerHTML=""; document.getElementById("warns").innerHTML=""; return; }
+
+  // assemble phrase in natural order: sector-adj subject [state] that event/work [money] [time] [agency]
+  const parts = [], binds = [];
+  const get = p => [...(state.sel[p]||[])];
+  const sec = get("sector"), ev = get("event"), wk = get("work"), mo = get("money"),
+        ti = get("time"), st = get("state"), ag = get("agency");
+  const sectorWord = sec.find(s=>!s.startsWith("naics")&&!s.startsWith("psc"));
+  const codeLit = sec.filter(s=>s.startsWith("naics")||s.startsWith("psc"));
+  const t = (txt, cls) => { parts.push(`<span class="t ${cls}">${txt}</span>`); };
+
+  if (sectorWord) { t(sectorWord,"sector"); binds.push([sectorWord,"naics","in", SECTORS[sectorWord]]); }
+  t(state.subject,"subject"); binds.push([state.subject,"subject","", SUBJECTS[state.subject].grain+" grain"]);
+  st.forEach(s=>{ t(s,"entity"); binds.push([s,"entity/state","", "entity step"]); });
+  if (ev.length||wk.length||mo.length) parts.push('<span style="color:var(--dim)">that</span>');
+  ev.forEach(e=>{
+    if (EVENT_PREFIX[e]) parts.push(`<span style="color:var(--dim)">${EVENT_PREFIX[e]}</span>`);
+    t(e,"event"); binds.push([e,"action_type","=", "code "+EVENTS[e]]); });
+  wk.forEach(w=>{ t(w,"worklang"); binds.push([w,"psc","in","work-language PSC set"]); });
+  codeLit.forEach(c=>{ t(c,"naics"); binds.push([c, c.startsWith("psc")?"psc":"naics","=","literal"]); });
+  mo.forEach(m=>{ t(m,"money"); binds.push([m, m.startsWith("lifetime")?"money (lifetime)": m.startsWith("sub")?"money (sub basis)":"money","≥/≤","dollar clause"]); });
+  ag.forEach(a=>{ t(a,"agency"); binds.push([a,"agency","=","toptier code"]); });
+  ti.forEach(x=>{ t(x.replace(" (=90d)",""), x.startsWith("expiring")?"time_ahead": x==="active"?"active":"time");
+    binds.push([x, x.startsWith("expiring")?"time_ahead": x==="active"?"active":"time","","window"]); });
+  ph.innerHTML = parts.join(" ");
+
+  // bindings table
+  document.getElementById("bindings").innerHTML = binds.map(b =>
+    `<div class="row"><span class="ax">${b[1]}</span><span>${b[0]}</span><span style="color:var(--dim);margin-left:auto">${b[3]||""}</span></div>`).join("");
+
+  // lane + plan visual (entity grain only shows the pipeline)
+  const lanesEl = document.getElementById("lanes");
+  const txnLane = ev.length>0 || (SUBJECTS[state.subject].grain==="entity" && (ti.some(x=>!x.startsWith("expiring")&&x!=="active") || ag.length) );
+  const awardLane = ti.some(x=>x.startsWith("expiring"));
+  const g2 = SUBJECTS[state.subject].grain;
+  if (g2==="entity") {
+    lanesEl.innerHTML =
+      `<span class="lane ${txnLane?"on":""}">transaction lane ${txnLane?"OPEN":"closed"}</span>` +
+      `<span class="lane ${awardLane?"on":""}">prime_award lane ${awardLane?"OPEN":"closed"}</span>` +
+      `<span class="lane on">entity hydration</span>` +
+      (txnLane&&awardLane ? `<span class="lane on" style="border-color:var(--purple);color:var(--purple)">UEI sets INTERSECT (AND)</span>`:"");
+    const steps = [];
+    if (txnLane) steps.push(`step 1  transaction collapse → recipients${mo.length&&!mo[0].startsWith("lifetime")?"  (amt_thresholds: per-firm Σ$)":""}`);
+    if (awardLane) steps.push(`step ${steps.length+1}  prime_award collapse → recipients  (+topology honesty)`);
+    steps.push(`step ${steps.length+1}  entity hydration  uei in <survivors, ≤500/chunk>${mo.some(m=>m.startsWith("lifetime"))?"  + prime_obl_lifetime floor":""}`);
+    document.getElementById("plan").textContent = steps.join("\n");
+  } else {
+    lanesEl.innerHTML = `<span class="lane on">single ${g2} step</span>`;
+    document.getElementById("plan").textContent = `1 step  grain: ${g2}  filters from bindings above`;
+  }
+
+  // trap warnings (the designed refusals)
+  const warns = [];
+  if (g2==="entity" && mo.length && !ev.length && !ti.length && !mo[0].startsWith("lifetime") && !mo[0].startsWith("sub"))
+    warns.push("⛔ Bare $ on companies with no event/window REFUSES (v5). Fix: say <code>lifetime over $X</code> or add a time window.");
+  if (g2==="entity" && codeLit.length && !ev.length && !wk.length && !ti.length)
+    warns.push("⛔ A bare code on companies needs a capability context — <code>primed in 236220</code> or <code>delivered subs under …</code> (or add an event to open the transaction lane).");
+  if (state.subject==="vehicles" && (mo.length || ti.length))
+    warns.push("⛔ vehicles + money/active/expiring REFUSES — vehicle channel semantics are a future vocabulary cycle. Use <code>orders</code> or <code>awards</code>.");
+  if ((g2!=="entity") && st.length)
+    warns.push("⛔ Entity qualifiers (state/dsbs/…) need the <code>companies</code> subject.");
+  if (g2==="transaction" && ti.some(x=>x.startsWith("expiring")||x==="active"))
+    warns.push("⛔ active/expiring live on the award grain — say <code>awards …</code> or <code>companies …</code>.");
+  if (g2==="entity" && mo.length && txnLane && awardLane && !mo[0].startsWith("lifetime"))
+    warns.push("⛔ A $ amount across BOTH lanes is ambiguous — split into two phrases, or pin it with <code>lifetime</code>.");
+  if (mo.some(m=>m.startsWith("sub")) && (ev.length||ti.length))
+    warns.push("⛔ <code>sub income</code> is a lifetime axis — it can't combine with event/time clauses.");
+  document.getElementById("warns").innerHTML = warns.map(w=>`<div class="warn">${w}</div>`).join("");
+}
+
+document.getElementById("copy").onclick = () => {
+  const txt = document.getElementById("phrase").textContent.trim();
+  const curl = `curl -s -X POST "$CATALYST_API_BASE_URL/api/v1/market/phrase" \\\n  -H "Authorization: Bearer $CATALYST_API_TOKEN" -H 'content-type: application/json' \\\n  -d '{"phrase": "${txt}"}'`;
+  navigator.clipboard.writeText(curl);
+  document.getElementById("copy").textContent = "copied ✓";
+  setTimeout(()=>document.getElementById("copy").textContent="copy curl → POST /api/v1/market/phrase", 1200);
+};
+
+// ── gallery: pinned verbatim from tests/test_phrase_compiler.py ──
+const OK = [
+  ["construction companies that just received new funding > $500k","the v5 flagship — Σ$ threshold on the 90-day window, freshest money first"],
+  ["construction companies in dsbs that received a code A mod","EX01/02 — event lane + dsbs entity gate"],
+  ["companies terminated for default in the last year","EX03"],
+  ["it services companies whose option was exercised in the last quarter","EX04 — sector alias + event G + 90d"],
+  ["companies novated in the last 2 years","EX05"],
+  ["vehicles carrying naics 541512","EX06 — vehicle topology, no money"],
+  ["orders under vehicle 47QFCA20D0001 acted in the last 180 days","EX07 — parent PIID"],
+  ["actions with a subcontracting plan in psc R499 in the last 180 days","EX08 — FAR 19.7 attached set"],
+  ["companies that received a code Y mod on construction awards","EX09 — later subject words are no-ops"],
+  ["sam active companies in VA","EX10 — entity-only cut, single step"],
+  ["companies that primed in 541690 and also sub","EX11 — capability context + posture"],
+  ["sub-only companies with inferred primeable 541330","EX12"],
+  ["actions over $5m in naics 237310 in the last 90 days","EX13 — $ on actions = per-action floor"],
+  ["awards from gsa in psc D302 acted in the last 90 days","EX14"],
+  ["construction companies with awards expiring within 180 days","EX15 — the prime_award lane"],
+  ["construction companies over $5m that were just funded","v4 — per-firm Σ$ of NEW money in 90d"],
+  ["companies lifetime over $5m that primed in 236220","v5 — explicit firm-size floor"],
+  ["active awards won by YSQMHRS4HSC5","EX18 — UEI recipient axis"],
+  ["awards over $5m expiring within 365 days","EX19 — money-topology honesty auto-added"],
+  ["dsbs companies in VA or MD that delivered subs under naics 236220","same-axis OR merges the state in-list"],
+  ["companies funded to repair bridges in the last 90 days","work language — verb+noun → PSC set"],
+  ["actions in naics 236220 in fy25","fiscal year → days-ago between"],
+  ["actions in naics 236220 since march 2025","bounded window"],
+];
+const NO = [
+  ["profitable construction companies","'profitable' is not in the vocabulary — every token binds or the phrase refuses naming it"],
+  ["terminated for default in the last year","no subject — never a defaulted grain"],
+  ["companies with a code A","bare code letter needs a mod/action context word"],
+  ["companies in naics 541690","bare code on companies needs a capability context (primed in / delivered subs under)"],
+  ["companies that received a code A mod from the navy","sub-tier agency — Cycle 3; toptier works today (dod, gsa…)"],
+  ["companies terminated for default or from gsa","cross-axis OR — 'or' only joins two values of the same axis"],
+  ["actions in naics 999999 in the last 90 days","not a known NAICS — validated against reference dims"],
+  ["awards won by kbr","company names are not vocabulary — resolve name → 12-char UEI first"],
+  ["companies with awards expiring soon","'expiring' needs a day count: expiring within <N> days"],
+  ["vehicles over $55m","vehicle channel money = future vocabulary cycle"],
+  ["actions expiring within 90 days","active/expiring live on the award grain"],
+  ["companies with sub income over $5m in fy24","sub income is a lifetime axis — no time windows"],
+];
+document.getElementById("g-ok").innerHTML = OK.map(x =>
+  `<div class="gcard ok"><div class="p">${x[0]}</div><div class="n">${x[1]}</div></div>`).join("");
+document.getElementById("g-no").innerHTML = NO.map(x =>
+  `<div class="gcard no"><div class="p">${x[0]}</div><div class="n">${x[1]}</div></div>`).join("");
+
+// tabs
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+  document.querySelectorAll(".page").forEach(x=>x.classList.remove("on"));
+  t.classList.add("on"); document.getElementById(t.dataset.p).classList.add("on");
+});
+</script>
+</body>
+</html>
