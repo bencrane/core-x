@@ -358,6 +358,18 @@ MANIFEST: list[dict] = [
     # — no demand yet, 8× the row weight, recurs every rebuild.
     {"ds": "va_vetpop_county_total", "tier": "D", "sort": ["fips", "snapshot_year"]},
     {"ds": "va_disability_comp_county", "tier": "D", "sort": ["fips", "fiscal_year"]},
+    # ── entity-inflection cluster (operator-directed cycle 2026-07-13; bridges
+    # gap-report 2026-07-12 Gaps B+C, "structural change in the last N days").
+    # sam_master_profile_deltas: 1 row/(uei, field, to_label) SAM vintage-diff
+    # change event (cage appears/moves, high-liability NAICS added w/ sb_flag,
+    # entity_structure, legal name, purpose, extract status; set add/remove for
+    # bus types / NAICS / PSC). Sorted (uei, to_date) so a "this UEI's recent
+    # changes" read prunes AND a windowed "everyone who changed since D" read
+    # prunes on to_date. gtm_fpds_entity_signal_events: the day-precision FPDS
+    # adjacency — first/last txn day per (uei, cage) + verified structured JV/8a
+    # flags; sorted uei. Both 1:1 (row-preserving) → exact-parity gate.
+    {"ds": "sam_master_profile_deltas", "tier": "B", "sort": ["uei", "to_date"]},
+    {"ds": "gtm_fpds_entity_signal_events", "tier": "B", "sort": ["uei"]},
 ]
 
 # agency vocab: deduped (code, name) off usaspending_award_canonical — mirrors
