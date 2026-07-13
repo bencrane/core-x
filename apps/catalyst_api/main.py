@@ -39,6 +39,7 @@ from .src import (
     lance_store,
     market_registry,
     market_store,
+    phrase_aggregate,
     phrase_compiler,
     profile_html,
     sub_universe_store,
@@ -199,6 +200,7 @@ def _info() -> dict:
             "market_query": "/api/v1/market/query  (POST: {grain:'entity'|'prime_award'|'transaction', filters:[...], limit:N})",
             "market_codes": "/api/v1/market/codes?type=naics|psc|agency&q=<text>&limit=20",
             "market_phrase": "/api/v1/market/phrase  (POST: {phrase})",
+            "federal_phrase": "/api/v1/federal/phrase  (POST: {phrase})",
             "market_subout_opportunities": (
                 "/api/v1/market/subout-opportunities  (POST: {uei, limit?, mode?: relationships|combos})"),
         },
@@ -776,6 +778,23 @@ def market_phrase(body: dict = Body(...)) -> JSONResponse:
     ``meta.plan`` carries the RESOLVED bodies."""
     try:
         result = phrase_compiler.compile_and_execute(body)
+    except lance_store.MapCompileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/federal/phrase", response_model=None, dependencies=[Depends(require_operator)])
+def federal_phrase(body: dict = Body(...)) -> JSONResponse:
+    """The deterministic aggregate phrase compiler (phrase-agg.v2).
+    ``{"phrase": "..."}`` → aggregate bars + compiled plan + bindings.
+    Two productions:
+    - v1: ``total <measure> <group> <window>`` → portrait bars (FY-windowed combos)
+    - v2: ``total active <measure> near <zip5> within <N> miles by equipment`` → yard bars
+    CLOSED grammar over CLOSED vocabularies — zero LLM: any unbound token refuses
+    the phrase naming the token (422). Results deterministically cached by normalized
+    phrase; artifact stamp disclosed in meta."""
+    try:
+        result = phrase_aggregate.compile_and_execute(body)
     except lance_store.MapCompileError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return JSONResponse(result)
