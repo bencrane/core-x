@@ -1,11 +1,27 @@
 """Compute worker — SAM entity master family (v2-only, faithful mirror), fail-safe + dispatcher-ready.
 
-Builds three Lance datasets from raw ``entity_registrations`` in ONE v2 scan:
+Builds four Lance datasets from raw ``entity_registrations`` in ONE v2 scan:
   - sam_master_entities  : 1 row / uei, latest-row-per-uei across all v2 snapshots, every
                            public field named per the FROZEN dictionary map, + parsed
                            array siblings, is_active, and cheap tenure aggregates.
   - sam_master_contacts  : the 6 POC blocks unpivoted to ≤6 rows / uei.
   - sam_master_domains   : entity_url normalized → (normalized_domain, uei) index.
+  - sam_master_profile_deltas : the field-level CHANGE mart — 1 row / (uei, field,
+                           to_label). The same v2 stack that yields the latest-row spine
+                           carries every prior vintage; instead of collapsing that to
+                           first/last-seen tenure aggregates and DISCARDING the field
+                           motion, this mart diffs each entity across CONSECUTIVE vintages
+                           and emits an explicit event when a scalar field changes (cage
+                           appears/moves, entity_structure, primary_naics, extract status,
+                           legal name, purpose) or a set element is added/removed
+                           (business types, NAICS, PSC). NAICS elements carry the
+                           small-business Y/N/E suffix, so a code added to the profile — or
+                           a code whose sizing flag flips — is flagged with sb_flag_old/new.
+                           A delta row exists only when the uei is present in BOTH vintages
+                           of the pair (whole-vintage absence is registration churn, not a
+                           field change); the change is bounded to (from_date, to_date].
+                           Rides the existing `proj` scan — no second read of the 19.3M-row
+                           source.
 
 Column names are the EXACT SAM dictionary field names (faithful slug); the only alias is
 ``uei`` for UNIQUE ENTITY ID. The projection is generated from
@@ -36,7 +52,8 @@ _PROD_PREFIX = "s3://data-sink/active/"
 def _uris_for(prefix: str) -> dict[str, str]:
     return {"entities": prefix + "sam_master_entities/",
             "contacts": prefix + "sam_master_contacts/",
-            "domains": prefix + "sam_master_domains/"}
+            "domains": prefix + "sam_master_domains/",
+            "deltas": prefix + "sam_master_profile_deltas/"}
 
 
 def _feed_for(prefix: str) -> str:
@@ -66,6 +83,25 @@ NAICS_FILL_MIN_FOR_GATE = 0.60        # below this, NAICS-numeric is observation
 ENTITIES_BTREE = ["uei", "primary_naics", "cage_code"]
 CONTACTS_BTREE = ["uei"]
 DOMAINS_BTREE = ["normalized_domain", "uei"]
+DELTAS_BTREE = ["uei", "to_date", "field"]
+
+# Profile-delta mart — catastrophic-collapse floor only (Δ-guarded once a baseline exists).
+# ~13 v2 transitions × ~800k entities, most carrying ≥1 changed field → millions of events;
+# a floor well under any plausible healthy build catches a projection/pairing collapse.
+DELTAS_FLOOR = 1_000_000
+# (mart field name, proj scalar column) — scalar single-value diffs.
+DELTA_SCALARS = [
+    ("cage_code", "cage_code"),
+    ("entity_structure", "entity_structure"),
+    ("primary_naics", "primary_naics"),
+    ("purpose_of_registration", "purpose_of_registration"),
+    ("registration_status", "sam_extract_code"),
+    ("legal_business_name", "legal_business_name"),
+]
+# (mart field base, proj `*_string` column) — '~'-separated set add/remove diffs.
+# naics is handled specially (small-business Y/N/E suffix → sb_flag + posture-flip event).
+DELTA_PLAIN_SETS = [("bus_type", "bus_type_string"), ("psc", "psc_code_string")]
+DELTA_NAICS_STRING = "naics_code_string"
 
 DUCKDB_MEMORY_LIMIT = "110GB"
 DUCKDB_THREADS = 8
@@ -136,6 +172,7 @@ CREATE TABLE IF NOT EXISTS ops.sam_master_runs (
     recorded_at     timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE ops.sam_master_runs ADD COLUMN IF NOT EXISTS dataset_uri text;
+ALTER TABLE ops.sam_master_runs ADD COLUMN IF NOT EXISTS deltas_rows bigint;
 CREATE INDEX IF NOT EXISTS sam_master_runs_recorded_at_idx ON ops.sam_master_runs (recorded_at DESC);
 """
 
@@ -267,6 +304,131 @@ def build_sql(field_map: list[dict], date_positions: list[int]) -> dict:
             "entities": entities_sql, "contacts": contacts_sql, "domains": domains_sql}
 
 
+def _vintage_date_sql(col: str) -> str:
+    """SAM extract label → the vintage's nominal DATE. ``YYYYMMDD`` → exact; ``YYYY_MMM`` →
+    first of that month. Used only for the delta window bounds (from_date, to_date]."""
+    months = ("WHEN 'JAN' THEN '01' WHEN 'FEB' THEN '02' WHEN 'MAR' THEN '03' WHEN 'APR' THEN '04' "
+              "WHEN 'MAY' THEN '05' WHEN 'JUN' THEN '06' WHEN 'JUL' THEN '07' WHEN 'AUG' THEN '08' "
+              "WHEN 'SEP' THEN '09' WHEN 'OCT' THEN '10' WHEN 'NOV' THEN '11' WHEN 'DEC' THEN '12'")
+    return (f"CASE WHEN regexp_matches({col}, '^[0-9]{{8}}$') "
+            f"THEN TRY_STRPTIME({col}, '%Y%m%d')::DATE "
+            f"ELSE TRY_CAST(substr({col},1,4) || '-' || CASE upper(substr({col},6,3)) {months} "
+            f"ELSE '00' END || '-01' AS DATE) END")
+
+
+def build_deltas_steps(snap_key_fn) -> tuple[list[tuple[str, str]], str]:
+    """Emit the profile-delta pipeline as ordered ``CREATE TEMP TABLE`` steps run against the
+    already-materialized ``proj`` (1 row / source-row, all needed scalar + `*_string` columns),
+    plus the final SELECT. Pure/importable so the SQL is unit-testable off a fixture ``proj``.
+
+    Adjacency uses the global vintage order (snap-key), so a uei that skips a vintage diffs
+    against its previous PRESENT vintage's successor only when both are truly consecutive —
+    absence from a whole vintage is registration churn, never a synthetic field change."""
+    vdate = _vintage_date_sql("extract_label")
+    snap = snap_key_fn("extract_label")
+
+    # 1) one row per (uei, vintage): dedup source dupes deterministically on snap-key.
+    scalar_cols = ", ".join(f"{proj_col} AS {proj_col}"
+                            for _, proj_col in DELTA_SCALARS)
+    set_cols = ", ".join([f"{DELTA_NAICS_STRING} AS {DELTA_NAICS_STRING}"]
+                         + [f"{c} AS {c}" for _, c in DELTA_PLAIN_SETS])
+    dsnap = (
+        "CREATE TEMP TABLE dsnap AS SELECT * EXCLUDE (_rn) FROM ("
+        f"  SELECT uei, extract_label, {vdate} AS vintage_date, {snap} AS snap_key, "
+        f"         {scalar_cols}, {set_cols}, "
+        "         row_number() OVER (PARTITION BY uei, extract_label ORDER BY source_file "
+        "                            DESC NULLS LAST) AS _rn "
+        "  FROM proj WHERE nullif(trim(uei),'') IS NOT NULL"
+        ") WHERE _rn = 1 AND vintage_date IS NOT NULL")
+
+    dvint = ("CREATE TEMP TABLE dvint AS SELECT extract_label, snap_key, "
+             "row_number() OVER (ORDER BY snap_key) AS vr "
+             "FROM (SELECT DISTINCT extract_label, snap_key FROM dsnap)")
+
+    # 2) consecutive-vintage pairs carrying every scalar/set _old,_new.
+    pair_scalar = ", ".join(
+        f"a.{c} AS {c}_old, b.{c} AS {c}_new" for _, c in DELTA_SCALARS)
+    pair_sets = ", ".join(
+        [f"a.{DELTA_NAICS_STRING} AS naics_old, b.{DELTA_NAICS_STRING} AS naics_new"]
+        + [f"a.{c} AS {base}_old, b.{c} AS {base}_new" for base, c in DELTA_PLAIN_SETS])
+    dpairs = (
+        "CREATE TEMP TABLE dpairs AS SELECT a.uei, "
+        "a.extract_label AS from_label, b.extract_label AS to_label, "
+        "a.vintage_date AS from_date, b.vintage_date AS to_date, "
+        f"{pair_scalar}, {pair_sets} "
+        "FROM dsnap a "
+        "JOIN dvint va ON va.extract_label = a.extract_label "
+        "JOIN dvint vb ON vb.vr = va.vr + 1 "
+        "JOIN dsnap b ON b.uei = a.uei AND b.extract_label = vb.extract_label")
+
+    # 3) NAICS element explode (code + Y/N/E small-business suffix), old vs new.
+    dnaics_el = (
+        "CREATE TEMP TABLE dnaics_el AS "
+        "SELECT uei, from_label, to_label, from_date, to_date, side, "
+        "       regexp_extract(el, '^([0-9]+)', 1) AS code, "
+        "       nullif(regexp_extract(el, '([A-Z])$', 1), '') AS flag FROM ("
+        "  SELECT uei, from_label, to_label, from_date, to_date, 'old' AS side, "
+        "         unnest(string_split(coalesce(naics_old,''), '~')) AS el FROM dpairs "
+        "  UNION ALL "
+        "  SELECT uei, from_label, to_label, from_date, to_date, 'new' AS side, "
+        "         unnest(string_split(coalesce(naics_new,''), '~')) AS el FROM dpairs"
+        ") WHERE el <> '' AND regexp_extract(el, '^([0-9]+)', 1) <> ''")
+    dnaics_diff = (
+        "CREATE TEMP TABLE dnaics_diff AS "
+        "SELECT coalesce(o.uei, n.uei) AS uei, "
+        "       coalesce(o.from_label, n.from_label) AS from_label, "
+        "       coalesce(o.to_label, n.to_label) AS to_label, "
+        "       coalesce(o.from_date, n.from_date) AS from_date, "
+        "       coalesce(o.to_date, n.to_date) AS to_date, "
+        "       coalesce(o.code, n.code) AS code, o.flag AS flag_old, n.flag AS flag_new, "
+        "       o.code IS NULL AS is_added, n.code IS NULL AS is_removed "
+        "FROM (SELECT DISTINCT * FROM dnaics_el WHERE side='old') o "
+        "FULL OUTER JOIN (SELECT DISTINCT * FROM dnaics_el WHERE side='new') n "
+        "  ON o.uei = n.uei AND o.to_label = n.to_label AND o.code = n.code")
+
+    # final union: scalar diffs + naics add/remove/flag-flip + plain-set add/remove.
+    scalar_sel = [
+        f"SELECT uei, '{field}' AS field, {col}_old AS old_value, {col}_new AS new_value, "
+        f"CAST(NULL AS VARCHAR) AS sb_flag_old, CAST(NULL AS VARCHAR) AS sb_flag_new, "
+        f"from_label, to_label, from_date, to_date FROM dpairs "
+        f"WHERE {col}_old IS DISTINCT FROM {col}_new "
+        f"AND NOT (coalesce({col}_old,'')='' AND coalesce({col}_new,'')='')"
+        for field, col in DELTA_SCALARS]
+    naics_sel = [
+        "SELECT uei, CASE WHEN is_added THEN 'naics_added' WHEN is_removed THEN 'naics_removed' "
+        "ELSE 'naics_sb_flag_changed' END AS field, "
+        "CASE WHEN is_added THEN NULL ELSE code END AS old_value, "
+        "CASE WHEN is_removed THEN NULL ELSE code END AS new_value, "
+        "flag_old AS sb_flag_old, flag_new AS sb_flag_new, "
+        "from_label, to_label, from_date, to_date FROM dnaics_diff "
+        "WHERE is_added OR is_removed OR (flag_old IS DISTINCT FROM flag_new)"]
+    plain_sel = [
+        f"SELECT coalesce(o.uei, n.uei) AS uei, "
+        f"CASE WHEN o.code IS NULL THEN '{base}_added' ELSE '{base}_removed' END AS field, "
+        f"o.code AS old_value, n.code AS new_value, "
+        f"CAST(NULL AS VARCHAR) AS sb_flag_old, CAST(NULL AS VARCHAR) AS sb_flag_new, "
+        f"coalesce(o.from_label, n.from_label) AS from_label, "
+        f"coalesce(o.to_label, n.to_label) AS to_label, "
+        f"coalesce(o.from_date, n.from_date) AS from_date, "
+        f"coalesce(o.to_date, n.to_date) AS to_date FROM "
+        f"(SELECT DISTINCT uei, from_label, to_label, from_date, to_date, "
+        f"        unnest(string_split(coalesce({base}_old,''), '~')) AS code FROM dpairs) o "
+        f"FULL OUTER JOIN (SELECT DISTINCT uei, from_label, to_label, from_date, to_date, "
+        f"        unnest(string_split(coalesce({base}_new,''), '~')) AS code FROM dpairs) n "
+        f"  ON o.uei = n.uei AND o.to_label = n.to_label AND o.code = n.code "
+        f"WHERE (o.code IS NULL OR n.code IS NULL) AND coalesce(o.code, n.code) <> ''"
+        for base, _ in DELTA_PLAIN_SETS]
+
+    final = ("SELECT uei, field, old_value, new_value, sb_flag_old, sb_flag_new, "
+             "from_label, to_label, from_date, to_date, "
+             "date_diff('day', from_date, to_date) AS window_days FROM ("
+             + "\nUNION ALL\n".join(scalar_sel + naics_sel + plain_sel)
+             + ") ORDER BY uei, to_date, field")
+    steps = [("dsnap", dsnap), ("dvint", dvint), ("dpairs", dpairs),
+             ("dnaics_el", dnaics_el), ("dnaics_diff", dnaics_diff)]
+    return steps, final
+
+
 # --------------------------------------------------------------------------- #
 # pre-write gates (pure — no R2/Modal/PG; unit-tested core of the safety net)
 # --------------------------------------------------------------------------- #
@@ -291,6 +453,8 @@ def assert_pre_write_gates(metrics: dict, baseline: dict | None) -> list[str]:
          f"3 contacts floor: {metrics['contacts_rows']:,} >= {CONTACTS_FLOOR:,}")
     gate(metrics["domains_rows"] >= DOMAINS_FLOOR,
          f"4 domains floor: {metrics['domains_rows']:,} >= {DOMAINS_FLOOR:,}")
+    gate(metrics["deltas_rows"] >= DELTAS_FLOOR,
+         f"4b profile-delta floor: {metrics['deltas_rows']:,} >= {DELTAS_FLOOR:,}")
     if baseline:
         gate(_within(e, baseline["entities_rows"], DELTA_GUARD),
              f"5 entities Δ: {e:,} ~ ±{DELTA_GUARD:.0%} of {baseline['entities_rows']:,}")
@@ -364,11 +528,12 @@ def _record_run(*, feed, dataset_uri, sam_label, metrics, status, error,
             cur.execute(
                 """INSERT INTO ops.sam_master_runs
                    (feed, dataset_uri, sam_label, entities_rows, contacts_rows, domains_rows,
-                    distinct_uei, status, error, started_at, completed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    deltas_rows, distinct_uei, status, error, started_at, completed_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (feed, dataset_uri, sam_label, metrics.get("entities_rows"),
                  metrics.get("contacts_rows"), metrics.get("domains_rows"),
-                 metrics.get("distinct_uei"), status, error, started_at, completed_at),
+                 metrics.get("deltas_rows"), metrics.get("distinct_uei"), status, error,
+                 started_at, completed_at),
             )
     except Exception as exc:  # noqa: BLE001 — audit must not mask the build
         print(f"WARN: ops ledger write failed: {exc}")
@@ -480,6 +645,12 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
         con.execute(f"CREATE TEMP TABLE contacts AS {sql['contacts']}")
         con.execute(f"CREATE TEMP TABLE domains AS {sql['domains']}")
 
+        # ── profile-delta mart: rides `proj` (already materialized) — no second scan ──
+        delta_steps, delta_final = build_deltas_steps(snap_key_sql)
+        for _dname, _dstmt in delta_steps:
+            con.execute(_dstmt)
+        con.execute(f"CREATE TEMP TABLE deltas AS {delta_final}")
+
         # ── single-pass metrics: counts + content plausibility + intersection probe (D8, D9) ──
         (e_rows, d_uei, naics_num, naics_nn, name_alpha, name_nn) = con.execute("""
             SELECT count(*), count(DISTINCT uei),
@@ -491,6 +662,8 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
         """).fetchone()
         c_rows = con.execute("SELECT count(*) FROM contacts").fetchone()[0]
         dom_rows = con.execute("SELECT count(*) FROM domains").fetchone()[0]
+        delta_rows = con.execute("SELECT count(*) FROM deltas").fetchone()[0]
+        delta_ueis = con.execute("SELECT count(DISTINCT uei) FROM deltas").fetchone()[0]
         # probe present in BOTH entities and contacts (D9), deterministic via uei tiebreak.
         probe = con.execute("""
             SELECT c.uei FROM (SELECT uei, count(*) n FROM contacts WHERE uei IS NOT NULL GROUP BY uei) c
@@ -501,10 +674,12 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
         entities = con.sql("SELECT * FROM entities").to_arrow_table()
         contacts = con.sql("SELECT * FROM contacts").to_arrow_table()
         domains = con.sql("SELECT * FROM domains").to_arrow_table()
+        deltas = con.sql("SELECT * FROM deltas").to_arrow_table()
         con.close()
 
         metrics = {
             "entities_rows": int(e_rows), "contacts_rows": int(c_rows), "domains_rows": int(dom_rows),
+            "deltas_rows": int(delta_rows), "deltas_distinct_uei": int(delta_ueis),
             "distinct_uei": int(d_uei),
             "naics_numeric_frac": (naics_num / naics_nn) if naics_nn else 0.0,
             "primary_naics_fill": (naics_nn / e_rows) if e_rows else 0.0,
@@ -536,7 +711,8 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
         try:
             for table, name, btree in ((entities, "entities", ENTITIES_BTREE),
                                        (contacts, "contacts", CONTACTS_BTREE),
-                                       (domains, "domains", DOMAINS_BTREE)):
+                                       (domains, "domains", DOMAINS_BTREE),
+                                       (deltas, "deltas", DELTAS_BTREE)):
                 lance.write_dataset(table, uris[name], storage_options=so, mode="overwrite",
                                     data_storage_version=DATA_STORAGE_VERSION,
                                     max_rows_per_file=MAX_ROWS_PER_FILE)
@@ -560,7 +736,11 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
             con_ds = lance.dataset(uris["contacts"], storage_options=so)
             if con_ds.scanner(columns=["uei"], filter=f"uei = '{pr}'").to_table().num_rows < 1:
                 raise RuntimeError(f"gate: contacts probe {pr} returned 0 rows")
-            print(f"post-write gates PASS — committed entities={ent.count_rows():,} idx={sorted(idx)} probe={pr}")
+            del_ds = lance.dataset(uris["deltas"], storage_options=so)
+            if del_ds.count_rows() != metrics["deltas_rows"]:
+                raise RuntimeError(f"gate: deltas write-integrity {del_ds.count_rows():,} != {metrics['deltas_rows']:,}")
+            print(f"post-write gates PASS — committed entities={ent.count_rows():,} "
+                  f"deltas={del_ds.count_rows():,} idx={sorted(idx)} probe={pr}")
         except Exception as werr:  # noqa: BLE001
             restored, orphaned = [], []
             for name, uri in uris.items():
