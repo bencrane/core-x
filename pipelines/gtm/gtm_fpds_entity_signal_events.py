@@ -42,7 +42,7 @@ DATA_STORAGE_VERSION = "2.1"
 MAX_ROWS_PER_FILE = 1048576
 SIGNALS_BTREE = ["uei", "first_action_date"]
 SIGNALS_BITMAP = ["signal_type"]
-SIGNALS_ROW_FLOOR = 400_000        # distinct (uei, cage) alone ≈ high hundreds of k
+SIGNALS_ROW_FLOOR = 200_000        # measured live ≈ 285k ((uei,cage) pairs + flag events)
 
 DUCKDB_MEMORY_LIMIT = os.environ.get("GTM_DUCKDB_MEM", "48GB")
 DUCKDB_THREADS = 16

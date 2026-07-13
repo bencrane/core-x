@@ -76,3 +76,42 @@
    structural absence: **the sidecar holds no change-dated / time-series view of SAM entity profile
    fields (CAGE, declared NAICS, business types, entity structure)**. Every "structural change in
    the last N days" question collapses to this one missing capability.
+
+---
+
+## Disposition (build cycle 2026-07-13, operator-directed)
+
+**Artifact:** `query_sidecar_20260712T224718Z` (85 tables) → `query_sidecar_20260713T043612Z` (87 tables).
+
+**Build scope block (adjacency sweep, decided before build):**
+- Ships from demand (Gaps B+C, operator directive): the SAM profile-delta mart + the FPDS
+  day-precision signal mart.
+- Adjacency riders (same scan, one line each):
+  - Delta mart scalar fields beyond CAGE/NAICS: `entity_structure`, `legal_business_name`,
+    `purpose_of_registration`, `registration_status` — rename/re-structure/status-lapse are the
+    same "what changed" question; ride the identical vintage-pair frame.
+  - Delta mart set fields beyond NAICS: `bus_type_added/removed`, `psc_added/removed` —
+    designation and PSC motion ride the same explode.
+  - `naics_sb_flag_changed` — the sizing-posture flip is the sibling column of the NAICS add
+    (Y/N/E suffix on the same token).
+  - FPDS signal mart flag family: `jv_8a_certified`, `jv_econ_disadv`, `jv_women_owned`,
+    `c8a_participant` — the JV columns are one boolean family; four aggregates in one pass.
+- Next-question simulation: "who changed → name them" (join `gtm_sam_entities`, served);
+  "new CAGE → when did it transact" (delta ⋈ `cage_txn` signal, served); "NAICS add → does the
+  entity already prime" (join `gtm_entity_behavior_rollup`, served); "trend changes by vintage"
+  (GROUP BY to_label, served).
+
+| Entry | Verdict | What shipped | Measured |
+|---|---|---|---|
+| Gap B (new CAGE, N days) | **Promote** | `sam_master_profile_deltas` (sam_master.py 4th dataset, rides the existing `proj` scan; 5,790,624 events / 1,214,349 UEIs) + `gtm_fpds_entity_signal_events` (284,842 rows) — net-new-CAGE query = delta ⋈ cage_txn signal | before: **unanswerable** (single snapshot) → after: **592 ms** warm (2,261 net-new CAGEs, trailing window, day-precision first-txn attached) |
+| Gap C (declared NAICS add) | **Promote** | same delta mart; `naics_added`/`naics_sb_flag_changed` with `sb_flag_old/new` | before: **unanswerable** (proxy only) → after: **608 ms** warm (3,328 high-liability events in trailing window) |
+| Gap A (award→sol→attachment/PDF/text coverage) | **Parked (structural-gated)** | nothing — the attachment substrate (manifests, download ledger, extraction state, opps universe) is GB-scale, freshness-coupled to in-flight Stage-3/4 runs, and has one session of demand. Re-evaluate on recurrence; the join keys (`solicitation_identifier/date`) are already served via `award_descriptions`. | n/a |
+
+**Vintage caveat (durable):** the delta mart's window resolution = SAM extract cadence
+(semiannual ≤2025, ~monthly 2026+). `20260503` ≡ `2026_MAY` (near-dup labels) → that transition
+is ~empty; the latest meaningful transition is `20260405 → 2026_MAY` (26 days). Filter on
+`to_date`, not on a single label.
+
+**Deliverables of the cycle:** 5 trailing-90d inflection CSVs (JV/8a first-txn, net-new CAGE ×
+first-txn day, high-liability NAICS + sizing posture, sub-to-prime w/ SAM tenure,
+positive-baseline obligation spikes), all served from the new artifact in 0.4–5.9 s.
