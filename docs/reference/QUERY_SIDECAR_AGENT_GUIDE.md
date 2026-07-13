@@ -105,6 +105,12 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_award_expiry_months` | uei × end_month · 221k | uei, end_month |
 | `gtm_prime_pop_lanes` | 1/(uei, pop_state, county) · 547k | uei |
 
+### Entity change & signal events (the "structural change in the last N days" layer)
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `sam_master_profile_deltas` | 1/(uei, field, to_label) · ~5.8M | uei, to_date | SAM vintage-diff CHANGE events. `field` ∈ {cage_code, entity_structure, primary_naics, purpose_of_registration, registration_status, legal_business_name, naics_added, naics_removed, naics_sb_flag_changed, bus_type_added/removed, psc_added/removed}. `old_value`/`new_value`; NAICS carries `sb_flag_old`/`sb_flag_new` (small-business Y/N/E). Bounded to `(from_date, to_date]` with `window_days`. A row exists only when the UEI is in BOTH adjacent vintages (whole-vintage absence = churn). **Net-new CAGE** = `field='cage_code' AND coalesce(old_value,'')=''`; **high-liability NAICS add** = `field='naics_added' AND new_value IN (...)`; **sizing-posture flip** = `field='naics_sb_flag_changed'`. Filter `to_label`/`to_date` for the window (latest MEANINGFUL transition is `2026_MAY`; `20260503` is a near-dup of it → ~empty). |
+| `gtm_fpds_entity_signal_events` | 1/(uei, signal_type, signal_value) · ~285k | uei | FPDS day-precision demonstrated signals. `signal_type='cage_txn'` → `signal_value`=cage, `first_action_date`/`last_action_date`/`action_ct`/`obl_sum` (the exact day a UEI's CAGE first transacts — cross-ref a net-new CAGE from the delta mart). Flag types `jv_8a_certified`, `jv_econ_disadv`, `jv_women_owned`, `c8a_participant` = verified structured JV/8(a) events (replaces the polluted SAM name-pattern JV heuristic). |
+
 ### Teaming / relationship substrate
 | Table | Grain · rows | Sorted |
 |---|---|---|
@@ -226,6 +232,20 @@ WHERE i.code_type='naics' AND i.code='541330'
 -- Teaming: who subs under this prime
 SELECT p.sub_uei, e.legal_business_name FROM gtm_prime_sub_pairs p
 JOIN gtm_sam_entities e ON e.uei = p.sub_uei WHERE p.prime_uei = 'XXX';
+
+-- INFLECTION: high-liability NAICS added to SAM profile in the latest window, w/ sizing posture
+SELECT d.uei, e.legal_business_name, d.new_value AS naics, d.sb_flag_new, d.window_days
+FROM sam_master_profile_deltas d JOIN gtm_sam_entities e USING(uei)
+WHERE d.field='naics_added' AND d.new_value IN ('236220','541512','561612')
+  AND d.to_label='2026_MAY'                     -- latest MEANINGFUL vintage transition
+ORDER BY d.new_value;
+
+-- INFLECTION: net-new CAGE (delta) → the exact day it first transacts (FPDS adjacency)
+SELECT d.uei, d.new_value AS cage, s.first_action_date, s.obl_sum
+FROM sam_master_profile_deltas d
+JOIN gtm_fpds_entity_signal_events s
+  ON s.uei = d.uei AND s.signal_type='cage_txn' AND s.signal_value = d.new_value
+WHERE d.field='cage_code' AND coalesce(d.old_value,'')='' AND d.to_label='2026_MAY';
 
 -- COMBO PORTRAIT: zoom out (family × FY, national) — one view
 SELECT * FROM v_family_fy WHERE family = '5413xJ' ORDER BY fy;
