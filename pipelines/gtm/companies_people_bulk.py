@@ -32,7 +32,9 @@ TARGET (Gen-3 system of record — native Lance v2.1):
     ALL grains are SEVERED from dexarchive — this worker NO LONGER overwrites any of them:
     s3://data-sink/active/companies/                  ── standalone SoR
     s3://data-sink/active/people/                     ── standalone SoR
-    s3://data-sink/active/company_target_industries/  ── standalone SoR
+    s3://data-sink/active/archive_company_target_industries/  ── standalone SoR (archived 2026-07-14:
+        noisy 34-category exa labels; the clean served-industry vocabulary lives in
+        active/demand_company_target_verticals/ + active/staffing_agencies/.industries_served)
     ingest_gtm_company_people is RETIRED — it REFUSES every call so a stray run can never wipe
     non-dexarchive rows. Existing rows stay frozen at their last snapshot; new rows arrive via
     direct writes (manual seeds + exa.ai websets + Waterfall ICP). reindex / verify still operate
@@ -160,8 +162,9 @@ INGEST_DATASETS: tuple[str, ...] = ()           # nothing left to materialize fr
 DATASET_URI = {
     "companies": os.environ.get("GTM_COMPANIES_URI", f"{_ACTIVE}/companies/"),
     "people": os.environ.get("GTM_PEOPLE_URI", f"{_ACTIVE}/people/"),
+    # archived 2026-07-14 (R2 prefix renamed): noisy exa target-industry labels; kept read-only.
     "company_target_industries": os.environ.get(
-        "GTM_TARGET_INDUSTRIES_URI", f"{_ACTIVE}/company_target_industries/"),
+        "GTM_TARGET_INDUSTRIES_URI", f"{_ACTIVE}/archive_company_target_industries/"),
 }
 
 FEED = "gtm_companies_people"
