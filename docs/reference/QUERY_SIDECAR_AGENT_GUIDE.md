@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 85 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.23B rows across 89 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -173,6 +173,9 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `dol_sca_occupations` | 1/occupation_code · 502 | occupation_code | SCA occupation taxonomy — the name/display layer (analog of `v_psc_names` for PSC): `occupation_title`, `occupation_definition`, `family_code`, `family_title`, `edition` |
 | `olms_cba_crosswalk` | 1/(doc_id) uei-matched · 4.8k | uei | Union exposure column for any target list: `uei` → `union_name`, `exp_date` (CBA expiration), `emp_name`, `tier`/`score`/`on_spine`/`is_active`/`geo_corroborated`. Join warm award tables on `uei` for §4(c) successorship exposure |
 | `v_wd_county_rates` | view | — | The county-priced floor in one SELECT: `sam_wd_rates_structured` ⋈ `sam_wd_county_coverage` ⋈ `sam_county_fips_crosswalk`. Columns: wd_id, revision_number, wd_type, occupation_code, classification_title, wage_rate, fringe, fringe_is_pct, hw_rate, state_code, state_name, county_name, county_fips, resolution_status. Predicates on wd_id / occupation_code / county_fips prune the underlying sorted tables |
+| `naics_labor_share` | 1/6-digit naics · 1.1k | naics_code | **The award-dollar pricing scalar** (labor-pricing cycle 2026-07-14): `loaded_labor_share = payroll_share × burden_multiplier` (SUSB × ECEC burden; BEA `bea_comp_share_of_output` cross-check) + provenance dials `payroll_share_level` (0 = sector-92 economy fallback) / `burden_match_level`. Closes `expected labor $ = award_$ × loaded_labor_share × pct_of_industry/100` — ⚠ `pct_of_industry` is PERCENT; prefer `v_role_priced_combos.category_award_share`, which bakes the /100 |
+| `occupation_alias_lookup` | 1/(alias_norm, code_type, code) · 66.9k | alias_norm, code | **The role-name entry hop**: free text → normalized `alias_norm` probe → SOC/SCA. O*NET primary/reported/alternate + SCA titles, parenthetical variants split ("Travel RN" and "Travel Registered Nurse" both resolve); SCA rows carry `bridged_soc_code`/`bridge_tier` inline; `in_combo_layer` = reachable through the ranked combo profiles. Ambiguous aliases (~8k map to >1 code): rank by `source_priority` then `in_combo_layer` |
+| `v_role_priced_combos` | view | — | The pre-call composite in one SELECT: alias → (soc leg ∪ sca leg) → `naics_psc_labor_profile_categories` ⋈ `naics_labor_share`. Probe `alias_norm` (prunes the sorted alias table); carries combo rank, soc/sca titles, cast `a_median`, growth, labor-share provenance, and precomputed `category_award_share = loaded_labor_share × pct_of_industry/100` |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |
@@ -345,6 +348,27 @@ JOIN dol_sca_occupations o ON o.occupation_code = x.occupation_code
 JOIN v_wd_county_rates f ON f.occupation_code = x.occupation_code
 LEFT JOIN soc_state_wage w ON w.soc_code = x.soc_code AND w.prim_state = f.state_code
 WHERE x.occupation_code = '23130' AND f.state_code = 'VA';
+
+-- ROLE TEXT → PRICED COMBOS (the pre-call entry hop, labor-pricing cycle).
+-- Normalize the free text like the table does (lowercase, punctuation → space),
+-- probe alias_norm, take the top-ranked combos with the precomputed
+-- expected-labor share of the award dollar. NEVER multiply pct_of_industry
+-- yourself — it is PERCENT; category_award_share already divides by 100.
+SELECT alias, code_type, code, occupation_title, naics_code, psc_code, rank,
+       a_median, loaded_labor_share, category_award_share
+FROM v_role_priced_combos
+WHERE alias_norm = 'travel rn' AND rank <= 3
+ORDER BY category_award_share DESC NULLS LAST LIMIT 25;
+
+-- Ambiguous role text: resolve the alias FIRST, pick the code, then price
+SELECT DISTINCT code_type, code, occupation_title, title_source, in_combo_layer
+FROM occupation_alias_lookup WHERE alias_norm = 'superintendent'
+ORDER BY in_combo_layer DESC;   -- then rank by source_priority
+
+-- EXPECTED LABOR $ for a target's award: award (naics) → the one-join scalar
+SELECT naics_code, payroll_share, burden_multiplier, loaded_labor_share,
+       payroll_share_level, burden_match_level
+FROM naics_labor_share WHERE naics_code = '541512';
 
 -- COUNTY-PRICED STATUTORY FLOOR for a given WD (the recurring Entry-2 shape)
 SELECT occupation_code, classification_title, wage_rate, fringe, hw_rate,
