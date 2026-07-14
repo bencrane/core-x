@@ -57,6 +57,7 @@ ranked SCA↔SOC ~20s → 2.8 ms).
 | `v_wd_county_rates` (view) | **warm** | the county-priced floor in one SELECT |
 | `olms_cba_crosswalk` | **warm** | UEI → union identity + CBA expiry (§4(c) successorship) |
 | `bls_oews_2025` | Lance | industry staffing pattern (roles per 1,000) |
+| `occupation_alias_lookup` | Lance | **the entry hop** (66.9k aliases, 2026-07-14): free-text role names → SOC/SCA via normalized `alias_norm` probe (O*NET primary/reported/alternate titles + SCA taxonomy, parenthetical variants split, SCA rows carry the bridged `soc_code` inline, `in_combo_layer` = reachable through the ranked combo profiles) |
 
 ### Pricing calibration — the labor-share/burden stack (Lance, landed #1118–#1120)
 
@@ -89,7 +90,7 @@ question shapes recur (per gap-pass-6 disposition,
 
 | Pre-call answer | Maps through | Datasets |
 |---|---|---|
-| Roles they staff | role names → SOC/SCA → reverse-lookup combos → awards | `naics_psc_labor_profile_categories` (reverse) → kinetic layer |
+| Roles they staff | role names → `occupation_alias_lookup` (alias_norm probe) → SOC/SCA → reverse-lookup combos → awards | `occupation_alias_lookup` → `naics_psc_labor_profile_categories` (reverse) → kinetic layer |
 | Geos served / national | PoP county FIPS / HQ state | `sam_county_fips_crosswalk`, spine `pop_county_fips`, entity HQ |
 | Clearances | extracted solicitation demand (confidence-gated) | `govcon_labor_demand` |
 | Labor holds / bench | occupation inventory vs ranked combo demand | combo layer + `soc_state_wage` |
@@ -125,9 +126,13 @@ promotion.
 
 ## Remaining deltas to fully closed-loop
 
-1. **Reverse-map entry hop** — free-text role names ("travel nurses", "cleared network
-   engineers") → SOC/SCA codes. The only unbuilt link in the pre-call → award chain. Match
-   corpus already landed: `dol_sca_occupations` titles/definitions + SOC titles.
+1. ~~**Reverse-map entry hop**~~ — **CLOSED 2026-07-14**: landed as `occupation_alias_lookup`
+   (66,878 rows; `pipelines/reference/materialize_occupation_alias_lookup.py`). Normalized
+   alias probe → SOC/SCA; verified "travel rn" → 29-1141 → 213 ranked combos, priced via
+   `naics_labor_share`. Coverage: 664/674 combo SOCs + 320/320 combo SCAs alias-reachable
+   (the 10 residuals are OEWS broad-group aggregate codes O*NET's detailed taxonomy lacks).
+   Matching doctrine: exact `alias_norm` probe → token/LIKE → fuzzy/LLM last; 8,017 aliases
+   map to >1 code — rank by `title_source` priority then `in_combo_layer`.
 2. ~~**Composed `naics_labor_share` dim**~~ — **CLOSED 2026-07-14**: landed as
    `naics_labor_share` via `pipelines/reference/materialize_naics_labor_share.py`
    (details + anchors in `LABOR_SHARE_OF_REVENUE_STACK.md`). The identity closes as
