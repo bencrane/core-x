@@ -7,30 +7,43 @@ separate closed grammar: the opener token ``total`` routes the phrase here
 span longest-matches a closed vocabulary, and any unbound token refuses the
 whole phrase naming the token. Zero LLM. Same phrase + artifact → same bars.
 
-v2 GRAMMAR — exactly two productions, everything else refuses:
+v3 GRAMMAR — exactly three productions, everything else refuses:
 
     total <measure> <group> <window>                            (v1 · portrait)
     total active <measure> near <zip5> within <N> miles by equipment   (v2 · yard)
+    total active labor for <role text> by combo|industry        (v3 · labor)
 
     measure  awarded | awards | award value | obligated | obligations | spend
              v1 → sum(prime_obl) over the combo×FY portrait
              v2 → sum(total_obligation) over open awards
-    group    by industry | across industries       (v1: NAICS sector rollup)
+             labor (v3) → sum(active_obligated × category_award_share): the
+             expected-labor slice of active award dollars
+    group    by industry | across industries       (v1/v3: NAICS sector rollup)
              by equipment | across equipment       (v2: equipment-need bucket)
-    window   fy23 to fy25 | fy2023 to fy2025 | fy24    (v1 REQUIRED; v2 refused —
+             by combo | across combos              (v3: NAICS×PSC combo)
+    window   fy23 to fy25 | fy2023 to fy2025 | fy24    (v1 REQUIRED; v2/v3 refused —
              active awards are point-in-time, not FY-windowed)
-    active   v2 scope: open awards (gtm_open_awards), place-of-performance
+    active   v2/v3 scope: open/active awards, point-in-time
     near     v2 anchor: 5-digit zip → award-PoP centroid (refuses unknown zips)
     within   v2 radius: '<N> miles' haversine from the anchor (REQUIRED)
     equipment scope: the curated NAICS×PSC heavy-iron combos
              (naics_psc_equipment_needs WHERE in_scope), bucketed
+    for      v3 role span: every token after 'for' until the group axis is the
+             free-text role name; it resolves against occupation_alias_lookup
+             at execute (exact normalized alias, then a depluralized retry) to
+             ONE code — in_combo_layer first, then source_priority, then code —
+             and an unresolvable role refuses WITH deterministic suggestions
+             (the same closed-world doctrine as v2's unknown-zip refusal)
     connectives: from, in, of, the, federal, $  — consumed, disclosed, never semantic
 
 Execution: v1 is ONE GROUP BY on the sidecar's ``v_combo_fy``; v2 is a centroid
 point-lookup + ONE bbox/haversine GROUP BY on ``gtm_open_awards`` joined to the
-equipment-combo verdicts. Results are cached in-process keyed by the normalized
-phrase — the response is deterministic w.r.t. the artifact, and the artifact
-stamp is carried in the response meta so a stale cache is visible, never silent.
+equipment-combo verdicts; v3 is an alias point-resolution + ONE GROUP BY on
+``v_role_priced_combos`` ⋈ ``combo_award_active_state`` — category_award_share
+already bakes the pct_of_industry/100, so the labor slice is a pure multiply.
+Results are cached in-process keyed by the normalized phrase — the response is
+deterministic w.r.t. the artifact, and the artifact stamp is carried in the
+response meta so a stale cache is visible, never silent.
 """
 from __future__ import annotations
 
@@ -43,7 +56,7 @@ from typing import Any
 from .lance_store import MapCompileError
 from . import sidecar_executor
 
-AGG_COMPILER_VERSION = "phrase-agg.v2"
+AGG_COMPILER_VERSION = "phrase-agg.v3"
 
 # ── closed vocabularies ────────────────────────────────────────────────────────
 MEASURES: dict[str, str] = {
@@ -53,12 +66,15 @@ MEASURES: dict[str, str] = {
     "obligated": "prime_obl_sum",
     "obligations": "prime_obl_sum",
     "spend": "prime_obl_sum",
+    "labor": "labor_expected_sum",
 }
 GROUPS: dict[str, str] = {
     "by industry": "industry",
     "across industries": "industry",
     "by equipment": "equipment",
     "across equipment": "equipment",
+    "by combo": "combo",
+    "across combos": "combo",
 }
 CONNECTIVES = {"from", "in", "of", "the", "federal", "$"}
 
@@ -125,7 +141,8 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
         {"tokens": ["total"], "axis": "mode", "op": None, "value": "aggregate"}]
     spec: dict[str, Any] = {"measure": None, "group_by": None,
                             "fy_lo": None, "fy_hi": None,
-                            "active": False, "zip": None, "radius_mi": None}
+                            "active": False, "zip": None, "radius_mi": None,
+                            "role": None}
     i, n = 1, len(tokens)
 
     def _multiword(vocab: dict[str, str], max_len: int = 2) -> tuple[str, str] | None:
@@ -178,6 +195,30 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
             bindings.append({"tokens": tokens[i:i + 3], "axis": "radius",
                              "op": "haversine_mi", "value": radius})
             i += 3
+            continue
+
+        # v3 role span: 'for <role text…>' — consume every token up to the
+        # group axis ('by'/'across'). The span is free text HERE; it binds
+        # against the closed alias world at execute (unknown role refuses).
+        if tok == "for":
+            if spec["role"] is not None:
+                raise MapCompileError("phrase refused: more than one role span")
+            j = i + 1
+            role_toks: list[str] = []
+            # the span stops at every reserved axis token so misplaced dials
+            # (near/within/fy) bind — and refuse — on their own axis
+            while j < n and tokens[j] not in ("by", "across", "near", "within") \
+                    and _fy(tokens[j]) is None:
+                role_toks.append(tokens[j])
+                j += 1
+            if not role_toks:
+                raise MapCompileError(
+                    "phrase refused: 'for' expects a role name — say "
+                    "'for registered nurses'")
+            spec["role"] = " ".join(role_toks)
+            bindings.append({"tokens": tokens[i:j], "axis": "role",
+                             "op": "alias_resolve", "value": spec["role"]})
+            i = j
             continue
 
         hit = _multiword(MEASURES)
@@ -251,7 +292,31 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
         raise MapCompileError("phrase refused: no group axis — say '… by industry' "
                               "or (active) '… by equipment'")
 
-    if spec["active"]:
+    if spec["measure"] == "labor_expected_sum":
+        # v3 · labor production: active + for <role> + by combo|industry.
+        if not spec["active"]:
+            raise MapCompileError(
+                "phrase refused: labor serves active awards — open with "
+                "'total active labor …'")
+        if spec["role"] is None:
+            raise MapCompileError(
+                "phrase refused: labor needs a role — say 'for registered nurses'")
+        if spec["fy_lo"] is not None:
+            raise MapCompileError(
+                "phrase refused: active awards are point-in-time — drop the "
+                "fiscal window")
+        if spec["zip"] is not None or spec["radius_mi"] is not None:
+            raise MapCompileError(
+                "phrase refused: labor mode is not geo-anchored — drop "
+                "'near'/'within'")
+        if spec["group_by"] not in ("combo", "industry"):
+            raise MapCompileError(
+                "phrase refused: labor mode serves 'by combo' or 'by industry'")
+    elif spec["role"] is not None:
+        raise MapCompileError(
+            "phrase refused: 'for <role>' requires the labor measure — say "
+            "'total active labor for …'")
+    elif spec["active"]:
         # v2 · yard production: active + near + within + by equipment; no window.
         if spec["fy_lo"] is not None:
             raise MapCompileError(
@@ -276,6 +341,10 @@ def compile_aggregate(phrase: str) -> dict[str, Any]:
             raise MapCompileError(
                 "phrase refused: 'by equipment' requires active scope — open "
                 "with 'total active …'")
+        if spec["group_by"] == "combo":
+            raise MapCompileError(
+                "phrase refused: 'by combo' serves the labor production — open "
+                "with 'total active labor for <role> …'")
         if spec["fy_lo"] is None:
             raise MapCompileError("phrase refused: no fiscal window — say '… fy23 to "
                                   "fy25' (an unbounded aggregate is not served)")
@@ -327,6 +396,122 @@ def _bucket_label(bucket: str) -> str:
     return bucket.replace("_", " ").title().replace(" And ", " & ")
 
 
+_ROLE_NORM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _role_norm(role: str) -> str:
+    """Mirror occupation_alias_lookup.alias_norm: lowercase, punctuation →
+    space, collapsed. Output is [a-z0-9 ] only — safe to inline in SQL."""
+    return _ROLE_NORM_RE.sub(" ", role.lower()).strip()
+
+
+def _role_candidates(norm: str) -> list[str]:
+    """Deterministic match ladder: exact, then last-token depluralized, then
+    every token depluralized ('registered nurses' → 'registered nurse')."""
+    cands = [norm]
+    toks = norm.split()
+    if toks and toks[-1].endswith("s"):
+        cands.append(" ".join(toks[:-1] + [toks[-1][:-1]]))
+    allsing = " ".join(t[:-1] if t.endswith("s") else t for t in toks)
+    if allsing not in cands:
+        cands.append(allsing)
+    return cands
+
+
+def _resolve_role_sql(norm: str) -> str:
+    return (
+        "SELECT alias_norm, code_type, code, occupation_title "
+        f"FROM occupation_alias_lookup WHERE alias_norm = '{norm}' "
+        "ORDER BY in_combo_layer DESC, source_priority ASC, code ASC LIMIT 1")
+
+
+def _role_suggest_sql(norm: str) -> str:
+    # suggestion probe for the refusal message: longest token, prefix-ish LIKE.
+    tok = max(norm.split(), key=len)
+    return (
+        "SELECT alias_norm, count(*) AS n FROM occupation_alias_lookup "
+        f"WHERE alias_norm LIKE '%{tok}%' AND in_combo_layer "
+        "GROUP BY 1 ORDER BY length(alias_norm) ASC, alias_norm ASC LIMIT 5")
+
+
+def _labor_sql(code_type: str, code: str, norm: str, group_by: str) -> str:
+    # category_award_share already bakes pct_of_industry/100; the labor slice
+    # of active dollars is a pure multiply. Pinning (alias_norm, code_type,
+    # code) selects exactly one alias row per combo — no soc/sca double count.
+    dims = ("substr(v.naics_code, 1, 2) AS sector2"
+            if group_by == "industry"
+            else "v.naics_code, v.psc_code")
+    group = "1" if group_by == "industry" else "1, 2"
+    return (
+        f"SELECT {dims}, "
+        "sum(c.active_obligated * v.category_award_share) AS expected_labor, "
+        "sum(c.active_obligated) AS active_obl, "
+        "sum(c.active_award_ct) AS awards "
+        "FROM v_role_priced_combos v "
+        "JOIN combo_award_active_state c "
+        "ON c.naics_code = v.naics_code AND c.psc_code = v.psc_code "
+        f"WHERE v.alias_norm = '{norm}' AND v.code_type = '{code_type}' "
+        f"AND v.code = '{code}' AND v.category_award_share IS NOT NULL "
+        f"GROUP BY {group}")
+
+
+def _execute_labor(spec: dict[str, Any]) -> dict[str, Any]:
+    norm = _role_norm(spec["role"])
+    if not norm:
+        raise MapCompileError("phrase refused: empty role after normalization")
+    resolved = None
+    for cand in _role_candidates(norm):
+        payload = sidecar_executor._sql(_resolve_role_sql(cand), limit=1)
+        if payload["rows"]:
+            resolved = dict(zip(payload["columns"], payload["rows"][0]))
+            break
+    if resolved is None:
+        sug = sidecar_executor._sql(_role_suggest_sql(norm), limit=5)
+        names = [r[0] for r in sug["rows"]]
+        hint = f" — nearest served roles: {', '.join(names)}" if names else ""
+        raise MapCompileError(
+            f"phrase refused: role '{spec['role']}' — no alias on record{hint}")
+
+    payload = sidecar_executor._sql(
+        _labor_sql(resolved["code_type"], resolved["code"],
+                   resolved["alias_norm"], spec["group_by"]), limit=500)
+    cols = payload["columns"]
+    bars = []
+    if spec["group_by"] == "industry":
+        rolled: dict[str, dict[str, float]] = {}
+        for row in payload["rows"]:
+            r = dict(zip(cols, row))
+            sector = _SECTOR_MERGE.get(r["sector2"], r["sector2"])
+            if sector not in SECTOR_LABELS:
+                continue
+            agg = rolled.setdefault(sector, {"labor": 0.0, "awards": 0})
+            agg["labor"] += r["expected_labor"] or 0.0
+            agg["awards"] += r["awards"] or 0
+        bars = [{"key": k, "label": SECTOR_LABELS[k],
+                 "total": round(v["labor"], 2), "count": int(v["awards"])}
+                for k, v in sorted(rolled.items(), key=lambda kv: -kv[1]["labor"])]
+    else:
+        for row in payload["rows"]:
+            r = dict(zip(cols, row))
+            if r["expected_labor"] is None:
+                continue
+            key = f"{r['naics_code']}×{r['psc_code']}"
+            bars.append({"key": key, "label": key,
+                         "total": round(r["expected_labor"], 2),
+                         "count": int(r["awards"] or 0)})
+        bars.sort(key=lambda b: -b["total"])
+    return {
+        "bars": bars,
+        "matched_rows": sum(b["count"] for b in bars),
+        "total_groups": len(bars),
+        "role": {"input": spec["role"], "alias_norm": resolved["alias_norm"],
+                 "code_type": resolved["code_type"], "code": resolved["code"],
+                 "occupation_title": resolved["occupation_title"]},
+        "artifact": payload.get("artifact"),
+        "elapsed_ms": payload.get("elapsed_ms"),
+    }
+
+
 def _execute_active_equipment(spec: dict[str, Any]) -> dict[str, Any]:
     cent = sidecar_executor._sql(_centroid_sql(spec["zip"]), limit=1)
     crow = dict(zip(cent["columns"], cent["rows"][0])) if cent["rows"] else {}
@@ -369,6 +554,12 @@ def execute_aggregate(spec: dict[str, Any], phrase: str) -> dict[str, Any]:
         hit = _CACHE.get(key)
         if hit and now - hit["at"] < _CACHE_TTL_S:
             return hit["result"]
+
+    if spec["measure"] == "labor_expected_sum":
+        result = _execute_labor(spec)
+        with _CACHE_LOCK:
+            _CACHE[key] = {"at": now, "result": result}
+        return result
 
     if spec["active"]:
         result = _execute_active_equipment(spec)
@@ -415,7 +606,15 @@ def compile_and_execute(body: Any) -> dict[str, Any]:
     compiled = compile_aggregate(phrase)
     spec = compiled["spec"]
     executed = execute_aggregate(spec, phrase)
-    if spec["active"]:
+    if spec["measure"] == "labor_expected_sum":
+        role = executed["role"]
+        plan = [{"grain": "aggregate",
+                 "source": "v_role_priced_combos×combo_award_active_state",
+                 "measure": "labor_expected_sum", "group_by": spec["group_by"],
+                 "fy": None, "role": role}]
+        title = (f"Expected labor $ in active awards · "
+                 f"{role['occupation_title']} ({role['code']})")
+    elif spec["active"]:
         plan = [{"grain": "aggregate",
                  "source": "gtm_open_awards×naics_psc_equipment_needs",
                  "measure": "active_obl_sum", "group_by": spec["group_by"],
@@ -437,7 +636,9 @@ def compile_and_execute(body: Any) -> dict[str, Any]:
             "bindings": compiled["bindings"],
             "plan": plan,
             "title": title,
-            "unitLabel": "USD obligated",
+            "unitLabel": ("USD expected labor"
+                          if spec["measure"] == "labor_expected_sum"
+                          else "USD obligated"),
             "matchedRows": executed["matched_rows"],
             "totalGroups": executed["total_groups"],
             "artifact": executed["artifact"],
