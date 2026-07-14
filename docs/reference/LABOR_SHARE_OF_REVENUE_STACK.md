@@ -19,8 +19,7 @@ expected labor $ by category = award_$ × labor_share × category_mix
 - **cross-check + coarse-grain fallback** (compensation ÷ gross output per industry) ← BEA
 - **burden multiplier** (total comp ÷ wages, converts payroll share → fully-loaded labor-cost share) ← BLS ECEC
 
-The composed `naics_labor_share` dim (share × mix join, NAICS↔BEA concordance, pass-through
-discounting) is a **follow-on** directive — out of scope here.
+The composed `naics_labor_share` dim is now **live** (2026-07-14) — see the section below.
 
 ## Datasets (Gen-3 Lance SoR, `s3://data-sink/active/`, Pattern A direct hydration)
 
@@ -30,6 +29,7 @@ discounting) is a **follow-on** directive — out of scope here.
 | `bea_industry_value_added` | table × industry_line × component × year | 14,272 | `comp_share_of_output = CoE / gross_output` (285 derived rows) |
 | `bls_ecec_costs` | series_id × year × period | 627,050 | — (full universe; see ECEC section below) |
 | `bls_ecec_burden` | ownership × industry_group × occupation_group × subcell | 321 | `burden_multiplier = total_comp / wages_salaries` |
+| `naics_labor_share` | 1/6-digit naics | 1,133 | `loaded_labor_share = payroll_share × burden_multiplier` (the composed dim; see below) |
 
 All Lance v2.1, `mode="overwrite"` (idempotent). BTREE on join keys (`naics`; `bea_industry_line`
 + `industry_name`; `series_id`; `industry_group`), BITMAP on low-cardinality categoricals.
@@ -122,6 +122,56 @@ in additive `value_raw`.
   Burden restricted to datatype D · area 99999 · NSA; the prior 24 private-industry combos
   reappear within tolerance (economy-private 1.4294 exact match). `cm.aspect.txt` (RSEs) and any
   seasonal-adjustment handling beyond landing the code verbatim are out of scope.
+
+## The composed dim (`naics_labor_share`) — live 2026-07-14
+
+Module [`pipelines/reference/materialize_naics_labor_share.py`](../../pipelines/reference/materialize_naics_labor_share.py),
+SoR `s3://data-sink/active/naics_labor_share/`. One row per 6-digit NAICS — universe =
+combo-layer NAICS (`naics_psc_labor_dim`, 853) ∪ SUSB 6-digit (970) = **1,133 rows**. Closes
+the identity with a single join:
+
+```
+expected labor $ by category = award_$ × loaded_labor_share × (pct_of_industry / 100)
+                                         └── this dim ──┘      └ naics_psc_labor_profile_categories ┘
+```
+
+⚠ `naics_psc_labor_profile_categories.pct_of_industry` is in **percent** (e.g. 21.08), not a
+fraction — divide by 100 in the composition. Verified: $10M on 541512×D307 → loaded share
+0.5162 → Software Developers (mix 21.08%) ≈ $1.09M expected labor $.
+
+- **`payroll_share`** — SUSB '01: Total' row at the most specific NAICS level available,
+  walk 6→5→4→3→sector (ranges 31-33/44-45/48-49 handled); `payroll_share_naics` +
+  `payroll_share_level` carry provenance. Level distribution: 970 at 6-digit, 65/17/13 at
+  5/4/3, 43 at sector, 25 at level 0 (sector 92 public administration — structurally absent
+  from SUSB → economy share 0.176307, flagged).
+- **`burden_multiplier`** — the ECEC private × all-occupations × all-workers cell matched via
+  a deterministic NAICS→CES-supersector map (`336411` exact; `6231xx`→nursing care;
+  31-33→manufacturing; 44-45→retail; 55→prof & business services; …); `burden_match_level`
+  ∈ detail (36) / sector (1,014) / supersector (58: ag+mining → goods-producing) / economy
+  (25). ECEC industry codes recovered from `bls_ecec_costs` (the burden table carries only
+  group text).
+- **`loaded_labor_share = payroll_share × burden_multiplier`** — the one scalar per NAICS.
+  Median 0.270; anchors: 236220 → 0.0979 × 1.4415 = 0.141; 541512 → 0.3528 × 1.4629 = 0.516;
+  561720 → 0.4157 × 1.3425 = 0.558; sector-92 fallback = 0.1763 × 1.4294 = 0.2520.
+- **`bea_comp_share_of_output`** (+ `bea_summary_code`/`bea_summary_desc`/`bea_share_year`)
+  — value-added-basis cross-check bound via `bea_naics_concordance` longest-prefix →
+  summary-line name → latest derived year (2024); coverage 1,038/1,133 (91.6%). Never
+  composed into the scalar (different denominator basis).
+- **Pass-through hazard, kept verbatim:** `payroll_share` can exceed 1 where receipts are
+  pass-through-heavy — 3 rows: 551114 holding companies (2.51), 561330 PEOs (1.51), 493110
+  warehousing (1.05). Award-level pass-through discounting is query-time work against
+  `award_subout_rollup`, deliberately not baked into the dim.
+- **Indexes:** BTREE `naics_code`; BITMAP `payroll_share_level`, `burden_match_level`,
+  `in_combo_layer`. Gates (all hard-fail in module): economy anchors exact (0.176307 /
+  1.429448), row count = universe, share coverage 100%, BEA coverage ≥90%, sector-54 median
+  in [0.30, 0.55] (0.3668), burden band [1.05, 1.90]. Ledger: `ops.labor_share_runs`.
+
+Re-run:
+```bash
+doppler run -p core-x -c prd -- uv run --with pylance --with pyarrow --with duckdb \
+  --with boto3 --with 'psycopg[binary]' \
+  python -m pipelines.reference.materialize_naics_labor_share --smoke   # then full (no flag)
+```
 
 ## BEA↔NAICS concordance (`bea_naics_concordance`)
 

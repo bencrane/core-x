@@ -67,6 +67,7 @@ ranked SCA↔SOC ~20s → 2.8 ms).
 | `census_susb_naics_payroll_receipts` | Lance | `payroll_share = payroll / receipts` per NAICS × size class (economy 0.1763) |
 | `bea_industry_value_added` | Lance | comp-share-of-output cross-check (economy 0.2966) |
 | `bea_naics_concordance` | Lance | BEA line ↔ 2017 NAICS bridge (#1119) |
+| `naics_labor_share` | Lance | **the composed dim** (1,133 rows, 1/6-digit NAICS, 2026-07-14): `loaded_labor_share = payroll_share × burden` + BEA cross-check + provenance flags — closes `expected labor $ = award_$ × loaded_labor_share × pct_of_industry/100` in one join (mix column is PERCENT) |
 
 Rebuild commands and gate values: [`LABOR_SHARE_OF_REVENUE_STACK.md`](LABOR_SHARE_OF_REVENUE_STACK.md).
 `labor_share_ingest --stream ecec` is **superseded** — do not re-run (would clobber the full
@@ -127,9 +128,11 @@ promotion.
 1. **Reverse-map entry hop** — free-text role names ("travel nurses", "cleared network
    engineers") → SOC/SCA codes. The only unbuilt link in the pre-call → award chain. Match
    corpus already landed: `dol_sca_occupations` titles/definitions + SOC titles.
-2. **Composed `naics_labor_share` dim** — share × mix × burden into one scalar per combo
-   (declared follow-on in the labor-share directive). All ingredients landed as of #1120;
-   `expected labor $ by category = award_$ × labor_share × category_mix`.
+2. ~~**Composed `naics_labor_share` dim**~~ — **CLOSED 2026-07-14**: landed as
+   `naics_labor_share` via `pipelines/reference/materialize_naics_labor_share.py`
+   (details + anchors in `LABOR_SHARE_OF_REVENUE_STACK.md`). The identity closes as
+   `expected labor $ by category = award_$ × loaded_labor_share × pct_of_industry/100`
+   (the categories mix column is percent, not fraction).
 3. **Promotions on recurrence** — `govcon_labor_demand`, `sam_labor_poc_people`, and the ECEC
    burden layer if the pricing lens recurs warm (file gap entries via `/sidecar-gaps`).
 
