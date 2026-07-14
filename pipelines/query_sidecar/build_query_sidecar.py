@@ -341,6 +341,16 @@ MANIFEST: list[dict] = [
     {"ds": "sca_soc_crosswalk", "tier": "D", "sort": ["occupation_code"]},
     {"ds": "dol_sca_occupations", "tier": "D", "sort": ["occupation_code"]},
     {"ds": "olms_cba_crosswalk", "tier": "D", "sort": ["uei"]},
+    # ── labor pricing + entry hop (labor-pricing cycle 2026-07-14: SIDECAR_GAP_
+    # REPORT 2026-07-14-labor-pricing-entry-hop; declared platform-app live-card
+    # demand). naics_labor_share: the composed award-dollar pricing scalar
+    # (loaded_labor_share = SUSB payroll_share × ECEC burden, BEA cross-check,
+    # provenance flags). occupation_alias_lookup: free-text role name → SOC/SCA
+    # (O*NET + SCA titles, normalized; sorted on the probe key alias_norm).
+    # Both SELECT * (tiny), row-preserving → exact-parity gate. The recurring
+    # composite (alias → combos → priced) ships as v_role_priced_combos.
+    {"ds": "naics_labor_share", "tier": "D", "sort": ["naics_code"]},
+    {"ds": "occupation_alias_lookup", "tier": "D", "sort": ["alias_norm", "code"]},
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
@@ -773,6 +783,43 @@ _VIEWS: dict[str, str] = {
         FROM prov
         LEFT JOIN equipment_matchmaking m ON m.domain_norm = prov.domain_norm
         LEFT JOIN equipment_rental_golden_overlap g ON g.firm_domain = prov.domain_norm
+    """,
+    # labor-pricing cycle (2026-07-14): the pre-call composite in one SELECT —
+    # role alias → (soc leg ∪ sca leg) → ranked combo categories ⋈ labor share.
+    # category_award_share PRECOMPUTES loaded_labor_share × pct_of_industry/100
+    # (pct_of_industry is PERCENT — baking the /100 here prevents the 100×
+    # inflation a raw consumer would produce). a_median is a source VARCHAR →
+    # TRY_CAST. Two UNION ALL legs keep the joins pure single-key equalities.
+    "v_role_priced_combos": """
+        CREATE VIEW v_role_priced_combos AS
+        WITH hits AS (
+            SELECT a.alias, a.alias_norm, a.code_type, a.code, a.occupation_title,
+                   a.title_source, a.in_combo_layer,
+                   c.naics_code, c.psc_code, c.rank, c.soc_code, c.sca_code,
+                   c.soc_title, c.sca_title, c.role_class, c.pct_of_industry,
+                   TRY_CAST(c.a_median AS DOUBLE) AS a_median,
+                   c.ep_growth_2024_2034_pct
+            FROM occupation_alias_lookup a
+            JOIN naics_psc_labor_profile_categories c ON c.soc_code = a.code
+            WHERE a.code_type = 'soc'
+            UNION ALL
+            SELECT a.alias, a.alias_norm, a.code_type, a.code, a.occupation_title,
+                   a.title_source, a.in_combo_layer,
+                   c.naics_code, c.psc_code, c.rank, c.soc_code, c.sca_code,
+                   c.soc_title, c.sca_title, c.role_class, c.pct_of_industry,
+                   TRY_CAST(c.a_median AS DOUBLE) AS a_median,
+                   c.ep_growth_2024_2034_pct
+            FROM occupation_alias_lookup a
+            JOIN naics_psc_labor_profile_categories c ON c.sca_code = a.code
+            WHERE a.code_type = 'sca'
+        )
+        SELECT h.*,
+               l.payroll_share, l.payroll_share_level,
+               l.burden_multiplier, l.burden_match_level,
+               l.loaded_labor_share,
+               l.loaded_labor_share * h.pct_of_industry / 100.0 AS category_award_share
+        FROM hits h
+        LEFT JOIN naics_labor_share l ON l.naics_code = h.naics_code
     """,
     # sub-out portrait at award grain: award_state × sub-out rollup — "is this
     # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
