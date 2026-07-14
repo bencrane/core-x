@@ -24,7 +24,8 @@ def test_flagship_total_awarded_by_industry_fy23_to_fy25():
     c = phrase_aggregate.compile_aggregate("total awarded by industry fy23 to fy25")
     assert c["spec"] == {"measure": "prime_obl_sum", "group_by": "industry",
                          "fy_lo": 2023, "fy_hi": 2025,
-                         "active": False, "zip": None, "radius_mi": None}
+                         "active": False, "zip": None, "radius_mi": None,
+                         "role": None}
     axes = [b["axis"] for b in c["bindings"]]
     assert axes == ["mode", "measure", "group_by", "window"]
 
@@ -195,3 +196,123 @@ def test_v2_unknown_zip_refuses(monkeypatch):
     with pytest.raises(MapCompileError, match="00000"):
         phrase_aggregate.compile_and_execute(
             {"phrase": "total active awards near 00000 within 50 miles by equipment"})
+
+
+# ── v3 · the labor production (role text → expected labor $) ──────────────────
+def test_flagship_active_labor_for_role_by_combo():
+    c = phrase_aggregate.compile_aggregate(
+        "total active labor for registered nurses by combo")
+    assert c["spec"]["measure"] == "labor_expected_sum"
+    assert c["spec"]["active"] is True
+    assert c["spec"]["role"] == "registered nurses"
+    assert c["spec"]["group_by"] == "combo"
+    assert c["spec"]["fy_lo"] is None and c["spec"]["zip"] is None
+    axes = [b["axis"] for b in c["bindings"]]
+    assert axes == ["mode", "scope", "measure", "role", "group_by"]
+
+
+def test_v3_role_span_stops_at_group_axis_and_binds_by_industry():
+    c = phrase_aggregate.compile_aggregate(
+        "total active labor for heavy truck drivers by industry")
+    assert c["spec"]["role"] == "heavy truck drivers"
+    assert c["spec"]["group_by"] == "industry"
+
+
+@pytest.mark.parametrize("phrase,match", [
+    ("total labor for nurses by combo", "active"),
+    ("total active labor by combo", "needs a role"),
+    ("total active labor for by combo", "expects a role name"),
+    ("total active labor for nurses by equipment", "'by combo' or 'by industry'"),
+    ("total active labor for nurses by combo fy24", "point-in-time"),
+    ("total active labor for nurses near 79925 within 50 miles by combo",
+     "not geo-anchored"),
+    ("total active awarded for nurses by combo", "requires the labor measure"),
+    ("total awarded by combo fy24", "labor production"),
+])
+def test_v3_refusals_name_the_token_or_fix(phrase, match):
+    with pytest.raises(MapCompileError, match=match):
+        phrase_aggregate.compile_aggregate(phrase)
+
+
+def test_v3_execute_resolves_role_and_prices_combos(monkeypatch):
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "enabled", lambda: True)
+    seen = []
+
+    def fake_sql(sql, limit):
+        seen.append(sql)
+        if "FROM occupation_alias_lookup WHERE alias_norm" in sql:
+            return {"columns": ["alias_norm", "code_type", "code",
+                                "occupation_title"],
+                    "rows": [["registered nurses", "soc", "29-1141",
+                              "Registered Nurses"]],
+                    "artifact": "test-artifact", "elapsed_ms": 1.0}
+        return {"columns": ["naics_code", "psc_code", "expected_labor",
+                            "active_obl", "awards"],
+                "rows": [["622110", "Q999", 5.0e6, 30.9e6, 12],
+                         ["621111", "Q403", 9.0e6, 55.0e6, 40],
+                         ["541512", "D307", None, 1.0e6, 2]],  # NULL share dropped
+                "artifact": "test-artifact", "elapsed_ms": 2.0}
+
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "_sql", fake_sql)
+    phrase_aggregate._CACHE.clear()
+    out = phrase_aggregate.compile_and_execute(
+        {"phrase": "total active labor for registered nurses by combo"})
+    assert len(seen) == 2
+    assert "in_combo_layer DESC, source_priority ASC" in seen[0]
+    assert ("v_role_priced_combos" in seen[1]
+            and "combo_award_active_state" in seen[1]
+            and "code_type = 'soc'" in seen[1] and "code = '29-1141'" in seen[1])
+    bars = out["data"]["bars"]
+    assert [b["key"] for b in bars] == ["621111×Q403", "622110×Q999"]
+    assert bars[0]["total"] == 9.0e6 and bars[0]["count"] == 40
+    assert out["meta"]["unitLabel"] == "USD expected labor"
+    assert out["meta"]["plan"][0]["role"]["code"] == "29-1141"
+    assert out["meta"]["title"] == (
+        "Expected labor $ in active awards · Registered Nurses (29-1141)")
+
+
+def test_v3_execute_industry_rollup(monkeypatch):
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "enabled", lambda: True)
+
+    def fake_sql(sql, limit):
+        if "FROM occupation_alias_lookup WHERE alias_norm" in sql:
+            return {"columns": ["alias_norm", "code_type", "code",
+                                "occupation_title"],
+                    "rows": [["carpenter", "sca", "23130", "CARPENTER"]],
+                    "artifact": "a", "elapsed_ms": 1.0}
+        return {"columns": ["sector2", "expected_labor", "active_obl", "awards"],
+                "rows": [["23", 4.0e6, 20e6, 9], ["31", 1.0e6, 5e6, 2],
+                         ["33", 2.0e6, 8e6, 3], ["99", 9e6, 9e6, 1]],
+                "artifact": "a", "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "_sql", fake_sql)
+    phrase_aggregate._CACHE.clear()
+    out = phrase_aggregate.compile_and_execute(
+        {"phrase": "total active labor for carpenters by industry"})
+    bars = out["data"]["bars"]
+    assert [b["key"] for b in bars] == ["23", "31-33"]      # merged + sorted, 99 dropped
+    assert bars[1]["total"] == 3.0e6 and bars[1]["count"] == 5
+
+
+def test_v3_depluralized_retry_then_unknown_role_refuses_with_suggestions(monkeypatch):
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "enabled", lambda: True)
+    seen = []
+
+    def fake_sql(sql, limit):
+        seen.append(sql)
+        if "ORDER BY in_combo_layer" in sql:      # resolution ladder → miss
+            return {"columns": ["alias_norm", "code_type", "code",
+                                "occupation_title"], "rows": [],
+                    "artifact": "a", "elapsed_ms": 1.0}
+        return {"columns": ["alias_norm", "n"],   # suggestion probe (LIKE)
+                "rows": [["travel rn", 1], ["travel registered nurse", 1]],
+                "artifact": "a", "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(phrase_aggregate.sidecar_executor, "_sql", fake_sql)
+    phrase_aggregate._CACHE.clear()
+    with pytest.raises(MapCompileError, match="travel rn"):
+        phrase_aggregate.compile_and_execute(
+            {"phrase": "total active labor for travel nurses by combo"})
+    resolve_calls = [s for s in seen if "ORDER BY in_combo_layer" in s]
+    assert len(resolve_calls) == 2          # exact, then depluralized retry
+    assert "alias_norm = 'travel nurse'" in resolve_calls[1]
