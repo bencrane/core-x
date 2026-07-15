@@ -124,6 +124,18 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_prime_code_signature", "tier": "A",
      "sort": ["uei", "code_type", "rank_lifetime"],
      "from_table": "gtm_entity_code_lanes", "signature": True, "aggregate": True},
+    # audience-spec cycle (2026-07-15, gap E1/E2/E4): the entity-grain audience
+    # spine — geo (physical + primary PoP state/county), $ windows (sub/prime
+    # 12/24/60mo/lifetime + bands), designation flags, people-coverage counts —
+    # in ONE table so an audience count is a single-table predicate instead of
+    # a 3-way join. Combined sub+prime totals ride as derived columns (E1);
+    # this is also the sidecar serving home for Market-tab audience counts (E4).
+    {"ds": "gtm_audience_entities", "tier": "A", "sort": ["uei"],
+     "extra_select": (
+         "COALESCE(sub_amt_12mo,0)+COALESCE(prime_obl_12mo,0) AS total_amt_12mo, "
+         "COALESCE(sub_amt_24mo,0)+COALESCE(prime_obl_24mo,0) AS total_amt_24mo, "
+         "COALESCE(sub_amt_60mo,0)+COALESCE(prime_obl_60mo,0) AS total_amt_60mo, "
+         "COALESCE(sub_amt_lifetime,0)+COALESCE(prime_obl_lifetime,0) AS total_amt_lifetime")},
     {"ds": "gtm_entity_geo", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_naics_psc_pairs", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "naics_reference", "tier": "A", "sort": ["naics_code"]},
@@ -146,6 +158,13 @@ MANIFEST: list[dict] = [
     # ── Tier B — Cycle B rollups (built-but-unwired; this is their serving lane)
     {"ds": "gtm_txn_events_slim", "tier": "B", "sort": ["uei", "action_date"]},
     {"ds": "gtm_txn_recipient_month_rollup", "tier": "B", "sort": ["uei"]},
+    # audience-spec cycle (2026-07-15, gap E3): laser-in sort copy — the same
+    # 34M-row fact re-clustered (action_type_code, month) so "entities with N
+    # actions of type X in window Y" prunes instead of full-scanning (measured
+    # 2.0s unpruned on serving). Local re-sort, no R2 read; must follow base.
+    {"ds": "gtm_txn_recipient_month_rollup", "tier": "B",
+     "dest": "txn_recipient_month_by_type", "sort": ["action_type_code", "month"],
+     "from_table": "gtm_txn_recipient_month_rollup"},
     {"ds": "gtm_award_recipient_rollup", "tier": "B", "sort": ["uei"]},
     {"ds": "gtm_award_expiry_months", "tier": "B", "sort": ["uei", "end_month"]},
     {"ds": "gtm_prime_pop_lanes", "tier": "B", "sort": ["uei"]},
