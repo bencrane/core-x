@@ -103,6 +103,33 @@ class DealDetailsUpdate(BaseModel):
     template_documenso_id: int | None = None
 
 
+class DealCreate(BaseModel):
+    """POST body for the MANUAL deal lane (Settings → New Deal) — the operator-authored parallel
+    to the booking producer. The signatory is REQUIRED (first/last/email): originate 422s without
+    a signatory email, so this lane refuses at the door rather than minting an unoriginatable deal.
+    ``domain`` is the account dedupe key when present; ``title`` is the person's job title."""
+
+    company_name: str
+    domain: str | None = None
+    first_name: str
+    last_name: str
+    email: str
+    title: str | None = None
+
+
+class DealCreated(BaseModel):
+    """The manual-create result. ``action`` is 'created' when the deal row is new, 'updated' when
+    the account already carried a deal (one deal per account — the manual lane collapses onto it,
+    same as a repeat booking). ``deal_handle`` keys every follow-up call (details PUT / originate)."""
+
+    action: str
+    deal_id: str
+    deal_handle: str
+    status: str
+    account_id: str
+    contact_id: str
+
+
 class DealOriginated(BaseModel):
     """The originate result — a Documenso document instantiated FROM the deal's attached template
     (template-use lane) with the deal's ``field_values`` prefilled, then distributed

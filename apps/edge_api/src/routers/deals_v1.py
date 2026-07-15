@@ -14,8 +14,16 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config
 from ..db import get_db_connection
-from ..deals import originate, queries
-from ..deals.models import DealDetails, DealDetailsUpdate, DealOriginated, DealSummary, TemplateOption
+from ..deals import create, originate, queries
+from ..deals.models import (
+    DealCreate,
+    DealCreated,
+    DealDetails,
+    DealDetailsUpdate,
+    DealOriginated,
+    DealSummary,
+    TemplateOption,
+)
 from ..service_token import require_service_token
 from ..services import documenso_client
 
@@ -27,6 +35,35 @@ async def list_deals(limit: int = 100) -> list[DealSummary]:
     async with get_db_connection() as conn:
         rows = await queries.list_recent(conn, min(max(limit, 1), 500))
     return [DealSummary.from_row(d) for d in rows]
+
+
+# POST /api/v1/deals — the MANUAL deal lane (Settings → New Deal): mint a deal from an operator
+# payload with NO booking upstream (the parallel to the Cal.com producer). Same grain (one deal per
+# account) and same upsert semantics as deals/materialize.py; the signatory is required. The returned
+# deal_handle keys the follow-ups (PUT details to attach a template + field_values, then originate).
+@router.post("", dependencies=[Depends(require_service_token)])
+async def create_deal(body: DealCreate) -> DealCreated:
+    company = body.company_name.strip()
+    email = body.email.strip()
+    first, last = body.first_name.strip(), body.last_name.strip()
+    if not company:
+        raise HTTPException(status_code=422, detail="company_name is required")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="a valid signatory email is required")
+    if not first or not last:
+        raise HTTPException(status_code=422, detail="signatory first_name and last_name are required")
+    async with get_db_connection() as conn:
+        result = await create.create_deal_manual(
+            conn,
+            company_name=company,
+            domain=body.domain,
+            first_name=first,
+            last_name=last,
+            email=email,
+            title=(body.title or "").strip() or None,
+        )
+        await conn.commit()
+    return DealCreated(**result)
 
 
 def _details_payload(deal: dict, contacts: list[dict], available: list[dict],
