@@ -292,6 +292,36 @@ function render() {
   const txnLane = ev.length>0 || (SUBJECTS[state.subject].grain==="entity" && (ti.some(x=>!x.startsWith("expiring")&&x!=="active") || ag.length) );
   const awardLane = ti.some(x=>x.startsWith("expiring"));
   const g2 = SUBJECTS[state.subject].grain;
+
+  // trap detection FIRST (the designed refusals) — a refusing composition must
+  // never render an authoritative-looking plan. Sector aliases count as codes:
+  // 'construction companies' refuses exactly like 'naics 236220 companies'
+  // (verified live 2026-07-15).
+  const warns = [];
+  if (g2==="entity" && mo.length && !ev.length && !ti.length && !mo[0].startsWith("lifetime") && !mo[0].startsWith("sub"))
+    warns.push("⛔ Bare $ on companies with no event/window REFUSES (v5). Fix: say <code>lifetime over $X</code> or add a time window.");
+  if (g2==="entity" && (codeLit.length || sectorWord) && !ev.length && !wk.length && !ti.length)
+    warns.push("⛔ A bare code/sector on companies needs a capability context — <code>primed in 236220</code> or <code>delivered subs under …</code> (or add an event/time to open the transaction lane).");
+  if (state.subject==="vehicles" && (mo.length || ti.length))
+    warns.push("⛔ vehicles + money/active/expiring REFUSES — vehicle channel semantics are a future vocabulary cycle. Use <code>orders</code> or <code>awards</code>.");
+  if ((g2!=="entity") && st.length)
+    warns.push("⛔ Entity qualifiers (state/dsbs/…) need the <code>companies</code> subject.");
+  if (g2==="transaction" && ti.some(x=>x.startsWith("expiring")||x==="active"))
+    warns.push("⛔ active/expiring live on the award grain — say <code>awards …</code> or <code>companies …</code>.");
+  if (g2==="entity" && mo.length && txnLane && awardLane && !mo[0].startsWith("lifetime"))
+    warns.push("⛔ A $ amount across BOTH lanes is ambiguous — split into two phrases, or pin it with <code>lifetime</code>.");
+  if (mo.some(m=>m.startsWith("sub")) && (ev.length||ti.length))
+    warns.push("⛔ <code>sub income</code> is a lifetime axis — it can't combine with event/time clauses.");
+  document.getElementById("warns").innerHTML = warns.map(w=>`<div class="warn">${w}</div>`).join("");
+  document.getElementById("copy").style.opacity = warns.length ? ".35" : "1";
+
+  if (warns.length) {
+    // REFUSES — no plan, no lanes; the refusal is the whole story.
+    lanesEl.innerHTML = `<span class="lane" style="border-color:var(--red);color:var(--red)">REFUSES — fix the ⛔ below</span>`;
+    document.getElementById("plan").textContent = "no plan — the compiler refuses this composition (see ⛔ below)";
+    return;
+  }
+
   if (g2==="entity") {
     lanesEl.innerHTML =
       `<span class="lane ${txnLane?"on":""}">transaction lane ${txnLane?"OPEN":"closed"}</span>` +
@@ -308,23 +338,6 @@ function render() {
     document.getElementById("plan").textContent = `1 step  grain: ${g2}  filters from bindings above`;
   }
 
-  // trap warnings (the designed refusals)
-  const warns = [];
-  if (g2==="entity" && mo.length && !ev.length && !ti.length && !mo[0].startsWith("lifetime") && !mo[0].startsWith("sub"))
-    warns.push("⛔ Bare $ on companies with no event/window REFUSES (v5). Fix: say <code>lifetime over $X</code> or add a time window.");
-  if (g2==="entity" && codeLit.length && !ev.length && !wk.length && !ti.length)
-    warns.push("⛔ A bare code on companies needs a capability context — <code>primed in 236220</code> or <code>delivered subs under …</code> (or add an event to open the transaction lane).");
-  if (state.subject==="vehicles" && (mo.length || ti.length))
-    warns.push("⛔ vehicles + money/active/expiring REFUSES — vehicle channel semantics are a future vocabulary cycle. Use <code>orders</code> or <code>awards</code>.");
-  if ((g2!=="entity") && st.length)
-    warns.push("⛔ Entity qualifiers (state/dsbs/…) need the <code>companies</code> subject.");
-  if (g2==="transaction" && ti.some(x=>x.startsWith("expiring")||x==="active"))
-    warns.push("⛔ active/expiring live on the award grain — say <code>awards …</code> or <code>companies …</code>.");
-  if (g2==="entity" && mo.length && txnLane && awardLane && !mo[0].startsWith("lifetime"))
-    warns.push("⛔ A $ amount across BOTH lanes is ambiguous — split into two phrases, or pin it with <code>lifetime</code>.");
-  if (mo.some(m=>m.startsWith("sub")) && (ev.length||ti.length))
-    warns.push("⛔ <code>sub income</code> is a lifetime axis — it can't combine with event/time clauses.");
-  document.getElementById("warns").innerHTML = warns.map(w=>`<div class="warn">${w}</div>`).join("");
 }
 
 document.getElementById("copy").onclick = () => {
