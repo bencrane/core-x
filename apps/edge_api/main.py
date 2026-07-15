@@ -68,6 +68,7 @@ from .src.routers.equipment_finance_candidates_v1 import router as equipment_fin
 from .src.routers.combo_work_summary_equipment_needs_v1 import (
     router as combo_work_summary_equipment_needs_router,
 )
+from .src.routers.combo_job_to_be_done_v1 import router as combo_job_to_be_done_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.title_normalize_v1 import router as title_normalize_router
@@ -257,6 +258,7 @@ app.include_router(equipment_finance_candidates_router)
 # source?}; raw_payload stored verbatim as jsonb — no projection, no comma-splitting, no taxonomy
 # normalization at land time. UPSERT on (naics_code, psc_code, model_id). Service-token gated.
 app.include_router(combo_work_summary_equipment_needs_router)
+app.include_router(combo_job_to_be_done_router)
 
 # epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
@@ -424,6 +426,7 @@ def _info() -> dict:
             "equipment_provider": True,   # /api/v1/equipment-provider/{land,check,stats}
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
             "combo_work_summary_equipment_needs": True,  # /api/v1/combo-work-summary-equipment-needs/land (combo-grain LLM equipment verdicts, UPSERT)
+            "combo_job_to_be_done": True,  # /api/v1/combo-job-to-be-done/land (combo-grain 'to: …' job sentences, UPSERT)
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
