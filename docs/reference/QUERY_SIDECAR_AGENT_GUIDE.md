@@ -56,6 +56,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_sam_entities` | 1/uei · 2.0M | uei | legal_business_name, physical_state/city/zip, primary_naics, in_dsbs, sam_is_active, normalized_domain, cage_code, business_types |
 | `gtm_entity_behavior_rollup` | 1/uei · 262k (only entities with award behavior) | uei | prime_obl_12/24/36/60mo/lifetime, prime_award_ct_*, active_award_ct, active_obl, pop_expiring_180d_ct, sub_amt_24/60mo/lifetime, sub_ct_lifetime, is_prime_24mo, is_sub_60mo, prime_and_sub, top_naics, top_agency_code, last_action_date |
 | `gtm_entity_geo` | 1/uei · 1.5M | uei | latitude, longitude, geo_precision (HQ, not place of performance) |
+| `gtm_audience_entities` | 1/uei · 2.0M | uei | THE audience-spec spine (2026-07-15 cycle): primary_pop_state/county + physical_state, sub_amt_12/24/60mo/lifetime, prime_obl_12/24/60mo/lifetime, **total_amt_12/24/60mo/lifetime (sub+prime combined, derived)**, all *_band cols, dsbs_*/fsrs_* designation flags, n_dialable/n_emailable people coverage, naics_2..6 rollups. One-table audience counts — no 3-way join. |
 
 ### Capability lanes (verb doctrine: demonstrated vs inferred)
 | Table | Grain · rows | Sorted | Semantics |
@@ -101,6 +102,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Table | Grain · rows | Sorted |
 |---|---|---|
 | `gtm_txn_recipient_month_rollup` | uei × action_type × plan_class × month · 34M | uei |
+| `txn_recipient_month_by_type` | same fact re-sorted · 34M | action_type_code, month — cross-entity "actions of type X in window Y" prunes here (9.6ms vs 2.0s on the uei-sorted copy) |
 | `gtm_award_recipient_rollup` | uei × naics × psc × agency × topology · 6.3M | uei |
 | `gtm_award_expiry_months` | uei × end_month · 221k | uei, end_month |
 | `gtm_prime_pop_lanes` | 1/(uei, pop_state, county) · 547k | uei |
@@ -426,6 +428,24 @@ ORDER BY d.recipients DESC NULLS LAST;
 -- cross to local medical-labor supply: join gtm_sam_entities on physical_state
 -- (2-letter) via substr(v.fips,1,2) → sam_county_fips_crosswalk.state_code, or
 -- to award geography directly on txn_events_combo_by_geo.pop_county_fips = v.fips.
+```
+
+### Audience-spec counts (2026-07-15 cycle)
+
+"How many entities fit: <geo> × <$ window> × <designations>" — ONE table, no joins:
+
+```sql
+SELECT COUNT(*), ROUND(SUM(total_amt_24mo)/1e9,1) AS bn
+FROM gtm_audience_entities
+WHERE primary_pop_state = 'TX' AND total_amt_24mo >= 1000000;   -- 43 ms
+```
+
+Laser-in clause — "entities with N actions of type X in window Y" — use the
+type/month-sorted copy, NOT the uei-sorted base:
+
+```sql
+SELECT COUNT(DISTINCT uei) FROM txn_recipient_month_by_type
+WHERE action_type_code = 'C' AND month >= DATE '2026-04-01';    -- 9.6 ms (209x vs base)
 ```
 
 ## 5. Performance model
