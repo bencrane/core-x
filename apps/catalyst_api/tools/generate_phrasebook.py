@@ -227,6 +227,12 @@ def main() -> None:
            font-size:13px; display:none; }}
 </style></head><body>
 <h1>Verified Phrasebook — five scaffolds</h1>
+<div style="border:1px solid var(--red); border-radius:8px; background:var(--panel);
+     padding:10px 14px; margin:12px 0; font-size:13px; color:var(--red); font-weight:600">
+  ⚠ STATUS: PENDING REVIEW (2026-07-15) — the entire phrase grammar is under
+  operator revision. Every phrase below compiles TODAY but is TBD: it may be
+  cut, replaced, or changed. Do not memorize; do not build against.
+</div>
 <p class="sub">The whole grammar is FIVE sentence scaffolds. Memorize the five
 purple templates; everything below each one is a verified instance — compiled
 through the REAL compiler (<code>{esc(version)}</code> /
