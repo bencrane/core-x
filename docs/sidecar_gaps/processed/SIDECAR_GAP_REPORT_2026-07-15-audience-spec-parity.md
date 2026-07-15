@@ -78,3 +78,22 @@
 4. **Entry 4** — no query cost, but the fork decision gates where 1–3 land.
 
 Demand only — no proposed solutions in entries per §7.
+
+---
+
+## Disposition (build cycle 2026-07-15, artifact query_sidecar_20260715T215456Z, 91 tables)
+
+| Entry | Verdict | Shipped | Measured |
+|---|---|---|---|
+| 1 combined totals | Promote (column-grain, rode the build) | `total_amt_12/24/60mo/lifetime` derived cols on `gtm_audience_entities` | expressible in one predicate; 36mo window PARKED (absent from source mart — needs an audience-mart rebuild first) |
+| 2 audience spine | Promote (structural, operator-directed demand) | `gtm_audience_entities` (2.03M rows, Tier A, sort uei, all 69 mart cols + 4 derived) | TX × ≥$1M-24mo count: 43 ms, single table (was: 3-way join) |
+| 3 laser-in sort | Promote (structural sort copy) | `txn_recipient_month_by_type` (34M, sort action_type_code, month) | 2,001 ms → 9.6 ms (209×), identical result (7,329 UEIs) |
+| 4 serving-home fork | Documented | Sidecar is the serving home for audience counts; the Postgres-mirror chain remains the Market tab's transport until re-pointed | n/a |
+
+**Adjacency riders:** all 69 source-mart columns ride entry 2's copy (bands,
+designation flags, people-coverage counts, naics_2..6) — every foreseeable
+same-session follow-up (name it, split by state, check coverage) is answerable.
+**Parked (structural-gated):** `total_amt_36mo` (source mart lacks sub_amt_36mo);
+named-signal event table (terminations/novations as first-class signals) — the
+month rollup serves these via action_type codes; cage_code on the audience mart
+(needs audience-mart rebuild, tracked with 36mo).
