@@ -210,23 +210,61 @@ _EVENT_VERBS: dict[str, list[str]] = {
     "were terminated": ["E", "F"],  # rollup
 }
 
+# Q4 STEP-GROWTH (approved 2026-07-15): "companies whose prime obligations grew
+# {2x|3x|4x|5x|10x} in the last {12 months vs the prior 24 | 6 vs prior 12 | 90 days
+# vs prior 90}". Per company, Σ obligations in window A ≥ N × Σ in the immediately-
+# preceding window B, AND Σ B > 0 (new entrants with zero prior excluded). Measure is
+# ALL prime obligation actions (no action-type filter). Served by the month-rollup mart
+# `gtm_txn_recipient_month_rollup` — NO place-of-performance columns, so `in <state>`
+# (PoP) is refused (422) exactly like events mode. No total/single grain, no percent.
+_MULTIPLIERS = {2, 3, 4, 5, 10}
+# window_pair → (a_days, b_days): A is the recent window, B the immediately-preceding.
+_WINDOW_PAIRS: dict[str, tuple[int, int]] = {
+    "12v24": (365, 730),
+    "6v12": (180, 365),
+    "90v90": (90, 90),
+}
+
 
 @router.post("/active-awards-query", dependencies=[Depends(require_service_token)])
 async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     mode = body.get("mode") or "active"
-    if mode not in ("active", "won", "events"):
-        raise HTTPException(status_code=422, detail="mode must be 'active', 'won' or 'events'")
+    if mode not in ("active", "won", "events", "growth"):
+        raise HTTPException(
+            status_code=422, detail="mode must be 'active', 'won', 'events' or 'growth'"
+        )
 
-    # Event verbs (Q3) carry NO total/single grain marker — the $ threshold is the
-    # per-company Σ obligations on the events. Q1/Q2 require the grain marker.
+    # Event verbs (Q3) and step-growth (Q4) carry NO total/single grain marker. Q1/Q2
+    # require the grain marker; growth's measure is the window A vs B obligation ratio.
     grain = body.get("grain")
-    if mode == "events":
+    if mode in ("events", "growth"):
         if grain is not None:
             raise HTTPException(
-                status_code=422, detail="grain does not apply to event verbs (no total/single grain)"
+                status_code=422,
+                detail=f"grain does not apply to mode '{mode}' (no total/single grain)",
             )
     elif grain not in ("total", "single"):
         raise HTTPException(status_code=422, detail="grain must be 'total' or 'single'")
+
+    # Q4 step-growth params — multiplier (fixed set) and window_pair (fixed set).
+    multiplier = body.get("multiplier")
+    window_pair = body.get("window_pair")
+    if mode == "growth":
+        if multiplier not in _MULTIPLIERS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"multiplier required for mode 'growth' — one of {sorted(_MULTIPLIERS)}",
+            )
+        if window_pair not in _WINDOW_PAIRS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"window_pair required for mode 'growth' — one of {sorted(_WINDOW_PAIRS)}",
+            )
+    else:
+        if multiplier is not None:
+            raise HTTPException(status_code=422, detail="multiplier only applies to mode 'growth'")
+        if window_pair is not None:
+            raise HTTPException(status_code=422, detail="window_pair only applies to mode 'growth'")
 
     event_verb = body.get("event_verb")
     if mode == "events":
@@ -253,11 +291,11 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         state = str(state).strip().upper()
         if state not in _US_STATES:
             raise HTTPException(status_code=422, detail=f"unknown state '{state}'")
-        if mode == "events":
+        if mode in ("events", "growth"):
             # The month-rollup mart has no PoP columns — PoP is award-grain.
             raise HTTPException(
                 status_code=422,
-                detail=f"in <state> not yet supported on event verbs — PoP is award-grain",
+                detail=f"in <state> not yet supported on mode '{mode}' — PoP is award-grain",
             )
 
     min_amt = body.get("min_amt")
@@ -337,6 +375,99 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
             )
         combo_pairs = ",".join(f"('{n}','{p}')" for n, p in combos)  # codes are validated vocab, not user input
         combo_pred = f"AND (naics_code, product_or_service_code) IN ({combo_pairs})"
+
+    # ── Q4 step-growth: a self-contained SQL path against the month-rollup mart. ──
+    if mode == "growth":
+        a_days, b_days = _WINDOW_PAIRS[window_pair]
+        span = a_days + b_days
+        gr_combo_pred = (
+            f" AND (t.naics_code, t.psc_code) IN ({combo_pairs})" if combo_pairs else ""
+        )
+        gr_need_pred = ""
+        if need_bucket:
+            gr_need_pred = (
+                f" AND EXISTS (SELECT 1 FROM naics_psc_equipment_needs eq "
+                f"WHERE eq.naics_code = t.naics_code AND eq.psc_code = t.psc_code "
+                f"AND eq.in_scope AND list_contains(eq.equipment_buckets, '{need_bucket}'))"
+            )
+        elif need_socs:
+            socs = ",".join(f"'{s}'" for s in need_socs)  # codes come from the server-side vocab
+            role_pred = "" if include_support else " AND lc.role_class = 'core_deliverable'"
+            gr_need_pred = (
+                f" AND EXISTS (SELECT 1 FROM naics_psc_labor_profile_categories lc "
+                f"WHERE lc.naics_code = t.naics_code AND lc.psc_code = t.psc_code "
+                f"AND lc.soc_code IN ({socs}){role_pred})"
+            )
+        entity_preds = []
+        if hq_state:
+            entity_preds.append(f"e.physical_state = '{hq_state}'")
+        ind_cte = ""
+        ind_join = ""
+        if industry:
+            prefixes = _INDUSTRIES[industry]
+            in_set = " OR ".join(f"code LIKE '{p}%'" for p in prefixes)
+            declared = " OR ".join(f"e.primary_naics LIKE '{p}%'" for p in prefixes)
+            ind_cte = f""", ind AS (
+  SELECT uei, SUM(CASE WHEN {in_set} THEN obl_lifetime ELSE 0 END) AS in_set_obl,
+         SUM(obl_lifetime) AS tot_obl
+  FROM gtm_entity_code_lanes WHERE side = 'prime' AND code_type = 'naics' GROUP BY 1
+)"""
+            ind_join = "LEFT JOIN ind ip ON ip.uei = g.uei"
+            entity_preds.append(
+                f"((ip.tot_obl > 0 AND ip.in_set_obl / ip.tot_obl >= {_INDUSTRY_SHARE_MIN}) "
+                f"OR (COALESCE(ip.tot_obl, 0) = 0 AND ({declared})))"
+            )
+        entity_where = ("WHERE " + " AND ".join(entity_preds)) if entity_preds else ""
+        sql = f"""
+WITH g AS (
+  SELECT t.uei,
+         SUM(CASE WHEN t.month >= CURRENT_DATE - INTERVAL {a_days} DAY
+                  THEN t.obligation_sum ELSE 0 END) AS a_obl,
+         SUM(CASE WHEN t.month < CURRENT_DATE - INTERVAL {a_days} DAY
+                   AND t.month >= CURRENT_DATE - INTERVAL {span} DAY
+                  THEN t.obligation_sum ELSE 0 END) AS b_obl
+  FROM gtm_txn_recipient_month_rollup t
+  WHERE t.month >= CURRENT_DATE - INTERVAL {span} DAY{gr_combo_pred}{gr_need_pred}{need_equip_pred_ev}
+  GROUP BY 1
+  HAVING b_obl > 0 AND a_obl >= {int(multiplier)} * b_obl
+){ind_cte}
+SELECT g.uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
+       e.normalized_domain, ROUND(g.a_obl, 0) AS window_obl, ROUND(g.b_obl, 0) AS prior_obl,
+       ROUND(g.a_obl / g.b_obl, 1) AS growth_ratio,
+       geo.latitude, geo.longitude,
+       COUNT(*) OVER () AS total_count
+FROM g LEFT JOIN gtm_sam_entities e ON e.uei = g.uei
+LEFT JOIN gtm_entity_geo geo ON geo.uei = g.uei {ind_join}
+{entity_where}
+ORDER BY g.a_obl - g.b_obl DESC
+LIMIT {limit}
+"""
+        token = os.environ.get("QUERY_SIDECAR_TOKEN")
+        if not token:
+            raise HTTPException(status_code=503, detail="QUERY_SIDECAR_TOKEN not configured")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{SIDECAR_URL}/api/v1/sql",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"sql": sql, "limit": limit},
+            )
+        if r.status_code != 200:
+            logger.error("sidecar growth query failed: %s %s", r.status_code, r.text[:300])
+            raise HTTPException(status_code=502, detail="sidecar query failed")
+        payload = r.json()
+        cols = payload["columns"]
+        rows = [dict(zip(cols, row)) for row in payload["rows"]]
+        return {
+            "query": {
+                "mode": mode, "multiplier": multiplier, "window_pair": window_pair,
+                "job_phrase": job_phrase, "state": state, "hq_state": hq_state,
+                "industry": industry, "need": need, "include_support": include_support,
+            },
+            "total": (rows[0].get("total_count") if rows else 0) or len(rows),
+            "rows": rows,
+            "elapsed_ms": payload.get("elapsed_ms"),
+            "artifact": payload.get("artifact"),
+        }
 
     # ── Q3 event verbs: a self-contained SQL path against the month-rollup mart. ──
     if mode == "events":
