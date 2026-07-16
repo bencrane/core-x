@@ -194,8 +194,11 @@ _WINDOWS_DAYS = {30, 45, 60, 90, 180, 365, 730, 1095}
 # Σ obligations ON THOSE ACTIONS within the window (the money the events moved).
 # Window REQUIRED. Verbs map to action_type_code sets; two are rollups. Served by
 # the sidecar month-rollup mart `txn_recipient_month_by_type` (uei × action_type_code
-# × naics × psc × agency × month), which has NO place-of-performance columns — the
-# `in <state>` (PoP) slot is refused (422) on event verbs.
+# × naics × psc × agency × month). When `state` is passed the aggregation switches to
+# the PoP-dimensioned mart `txn_recipient_month_pop` (uei × action_type_code × pop_state
+# × pop_county × month) filtered on pop_state — closing the previously-disclosed 422.
+# That mart carries NO naics/psc, so `in <state>` cannot combine with job_phrase/need
+# (combo grain) — that combination is refused (422).
 _EVENT_VERBS: dict[str, list[str]] = {
     "picked up additional work": ["A"],
     "had work added in scope": ["B"],
@@ -215,8 +218,11 @@ _EVENT_VERBS: dict[str, list[str]] = {
 # vs prior 90}". Per company, Σ obligations in window A ≥ N × Σ in the immediately-
 # preceding window B, AND Σ B > 0 (new entrants with zero prior excluded). Measure is
 # ALL prime obligation actions (no action-type filter). Served by the month-rollup mart
-# `gtm_txn_recipient_month_rollup` — NO place-of-performance columns, so `in <state>`
-# (PoP) is refused (422) exactly like events mode. No total/single grain, no percent.
+# `gtm_txn_recipient_month_rollup`. When `state` is passed the aggregation switches to
+# the PoP-dimensioned mart `txn_recipient_month_pop` (summing obligation across ALL
+# action types within pop_state) — closing the previously-disclosed 422. That mart
+# carries no naics/psc, so `in <state>` cannot combine with job_phrase/need (refused
+# 422). No total/single grain, no percent.
 _MULTIPLIERS = {2, 3, 4, 5, 10}
 # window_pair → (a_days, b_days): A is the recent window, B the immediately-preceding.
 _WINDOW_PAIRS: dict[str, tuple[int, int]] = {
@@ -224,6 +230,58 @@ _WINDOW_PAIRS: dict[str, tuple[int, int]] = {
     "6v12": (180, 365),
     "90v90": (90, 90),
 }
+
+# Billing arrangement families (approved 2026-07-16) — body param `billing` ∈
+# {"fixed price","cost plus","time and materials"}, Q1/Q2 (active/won) ONLY.
+# Award-latest-state pricing on award_plan_state.latest_pricing_code, joined by
+# contract_award_unique_key. Sets derived deterministically from fpds_code_vocab
+# (field='pricing') official descriptions, verified against the live sidecar
+# 2026-07-16 (award_plan_state stores single-letter codes for pricing):
+#   fixed price — official description CONTAINS "FIXED PRICE":
+#       A  FIXED PRICE REDETERMINATION
+#       B  FIXED PRICE LEVEL OF EFFORT
+#       J  FIRM FIXED PRICE
+#       K  FIXED PRICE WITH ECONOMIC PRICE ADJUSTMENT
+#       L  FIXED PRICE INCENTIVE
+#       M  FIXED PRICE AWARD FEE
+#   cost plus — description CONTAINS "COST PLUS" (S COST NO FEE and T COST SHARING
+#               are cost-reimbursement but NOT cost-plus → deliberately excluded):
+#       R  COST PLUS AWARD FEE
+#       U  COST PLUS FIXED FEE
+#       V  COST PLUS INCENTIVE FEE
+#   time and materials — "TIME AND MATERIALS" + "LABOR HOUR":
+#       Y  TIME AND MATERIALS
+#       Z  LABOR HOURS
+_BILLING_PRICING_CODES: dict[str, frozenset[str]] = {
+    "fixed price": frozenset({"A", "B", "J", "K", "L", "M"}),
+    "cost plus": frozenset({"R", "U", "V"}),
+    "time and materials": frozenset({"Y", "Z"}),
+}
+
+# Financing arrangement (approved 2026-07-16) — body param `financing` ∈
+# {"with progress payments","without progress payments"}, Q1/Q2 ONLY. Award-latest-
+# state financing on award_plan_state.latest_financing_code. FPDS stores this field
+# as BOTH single-letter codes AND the spelled-out description; both forms appear
+# live in award_plan_state (verified 2026-07-16), so the progress set carries both.
+# Progress-payment codes = official description CONTAINS "PROGRESS PAYMENTS"
+# (fpds_code_vocab field='financing'):
+#       A  / "FAR 52.232-16 PROGRESS PAYMENTS"
+#       C  / "PERCENTAGE OF COMPLETION PROGRESS PAYMENTS"
+#       D  / "UNUSUAL PROGRESS PAYMENTS OR ADVANCE PAYMENTS"
+# (E/"COMMERCIAL FINANCING", F/"PERFORMANCE-BASED FINANCING", Z/"NOT APPLICABLE"
+#  are financing arrangements but NOT progress payments → the "without" complement.)
+# NULL decision (verified 2026-07-16): latest_financing_code is NULL on ~32M award-
+# state rows (financing field not reported) and "NOT APPLICABLE"/Z on ~49M more. A
+# NULL means no financing arrangement was reported → it is "without progress
+# payments". So "without" = plan row whose financing_code IS NULL OR is not one of
+# the progress-payment codes; "with" = plan row whose financing_code IS one of them.
+_FINANCING_PROGRESS_CODES: frozenset[str] = frozenset({
+    "A", "C", "D",
+    "FAR 52.232-16 PROGRESS PAYMENTS",
+    "PERCENTAGE OF COMPLETION PROGRESS PAYMENTS",
+    "UNUSUAL PROGRESS PAYMENTS OR ADVANCE PAYMENTS",
+})
+_FINANCING_TOKENS = frozenset({"with progress payments", "without progress payments"})
 
 
 @router.post("/active-awards-query", dependencies=[Depends(require_service_token)])
@@ -291,11 +349,38 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         state = str(state).strip().upper()
         if state not in _US_STATES:
             raise HTTPException(status_code=422, detail=f"unknown state '{state}'")
-        if mode in ("events", "growth"):
-            # The month-rollup mart has no PoP columns — PoP is award-grain.
+        # events/growth + state → served by the PoP-dimensioned mart (below). The
+        # combo-grain guard (state cannot combine with job_phrase/need on those modes)
+        # is enforced after job/need resolution.
+
+    billing = body.get("billing")
+    if billing is not None:
+        billing = str(billing).strip().lower()
+        if billing not in _BILLING_PRICING_CODES:
             raise HTTPException(
                 status_code=422,
-                detail=f"in <state> not yet supported on mode '{mode}' — PoP is award-grain",
+                detail=f"unknown billing '{billing}' — one of {sorted(_BILLING_PRICING_CODES)}",
+            )
+        if mode in ("events", "growth"):
+            # Pricing is award-latest-state (award grain); events/growth are transaction
+            # grain — the two do not compose. Billing rides Q1 (active) / Q2 (won) only.
+            raise HTTPException(
+                status_code=422,
+                detail=f"billing not supported on mode '{mode}' — pricing is award-latest-state (award grain), not transaction grain",
+            )
+
+    financing = body.get("financing")
+    if financing is not None:
+        financing = str(financing).strip().lower()
+        if financing not in _FINANCING_TOKENS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown financing '{financing}' — one of {sorted(_FINANCING_TOKENS)}",
+            )
+        if mode in ("events", "growth"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"financing not supported on mode '{mode}' — financing is award-latest-state (award grain), not transaction grain",
             )
 
     min_amt = body.get("min_amt")
@@ -376,10 +461,30 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         combo_pairs = ",".join(f"('{n}','{p}')" for n, p in combos)  # codes are validated vocab, not user input
         combo_pred = f"AND (naics_code, product_or_service_code) IN ({combo_pairs})"
 
+    # events/growth + state route to the PoP mart, which carries no NAICS/PSC — so a
+    # PoP-state filter cannot compose with job_phrase or need (both combo grain).
+    if mode in ("events", "growth") and state and (combo_pairs or need is not None):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"in <state> (PoP) on mode '{mode}' cannot combine with job_phrase/need — "
+                "the PoP-dimensioned mart carries no NAICS/PSC combo grain"
+            ),
+        )
+
     # ── Q4 step-growth: a self-contained SQL path against the month-rollup mart. ──
     if mode == "growth":
         a_days, b_days = _WINDOW_PAIRS[window_pair]
         span = a_days + b_days
+        # PoP CAPABILITY: `in <state>` sums obligation across ALL action types within
+        # the PoP state on txn_recipient_month_pop. Without state, the non-PoP rollup.
+        # (combo/need are 422'd alongside state above, so their preds stay empty here.)
+        if state:
+            gr_fact = "txn_recipient_month_pop"
+            gr_state_pred = f" AND t.pop_state = '{state}'"
+        else:
+            gr_fact = "gtm_txn_recipient_month_rollup"
+            gr_state_pred = ""
         gr_combo_pred = (
             f" AND (t.naics_code, t.psc_code) IN ({combo_pairs})" if combo_pairs else ""
         )
@@ -426,8 +531,8 @@ WITH g AS (
          SUM(CASE WHEN t.month < CURRENT_DATE - INTERVAL {a_days} DAY
                    AND t.month >= CURRENT_DATE - INTERVAL {span} DAY
                   THEN t.obligation_sum ELSE 0 END) AS b_obl
-  FROM gtm_txn_recipient_month_rollup t
-  WHERE t.month >= CURRENT_DATE - INTERVAL {span} DAY{gr_combo_pred}{gr_need_pred}{need_equip_pred_ev}
+  FROM {gr_fact} t
+  WHERE t.month >= CURRENT_DATE - INTERVAL {span} DAY{gr_state_pred}{gr_combo_pred}{gr_need_pred}{need_equip_pred_ev}
   GROUP BY 1
   HAVING b_obl > 0 AND a_obl >= {int(multiplier)} * b_obl
 ){ind_cte}
@@ -472,6 +577,15 @@ LIMIT {limit}
     # ── Q3 event verbs: a self-contained SQL path against the month-rollup mart. ──
     if mode == "events":
         codes_sql = ",".join(f"'{c}'" for c in _EVENT_VERBS[event_verb])
+        # PoP CAPABILITY: `in <state>` filters the same action-code set on the PoP-
+        # dimensioned mart txn_recipient_month_pop by pop_state. Without state, the
+        # non-PoP by-type rollup. (combo/need are 422'd alongside state above.)
+        if state:
+            ev_fact = "txn_recipient_month_pop"
+            ev_state_pred = f" AND t.pop_state = '{state}'"
+        else:
+            ev_fact = "txn_recipient_month_by_type"
+            ev_state_pred = ""
         ev_combo_pred = (
             f" AND (t.naics_code, t.psc_code) IN ({combo_pairs})" if combo_pairs else ""
         )
@@ -514,9 +628,9 @@ LIMIT {limit}
         sql = f"""
 WITH ev AS (
   SELECT t.uei, SUM(t.obligation_sum) AS event_obl, SUM(t.n_actions) AS event_actions
-  FROM txn_recipient_month_by_type t
+  FROM {ev_fact} t
   WHERE t.action_type_code IN ({codes_sql})
-    AND t.month >= CURRENT_DATE - INTERVAL {int(window_days)} DAY{ev_combo_pred}{ev_need_pred}{need_equip_pred_ev}
+    AND t.month >= CURRENT_DATE - INTERVAL {int(window_days)} DAY{ev_state_pred}{ev_combo_pred}{ev_need_pred}{need_equip_pred_ev}
   GROUP BY 1 {ev_having}
 ){ind_cte}
 SELECT g.uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
@@ -609,11 +723,35 @@ LIMIT {limit}
             f"WHERE lc.naics_code = s.naics_code AND lc.psc_code = s.product_or_service_code "
             f"AND lc.soc_code IN ({socs}){role_pred})"
         )
+    # Billing (pricing) + financing gate on award-latest-state — EXISTS from the awd
+    # CTE to award_plan_state on contract_award_unique_key. Composes: billing and
+    # financing conditions AND together inside one EXISTS. Codes are the frozen
+    # server-side vocab above, never user input. An award absent from award_plan_state
+    # has no reported plan state and is excluded by the EXISTS (documented behaviour).
+    plan_pred = ""
+    if billing is not None or financing is not None:
+        plan_conds = []
+        if billing is not None:
+            codes = ",".join(f"'{c}'" for c in sorted(_BILLING_PRICING_CODES[billing]))
+            plan_conds.append(f"p.latest_pricing_code IN ({codes})")
+        if financing is not None:
+            codes = ",".join(f"'{c}'" for c in sorted(_FINANCING_PROGRESS_CODES))
+            if financing == "with progress payments":
+                plan_conds.append(f"p.latest_financing_code IN ({codes})")
+            else:  # "without progress payments": complement, NULL treated as without
+                plan_conds.append(
+                    f"(p.latest_financing_code IS NULL OR p.latest_financing_code NOT IN ({codes}))"
+                )
+        plan_pred = (
+            " AND EXISTS (SELECT 1 FROM award_plan_state p "
+            "WHERE p.contract_award_unique_key = s.contract_award_unique_key "
+            f"AND {' AND '.join(plan_conds)})"
+        )
     sql = f"""
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
   FROM usaspending_fpds_prime_award_state s
-  WHERE {base_pred} {combo_pred}{need_pred}{need_equip_pred}
+  WHERE {base_pred} {combo_pred}{need_pred}{need_equip_pred}{plan_pred}
 ), located AS (
   SELECT a.* FROM awd a {state_join}
 ), agg AS (
@@ -635,7 +773,12 @@ LIMIT {limit}
     token = os.environ.get("QUERY_SIDECAR_TOKEN")
     if not token:
         raise HTTPException(status_code=503, detail="QUERY_SIDECAR_TOKEN not configured")
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    # The billing/financing gate joins award_plan_state (~83M rows, no sidecar index):
+    # the fixed-price set alone matches ~79M plan rows, so the semi-join runs ~45s
+    # (rarer code sets ~2s). Widen the timeout past the 60s default when a plan gate is
+    # present; ungated active/won still returns in tens of ms regardless of timeout.
+    query_timeout = 90.0 if plan_pred else 60.0
+    async with httpx.AsyncClient(timeout=query_timeout) as client:
         r = await client.post(
             f"{SIDECAR_URL}/api/v1/sql",
             headers={"Authorization": f"Bearer {token}"},
@@ -649,6 +792,7 @@ LIMIT {limit}
     rows = [dict(zip(cols, row)) for row in payload["rows"]]
     return {
         "query": {"mode": mode, "grain": grain, "job_phrase": job_phrase, "state": state,
+                  "billing": billing, "financing": financing,
                   "min_amt": min_amt, "window_days": window_days, "hq_state": hq_state,
                   "industry": industry, "need": need, "include_support": include_support},
         "total": (rows[0].get("total_count") if rows else 0) or len(rows),
