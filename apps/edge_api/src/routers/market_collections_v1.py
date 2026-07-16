@@ -189,12 +189,13 @@ async def count_market(body: dict[str, Any]) -> dict[str, Any]:
     won_preds = [f"w.won >= {float(min_won or 0)}"]
     if max_won is not None:
         won_preds.append(f"w.won < {float(max_won)}")
+    won_where = " AND ".join(won_preds)
 
     hq_pred = ""
     if based_in:
         in_list = ",".join(f"'{s}'" for s in based_in)
         hq_pred = (
-            " AND m.uei IN (SELECT uei FROM gtm_sam_entities"
+            " AND w.uei IN (SELECT uei FROM gtm_sam_entities"
             f" WHERE physical_state IN ({in_list}))"
         )
 
@@ -216,12 +217,58 @@ act AS (
 ),
 m AS (
   SELECT w.uei, w.won FROM won w JOIN act USING (uei)
-  WHERE {' AND '.join(won_preds)}
+  WHERE {won_where}{hq_pred}
+),
+awards AS (
+  SELECT a.recipient_uei AS uei,
+         (a.award_topology = 'vehicle') AS is_vehicle,
+         greatest(coalesce(a.current_total_value_of_award, 0), 0) AS cvalue,
+         greatest(coalesce(a.current_total_value_of_award, 0) - coalesce(a.life_to_date_obligated, 0), 0) AS crunway,
+         greatest(coalesce(a.potential_ceiling, 0), 0) AS vceiling,
+         greatest(coalesce(a.potential_ceiling, 0) - coalesce(a.life_to_date_obligated, 0), 0) AS vheadroom
+  FROM usaspending_fpds_prime_award_state a
+  JOIN pairs pr ON a.naics_code = pr.naics_code AND a.product_or_service_code = pr.psc_code
+  JOIN m ON m.uei = a.recipient_uei
+  WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE
+),
+firm AS (
+  SELECT m.uei, m.won,
+         coalesce(f.committed_ct, 0) AS committed_ct,
+         coalesce(f.committed_value, 0) AS committed_value,
+         coalesce(f.committed_runway, 0) AS committed_runway,
+         coalesce(f.vehicle_ct, 0) AS vehicle_ct,
+         coalesce(f.vehicle_ceiling, 0) AS vehicle_ceiling,
+         coalesce(f.vehicle_headroom, 0) AS vehicle_headroom
+  FROM m LEFT JOIN (
+    SELECT uei,
+           count(*) FILTER (WHERE NOT is_vehicle) AS committed_ct,
+           sum(cvalue) FILTER (WHERE NOT is_vehicle) AS committed_value,
+           sum(crunway) FILTER (WHERE NOT is_vehicle) AS committed_runway,
+           count(*) FILTER (WHERE is_vehicle) AS vehicle_ct,
+           sum(vceiling) FILTER (WHERE is_vehicle) AS vehicle_ceiling,
+           sum(vheadroom) FILTER (WHERE is_vehicle) AS vehicle_headroom
+    FROM awards GROUP BY 1
+  ) f USING (uei)
 )
-SELECT count(*) AS n, round(coalesce(sum(m.won), 0), 0) AS won_total,
-       round(coalesce(median(m.won), 0), 0) AS won_median,
-       round(coalesce(avg(m.won), 0), 0) AS won_avg
-FROM m WHERE TRUE{hq_pred}
+SELECT count(*) AS n,
+       round(coalesce(sum(won), 0), 0) AS won_total,
+       round(coalesce(median(won), 0), 0) AS won_median,
+       round(coalesce(avg(won), 0), 0) AS won_avg,
+       round(coalesce(sum(committed_value), 0), 0) AS book_total,
+       round(coalesce(median(committed_value), 0), 0) AS book_median,
+       round(coalesce(avg(committed_value), 0), 0) AS book_avg,
+       coalesce(median(committed_ct), 0) AS awards_median,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle) AS committed_award_ct,
+       (SELECT round(coalesce(median(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle) AS award_median,
+       (SELECT round(coalesce(avg(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle) AS award_avg,
+       round(coalesce(sum(committed_runway), 0), 0) AS runway_total,
+       round(coalesce(median(committed_runway), 0), 0) AS runway_median,
+       round(coalesce(avg(committed_runway), 0), 0) AS runway_avg,
+       coalesce(sum(vehicle_ct), 0) AS vehicle_seats,
+       count(*) FILTER (WHERE vehicle_ct > 0) AS vehicle_holders,
+       round(coalesce(sum(vehicle_ceiling), 0), 0) AS vehicle_ceiling_total,
+       round(coalesce(sum(vehicle_headroom), 0), 0) AS vehicle_headroom_total
+FROM firm
 """
     token = os.environ.get("QUERY_SIDECAR_TOKEN")
     if not token:
@@ -236,12 +283,14 @@ FROM m WHERE TRUE{hq_pred}
         logger.error("sidecar market-collections count failed: %s %s", r.status_code, r.text[:300])
         raise HTTPException(status_code=502, detail="sidecar query failed")
     payload = r.json()
-    row = payload["rows"][0] if payload.get("rows") else [0, 0, 0, 0]
+    row = payload["rows"][0] if payload.get("rows") else [0] * 18
+    cols = ["count", "won_total", "won_median", "won_avg", "book_total", "book_median",
+            "book_avg", "awards_median", "committed_award_ct", "award_median", "award_avg",
+            "runway_total", "runway_median", "runway_avg", "vehicle_seats", "vehicle_holders",
+            "vehicle_ceiling_total", "vehicle_headroom_total"]
+    stats = dict(zip(cols, row))
     return {
-        "count": row[0],
-        "won_total": row[1],
-        "won_median": row[2],
-        "won_avg": row[3],
+        **stats,
         "spec": {
             "collections": slugs,
             "based_in": based_in,
