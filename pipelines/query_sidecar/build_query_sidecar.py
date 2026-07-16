@@ -316,7 +316,23 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_open_awards", "tier": "D", "sort": ["recipient_uei"]},
     {"ds": "gtm_prime_demand_events", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_primes_by_recipient_code", "tier": "D", "sort": ["recipient_code"]},
-    {"ds": "gtm_prime_subout_by_recipient_code", "tier": "D", "sort": ["prime_awardee_uei"]},
+    # subout-rate cycle (2026-07-15, operator-directed): the cube gains its
+    # denominators + rate + within-context share via a row-preserving LEFT
+    # JOIN to gtm_entity_code_lanes (side='prime' pre-filtered to a temp so
+    # join keys stay pure equalities; prime lanes are unique per
+    # (uei, code_type, code) — probe-verified 2026-07-15). Exact parity kept.
+    # Manifest order guarantees gtm_entity_code_lanes (Tier A) builds first.
+    {"ds": "gtm_prime_subout_by_recipient_code", "tier": "D",
+     "sort": ["prime_awardee_uei"], "subout_rate": True},
+    # recipient-shape-anchored sort copy: every read filters ONE evidence lens
+    # (the four recipient_code_source lenses overlap — summing across them
+    # double-counts), then the recipient code. "Primes that route ≥N% of
+    # <context> work to subs who prime in Y" prunes here instead of scanning
+    # 11.8M (measured 2.6 s unpruned). Local re-sort, must follow base.
+    {"ds": "gtm_prime_subout_by_recipient_code", "tier": "D",
+     "dest": "gtm_prime_subout_by_code",
+     "sort": ["recipient_code_source", "recipient_code_type", "recipient_code"],
+     "from_table": "gtm_prime_subout_by_recipient_code"},
     {"ds": "gtm_subbed_under_to_primed_in_cooccurrence", "tier": "D", "sort": ["subbed_under_code"]},
     {"ds": "gtm_sub_profiles", "tier": "D", "sort": ["uei"]},
     {"ds": "govcon_subawardee_profiles", "tier": "D", "sort": ["sub_uei"]},
@@ -672,6 +688,35 @@ LEFT JOIN gtm_prime_combo_lanes c
       AND c.naics_code = f.naics_code
       AND c.psc_code = f.psc_code
 ORDER BY f.uei
+"""
+
+# subout-rate cycle (2026-07-15, operator-directed): the sub-out cube gains
+# the prime's in-context obligations (denominator family), the demanded rate,
+# and the within-lens context share. subout_base is the locally-materialized
+# Lance stream; prime_lanes is the side='prime' slice of the already-built
+# code lanes (probe-side gate applied BEFORE the join so the ON clause stays
+# pure equality — the NL-join trap). Join is row-preserving (prime lanes
+# unique per (uei, code_type, code)) → exact-parity gate. subout_rate can
+# legitimately exceed 1 (pass-through vehicles; subaward $ vs obligated $).
+_SUBOUT_RATE_SQL = """
+CREATE TABLE gtm_prime_subout_by_recipient_code AS
+SELECT s.*,
+       p.obl_24mo          AS prime_obl_24mo_in_context,
+       p.obl_60mo          AS prime_obl_60mo_in_context,
+       p.obl_lifetime      AS prime_obl_lifetime_in_context,
+       p.action_ct         AS prime_action_ct_in_context,
+       p.last_action_date  AS prime_last_action_in_context,
+       s.subaward_amt_total / NULLIF(p.obl_lifetime, 0) AS subout_rate_lifetime,
+       s.subaward_amt_total / NULLIF(sum(s.subaward_amt_total) OVER (
+           PARTITION BY s.prime_awardee_uei, s.context_code_type, s.context_code,
+                        s.recipient_code_source, s.recipient_code_type), 0)
+                            AS share_of_context_subout
+FROM subout_base s
+LEFT JOIN prime_lanes p
+       ON p.uei = s.prime_awardee_uei
+      AND p.code_type = s.context_code_type
+      AND p.code = s.context_code
+ORDER BY s.prime_awardee_uei
 """
 
 # pricing-terms cycle (2026-07-15, operator-directed): entity-event-geo month
@@ -1273,6 +1318,18 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
                 con.execute(_SUBOUT_ROLLUP_SQL)
             elif spec.get("plan_state"):
                 con.execute(_PLAN_STATE_SQL)
+            elif spec.get("subout_rate"):
+                # stream -> local temp; probe-side gate (side='prime') applied
+                # while materializing prime_lanes so the join ON stays pure
+                # equality; then the row-preserving denominator join.
+                con.execute("CREATE TEMP TABLE subout_base AS SELECT * FROM src")
+                con.execute("""CREATE TEMP TABLE prime_lanes AS
+                    SELECT uei, code_type, code, obl_24mo, obl_60mo,
+                           obl_lifetime, action_ct, last_action_date
+                    FROM gtm_entity_code_lanes WHERE side = 'prime'""")
+                con.execute(_SUBOUT_RATE_SQL)
+                con.execute("DROP TABLE subout_base")
+                con.execute("DROP TABLE prime_lanes")
             elif spec.get("farmout_share"):
                 # stream -> local temp first (hygiene rule), then the
                 # row-preserving denominator join against the already-built
