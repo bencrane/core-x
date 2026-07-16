@@ -70,6 +70,7 @@ from .src.routers.combo_work_summary_equipment_needs_v1 import (
 )
 from .src.routers.combo_job_to_be_done_v1 import router as combo_job_to_be_done_router
 from .src.routers.active_awards_query_v1 import router as active_awards_query_router
+from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.title_normalize_v1 import router as title_normalize_router
@@ -261,6 +262,11 @@ app.include_router(equipment_finance_candidates_router)
 app.include_router(combo_work_summary_equipment_needs_router)
 app.include_router(combo_job_to_be_done_router)
 app.include_router(active_awards_query_router)
+
+# market-spec: live market definition on a call — count of entities fitting a
+# geo/$/designation/firmographic spec, served by the query-sidecar audience spine
+# (gtm_audience_entities). Contactability deliberately absent (operator ruling 2026-07-16).
+app.include_router(market_spec_router)
 
 # epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
