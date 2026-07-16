@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.23B rows across 89 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.30B rows across 94 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -76,19 +76,21 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 38 cols incl. `subaward_description`, `prime_award_base_transaction_description`, `subawardee_business_types` (designation flags); `subaward_amount` is VARCHAR — use `subaward_amount_num` |
 | `subaward_canonical_slim_by_sub` | same rows | subawardee_uei | second copy, sub-side clustering |
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
-| `txn_rows` | 1/FPDS action · 108M | action_date | The 16-col wire contract with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
+| `txn_rows` | 1/FPDS action · 108M | action_date | The wire-contract row serving with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) + `type_of_contract_pricing_code`/`type_of_contract_pric_desc` (2026-07-15) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
 | `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id |
 
 ### The combo-portrait layer (industry × work × time × geo × agency × sub-out, zoomable)
 
 | Table | Grain · rows | Sorted | Semantics |
 |---|---|---|---|
-| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, **`pop_country_code`** (ISO3 — splits the no-US-state bucket into overseas vs unstated; names via `country_vocab`), **`type_of_set_aside_code`** (the set-aside dial), `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
+| `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, **`pop_country_code`** (ISO3 — splits the no-US-state bucket into overseas vs unstated; names via `country_vocab`), **`type_of_set_aside_code`** (the set-aside dial), `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), **the pricing-terms dials (2026-07-15 cycle): `pricing_code`** (type of contract pricing — J=FFP, U=CPFF, Y=T&M…; the cash-flow-shape signal), **`financing_code`** (progress/performance-based payments), **`pba_code`**, **`co_business_size`** (CO size determination S/O — the effective net-15 tier), **`labor_standards_code`** (SCA/DBA applies) — names for all five via `fpds_code_vocab`, `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
 | `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
 | `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
-| `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action `subcontracting_plan` per award (`latest_plan`, `latest_action_date`, `actions`) — award-grain plan state for arbitrary/closed populations, one pruned join |
+| `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action state per award: `latest_plan` (subcontracting plan) + **`latest_pricing_code`, `latest_financing_code`, `latest_business_size`** (2026-07-15 — award_state carries NO pricing columns; THIS is the award-grain pricing home). Cash-stress shape: `latest_pricing_code='J' AND latest_financing_code IN ('Z','NOT APPLICABLE')` ⋈ award_state actives. Names via `fpds_code_vocab` |
+| `action_type_vocab` | 1/action_type_code · 22 (21 codes + NULL base row) | — | **The action-type language layer** (2026-07-15): `source_description` (empirical majority — source pairs are messy: 102 raw tuples), `plain_english` (subject-first query phrase: "received additional funding", "had an option year exercised"), `family` (new_award\|more_work\|funding_only\|termination\|definitization\|closeout\|admin), `is_more_work` (A,B,D,G,L), `is_funding_released` (C,G — G carries BOTH: option exercise turns on work AND its money; C is the only pure-money event). NULL code row = base/initial award (FPDS stamps action type on mods only) |
+| `fpds_code_vocab` | 1/(field, code) · ~100 | field, code | Name resolution for the five pricing-terms code spaces: `field` ∈ pricing \| financing \| performance_based \| business_size_determination \| labor_standards, majority name per code |
 | `naics_psc_labor_profile` / `naics_psc_deliverable` | 1/(naics, psc) · 16.3k / 21k | naics_code, psc_code | The combo-grain LANGUAGE layers: `work_summary` + labor-play/OEWS mapping; `what_was_done` + work_type/regime/confidence — plain-language rendering joins these onto any sidecar code set (letters, on-page copy). Complements the code-grain to-verb vocabulary in the phrase compiler |
 | `naics_psc_labor_profile_categories` | 1/(naics, psc, rank) · 54k | naics_code, psc_code, rank | Ranked SOC/SCA occupational categories per combo (the "additional ___" candidates), wage medians, growth |
 | `naics_psc_vertical_map` | 1/(naics, psc) · 279 | naics_code, psc_code | Curated vertical + **equipment_intensity** + regime per anchor combo |
@@ -97,12 +99,14 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `v_combo_fy` / `v_family_fy` / `v_award_subout` | views | — | Baked portrait queries: combo×FY measures (prime $, plan-attached share, task-order share); family grain; award×sub-out join |
 | `v_combo_active_equipment` / `v_equipment_needs_phrases` | views | — | Product surface: `combo_award_active_state` ⋈ equipment verdict on (naics, psc) — "active $ of [bucket]-needing work" is one GROUP BY; and the phrase-grain vocabulary explode of `proposed_equipment_needs` (per-combo phrase profile / head coverage) |
 | `v_psc_names` / `v_naics_names` / `v_sam_declared_codes` | views | — | Vintage-safe reference names (active-else-latest, 1 row/code); SAM declarations unnested to (uei, is_active, code_type, code) |
+| `v_staffing_absorption` | view | — | **The staffed-out residual** (2026-07-15, directional v1): per (uei, naics, psc) prime lane — `implied_labor_dollars_60mo` (prime $ × `loaded_labor_share`), `implied_fte_per_year_60mo` (÷ combo avg SOC wage ÷ 5 — methodology is visible in the view SQL, a query-time dial, deliberately not a baked mart), `farmout_amt_60mo`/`farmout_share_60mo` (reported farm-out), `employees_on_linkedin`/`pdl_employee_size_range` (observable headcount via SAM↔PDL bridge). Big implied labor + small headcount + little reported farm-out = invisible staffing arrangements (the Optum-nurses shape). Seconds-class (~9 s even filtered — the headcount CTE walks the full SAM↔PDL bridge): fine for directional pulls, not for hot paths |
 
 ### Rollups & expiry
 | Table | Grain · rows | Sorted |
 |---|---|---|
 | `gtm_txn_recipient_month_rollup` | uei × action_type × plan_class × month · 34M | uei |
 | `txn_recipient_month_by_type` | same fact re-sorted · 34M | action_type_code, month — cross-entity "actions of type X in window Y" prunes here (9.6ms vs 2.0s on the uei-sorted copy) |
+| `txn_recipient_month_pop` | uei × action_type × pop_state × pop_county_fips × month · 27.5M | action_type_code, pop_state, pop_county_fips, month — **the entity-event-GEO rollup** (2026-07-15): closes the phrase layer's "in \<state\> (PoP) on event verbs" refusal. "Entities that had action X in state S in window W" prunes on (type, state) — measured 18.4 ms |
 | `gtm_award_recipient_rollup` | uei × naics × psc × agency × topology · 6.3M | uei |
 | `gtm_award_expiry_months` | uei × end_month · 221k | uei, end_month |
 | `gtm_prime_pop_lanes` | 1/(uei, pop_state, county) · 547k | uei |
@@ -119,7 +123,8 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_prime_sub_pairs` / `gtm_prime_sub_pairs_by_sub` | 1/(prime_uei, sub_uei) · 269k | prime_uei / sub_uei |
 | `gtm_prime_combo_lanes` | 1/(uei, naics, psc) · 5.1M | uei |
 | `gtm_sub_combo_lanes` | 1/(uei, naics, psc) · 339k | uei |
-| `gtm_prime_farmout_combo_lanes` · `gtm_prime_vehicle_lanes` | 38k · 16k | uei |
+| `gtm_prime_farmout_combo_lanes` | 1/(uei, naics, psc) with farm-out · 38k | uei | **carries its denominators + shares** (2026-07-15): `prime_obl_24mo/60mo/lifetime`, `prime_txns_lifetime`, `farmout_share_24mo/60mo/lifetime` (farm-out ÷ prime obligations; NULL when the prime has no obligations in the combo). "Primes that sub out >N% of X-shaped work" = one pruned read |
+| `gtm_prime_vehicle_lanes` | 16k | uei |
 | `gtm_prime_demand_events` | event/prime uei (24mo) · 11.3M | uei |
 | `gtm_primes_by_recipient_code` | 1/(code_type, code) marginal · 1.7M | recipient_code |
 | `gtm_prime_subout_by_recipient_code` | prime × context_code cube · 11.8M | prime_awardee_uei |
@@ -446,6 +451,64 @@ type/month-sorted copy, NOT the uei-sorted base:
 ```sql
 SELECT COUNT(DISTINCT uei) FROM txn_recipient_month_by_type
 WHERE action_type_code = 'C' AND month >= DATE '2026-04-01';    -- 9.6 ms (209x vs base)
+```
+
+### Pricing-terms cycle (2026-07-15)
+
+**(h) Event verb × PoP state — the phrase layer's former refusal.** "Entities that had an
+option year exercised in Virginia this quarter" prunes on (type, state):
+
+```sql
+SELECT uei, SUM(n_actions) AS actions, SUM(obligation_sum) AS obl
+FROM txn_recipient_month_pop
+WHERE action_type_code = 'G' AND pop_state = 'VA' AND month >= DATE '2026-04-01'
+GROUP BY 1 ORDER BY obl DESC;
+```
+
+**(i) Action-type semantics — phrase → codes via the vocab, never hardcode.**
+"more work" / "funding released" aggregations read the flags:
+
+```sql
+SELECT t.uei, SUM(t.obligation_sum) AS more_work_obl
+FROM txn_recipient_month_by_type t
+JOIN action_type_vocab v ON v.action_type_code = t.action_type_code
+WHERE v.is_more_work AND t.month >= DATE '2026-01-01'
+GROUP BY 1;
+-- NULL action_type_code on facts = the base award itself (vocab's NULL row).
+```
+
+**(j) Cash-stress shape — pricing × financing × size, award grain.** FFP with no
+financing arrangement floats the whole performance cost; small-entity primes on that
+shape are the factoring/credit lens:
+
+```sql
+SELECT a.recipient_uei, count(*) AS ffp_awards, sum(a.life_to_date_obligated) AS obl
+FROM usaspending_fpds_prime_award_state a
+JOIN award_plan_state p ON p.contract_award_unique_key = a.contract_award_unique_key
+WHERE p.latest_pricing_code = 'J'                -- firm fixed price
+  AND coalesce(p.latest_financing_code, 'Z') IN ('Z', 'NOT APPLICABLE')
+  AND p.latest_business_size = 'S'
+  AND a.current_end_date >= current_date
+GROUP BY 1;
+-- market-level mix: GROUP BY pricing_code over txn_events_combo (names via fpds_code_vocab)
+```
+
+**(k) Farm-out share — propensity to sub out a shape of work, pre-divided:**
+
+```sql
+SELECT uei, naics_code, psc_code, farmout_share_60mo, farmout_amt_60mo, prime_obl_60mo
+FROM gtm_prime_farmout_combo_lanes
+WHERE farmout_share_60mo >= 0.30 AND prime_obl_60mo >= 1e6;
+```
+
+**(l) Staffing absorption (directional) — implied labor the entity can't absorb W2:**
+
+```sql
+SELECT * FROM v_staffing_absorption
+WHERE naics_code = '561612' AND implied_fte_per_year_60mo > 50
+  AND coalesce(employees_on_linkedin, 0) < implied_fte_per_year_60mo / 2
+  AND coalesce(farmout_share_60mo, 0) < 0.10;
+-- methodology (wage divisor, annualization) lives in the view SQL — a query-time dial
 ```
 
 ## 5. Performance model

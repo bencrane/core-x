@@ -211,7 +211,11 @@ MANIFEST: list[dict] = [
          "recipient_uei", "recipient_name", "action_date", "action_type_code",
          "action_type_description", "subcontracting_plan", "subcontracting_plan_desc",
          "federal_action_obligation", "base_and_all_options_value", "naics_code",
-         "product_or_service_code", "awarding_agency_code", "awarding_agency_name"]},
+         "product_or_service_code", "awarding_agency_code", "awarding_agency_name",
+         # pricing-terms cycle (2026-07-15): row-serving carries the pricing
+         # structure verbatim (code + source desc) — additive to the 16-col
+         # wire contract, existing consumers select by name.
+         "type_of_contract_pricing_code", "type_of_contract_pric_desc"]},
     # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
@@ -226,6 +230,16 @@ MANIFEST: list[dict] = [
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_geo",
      "sort": ["pop_state", "pop_county_fips", "action_date"],
      "from_table": "txn_events_combo"},
+    # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
+    # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
+    # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
+    # uei × action_type × pop_state/county × month off the local fact; sorted
+    # so "entities with action X in state S in window W" prunes. County rides
+    # the same GROUP BY (the zoom-in next question). Aggregate -> non-empty
+    # parity. Local build, must follow txn_events_combo.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "txn_recipient_month_pop",
+     "sort": ["action_type_code", "pop_state", "pop_county_fips", "month"],
+     "from_table": "txn_events_combo", "month_pop_rollup": True, "aggregate": True},
     # award-grain sub-out rollup: joins the fact/award_state on award key —
     # "is this combo/geo/agency getting subbed out more or less".
     {"ds": "usaspending_subaward_canonical", "tier": "C", "dest": "award_subout_rollup",
@@ -254,9 +268,33 @@ MANIFEST: list[dict] = [
     # gap-pass-1 E2: award-grain "carries a subcontracting plan" latest-state for
     # arbitrary/closed populations (plan lives at txn grain; this pins the
     # latest-action plan flag per award).
+    # pricing-terms cycle (2026-07-15): the pricing/financing/size-determination
+    # latest-state rides the SAME per-award arg_max scan — award_state (Lance)
+    # carries no pricing columns, so this is the award-grain pricing home
+    # (join usaspending_fpds_prime_award_state on contract_award_unique_key).
     {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_plan_state",
      "sort": ["contract_award_unique_key"], "plan_state": True, "aggregate": True,
-     "cols": ["contract_award_unique_key", "subcontracting_plan", "action_date"]},
+     "cols": ["contract_award_unique_key", "subcontracting_plan", "action_date",
+              "type_of_contract_pricing_code", "contract_financing",
+              "contracting_officers_determination_of_business_size"]},
+    # pricing-terms cycle (2026-07-15, gap E1): action-type vocabulary — the
+    # empirical majority description per code (source pairs are messy: 102
+    # raw tuples, truncated/null/cross-contaminated variants) FULL-joined with
+    # the authored semantic layer (plain-english phrase, family, more-work /
+    # funding-released flags) consumed by the phrase/query-search rebuild.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "action_type_vocab",
+     "sort": [], "action_type_vocab": True, "aggregate": True,
+     "cols": ["action_type_code", "action_type_description"]},
+    # pricing-terms cycle (2026-07-15, adjacency): name resolution for every
+    # code space the fact just gained — one scan, one (field, code, name)
+    # table, same majority-dedup rule as the agency/country vocabs.
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "fpds_code_vocab",
+     "sort": [], "fpds_code_vocab": True, "aggregate": True,
+     "cols": ["type_of_contract_pricing_code", "type_of_contract_pric_desc",
+              "contract_financing", "contract_financing_descrip",
+              "performance_based_service_acquisition_code", "performance_based_se_desc",
+              "contracting_officers_determination_of_business_size", "contracting_officers_desc",
+              "labor_standards_code", "labor_standards_descrip"]},
     # gtm_subaward_recipient_code_evidence (92M) stays OUT: no phrase.v2 shape
     # touches it (subout drill-down only) — remains gated pending a workload.
     # ── Tier D — recipe/relationship substrate ────────────────────────────────
@@ -267,7 +305,13 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_sub_universe_targets", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_prime_combo_lanes", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sub_combo_lanes", "tier": "D", "sort": ["uei"]},
-    {"ds": "gtm_prime_farmout_combo_lanes", "tier": "D", "sort": ["uei"]},
+    # pricing-terms cycle (2026-07-15, gap E3): farm-out SHARE — the lanes gain
+    # the prime-obligation denominators + precomputed shares via a row-
+    # preserving LEFT JOIN to gtm_prime_combo_lanes (1 row/uei×naics×psc both
+    # sides, pure-equality keys; manifest order guarantees combo_lanes is
+    # already built). Exact-parity gate still applies.
+    {"ds": "gtm_prime_farmout_combo_lanes", "tier": "D", "sort": ["uei"],
+     "farmout_share": True},
     {"ds": "gtm_prime_vehicle_lanes", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_open_awards", "tier": "D", "sort": ["recipient_uei"]},
     {"ds": "gtm_prime_demand_events", "tier": "D", "sort": ["uei"]},
@@ -436,6 +480,14 @@ _COMBO_SRC_COLS = [
     # gap-pass-2 adjacency: the set-aside dial ("how much of this market is
     # set-aside") — rides the build already paid for.
     "type_of_set_aside_code",
+    # pricing-terms cycle (2026-07-15, gap E2): the cash-flow-shape dials —
+    # pricing structure (FFP vs cost-reimb vs T&M), financing arrangement,
+    # PBA flag, CO size determination (effective net-15 tier), SCA/DBA labor
+    # standards. Codes only on the fact; names resolve via fpds_code_vocab.
+    "type_of_contract_pricing_code", "contract_financing",
+    "performance_based_service_acquisition_code",
+    "contracting_officers_determination_of_business_size",
+    "labor_standards_code",
     "federal_action_obligation",
 ]
 
@@ -463,6 +515,11 @@ SELECT
     t.pop_county_name,
     t.primary_place_of_performance_country_code       AS pop_country_code,
     t.type_of_set_aside_code,
+    t.type_of_contract_pricing_code                   AS pricing_code,
+    t.contract_financing                              AS financing_code,
+    t.performance_based_service_acquisition_code      AS pba_code,
+    t.contracting_officers_determination_of_business_size AS co_business_size,
+    t.labor_standards_code,
     t.federal_action_obligation                       AS obligation
 FROM src t
 LEFT JOIN src_aw a ON a.contract_award_unique_key = t.contract_award_unique_key
@@ -487,12 +544,149 @@ _PLAN_STATE_SQL = """
 CREATE TABLE award_plan_state AS
 SELECT contract_award_unique_key,
        arg_max(subcontracting_plan, action_date)  AS latest_plan,
+       arg_max(type_of_contract_pricing_code, action_date)
+                                                  AS latest_pricing_code,
+       arg_max(contract_financing, action_date)   AS latest_financing_code,
+       arg_max(contracting_officers_determination_of_business_size, action_date)
+                                                  AS latest_business_size,
        max(action_date)                           AS latest_action_date,
        count(*)                                   AS actions
 FROM src
 WHERE contract_award_unique_key IS NOT NULL
 GROUP BY 1
 ORDER BY contract_award_unique_key
+"""
+
+# pricing-terms cycle (2026-07-15, gap E1): action-type vocabulary. Empirical
+# leg = majority description per code (same dedup rule as the other vocabs;
+# collapses the 102 messy source tuples). Authored leg = the session-verified
+# semantic layer: subject-first query phrase, family, and the two aggregation
+# flags (G carries BOTH more-work and funding-released — an option exercise
+# turns on new work AND obligates its money; C is the only pure-money event).
+# The NULL-code row is the base/initial award (FPDS stamps action type on
+# modifications only). FULL OUTER JOIN keeps any future source code visible
+# even before it is authored; pure single-key equality (EXPLAIN-gated).
+_ACTION_TYPE_VOCAB_SQL = """
+CREATE TABLE action_type_vocab AS
+WITH pairs AS (
+    SELECT action_type_code AS code, action_type_description AS name, count(*) AS n
+    FROM src
+    WHERE action_type_code IS NOT NULL AND action_type_code <> ''
+      AND action_type_description IS NOT NULL AND action_type_description <> ''
+    GROUP BY 1, 2
+),
+empirical AS (
+    SELECT code, name
+    FROM (SELECT code, name,
+                 row_number() OVER (PARTITION BY code ORDER BY n DESC, name) AS rn
+          FROM pairs)
+    WHERE rn = 1
+),
+authored (code, plain_english, family, is_more_work, is_funding_released) AS (
+    VALUES
+    (NULL, 'won a new contract',                              'new_award',   FALSE, FALSE),
+    ('A',  'picked up additional work on a new agreement',    'more_work',   TRUE,  FALSE),
+    ('B',  'had more work added within scope',                'more_work',   TRUE,  FALSE),
+    ('C',  'received additional funding',                     'funding_only', FALSE, TRUE),
+    ('D',  'got a change order',                              'more_work',   TRUE,  FALSE),
+    ('E',  'was terminated for default',                      'termination', FALSE, FALSE),
+    ('F',  'was terminated for convenience',                  'termination', FALSE, FALSE),
+    ('G',  'had an option year exercised',                    'more_work',   TRUE,  TRUE),
+    ('H',  'had a letter contract definitized',               'definitization', FALSE, FALSE),
+    ('J',  'took over a contract by novation',                'admin',       FALSE, FALSE),
+    ('K',  'had a contract closed out',                       'closeout',    FALSE, FALSE),
+    ('L',  'had a change order definitized',                  'more_work',   TRUE,  FALSE),
+    ('M',  'had an administrative action',                    'admin',       FALSE, FALSE),
+    ('N',  'had a contract cancelled',                        'termination', FALSE, FALSE),
+    ('P',  're-represented after a merger or acquisition',    'admin',       FALSE, FALSE),
+    ('R',  're-represented its size or status',               'admin',       FALSE, FALSE),
+    ('S',  'had its contract ID changed',                     'admin',       FALSE, FALSE),
+    ('T',  'had a contract transferred',                      'admin',       FALSE, FALSE),
+    ('V',  'changed its name or entity ID',                   'admin',       FALSE, FALSE),
+    ('W',  'changed its address',                             'admin',       FALSE, FALSE),
+    ('X',  'was terminated for cause',                        'termination', FALSE, FALSE),
+    ('Y',  'added a subcontracting plan',                     'admin',       FALSE, FALSE)
+)
+SELECT COALESCE(a.code, e.code)  AS action_type_code,
+       e.name                    AS source_description,
+       a.plain_english, a.family, a.is_more_work, a.is_funding_released
+FROM authored a
+FULL OUTER JOIN empirical e ON e.code = a.code
+ORDER BY action_type_code NULLS FIRST
+"""
+
+# pricing-terms cycle (2026-07-15, adjacency rider): one (field, code, name)
+# vocabulary covering every code space the fact gained this cycle — majority
+# name per code, same dedup rule as agency/country vocabs, five legs off the
+# SAME single scan. Source noise (verbatim text appearing in the code column,
+# e.g. 'SMALL BUSINESS') dedups to itself harmlessly.
+_FPDS_CODE_VOCAB_SQL = """
+CREATE TABLE fpds_code_vocab AS
+WITH raw AS (
+    -- src is a one-shot Arrow stream: FIVE separate `FROM src` legs would
+    -- read an exhausted reader (silent empty legs). One scan, lateral UNNEST.
+    SELECT u.field, u.code, u.name
+    FROM src, UNNEST([
+        {'field': 'pricing',
+         'code': type_of_contract_pricing_code, 'name': type_of_contract_pric_desc},
+        {'field': 'financing',
+         'code': contract_financing, 'name': contract_financing_descrip},
+        {'field': 'performance_based',
+         'code': performance_based_service_acquisition_code, 'name': performance_based_se_desc},
+        {'field': 'business_size_determination',
+         'code': contracting_officers_determination_of_business_size, 'name': contracting_officers_desc},
+        {'field': 'labor_standards',
+         'code': labor_standards_code, 'name': labor_standards_descrip}
+    ]) AS t(u)
+),
+pairs AS (
+    SELECT field, code, name, count(*) AS n
+    FROM raw
+    WHERE code IS NOT NULL AND code <> '' AND name IS NOT NULL AND name <> ''
+    GROUP BY 1, 2, 3
+)
+SELECT field, code, name
+FROM (SELECT field, code, name,
+             row_number() OVER (PARTITION BY field, code ORDER BY n DESC, name) AS rn
+      FROM pairs)
+WHERE rn = 1
+ORDER BY field, code
+"""
+
+# pricing-terms cycle (2026-07-15, gap E3): the farm-out lanes gain their
+# denominators + shares. farmout_base is the locally-materialized Lance
+# stream (hygiene rule); gtm_prime_combo_lanes is already built (manifest
+# order). Both sides are 1 row/(uei, naics, psc) -> row-preserving LEFT JOIN,
+# exact-parity gate applies. Keys are pure equalities (EXPLAIN-gated).
+_FARMOUT_SHARE_SQL = """
+CREATE TABLE gtm_prime_farmout_combo_lanes AS
+SELECT f.*,
+       c.prime_obl_24mo, c.prime_obl_60mo, c.prime_obl_lifetime,
+       c.n_txns_lifetime                                        AS prime_txns_lifetime,
+       f.farmout_amt_24mo    / NULLIF(c.prime_obl_24mo, 0)      AS farmout_share_24mo,
+       f.farmout_amt_60mo    / NULLIF(c.prime_obl_60mo, 0)      AS farmout_share_60mo,
+       f.farmout_amt_lifetime / NULLIF(c.prime_obl_lifetime, 0) AS farmout_share_lifetime
+FROM farmout_base f
+LEFT JOIN gtm_prime_combo_lanes c
+       ON c.uei = f.uei
+      AND c.naics_code = f.naics_code
+      AND c.psc_code = f.psc_code
+ORDER BY f.uei
+"""
+
+# pricing-terms cycle (2026-07-15, operator-directed): entity-event-geo month
+# rollup — closes the phrase layer's "in <state> (PoP) on event verbs" refusal.
+# Pure GROUP BY over the local fact (no join). Sorted action_type-first so the
+# compiled shape (event verb × state × window -> entity set) prunes.
+_MONTH_POP_SQL = """
+CREATE TABLE txn_recipient_month_pop AS
+SELECT uei, action_type_code, pop_state, pop_county_fips,
+       date_trunc('month', action_date) AS month,
+       count(*)                         AS n_actions,
+       sum(obligation)                  AS obligation_sum
+FROM txn_events_combo
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY action_type_code, pop_state, pop_county_fips, month
 """
 
 # gap-pass-2 E1: PoP country code -> majority name (same dedup rule as the
@@ -840,6 +1034,50 @@ _VIEWS: dict[str, str] = {
         FROM hits h
         LEFT JOIN naics_labor_share l ON l.naics_code = h.naics_code
     """,
+    # pricing-terms cycle (2026-07-15, gap E4 directional): the staffing-
+    # absorption composite — implied labor demand per prime combo lane
+    # (prime $ × loaded_labor_share), a visible v1 FTE estimate (60mo
+    # annualized / combo avg SOC wage — methodology stays a query-time dial,
+    # deliberately NOT baked into a mart), the entity's observable headcount
+    # (PDL band + LinkedIn count via the SAM↔PDL bridge), and the reported
+    # farm-out. The staffed-out signal is the residual: big implied labor,
+    # small headcount, little reported farm-out. Filter on uei/naics/psc —
+    # the underlying sorted tables prune; full-universe scans are for builds.
+    "v_staffing_absorption": """
+        CREATE VIEW v_staffing_absorption AS
+        WITH combo_wage AS (
+            SELECT naics_code, psc_code,
+                   avg(TRY_CAST(a_median AS DOUBLE)) AS avg_soc_wage
+            FROM naics_psc_labor_profile_categories
+            GROUP BY 1, 2
+        ),
+        hc AS (
+            SELECT b.uei,
+                   max(TRY_CAST(fb.employees_on_linkedin AS BIGINT)) AS employees_on_linkedin,
+                   max(p.employee_size_range)                        AS pdl_employee_size_range
+            FROM bridge_sam_pdl b
+            LEFT JOIN pdl_normalized_companies p ON p.pdl_company_id = b.pdl_company_id
+            LEFT JOIN firmographics_blitz fb     ON fb.domain_norm = b.normalized_domain
+            GROUP BY 1
+        )
+        SELECT c.uei, c.naics_code, c.psc_code,
+               c.prime_obl_24mo, c.prime_obl_60mo, c.prime_obl_lifetime,
+               l.loaded_labor_share,
+               c.prime_obl_60mo * l.loaded_labor_share             AS implied_labor_dollars_60mo,
+               w.avg_soc_wage,
+               c.prime_obl_60mo * l.loaded_labor_share
+                   / NULLIF(w.avg_soc_wage, 0) / 5.0               AS implied_fte_per_year_60mo,
+               f.farmout_amt_60mo, f.farmout_share_60mo,
+               h.employees_on_linkedin, h.pdl_employee_size_range
+        FROM gtm_prime_combo_lanes c
+        LEFT JOIN naics_labor_share l ON l.naics_code = c.naics_code
+        LEFT JOIN combo_wage w
+               ON w.naics_code = c.naics_code AND w.psc_code = c.psc_code
+        LEFT JOIN gtm_prime_farmout_combo_lanes f
+               ON f.uei = c.uei AND f.naics_code = c.naics_code
+              AND f.psc_code = c.psc_code
+        LEFT JOIN hc h ON h.uei = c.uei
+    """,
     # sub-out portrait at award grain: award_state × sub-out rollup — "is this
     # combo/geo/agency getting subbed out more or less" is a GROUP BY over this.
     "v_award_subout": """
@@ -974,6 +1212,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_POSITION_ORDERS_SQL)
         elif spec.get("combo_active"):
             con.execute(_COMBO_ACTIVE_SQL)
+        elif spec.get("month_pop_rollup"):
+            con.execute(_MONTH_POP_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
@@ -1023,12 +1263,23 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
                 con.execute(_AGENCY_SUB_VOCAB_SQL)
             elif spec.get("country_vocab"):
                 con.execute(_COUNTRY_VOCAB_SQL)
+            elif spec.get("action_type_vocab"):
+                con.execute(_ACTION_TYPE_VOCAB_SQL)
+            elif spec.get("fpds_code_vocab"):
+                con.execute(_FPDS_CODE_VOCAB_SQL)
             elif spec.get("ordering_windows"):
                 con.execute(_ORDERING_WINDOWS_SQL)
             elif spec.get("subout_rollup"):
                 con.execute(_SUBOUT_ROLLUP_SQL)
             elif spec.get("plan_state"):
                 con.execute(_PLAN_STATE_SQL)
+            elif spec.get("farmout_share"):
+                # stream -> local temp first (hygiene rule), then the
+                # row-preserving denominator join against the already-built
+                # gtm_prime_combo_lanes table.
+                con.execute("CREATE TEMP TABLE farmout_base AS SELECT * FROM src")
+                con.execute(_FARMOUT_SHARE_SQL)
+                con.execute("DROP TABLE farmout_base")
             else:
                 extra = spec.get("extra_select")
                 select = "SELECT *" + (f", {extra}" if extra else "")
