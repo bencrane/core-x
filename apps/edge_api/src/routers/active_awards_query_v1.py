@@ -389,7 +389,8 @@ WITH ev AS (
   GROUP BY 1 {ev_having}
 ){ind_cte}
 SELECT g.uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
-       e.normalized_domain, ROUND(g.event_obl, 0) AS event_obl, g.event_actions AS event_actions
+       e.normalized_domain, ROUND(g.event_obl, 0) AS event_obl, g.event_actions AS event_actions,
+       COUNT(*) OVER () AS total_count
 FROM ev g LEFT JOIN gtm_sam_entities e ON e.uei = g.uei {ind_join}
 {entity_where}
 ORDER BY g.event_obl DESC
@@ -417,7 +418,7 @@ LIMIT {limit}
                 "hq_state": hq_state, "industry": industry, "need": need,
                 "include_support": include_support,
             },
-            "total": len(rows),
+            "total": (rows[0].get("total_count") if rows else 0) or len(rows),
             "rows": rows,
             "elapsed_ms": payload.get("elapsed_ms"),
             "artifact": payload.get("artifact"),
@@ -489,7 +490,8 @@ WITH awd AS (
 ){ind_cte}
 SELECT g.recipient_uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
        e.normalized_domain, ROUND(g.total_obl, 0) AS active_total_obl,
-       ROUND(g.max_single, 0) AS active_max_single, g.award_ct AS active_award_ct
+       ROUND(g.max_single, 0) AS active_max_single, g.award_ct AS active_award_ct,
+       COUNT(*) OVER () AS total_count
 FROM agg g LEFT JOIN gtm_sam_entities e ON e.uei = g.recipient_uei {ind_join}
 {entity_where}
 ORDER BY {"g.total_obl" if grain == "total" else "g.max_single"} DESC
@@ -514,7 +516,7 @@ LIMIT {limit}
         "query": {"mode": mode, "grain": grain, "job_phrase": job_phrase, "state": state,
                   "min_amt": min_amt, "window_days": window_days, "hq_state": hq_state,
                   "industry": industry, "need": need, "include_support": include_support},
-        "total": len(rows),
+        "total": (rows[0].get("total_count") if rows else 0) or len(rows),
         "rows": rows,
         "elapsed_ms": payload.get("elapsed_ms"),
         "artifact": payload.get("artifact"),
