@@ -112,6 +112,17 @@ async def jtbd_vocab() -> dict[str, Any]:
 #     (self-identity, never inherited).
 # Lifetime for stable identity; 10% because the share distribution is bimodal
 # (measured 2026-07-15: any→10% cuts incidental-work members; 10→50% barely moves).
+# Equipment demand buckets (approved 2026-07-15) — natural names → the 5 canonical
+# equipment_buckets on naics_psc_equipment_needs. Posited (LLM-inferred from the
+# combo's work), not observed order sheets — disclosed on calls, kept sharp.
+_EQUIPMENT_BUCKETS: dict[str, str] = {
+    "earthmoving equipment": "heavy_earthmoving_civil",
+    "cranes": "material_handling_cranes",
+    "heavy haul trucks": "trucks_heavy_haul",
+    "aerial lifts": "aerial_access",
+    "power generation equipment": "industrial_power_support",
+}
+
 _INDUSTRY_SHARE_MIN = 0.10
 _INDUSTRIES: dict[str, list[str]] = {
     "construction": ["23"],
@@ -206,15 +217,20 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     # (support roles ride nearly every combo and would make 'need' non-discriminating).
     need = body.get("need")
     need_socs: list[str] = []
+    need_bucket: str | None = None
     if need is not None:
         need = str(need).strip().lower()
-        await _load_vocab()
-        need_socs = sorted(set(_cache.get("occupations", {}).get(need, [])))
-        if not need_socs:
-            raise HTTPException(
-                status_code=422,
-                detail=f"unknown occupation '{need}' — not in the occupation vocabulary",
-            )
+        # Equipment bucket tokens share the `need` slot (approved 2026-07-15: one
+        # word, posited demand — "they aren't tearing down buildings by hand").
+        need_bucket = _EQUIPMENT_BUCKETS.get(need)
+        if need_bucket is None:
+            await _load_vocab()
+            need_socs = sorted(set(_cache.get("occupations", {}).get(need, [])))
+            if not need_socs:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"unknown need token '{need}' — not in the occupation or equipment vocabulary",
+                )
     include_support = bool(body.get("include_support"))
 
     limit = min(int(body.get("limit") or 100), 1000)
@@ -271,7 +287,13 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         )
     entity_where = ("WHERE " + " AND ".join(entity_preds)) if entity_preds else ""
     need_pred = ""
-    if need_socs:
+    if need_bucket:
+        need_pred = (
+            f" AND EXISTS (SELECT 1 FROM naics_psc_equipment_needs eq "
+            f"WHERE eq.naics_code = s.naics_code AND eq.psc_code = s.product_or_service_code "
+            f"AND eq.in_scope AND list_contains(eq.equipment_buckets, '{need_bucket}'))"
+        )
+    elif need_socs:
         socs = ",".join(f"'{s}'" for s in need_socs)  # codes come from the server-side vocab
         role_pred = "" if include_support else " AND lc.role_class = 'core_deliverable'"
         # NOTE: outer table aliased `s` — an unqualified column inside EXISTS binds
