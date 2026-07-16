@@ -61,6 +61,7 @@ async def _load_vocab() -> None:
     if time.monotonic() - _cache["at"] < _CACHE_TTL_S and _cache["combos"]:
         return
     combos: dict[str, list[tuple[str, str]]] = {}
+    occupations: dict[str, list[str]] = {}
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -70,7 +71,23 @@ async def _load_vocab() -> None:
             )
             for phrase, naics, psc in await cur.fetchall():
                 combos.setdefault(phrase, []).append((naics, psc))
+            # Occupation tokens ("and need <token>") — title tokens map to their SOC
+            # codes; group tokens expand to every code in the 2-digit major group.
+            try:
+                await cur.execute("SELECT soc_code, token, group_token FROM gtm.occupation_tokens")
+                rows = await cur.fetchall()
+                for soc, token, group_token in rows:
+                    occupations.setdefault(token, []).append(soc)
+                    if group_token:
+                        occupations.setdefault(group_token, []).append(soc)
+            except Exception:  # table not landed yet — occupations vocab empty
+                await conn.rollback()
     _cache["combos"] = combos
+    _cache["occupations"] = occupations
+    _cache["occupation_vocab"] = sorted(
+        ({"token": t, "soc_count": len(set(c))} for t, c in occupations.items()),
+        key=lambda x: -x["soc_count"],
+    )
     _cache["vocab"] = sorted(
         ({"phrase": p, "combo_count": len(c)} for p, c in combos.items()),
         key=lambda x: -x["combo_count"],
@@ -81,7 +98,8 @@ async def _load_vocab() -> None:
 @router.get("/jtbd-vocab", dependencies=[Depends(require_service_token)])
 async def jtbd_vocab() -> dict[str, Any]:
     await _load_vocab()
-    return {"model_id": CANONICAL_MODEL, "phrases": _cache["vocab"]}
+    return {"model_id": CANONICAL_MODEL, "phrases": _cache["vocab"],
+            "occupations": _cache.get("occupation_vocab", [])}
 
 
 # Industry vocabulary (approved 2026-07-15): "<industry> companies …" — a frozen
@@ -182,6 +200,23 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
                 detail=f"unknown industry '{industry}' — not in the industry vocabulary",
             )
 
+    # "and need <occupation>" (approved 2026-07-15): keep companies whose QUALIFYING
+    # awards' combos require the occupation. Work-scoping invariant applies — evaluated
+    # on the same award slice the sentence selected. Default core-deliverable roles only
+    # (support roles ride nearly every combo and would make 'need' non-discriminating).
+    need = body.get("need")
+    need_socs: list[str] = []
+    if need is not None:
+        need = str(need).strip().lower()
+        await _load_vocab()
+        need_socs = sorted(set(_cache.get("occupations", {}).get(need, [])))
+        if not need_socs:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown occupation '{need}' — not in the occupation vocabulary",
+            )
+    include_support = bool(body.get("include_support"))
+
     limit = min(int(body.get("limit") or 100), 1000)
 
     combo_pred = ""
@@ -235,11 +270,22 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
             f"OR (COALESCE(ip.tot_obl, 0) = 0 AND ({declared})))"
         )
     entity_where = ("WHERE " + " AND ".join(entity_preds)) if entity_preds else ""
+    need_pred = ""
+    if need_socs:
+        socs = ",".join(f"'{s}'" for s in need_socs)  # codes come from the server-side vocab
+        role_pred = "" if include_support else " AND lc.role_class = 'core_deliverable'"
+        # NOTE: outer table aliased `s` — an unqualified column inside EXISTS binds
+        # to the inner table first (lc.naics_code = naics_code would be a tautology).
+        need_pred = (
+            f" AND EXISTS (SELECT 1 FROM naics_psc_labor_profile_categories lc "
+            f"WHERE lc.naics_code = s.naics_code AND lc.psc_code = s.product_or_service_code "
+            f"AND lc.soc_code IN ({socs}){role_pred})"
+        )
     sql = f"""
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
-  FROM usaspending_fpds_prime_award_state
-  WHERE {base_pred} {combo_pred}
+  FROM usaspending_fpds_prime_award_state s
+  WHERE {base_pred} {combo_pred}{need_pred}
 ), located AS (
   SELECT a.* FROM awd a {state_join}
 ), agg AS (
