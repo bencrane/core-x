@@ -84,6 +84,50 @@ async def jtbd_vocab() -> dict[str, Any]:
     return {"model_id": CANONICAL_MODEL, "phrases": _cache["vocab"]}
 
 
+# Industry vocabulary (approved 2026-07-15): "<industry> companies …" — a frozen
+# name → NAICS-prefix-set table. Membership (operator-corrected 2026-07-15):
+#   • entity HAS prime history → ≥10% share of PRIME-side lifetime $ in the set
+#     (what they win outright is what they do). NEVER the sub-side lane codes —
+#     those carry the PRIME award's combo, and a staffing firm subbing under an
+#     aerospace prime is not an aerospace company.
+#   • entity has NO prime history → their SAM-declared NAICS matches the set
+#     (self-identity, never inherited).
+# Lifetime for stable identity; 10% because the share distribution is bimodal
+# (measured 2026-07-15: any→10% cuts incidental-work members; 10→50% barely moves).
+_INDUSTRY_SHARE_MIN = 0.10
+_INDUSTRIES: dict[str, list[str]] = {
+    "construction": ["23"],
+    "engineering": ["5413"],
+    "environmental": ["562"],
+    "facilities": ["5612", "5617"],
+    "janitorial": ["56172"],
+    "landscaping": ["56173"],
+    "security": ["5616"],
+    "real estate": ["531"],
+    "logistics": ["48", "49"],
+    "trucking": ["484"],
+    "aerospace": ["3364"],
+    "shipbuilding": ["3366"],
+    "defense": ["3364", "3366", "3369", "33299", "3345"],
+    "manufacturing": ["31", "32", "33"],
+    "electronics": ["334"],
+    "machinery": ["333"],
+    "chemical": ["325"],
+    "pharmaceutical": ["3254"],
+    "energy": ["22", "211", "213"],
+    "mining": ["212"],
+    "it": ["5415"],
+    "software": ["5112", "5415"],
+    "telecom": ["517"],
+    "consulting": ["5416"],
+    "accounting": ["5412"],
+    "legal": ["5411"],
+    "healthcare": ["62"],
+    "staffing": ["5613"],
+    "financial": ["52"],
+    "agriculture": ["11"],
+}
+
 # Q2 (approved 2026-07-15): "companies that have won (total|single) awards …
 # in the last <window>" — awards FIRST AWARDED within the window (event, not
 # status; an already-completed recent win still counts). $ = the award's full
@@ -123,6 +167,21 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="min_amt must be a number")
 
+    hq_state = body.get("hq_state")
+    if hq_state is not None:
+        hq_state = str(hq_state).strip().upper()
+        if hq_state not in _US_STATES:
+            raise HTTPException(status_code=422, detail=f"unknown hq_state '{hq_state}'")
+
+    industry = body.get("industry")
+    if industry is not None:
+        industry = str(industry).strip().lower()
+        if industry not in _INDUSTRIES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown industry '{industry}' — not in the industry vocabulary",
+            )
+
     limit = min(int(body.get("limit") or 100), 1000)
 
     combo_pred = ""
@@ -156,6 +215,26 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         if mode == "active"
         else f"first_action_date >= CURRENT_DATE - INTERVAL {int(window_days)} DAY"
     )
+    entity_preds = []
+    if hq_state:
+        entity_preds.append(f"e.physical_state = '{hq_state}'")
+    ind_cte = ""
+    ind_join = ""
+    if industry:
+        prefixes = _INDUSTRIES[industry]
+        in_set = " OR ".join(f"code LIKE '{p}%'" for p in prefixes)
+        declared = " OR ".join(f"e.primary_naics LIKE '{p}%'" for p in prefixes)
+        ind_cte = f""", ind AS (
+  SELECT uei, SUM(CASE WHEN {in_set} THEN obl_lifetime ELSE 0 END) AS in_set_obl,
+         SUM(obl_lifetime) AS tot_obl
+  FROM gtm_entity_code_lanes WHERE side = 'prime' AND code_type = 'naics' GROUP BY 1
+)"""
+        ind_join = "LEFT JOIN ind ip ON ip.uei = g.recipient_uei"
+        entity_preds.append(
+            f"((ip.tot_obl > 0 AND ip.in_set_obl / ip.tot_obl >= {_INDUSTRY_SHARE_MIN}) "
+            f"OR (COALESCE(ip.tot_obl, 0) = 0 AND ({declared})))"
+        )
+    entity_where = ("WHERE " + " AND ".join(entity_preds)) if entity_preds else ""
     sql = f"""
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
@@ -167,11 +246,12 @@ WITH awd AS (
   SELECT recipient_uei, SUM(life_to_date_obligated) AS total_obl,
          MAX(life_to_date_obligated) AS max_single, COUNT(*) AS award_ct
   FROM located GROUP BY 1 {having}
-)
+){ind_cte}
 SELECT g.recipient_uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
        e.normalized_domain, ROUND(g.total_obl, 0) AS active_total_obl,
        ROUND(g.max_single, 0) AS active_max_single, g.award_ct AS active_award_ct
-FROM agg g LEFT JOIN gtm_sam_entities e ON e.uei = g.recipient_uei
+FROM agg g LEFT JOIN gtm_sam_entities e ON e.uei = g.recipient_uei {ind_join}
+{entity_where}
 ORDER BY {"g.total_obl" if grain == "total" else "g.max_single"} DESC
 LIMIT {limit}
 """
@@ -192,7 +272,8 @@ LIMIT {limit}
     rows = [dict(zip(cols, row)) for row in payload["rows"]]
     return {
         "query": {"mode": mode, "grain": grain, "job_phrase": job_phrase, "state": state,
-                  "min_amt": min_amt, "window_days": window_days},
+                  "min_amt": min_amt, "window_days": window_days, "hq_state": hq_state,
+                  "industry": industry},
         "total": len(rows),
         "rows": rows,
         "elapsed_ms": payload.get("elapsed_ms"),
