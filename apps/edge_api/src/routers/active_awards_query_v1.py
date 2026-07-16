@@ -84,11 +84,31 @@ async def jtbd_vocab() -> dict[str, Any]:
     return {"model_id": CANONICAL_MODEL, "phrases": _cache["vocab"]}
 
 
+# Q2 (approved 2026-07-15): "companies that have won (total|single) awards …
+# in the last <window>" — awards FIRST AWARDED within the window (event, not
+# status; an already-completed recent win still counts). $ = the award's full
+# life-to-date obligations. Fixed window vocabulary only.
+_WINDOWS_DAYS = {30, 45, 60, 90, 180, 365, 730, 1095}
+
+
 @router.post("/active-awards-query", dependencies=[Depends(require_service_token)])
 async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     grain = body.get("grain")
     if grain not in ("total", "single"):
         raise HTTPException(status_code=422, detail="grain must be 'total' or 'single'")
+
+    mode = body.get("mode") or "active"
+    if mode not in ("active", "won"):
+        raise HTTPException(status_code=422, detail="mode must be 'active' or 'won'")
+    window_days = body.get("window_days")
+    if mode == "won":
+        if window_days not in _WINDOWS_DAYS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"window_days required for mode 'won' — one of {sorted(_WINDOWS_DAYS)}",
+            )
+    elif window_days is not None:
+        raise HTTPException(status_code=422, detail="window_days only applies to mode 'won'")
 
     state = body.get("state")
     if state is not None:
@@ -131,11 +151,16 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     measure = "SUM(life_to_date_obligated)" if grain == "total" else "MAX(life_to_date_obligated)"
     having = f"HAVING {measure} > {min_amt}" if min_amt is not None else ""
 
+    base_pred = (
+        "current_end_date >= CURRENT_DATE AND is_terminated = FALSE"
+        if mode == "active"
+        else f"first_action_date >= CURRENT_DATE - INTERVAL {int(window_days)} DAY"
+    )
     sql = f"""
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
   FROM usaspending_fpds_prime_award_state
-  WHERE current_end_date >= CURRENT_DATE AND is_terminated = FALSE {combo_pred}
+  WHERE {base_pred} {combo_pred}
 ), located AS (
   SELECT a.* FROM awd a {state_join}
 ), agg AS (
@@ -166,7 +191,8 @@ LIMIT {limit}
     cols = payload["columns"]
     rows = [dict(zip(cols, row)) for row in payload["rows"]]
     return {
-        "query": {"grain": grain, "job_phrase": job_phrase, "state": state, "min_amt": min_amt},
+        "query": {"mode": mode, "grain": grain, "job_phrase": job_phrase, "state": state,
+                  "min_amt": min_amt, "window_days": window_days},
         "total": len(rows),
         "rows": rows,
         "elapsed_ms": payload.get("elapsed_ms"),
