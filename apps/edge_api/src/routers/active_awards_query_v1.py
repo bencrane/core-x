@@ -62,6 +62,7 @@ async def _load_vocab() -> None:
         return
     combos: dict[str, list[tuple[str, str]]] = {}
     occupations: dict[str, list[str]] = {}
+    equipment: dict[str, list[tuple[str, str]]] = {}
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -82,10 +83,34 @@ async def _load_vocab() -> None:
                         occupations.setdefault(group_token, []).append(soc)
             except Exception:  # table not landed yet — occupations vocab empty
                 await conn.rollback()
+            # Granular equipment tokens ("and need <token>") — free-text equipment
+            # nouns → the (naics, psc) combos whose work implies that gear. The generic
+            # `equipment` token is EXCLUDED from the resolvable vocabulary (too broad —
+            # thousands of combos); use one of the 5 equipment buckets instead.
+            try:
+                await cur.execute(
+                    "SELECT token, naics_code, psc_code FROM gtm.equipment_tokens "
+                    "WHERE token <> 'equipment'"
+                )
+                for token, naics, psc in await cur.fetchall():
+                    equipment.setdefault(token, []).append((naics, psc))
+            except Exception:  # table not landed yet — equipment vocab empty
+                await conn.rollback()
     _cache["combos"] = combos
     _cache["occupations"] = occupations
+    _cache["equipment"] = equipment
+    # The typeahead completes occupations, the 5 equipment buckets, AND granular
+    # equipment tokens off the SAME `occupations` array (shape {token, soc_count};
+    # soc_count is an opaque completion weight — combo count for equipment tokens).
+    # A token that is both a bucket and a granular token (e.g. "cranes") appears
+    # once; resolution order at query time is bucket → occupation → granular.
+    occ_counts: dict[str, int] = {t: len(set(c)) for t, c in occupations.items()}
+    for t, pairs in equipment.items():
+        occ_counts[t] = len(set(pairs))
+    for t in _EQUIPMENT_BUCKETS:
+        occ_counts.setdefault(t, len(set(equipment.get(t, []))))
     _cache["occupation_vocab"] = sorted(
-        ({"token": t, "soc_count": len(set(c))} for t, c in occupations.items()),
+        ({"token": t, "soc_count": n} for t, n in occ_counts.items()),
         key=lambda x: -x["soc_count"],
     )
     _cache["vocab"] = sorted(
@@ -264,19 +289,34 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     need = body.get("need")
     need_socs: list[str] = []
     need_bucket: str | None = None
+    # Granular equipment token → its combo pairs, inlined into the qualifying-award
+    # predicate (Q1/Q2 use the `s`-aliased FPDS table; events uses `t`).
+    need_equip_pred = ""
+    need_equip_pred_ev = ""
     if need is not None:
         need = str(need).strip().lower()
-        # Equipment bucket tokens share the `need` slot (approved 2026-07-15: one
-        # word, posited demand — "they aren't tearing down buildings by hand").
+        # Resolution order (approved 2026-07-15): equipment bucket → occupation →
+        # granular equipment token. Equipment tokens share the `need` slot (one word,
+        # posited demand — "they aren't tearing down buildings by hand").
         need_bucket = _EQUIPMENT_BUCKETS.get(need)
         if need_bucket is None:
             await _load_vocab()
             need_socs = sorted(set(_cache.get("occupations", {}).get(need, [])))
             if not need_socs:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"unknown need token '{need}' — not in the occupation or equipment vocabulary",
-                )
+                equip_combos = _cache.get("equipment", {}).get(need)
+                if not equip_combos:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"unknown need token '{need}' — not in the occupation or equipment vocabulary",
+                    )
+                if len(equip_combos) > 2000:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"token '{need}' too broad — use a bucket",
+                    )
+                pairs = ",".join(f"('{n}','{p}')" for n, p in equip_combos)  # server-side vocab, not user input
+                need_equip_pred = f" AND (s.naics_code, s.product_or_service_code) IN ({pairs})"
+                need_equip_pred_ev = f" AND (t.naics_code, t.psc_code) IN ({pairs})"
     include_support = bool(body.get("include_support"))
 
     limit = min(int(body.get("limit") or 100), 1000)
@@ -345,7 +385,7 @@ WITH ev AS (
   SELECT t.uei, SUM(t.obligation_sum) AS event_obl, SUM(t.n_actions) AS event_actions
   FROM txn_recipient_month_by_type t
   WHERE t.action_type_code IN ({codes_sql})
-    AND t.month >= CURRENT_DATE - INTERVAL {int(window_days)} DAY{ev_combo_pred}{ev_need_pred}
+    AND t.month >= CURRENT_DATE - INTERVAL {int(window_days)} DAY{ev_combo_pred}{ev_need_pred}{need_equip_pred_ev}
   GROUP BY 1 {ev_having}
 ){ind_cte}
 SELECT g.uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
@@ -439,7 +479,7 @@ LIMIT {limit}
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
   FROM usaspending_fpds_prime_award_state s
-  WHERE {base_pred} {combo_pred}{need_pred}
+  WHERE {base_pred} {combo_pred}{need_pred}{need_equip_pred}
 ), located AS (
   SELECT a.* FROM awd a {state_join}
 ), agg AS (
