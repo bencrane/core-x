@@ -174,6 +174,17 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_ordering_windows",
      "sort": ["contract_award_unique_key"], "ordering_windows": True, "aggregate": True,
      "cols": ["contract_award_unique_key", "ordering_period_end_date", "action_date"]},
+    # gap-pass-1 E2 + pricing-terms cycle: award-grain latest-action state
+    # (subcontracting plan + pricing/financing/size). billing-latency cycle
+    # (2026-07-16): MOVED before award_state — the parent_window build now
+    # denormalizes these columns onto award_state itself, because ANY
+    # query-time join with the 83M side saturates the 2-thread serving box
+    # (measured 32-49 s on the billing shapes; the position-orders precedent).
+    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_plan_state",
+     "sort": ["contract_award_unique_key"], "plan_state": True, "aggregate": True,
+     "cols": ["contract_award_unique_key", "subcontracting_plan", "action_date",
+              "type_of_contract_pricing_code", "contract_financing",
+              "contracting_officers_determination_of_business_size"]},
     # award-grain rows + exact expiring: 96s live-lane -> ms-class local; also
     # removes the expiry_months month-grain approximation on two-lane phrases.
     # gap-pass-2 E2: parent_window build widens it with own + resolved-parent
@@ -265,18 +276,16 @@ MANIFEST: list[dict] = [
               "recipient_uei", "award_id_piid", "description",
               # gap-pass-1 E4: solicitation join keys for the PDF-handoff workstream
               "solicitation_identifier", "solicitation_date"]},
-    # gap-pass-1 E2: award-grain "carries a subcontracting plan" latest-state for
-    # arbitrary/closed populations (plan lives at txn grain; this pins the
-    # latest-action plan flag per award).
-    # pricing-terms cycle (2026-07-15): the pricing/financing/size-determination
-    # latest-state rides the SAME per-award arg_max scan — award_state (Lance)
-    # carries no pricing columns, so this is the award-grain pricing home
-    # (join usaspending_fpds_prime_award_state on contract_award_unique_key).
-    {"ds": "usaspending_fpds_canonical_txn", "tier": "C", "dest": "award_plan_state",
-     "sort": ["contract_award_unique_key"], "plan_state": True, "aggregate": True,
-     "cols": ["contract_award_unique_key", "subcontracting_plan", "action_date",
-              "type_of_contract_pricing_code", "contract_financing",
-              "contracting_officers_determination_of_business_size"]},
+    # (award_plan_state moved up — billing-latency cycle 2026-07-16: it must
+    # build BEFORE award_state so parent_window denormalizes its columns.)
+    # billing-latency cycle (2026-07-16): entity-grain pricing mix — the demo
+    # lens ("primes whose active book is predominantly FFP / unfinanced /
+    # small-determined") as ONE uei-sorted read. 767k rows off the local
+    # award_state (which now carries the pricing columns). Aggregate parity.
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
+     "dest": "gtm_entity_pricing_mix", "sort": ["uei"],
+     "from_table": "usaspending_fpds_prime_award_state",
+     "entity_pricing_mix": True, "aggregate": True},
     # pricing-terms cycle (2026-07-15, gap E1): action-type vocabulary — the
     # empirical majority description per code (source pairs are messy: 102
     # raw tuples, truncated/null/cross-contaminated variants) FULL-joined with
@@ -726,13 +735,19 @@ ORDER BY s.prime_awardee_uei
 _MONTH_POP_SQL = """
 CREATE TABLE txn_recipient_month_pop AS
 SELECT uei, action_type_code, pop_state, pop_county_fips,
+       naics_code, psc_code,
        date_trunc('month', action_date) AS month,
        count(*)                         AS n_actions,
        sum(obligation)                  AS obligation_sum
 FROM txn_events_combo
-GROUP BY 1, 2, 3, 4, 5
+GROUP BY 1, 2, 3, 4, 5, 6, 7
 ORDER BY action_type_code, pop_state, pop_county_fips, month
 """
+# billing-latency cycle (2026-07-16): naics/psc added to the grain (27.5M ->
+# 37.0M rows, probe-measured) so event-verb × PoP-state composes with the
+# job/need combo layer. Aggregations to the coarser grain stay correct
+# (SUM over the finer rows); the sort is unchanged so state-anchored reads
+# prune exactly as before.
 
 # gap-pass-2 E1: PoP country code -> majority name (same dedup rule as the
 # agency vocabs; collapses source variants like "UNITED STATES OF AMERICA").
@@ -807,10 +822,21 @@ SELECT a.*,
        p.awarding_sub_agency_code    AS parent_awarding_sub_agency_code,
        p.idv_type_code               AS parent_idv_type_code,
        p.award_type_code             AS parent_award_type_code,
-       p.type_of_set_aside_code      AS parent_type_of_set_aside_code
+       p.type_of_set_aside_code      AS parent_type_of_set_aside_code,
+       -- billing-latency cycle (2026-07-16): pricing/plan latest-state
+       -- DENORMALIZED onto the award row. Query-time joins with this 83M
+       -- table saturate the 2-thread serving box (measured 32-49 s on the
+       -- billing shapes); award_plan_state is GROUP BY key -> 1:1, the
+       -- exact-parity gate still applies.
+       ps.latest_plan,
+       ps.latest_pricing_code,
+       ps.latest_financing_code,
+       ps.latest_business_size
 FROM award_state_base a
 LEFT JOIN award_ordering_windows o
        ON o.contract_award_unique_key = a.contract_award_unique_key
+LEFT JOIN award_plan_state ps
+       ON ps.contract_award_unique_key = a.contract_award_unique_key
 LEFT JOIN parent_attrs p
        ON p.contract_award_unique_key
         = (CASE WHEN a.parent_match_flag = 'resolved' THEN a.parent_award_key_resolved END)
@@ -818,6 +844,50 @@ LEFT JOIN award_ordering_windows po
        ON po.contract_award_unique_key
         = (CASE WHEN a.parent_match_flag = 'resolved' THEN a.parent_award_key_resolved END)
 ORDER BY a.current_end_date
+"""
+
+# billing-latency cycle (2026-07-16): entity-grain pricing mix — one row per
+# recipient over the (now pricing-carrying) local award_state. Class map from
+# fpds_code_vocab (probe-verified): fixed = A,B,J,K,L,M; cost = R,S,T,U,V;
+# tm_lh = Y,Z; everything else (0,1,2,3,NO,O,P,X,null) = other/unknown.
+# "Unfinanced" = financing NULL / Z / literal 'NOT APPLICABLE' (source noise
+# keeps text in the code column on old rows). Active = the combo_active rule.
+_ENTITY_PRICING_MIX_SQL = """
+CREATE TABLE gtm_entity_pricing_mix AS
+WITH cls AS (
+    SELECT recipient_uei,
+           total_dollars_obligated_snapshot AS obl,
+           (days_to_expiry > 0 AND is_terminated = FALSE) AS is_active,
+           CASE WHEN latest_pricing_code IN ('A','B','J','K','L','M') THEN 'fixed'
+                WHEN latest_pricing_code IN ('R','S','T','U','V')     THEN 'cost'
+                WHEN latest_pricing_code IN ('Y','Z')                 THEN 'tm_lh'
+                ELSE 'other' END AS pricing_class,
+           (latest_pricing_code = 'J') AS is_ffp,
+           (latest_financing_code IS NULL
+            OR latest_financing_code IN ('Z', 'NOT APPLICABLE'))      AS is_unfinanced,
+           (latest_business_size = 'S')                               AS is_small_det
+    FROM usaspending_fpds_prime_award_state
+    WHERE recipient_uei IS NOT NULL AND recipient_uei <> ''
+)
+SELECT recipient_uei                                                   AS uei,
+       count(*)                                                        AS award_ct,
+       sum(obl)                                                        AS obl_total,
+       count(*)  FILTER (WHERE is_active)                              AS active_award_ct,
+       sum(obl)  FILTER (WHERE is_active)                              AS active_obl,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed')  AS active_obl_fixed,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost')   AS active_obl_cost,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh')  AS active_obl_tm_lh,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other')  AS active_obl_other,
+       count(*)  FILTER (WHERE is_active AND is_ffp AND is_unfinanced) AS active_ffp_unfinanced_ct,
+       sum(obl)  FILTER (WHERE is_active AND is_ffp AND is_unfinanced) AS active_obl_ffp_unfinanced,
+       sum(obl)  FILTER (WHERE is_active AND is_small_det)             AS active_obl_small_determined,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed')
+           / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_fixed_share,
+       sum(obl)  FILTER (WHERE is_active AND is_ffp AND is_unfinanced)
+           / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_ffp_unfinanced_share
+FROM cls
+GROUP BY 1
+ORDER BY uei
 """
 
 # gap-pass-3 E1 residual (measured post-v8: the position ladder stayed 17-22s
@@ -1259,6 +1329,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_COMBO_ACTIVE_SQL)
         elif spec.get("month_pop_rollup"):
             con.execute(_MONTH_POP_SQL)
+        elif spec.get("entity_pricing_mix"):
+            con.execute(_ENTITY_PRICING_MIX_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
