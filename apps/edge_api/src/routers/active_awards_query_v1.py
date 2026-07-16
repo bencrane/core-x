@@ -127,6 +127,55 @@ async def jtbd_vocab() -> dict[str, Any]:
             "occupations": _cache.get("occupation_vocab", [])}
 
 
+GPT_MODEL = "gpt-5.4"
+
+
+@router.get("/jtbd-phrase-map", dependencies=[Depends(require_service_token)])
+async def jtbd_phrase_map() -> dict[str, Any]:
+    """Canonicalization audit map: each canonical phrase → the distinct GPT-5.4
+    'to: …' rewrites it absorbed (matched on the shared (naics, psc) combo grain).
+    Read-only review surface for the operator's phrase-quality pass; both layers
+    live in gtm.combo_job_to_be_done under their model_id. Cached like the vocab.
+    """
+    now = time.monotonic()
+    cached = _cache.get("phrase_map")
+    if cached is not None and now - _cache.get("phrase_map_at", 0.0) < _CACHE_TTL_S:
+        return cached
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT c.output_sentence AS phrase, g.output_sentence AS variant, "
+                "COUNT(*) AS combo_count "
+                "FROM gtm.combo_job_to_be_done c "
+                "JOIN gtm.combo_job_to_be_done g "
+                "  ON g.naics_code = c.naics_code AND g.psc_code = c.psc_code "
+                " AND g.model_id = %s "
+                "WHERE c.model_id = %s "
+                "GROUP BY 1, 2",
+                (GPT_MODEL, CANONICAL_MODEL),
+            )
+            rows = await cur.fetchall()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    totals: dict[str, int] = {}
+    for phrase, variant, combo_count in rows:
+        grouped.setdefault(phrase, []).append({"variant": variant, "combo_count": combo_count})
+        totals[phrase] = totals.get(phrase, 0) + combo_count
+    phrases = [
+        {
+            "phrase": p,
+            "combo_count": totals[p],
+            "variant_count": len(vs),
+            "variants": sorted(vs, key=lambda v: -v["combo_count"]),
+        }
+        for p, vs in grouped.items()
+    ]
+    phrases.sort(key=lambda x: -x["combo_count"])
+    payload = {"canonical_model": CANONICAL_MODEL, "source_model": GPT_MODEL, "phrases": phrases}
+    _cache["phrase_map"] = payload
+    _cache["phrase_map_at"] = now
+    return payload
+
+
 # Industry vocabulary (approved 2026-07-15): "<industry> companies …" — a frozen
 # name → NAICS-prefix-set table. Membership (operator-corrected 2026-07-15):
 #   • entity HAS prime history → ≥10% share of PRIME-side lifetime $ in the set
