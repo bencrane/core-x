@@ -71,6 +71,18 @@ _US_STATES = {
 _WINDOW_START = "2022-10-01"
 _WINDOW_END = "2025-09-30"
 
+# Canonical /count SQL column contract, in SELECT order (the sidecar echoes the
+# SQL aliases back as ``columns``; any drift is a 502, never a mislabeled stat).
+EXPECTED_COLS = (
+    "count", "won_total", "won_median", "won_avg", "book_total", "book_median",
+    "book_avg", "awards_median", "committed_award_ct", "award_median", "award_avg",
+    "runway_total", "runway_median", "runway_avg", "vehicle_seats", "vehicle_holders",
+    "vehicle_ceiling_total", "vehicle_headroom_total",
+    "pricing_fixed_value", "pricing_cost_value", "pricing_tm_lh_value",
+    "pricing_fixed_ct", "pricing_cost_ct", "pricing_tm_lh_ct", "pricing_other_ct",
+    "ffp_unfinanced_value", "ffp_unfinanced_ct",
+)
+
 # slug -> {"title", "description", "pairs": [(naics, psc)]}; cached in-process.
 _cache: dict[str, Any] = {"at": 0.0, "collections": {}}
 _CACHE_TTL_S = 600
@@ -105,6 +117,17 @@ async def _load_collections() -> None:
                 }
     _cache["collections"] = collections
     _cache["at"] = time.monotonic()
+
+
+def _add_pricing_other(stats: dict[str, Any]) -> None:
+    """pricing_other_value is the post-rounding residual so the four classes sum
+    to book_total exactly; never a fifth independently rounded SQL partition."""
+    stats["pricing_other_value"] = (
+        stats["book_total"]
+        - stats["pricing_fixed_value"]
+        - stats["pricing_cost_value"]
+        - stats["pricing_tm_lh_value"]
+    )
 
 
 def _refuse(detail: str) -> HTTPException:
@@ -225,7 +248,13 @@ awards AS (
          greatest(coalesce(a.current_total_value_of_award, 0), 0) AS cvalue,
          greatest(coalesce(a.current_total_value_of_award, 0) - coalesce(a.life_to_date_obligated, 0), 0) AS crunway,
          greatest(coalesce(a.potential_ceiling, 0), 0) AS vceiling,
-         greatest(coalesce(a.potential_ceiling, 0) - coalesce(a.life_to_date_obligated, 0), 0) AS vheadroom
+         greatest(coalesce(a.potential_ceiling, 0) - coalesce(a.life_to_date_obligated, 0), 0) AS vheadroom,
+         (CASE WHEN a.latest_pricing_code IN ('A','B','J','K','L','M') THEN 'fixed'
+               WHEN a.latest_pricing_code IN ('R','S','T','U','V') THEN 'cost'
+               WHEN a.latest_pricing_code IN ('Y','Z') THEN 'tm_lh'
+               ELSE 'other' END) AS pricing_class,
+         (a.latest_pricing_code = 'J'
+          AND coalesce(a.latest_financing_code, 'Z') IN ('Z','NOT APPLICABLE')) AS is_ffp_unfin
   FROM usaspending_fpds_prime_award_state a
   JOIN pairs pr ON a.naics_code = pr.naics_code AND a.product_or_service_code = pr.psc_code
   JOIN m ON m.uei = a.recipient_uei
@@ -250,7 +279,7 @@ firm AS (
     FROM awards GROUP BY 1
   ) f USING (uei)
 )
-SELECT count(*) AS n,
+SELECT count(*) AS "count",
        round(coalesce(sum(won), 0), 0) AS won_total,
        round(coalesce(median(won), 0), 0) AS won_median,
        round(coalesce(avg(won), 0), 0) AS won_avg,
@@ -267,7 +296,16 @@ SELECT count(*) AS n,
        coalesce(sum(vehicle_ct), 0) AS vehicle_seats,
        count(*) FILTER (WHERE vehicle_ct > 0) AS vehicle_holders,
        round(coalesce(sum(vehicle_ceiling), 0), 0) AS vehicle_ceiling_total,
-       round(coalesce(sum(vehicle_headroom), 0), 0) AS vehicle_headroom_total
+       round(coalesce(sum(vehicle_headroom), 0), 0) AS vehicle_headroom_total,
+       (SELECT round(coalesce(sum(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle AND pricing_class = 'fixed') AS pricing_fixed_value,
+       (SELECT round(coalesce(sum(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle AND pricing_class = 'cost') AS pricing_cost_value,
+       (SELECT round(coalesce(sum(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle AND pricing_class = 'tm_lh') AS pricing_tm_lh_value,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle AND pricing_class = 'fixed') AS pricing_fixed_ct,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle AND pricing_class = 'cost') AS pricing_cost_ct,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle AND pricing_class = 'tm_lh') AS pricing_tm_lh_ct,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle AND pricing_class = 'other') AS pricing_other_ct,
+       (SELECT round(coalesce(sum(cvalue), 0), 0) FROM awards WHERE NOT is_vehicle AND is_ffp_unfin) AS ffp_unfinanced_value,
+       (SELECT count(*) FROM awards WHERE NOT is_vehicle AND is_ffp_unfin) AS ffp_unfinanced_ct
 FROM firm
 """
     token = os.environ.get("QUERY_SIDECAR_TOKEN")
@@ -283,12 +321,15 @@ FROM firm
         logger.error("sidecar market-collections count failed: %s %s", r.status_code, r.text[:300])
         raise HTTPException(status_code=502, detail="sidecar query failed")
     payload = r.json()
-    row = payload["rows"][0] if payload.get("rows") else [0] * 18
-    cols = ["count", "won_total", "won_median", "won_avg", "book_total", "book_median",
-            "book_avg", "awards_median", "committed_award_ct", "award_median", "award_avg",
-            "runway_total", "runway_median", "runway_avg", "vehicle_seats", "vehicle_holders",
-            "vehicle_ceiling_total", "vehicle_headroom_total"]
-    stats = dict(zip(cols, row))
+    cols = payload.get("columns")
+    if cols is not None and tuple(cols) != EXPECTED_COLS:
+        logger.error("sidecar market-collections columns mismatch: %s", cols)
+        raise HTTPException(status_code=502, detail="sidecar column contract mismatch")
+    if payload.get("rows"):
+        stats = dict(zip(cols or EXPECTED_COLS, payload["rows"][0]))
+    else:
+        stats = dict.fromkeys(EXPECTED_COLS, 0)
+    _add_pricing_other(stats)
     return {
         **stats,
         "spec": {
