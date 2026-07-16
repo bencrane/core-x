@@ -461,24 +461,17 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
         combo_pairs = ",".join(f"('{n}','{p}')" for n, p in combos)  # codes are validated vocab, not user input
         combo_pred = f"AND (naics_code, product_or_service_code) IN ({combo_pairs})"
 
-    # events/growth + state route to the PoP mart, which carries no NAICS/PSC — so a
-    # PoP-state filter cannot compose with job_phrase or need (both combo grain).
-    if mode in ("events", "growth") and state and (combo_pairs or need is not None):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"in <state> (PoP) on mode '{mode}' cannot combine with job_phrase/need — "
-                "the PoP-dimensioned mart carries no NAICS/PSC combo grain"
-            ),
-        )
+    # events/growth + state + job/need COMPOSE since the 2026-07-16 billing-latency
+    # cycle widened txn_recipient_month_pop with naics_code/psc_code — the historical
+    # refusal ("PoP mart carries no combo grain") is retired.
 
     # ── Q4 step-growth: a self-contained SQL path against the month-rollup mart. ──
     if mode == "growth":
         a_days, b_days = _WINDOW_PAIRS[window_pair]
         span = a_days + b_days
         # PoP CAPABILITY: `in <state>` sums obligation across ALL action types within
-        # the PoP state on txn_recipient_month_pop. Without state, the non-PoP rollup.
-        # (combo/need are 422'd alongside state above, so their preds stay empty here.)
+        # the PoP state on txn_recipient_month_pop (combo-grain since 2026-07-16 —
+        # job/need preds compose below). Without state, the non-PoP rollup.
         if state:
             gr_fact = "txn_recipient_month_pop"
             gr_state_pred = f" AND t.pop_state = '{state}'"
@@ -578,8 +571,8 @@ LIMIT {limit}
     if mode == "events":
         codes_sql = ",".join(f"'{c}'" for c in _EVENT_VERBS[event_verb])
         # PoP CAPABILITY: `in <state>` filters the same action-code set on the PoP-
-        # dimensioned mart txn_recipient_month_pop by pop_state. Without state, the
-        # non-PoP by-type rollup. (combo/need are 422'd alongside state above.)
+        # dimensioned mart txn_recipient_month_pop by pop_state (combo-grain since
+        # 2026-07-16 — job/need preds compose below). Without state, the by-type rollup.
         if state:
             ev_fact = "txn_recipient_month_pop"
             ev_state_pred = f" AND t.pop_state = '{state}'"
@@ -723,30 +716,29 @@ LIMIT {limit}
             f"WHERE lc.naics_code = s.naics_code AND lc.psc_code = s.product_or_service_code "
             f"AND lc.soc_code IN ({socs}){role_pred})"
         )
-    # Billing (pricing) + financing gate on award-latest-state — EXISTS from the awd
-    # CTE to award_plan_state on contract_award_unique_key. Composes: billing and
-    # financing conditions AND together inside one EXISTS. Codes are the frozen
-    # server-side vocab above, never user input. An award absent from award_plan_state
-    # has no reported plan state and is excluded by the EXISTS (documented behaviour).
+    # Billing (pricing) + financing gate on award-latest-state — since the 2026-07-16
+    # billing-latency cycle the plan-state columns (latest_pricing_code,
+    # latest_financing_code) live DENORMALIZED on usaspending_fpds_prime_award_state
+    # itself, so the gate is plain single-table predicates (the historical 83M×83M
+    # query-time EXISTS join to award_plan_state ran ~45s and is retired — never
+    # reintroduce it). Codes are the frozen server-side vocab above, never user input.
+    # An award with no reported plan state has NULL latest_pricing_code and is excluded
+    # by a billing IN-list (documented behaviour, unchanged).
     plan_pred = ""
     if billing is not None or financing is not None:
         plan_conds = []
         if billing is not None:
             codes = ",".join(f"'{c}'" for c in sorted(_BILLING_PRICING_CODES[billing]))
-            plan_conds.append(f"p.latest_pricing_code IN ({codes})")
+            plan_conds.append(f"s.latest_pricing_code IN ({codes})")
         if financing is not None:
             codes = ",".join(f"'{c}'" for c in sorted(_FINANCING_PROGRESS_CODES))
             if financing == "with progress payments":
-                plan_conds.append(f"p.latest_financing_code IN ({codes})")
+                plan_conds.append(f"s.latest_financing_code IN ({codes})")
             else:  # "without progress payments": complement, NULL treated as without
                 plan_conds.append(
-                    f"(p.latest_financing_code IS NULL OR p.latest_financing_code NOT IN ({codes}))"
+                    f"(s.latest_financing_code IS NULL OR s.latest_financing_code NOT IN ({codes}))"
                 )
-        plan_pred = (
-            " AND EXISTS (SELECT 1 FROM award_plan_state p "
-            "WHERE p.contract_award_unique_key = s.contract_award_unique_key "
-            f"AND {' AND '.join(plan_conds)})"
-        )
+        plan_pred = " AND " + " AND ".join(plan_conds)
     sql = f"""
 WITH awd AS (
   SELECT recipient_uei, contract_award_unique_key, life_to_date_obligated
@@ -773,12 +765,7 @@ LIMIT {limit}
     token = os.environ.get("QUERY_SIDECAR_TOKEN")
     if not token:
         raise HTTPException(status_code=503, detail="QUERY_SIDECAR_TOKEN not configured")
-    # The billing/financing gate joins award_plan_state (~83M rows, no sidecar index):
-    # the fixed-price set alone matches ~79M plan rows, so the semi-join runs ~45s
-    # (rarer code sets ~2s). Widen the timeout past the 60s default when a plan gate is
-    # present; ungated active/won still returns in tens of ms regardless of timeout.
-    query_timeout = 90.0 if plan_pred else 60.0
-    async with httpx.AsyncClient(timeout=query_timeout) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
             f"{SIDECAR_URL}/api/v1/sql",
             headers={"Authorization": f"Bearer {token}"},
