@@ -163,31 +163,77 @@ _INDUSTRIES: dict[str, list[str]] = {
 # life-to-date obligations. Fixed window vocabulary only.
 _WINDOWS_DAYS = {30, 45, 60, 90, 180, 365, 730, 1095}
 
+# Q3 (approved 2026-07-15): "companies that <event verb> … in the last <window>"
+# — FPDS modification EVENTS on active awards, keyed by action_type_code. Unlike
+# Q1/Q2 there is NO total/single grain marker: the $ threshold is the per-company
+# Σ obligations ON THOSE ACTIONS within the window (the money the events moved).
+# Window REQUIRED. Verbs map to action_type_code sets; two are rollups. Served by
+# the sidecar month-rollup mart `txn_recipient_month_by_type` (uei × action_type_code
+# × naics × psc × agency × month), which has NO place-of-performance columns — the
+# `in <state>` (PoP) slot is refused (422) on event verbs.
+_EVENT_VERBS: dict[str, list[str]] = {
+    "picked up additional work": ["A"],
+    "had work added in scope": ["B"],
+    "received new funding": ["C"],
+    "got change orders": ["D"],
+    "had change orders priced": ["L"],
+    "had options exercised": ["G"],
+    "were terminated for default": ["E"],
+    "were terminated for convenience": ["F"],
+    "were novated": ["J"],
+    "picked up more work": ["A", "B", "G", "D", "L"],  # rollup
+    "were terminated": ["E", "F"],  # rollup
+}
+
 
 @router.post("/active-awards-query", dependencies=[Depends(require_service_token)])
 async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
+    mode = body.get("mode") or "active"
+    if mode not in ("active", "won", "events"):
+        raise HTTPException(status_code=422, detail="mode must be 'active', 'won' or 'events'")
+
+    # Event verbs (Q3) carry NO total/single grain marker — the $ threshold is the
+    # per-company Σ obligations on the events. Q1/Q2 require the grain marker.
     grain = body.get("grain")
-    if grain not in ("total", "single"):
+    if mode == "events":
+        if grain is not None:
+            raise HTTPException(
+                status_code=422, detail="grain does not apply to event verbs (no total/single grain)"
+            )
+    elif grain not in ("total", "single"):
         raise HTTPException(status_code=422, detail="grain must be 'total' or 'single'")
 
-    mode = body.get("mode") or "active"
-    if mode not in ("active", "won"):
-        raise HTTPException(status_code=422, detail="mode must be 'active' or 'won'")
+    event_verb = body.get("event_verb")
+    if mode == "events":
+        if event_verb not in _EVENT_VERBS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown event_verb '{event_verb}' — one of {sorted(_EVENT_VERBS)}",
+            )
+    elif event_verb is not None:
+        raise HTTPException(status_code=422, detail="event_verb only applies to mode 'events'")
+
     window_days = body.get("window_days")
-    if mode == "won":
+    if mode in ("won", "events"):
         if window_days not in _WINDOWS_DAYS:
             raise HTTPException(
                 status_code=422,
-                detail=f"window_days required for mode 'won' — one of {sorted(_WINDOWS_DAYS)}",
+                detail=f"window_days required for mode '{mode}' — one of {sorted(_WINDOWS_DAYS)}",
             )
     elif window_days is not None:
-        raise HTTPException(status_code=422, detail="window_days only applies to mode 'won'")
+        raise HTTPException(status_code=422, detail="window_days only applies to mode 'won'/'events'")
 
     state = body.get("state")
     if state is not None:
         state = str(state).strip().upper()
         if state not in _US_STATES:
             raise HTTPException(status_code=422, detail=f"unknown state '{state}'")
+        if mode == "events":
+            # The month-rollup mart has no PoP columns — PoP is award-grain.
+            raise HTTPException(
+                status_code=422,
+                detail=f"in <state> not yet supported on event verbs — PoP is award-grain",
+            )
 
     min_amt = body.get("min_amt")
     if min_amt is not None:
@@ -236,6 +282,7 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
     limit = min(int(body.get("limit") or 100), 1000)
 
     combo_pred = ""
+    combo_pairs = ""  # reused by events mode against t.naics_code/t.psc_code
     job_phrase = body.get("job_phrase")
     if job_phrase is not None:
         job_phrase = str(job_phrase).strip().lower()
@@ -248,8 +295,93 @@ async def active_awards_query(body: dict[str, Any]) -> dict[str, Any]:
                 status_code=422,
                 detail=f"unknown job phrase '{job_phrase}' — not in the canonical vocabulary",
             )
-        pairs = ",".join(f"('{n}','{p}')" for n, p in combos)  # codes are validated vocab, not user input
-        combo_pred = f"AND (naics_code, product_or_service_code) IN ({pairs})"
+        combo_pairs = ",".join(f"('{n}','{p}')" for n, p in combos)  # codes are validated vocab, not user input
+        combo_pred = f"AND (naics_code, product_or_service_code) IN ({combo_pairs})"
+
+    # ── Q3 event verbs: a self-contained SQL path against the month-rollup mart. ──
+    if mode == "events":
+        codes_sql = ",".join(f"'{c}'" for c in _EVENT_VERBS[event_verb])
+        ev_combo_pred = (
+            f" AND (t.naics_code, t.psc_code) IN ({combo_pairs})" if combo_pairs else ""
+        )
+        ev_need_pred = ""
+        if need_bucket:
+            ev_need_pred = (
+                f" AND EXISTS (SELECT 1 FROM naics_psc_equipment_needs eq "
+                f"WHERE eq.naics_code = t.naics_code AND eq.psc_code = t.psc_code "
+                f"AND eq.in_scope AND list_contains(eq.equipment_buckets, '{need_bucket}'))"
+            )
+        elif need_socs:
+            socs = ",".join(f"'{s}'" for s in need_socs)  # codes come from the server-side vocab
+            role_pred = "" if include_support else " AND lc.role_class = 'core_deliverable'"
+            ev_need_pred = (
+                f" AND EXISTS (SELECT 1 FROM naics_psc_labor_profile_categories lc "
+                f"WHERE lc.naics_code = t.naics_code AND lc.psc_code = t.psc_code "
+                f"AND lc.soc_code IN ({socs}){role_pred})"
+            )
+        ev_having = f"HAVING SUM(t.obligation_sum) > {min_amt}" if min_amt is not None else ""
+        entity_preds = []
+        if hq_state:
+            entity_preds.append(f"e.physical_state = '{hq_state}'")
+        ind_cte = ""
+        ind_join = ""
+        if industry:
+            prefixes = _INDUSTRIES[industry]
+            in_set = " OR ".join(f"code LIKE '{p}%'" for p in prefixes)
+            declared = " OR ".join(f"e.primary_naics LIKE '{p}%'" for p in prefixes)
+            ind_cte = f""", ind AS (
+  SELECT uei, SUM(CASE WHEN {in_set} THEN obl_lifetime ELSE 0 END) AS in_set_obl,
+         SUM(obl_lifetime) AS tot_obl
+  FROM gtm_entity_code_lanes WHERE side = 'prime' AND code_type = 'naics' GROUP BY 1
+)"""
+            ind_join = "LEFT JOIN ind ip ON ip.uei = g.uei"
+            entity_preds.append(
+                f"((ip.tot_obl > 0 AND ip.in_set_obl / ip.tot_obl >= {_INDUSTRY_SHARE_MIN}) "
+                f"OR (COALESCE(ip.tot_obl, 0) = 0 AND ({declared})))"
+            )
+        entity_where = ("WHERE " + " AND ".join(entity_preds)) if entity_preds else ""
+        sql = f"""
+WITH ev AS (
+  SELECT t.uei, SUM(t.obligation_sum) AS event_obl, SUM(t.n_actions) AS event_actions
+  FROM txn_recipient_month_by_type t
+  WHERE t.action_type_code IN ({codes_sql})
+    AND t.month >= CURRENT_DATE - INTERVAL {int(window_days)} DAY{ev_combo_pred}{ev_need_pred}
+  GROUP BY 1 {ev_having}
+){ind_cte}
+SELECT g.uei AS uei, e.legal_business_name, e.physical_city, e.physical_state,
+       e.normalized_domain, ROUND(g.event_obl, 0) AS event_obl, g.event_actions AS event_actions
+FROM ev g LEFT JOIN gtm_sam_entities e ON e.uei = g.uei {ind_join}
+{entity_where}
+ORDER BY g.event_obl DESC
+LIMIT {limit}
+"""
+        token = os.environ.get("QUERY_SIDECAR_TOKEN")
+        if not token:
+            raise HTTPException(status_code=503, detail="QUERY_SIDECAR_TOKEN not configured")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{SIDECAR_URL}/api/v1/sql",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"sql": sql, "limit": limit},
+            )
+        if r.status_code != 200:
+            logger.error("sidecar events query failed: %s %s", r.status_code, r.text[:300])
+            raise HTTPException(status_code=502, detail="sidecar query failed")
+        payload = r.json()
+        cols = payload["columns"]
+        rows = [dict(zip(cols, row)) for row in payload["rows"]]
+        return {
+            "query": {
+                "mode": mode, "event_verb": event_verb, "job_phrase": job_phrase,
+                "state": state, "min_amt": min_amt, "window_days": window_days,
+                "hq_state": hq_state, "industry": industry, "need": need,
+                "include_support": include_support,
+            },
+            "total": len(rows),
+            "rows": rows,
+            "elapsed_ms": payload.get("elapsed_ms"),
+            "artifact": payload.get("artifact"),
+        }
 
     state_join = (
         "JOIN usaspending_award_pop_centroids c "
@@ -341,7 +473,7 @@ LIMIT {limit}
     return {
         "query": {"mode": mode, "grain": grain, "job_phrase": job_phrase, "state": state,
                   "min_amt": min_amt, "window_days": window_days, "hq_state": hq_state,
-                  "industry": industry},
+                  "industry": industry, "need": need, "include_support": include_support},
         "total": len(rows),
         "rows": rows,
         "elapsed_ms": payload.get("elapsed_ms"),
