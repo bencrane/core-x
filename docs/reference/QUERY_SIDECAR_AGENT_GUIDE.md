@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.31B rows across 95 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.32B rows across 96 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -70,7 +70,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | Table | Grain · rows | Sorted | Notes |
 |---|---|---|---|
 | `gtm_txn_events_slim` | 1/FPDS action · 108M | uei, action_date | Columns: uei, action_date, action_type_code (A–Y mod events), subcontracting_plan, naics_code, psc_code, awarding_agency_code, **obligation** (≠ federal_action_obligation), action_key, award_key |
-| `usaspending_fpds_prime_award_state` | 1/contract_award_unique_key · 83M | current_end_date | 52 cols: award_topology, recipient_uei/name, life_to_date_obligated, current_end_date (expiry queries prune HARD on this), naics/psc, agency, PIIDs, **window state** (own `ordering_period_end_date` + resolved-parent `parent_ordering_period_end_date`/`parent_current_end_date`/`parent_potential_end_date`) **and parent attribution** (`parent_awarding_agency_code`/`parent_awarding_sub_agency_code` = whose vehicle, `parent_idv_type_code`/`parent_award_type_code` = what instrument, `parent_type_of_set_aside_code`). Parent cols populated only when `parent_match_flag='resolved'`; 'self'/'dangling' rows stay NULL. Position/active ladders and "agency behind the parent instrument" are ONE pass, never a self-join. DESCRIBE it |
+| `usaspending_fpds_prime_award_state` | 1/contract_award_unique_key · 83M | current_end_date | 52 cols: award_topology, recipient_uei/name, life_to_date_obligated, current_end_date (expiry queries prune HARD on this), naics/psc, agency, PIIDs, **window state** (own `ordering_period_end_date` + resolved-parent `parent_ordering_period_end_date`/`parent_current_end_date`/`parent_potential_end_date`) **and parent attribution** (`parent_awarding_agency_code`/`parent_awarding_sub_agency_code` = whose vehicle, `parent_idv_type_code`/`parent_award_type_code` = what instrument, `parent_type_of_set_aside_code`). Parent cols populated only when `parent_match_flag='resolved'`; 'self'/'dangling' rows stay NULL. Position/active ladders and "agency behind the parent instrument" are ONE pass, never a self-join. **Since 2026-07-16 also carries the pricing latest-state** (`latest_plan`, `latest_pricing_code`, `latest_financing_code`, `latest_business_size`) — billing shapes are single-table. DESCRIBE it |
 | `award_ordering_windows` | 1/award with an ordering window · 982k | contract_award_unique_key | `ordering_period_end_date` (latest-action `arg_max`) + `latest_action_date` — IDV/vehicle ordering-window universe ("which vehicles' windows close in N days") |
 | `gtm_position_orders` | 1/order with OPEN window (as of build date) · ~17M | contract_award_unique_key | The position-ladder substrate: contract_award_unique_key, recipient_uei, parent_award_key_resolved, `window_end` (own-else-parent ordering end). **Position rungs join ring keys to THIS, never to the 83M award_state** — any 83M-side join saturates the 2-thread serving box (measured 17–22s) |
 | `subaward_canonical_slim` | 1/subaward · 1.3M | prime_awardee_uei | 38 cols incl. `subaward_description`, `prime_award_base_transaction_description`, `subawardee_business_types` (designation flags); `subaward_amount` is VARCHAR — use `subaward_amount_num` |
@@ -88,7 +88,8 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
-| `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action state per award: `latest_plan` (subcontracting plan) + **`latest_pricing_code`, `latest_financing_code`, `latest_business_size`** (2026-07-15 — award_state carries NO pricing columns; THIS is the award-grain pricing home). Cash-stress shape: `latest_pricing_code='J' AND latest_financing_code IN ('Z','NOT APPLICABLE')` ⋈ award_state actives. Names via `fpds_code_vocab` |
+| `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action state per award: `latest_plan`, `latest_pricing_code`, `latest_financing_code`, `latest_business_size`. **Since 2026-07-16 these are ALSO denormalized onto `usaspending_fpds_prime_award_state` — never join this to award_state at query time** (32–49 s measured; the 83M-join saturation class). Billing shapes read award_state single-table; entity-level mix reads `gtm_entity_pricing_mix` |
+| `gtm_entity_pricing_mix` | 1/uei · 767k | uei | **The billing/demo lens** (2026-07-16): active vs total book by pricing class — `active_obl_fixed/cost/tm_lh/other` (class map: fixed A,B,J,K,L,M · cost R,S,T,U,V · tm_lh Y,Z), `active_ffp_unfinanced_ct`/`active_obl_ffp_unfinanced`, `active_obl_small_determined`, precomputed `active_fixed_share`/`active_ffp_unfinanced_share`. "Primes whose active book is ≥70% FFP" = one uei-sorted read, ms-class |
 | `action_type_vocab` | 1/action_type_code · 22 (21 codes + NULL base row) | — | **The action-type language layer** (2026-07-15): `source_description` (empirical majority — source pairs are messy: 102 raw tuples), `plain_english` (subject-first query phrase: "received additional funding", "had an option year exercised"), `family` (new_award\|more_work\|funding_only\|termination\|definitization\|closeout\|admin), `is_more_work` (A,B,D,G,L), `is_funding_released` (C,G — G carries BOTH: option exercise turns on work AND its money; C is the only pure-money event). NULL code row = base/initial award (FPDS stamps action type on mods only) |
 | `fpds_code_vocab` | 1/(field, code) · ~100 | field, code | Name resolution for the five pricing-terms code spaces: `field` ∈ pricing \| financing \| performance_based \| business_size_determination \| labor_standards, majority name per code |
 | `naics_psc_labor_profile` / `naics_psc_deliverable` | 1/(naics, psc) · 16.3k / 21k | naics_code, psc_code | The combo-grain LANGUAGE layers: `work_summary` + labor-play/OEWS mapping; `what_was_done` + work_type/regime/confidence — plain-language rendering joins these onto any sidecar code set (letters, on-page copy). Complements the code-grain to-verb vocabulary in the phrase compiler |
@@ -106,7 +107,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|---|
 | `gtm_txn_recipient_month_rollup` | uei × action_type × plan_class × month · 34M | uei |
 | `txn_recipient_month_by_type` | same fact re-sorted · 34M | action_type_code, month — cross-entity "actions of type X in window Y" prunes here (9.6ms vs 2.0s on the uei-sorted copy) |
-| `txn_recipient_month_pop` | uei × action_type × pop_state × pop_county_fips × month · 27.5M | action_type_code, pop_state, pop_county_fips, month — **the entity-event-GEO rollup** (2026-07-15): closes the phrase layer's "in \<state\> (PoP) on event verbs" refusal. "Entities that had action X in state S in window W" prunes on (type, state) — measured 18.4 ms |
+| `txn_recipient_month_pop` | uei × action_type × pop_state × pop_county_fips × **naics × psc** × month · 37M | action_type_code, pop_state, pop_county_fips, month — **the entity-event-GEO rollup**. Since 2026-07-16 the grain carries naics/psc, so event verb × state × job/need combo composes in one statement (SUM to the coarser grain stays correct). "Entities that had action X in state S in window W" prunes on (type, state) |
 | `gtm_award_recipient_rollup` | uei × naics × psc × agency × topology · 6.3M | uei |
 | `gtm_award_expiry_months` | uei × end_month · 221k | uei, end_month |
 | `gtm_prime_pop_lanes` | 1/(uei, pop_state, county) · 547k | uei |
@@ -478,20 +479,24 @@ GROUP BY 1;
 -- NULL action_type_code on facts = the base award itself (vocab's NULL row).
 ```
 
-**(j) Cash-stress shape — pricing × financing × size, award grain.** FFP with no
-financing arrangement floats the whole performance cost; small-entity primes on that
-shape are the factoring/credit lens:
+**(j) Cash-stress shape — pricing × financing × size, single-table (never join plan_state).**
+Pricing latest-state is denormalized onto award_state (2026-07-16); entity-level mix is
+pre-aggregated:
 
 ```sql
-SELECT a.recipient_uei, count(*) AS ffp_awards, sum(a.life_to_date_obligated) AS obl
-FROM usaspending_fpds_prime_award_state a
-JOIN award_plan_state p ON p.contract_award_unique_key = a.contract_award_unique_key
-WHERE p.latest_pricing_code = 'J'                -- firm fixed price
-  AND coalesce(p.latest_financing_code, 'Z') IN ('Z', 'NOT APPLICABLE')
-  AND p.latest_business_size = 'S'
-  AND a.current_end_date >= current_date
+-- award grain: active FFP, unfinanced, small-determined — one pruned read
+SELECT recipient_uei, count(*) AS ffp_awards, sum(life_to_date_obligated) AS obl
+FROM usaspending_fpds_prime_award_state
+WHERE latest_pricing_code = 'J'
+  AND coalesce(latest_financing_code, 'Z') IN ('Z', 'NOT APPLICABLE')
+  AND latest_business_size = 'S'
+  AND current_end_date >= current_date AND is_terminated = FALSE
 GROUP BY 1;
--- market-level mix: GROUP BY pricing_code over txn_events_combo (names via fpds_code_vocab)
+
+-- entity grain: "primes whose active book is predominantly FFP-unfinanced" — ms-class
+SELECT uei, active_obl, active_ffp_unfinanced_share
+FROM gtm_entity_pricing_mix
+WHERE active_ffp_unfinanced_share >= 0.70 AND active_obl >= 1e6;
 ```
 
 **(k) Farm-out share — propensity to sub out a shape of work, pre-divided:**

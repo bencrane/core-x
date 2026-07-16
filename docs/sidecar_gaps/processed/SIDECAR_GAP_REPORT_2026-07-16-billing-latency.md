@@ -24,7 +24,9 @@
 
 ---
 
-## Disposition (build cycle 2026-07-16, artifact `PENDING-VERIFY`)
+## Disposition (build cycle 2026-07-16, artifact `query_sidecar_20260716T034525Z.duckdb`)
+
+Build: single run, success — 96 tables, 48.47 GiB, all parity gates OK, serving hot-swapped.
 
 ### Build scope block (adjacency sweep, written before the build fired)
 
@@ -50,4 +52,12 @@
 
 ### Measured deltas (before → after)
 
-- PENDING-VERIFY
+| Shape | Before | After (measured on serving, warm) |
+|---|---|---|
+| Active-FFP distinct recipients (award grain) | **32.0 s** (plan_state ⋈ award_state) | **77.5 ms** single-table (413×) |
+| "Primes whose active book is ≥70% FFP-unfinanced, ≥$1M" (the demo lens) | unanswerable warm | **15.8 ms** on `gtm_entity_pricing_mix` (766,803 rows) |
+| Fullest award-grain stack (FFP × unfinanced × small × expiring-180d) | ~49 s | **1.8 s** (27×) — residual-predicate scan over the end-date prune; the entity-lane equivalent (mix ⋈ behavior_rollup on uei, both small + sorted) is ms-class and is the recommended demo route |
+| Event × state × combo (G × VA × NAICS-5415 since 2026-01) | phrase-layer refusal | **28.4 ms** on the widened `txn_recipient_month_pop` (36,967,123 rows) |
+
+Sub-second billing is met on the entity lane and the simple award shapes; the fullest
+award-grain stack is 1.8 s and documented as the non-preferred route.
