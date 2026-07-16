@@ -22,7 +22,11 @@ Single entry, operator-directed. Demand only — no proposed solutions.
 
 ---
 
-## Disposition (build cycle 2026-07-15/16, artifact `PENDING-VERIFY`)
+## Disposition (build cycle 2026-07-15/16, artifact `query_sidecar_20260716T030427Z.duckdb`)
+
+Build: single run, success — 95 tables, 1,314,981,229 rows, 48.04 GiB, all parity gates OK
+(base cube 11,844,606 rows exact-parity through the denominator join; sort copy identical).
+Serving hot-swapped; measurements below are on the live endpoint.
 
 ### Build scope block (adjacency sweep, written before the build fired)
 
@@ -48,4 +52,8 @@ Single entry, operator-directed. Demand only — no proposed solutions.
 
 ### Measured deltas (before → after)
 
-- PENDING-VERIFY (filled after serving hot-swap)
+| Shape | Before | After (measured on serving) |
+|---|---|---|
+| Demanded: "primes routing ≥30% of their 541712 work to subs who prime in 541330" | unanswerable (hand-written 11.8M × 1.7M join with probe-side gate, per session) | **25.5 ms** on `gtm_prime_subout_by_code` (77 primes) |
+| Recipient-shape-anchored read (subs-who-prime-in-236220 across all primes) | 2.6 s unpruned scan | **8.0 ms** on the sort copy (325× improvement) |
+| Prime-anchored rate/share portrait | numerator only; no rate | **18.4 ms** — rate + within-context share + denominators on the base cube |

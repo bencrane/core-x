@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.30B rows across 94 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.31B rows across 95 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -127,7 +127,8 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_prime_vehicle_lanes` | 16k | uei |
 | `gtm_prime_demand_events` | event/prime uei (24mo) · 11.3M | uei |
 | `gtm_primes_by_recipient_code` | 1/(code_type, code) marginal · 1.7M | recipient_code |
-| `gtm_prime_subout_by_recipient_code` | prime × context_code cube · 11.8M | prime_awardee_uei |
+| `gtm_prime_subout_by_recipient_code` | prime × context_code × recipient_code cube · 11.8M | prime_awardee_uei | **Farm-out characterized by the RECIPIENT's shape** — `recipient_code_source` ∈ awarded_prime_contracts_in_code (the sub's own prime history) \| delivered_subawards_under_code \| sam_registered_naics \| sam_primary_naics \| subaward_reported_naics. ⚠ lenses OVERLAP — filter ONE source per query, never sum across. Since 2026-07-15: `prime_obl_24/60mo/lifetime_in_context` + `prime_action_ct/last_action_in_context` (denominator family), **`subout_rate_lifetime`** (subaward $ ÷ prime obl in context; can exceed 1 on pass-throughs), **`share_of_context_subout`** (within-lens: of what this prime subs out in context X, the fraction going to shape Y) |
+| `gtm_prime_subout_by_code` | same 11.8M rows | recipient_code_source, recipient_code_type, recipient_code | Second copy — **recipient-shape-anchored** reads ("primes that route ≥N% of X work to subs who prime in Y") prune here |
 | `gtm_subbed_under_to_primed_in_cooccurrence` | code × code matrix · 589k | subbed_under_code |
 | `gtm_sub_profiles` · `govcon_subawardee_profiles` | 1/sub uei · 105k · 25k | uei / sub_uei |
 | `gtm_sub_universe_pairs` / `_targets` | pair-grain recipe precompute · 30k | target_uei |
@@ -509,6 +510,20 @@ WHERE naics_code = '561612' AND implied_fte_per_year_60mo > 50
   AND coalesce(employees_on_linkedin, 0) < implied_fte_per_year_60mo / 2
   AND coalesce(farmout_share_60mo, 0) < 0.10;
 -- methodology (wage divisor, annualization) lives in the view SQL — a query-time dial
+```
+
+**(m) Farm-out by recipient shape — "routes X-shaped work to Y-shaped subs".** The
+recipient's identity comes from its own record (`awarded_prime_contracts_in_code` = the
+sub's own prime-award history). Filter ONE `recipient_code_source` — lenses overlap:
+
+```sql
+-- primes routing ≥30% of their 541712 work to subs who themselves prime in 541330
+SELECT prime_awardee_uei, subaward_amt_total, subout_rate_lifetime, share_of_context_subout
+FROM gtm_prime_subout_by_code               -- recipient-anchored sort copy (25 ms)
+WHERE recipient_code_source = 'awarded_prime_contracts_in_code'
+  AND recipient_code_type = 'naics' AND recipient_code = '541330'
+  AND context_code = '541712' AND subout_rate_lifetime >= 0.30;
+-- prime-anchored portrait: same columns on gtm_prime_subout_by_recipient_code (uei sort)
 ```
 
 ## 5. Performance model
