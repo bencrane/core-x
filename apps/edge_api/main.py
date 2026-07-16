@@ -70,6 +70,7 @@ from .src.routers.combo_work_summary_equipment_needs_v1 import (
 )
 from .src.routers.combo_job_to_be_done_v1 import router as combo_job_to_be_done_router
 from .src.routers.active_awards_query_v1 import router as active_awards_query_router
+from .src.routers.market_collections_v1 import router as market_collections_router
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
@@ -267,6 +268,13 @@ app.include_router(active_awards_query_router)
 # geo/$/designation/firmographic spec, served by the query-sidecar audience spine
 # (gtm_audience_entities). Contactability deliberately absent (operator ruling 2026-07-16).
 app.include_router(market_spec_router)
+
+# market-collections: the 22 durable pair-defined market collections
+# (gtm.market_collections; hq/MARKET_COLLECTIONS_PROGRAM.md v2) — list + live
+# member count with geo/band tuning. Member = FY23-25 won-in-band within the
+# collections' pairs AND >= 1 active in-scope award (PoP-filtered when
+# working_in is given — PoP relates to ACTIVE awards only, operator ruling).
+app.include_router(market_collections_router)
 
 # epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
