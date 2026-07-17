@@ -112,10 +112,19 @@ terminated-exclusion, negative-obligation passthrough, NULL-uei filter, best-row
 (employee_size beats non-generic domain); EXPLAIN gate on the firmographics join — hash
 join, no NL/cross nodes.
 
-**Measured before → after:** (after-timings recorded post-publish below)
-- FY-won leg: 790 ms (108M group-by) → ___
-- employee-size leg: 10,000 ms → ___
-- award-book leg: 21 ms computed, unpinned → ___ (named columns)
+**Measured before → after (artifact `query_sidecar_20260717T193347Z`, built this cycle:
+fy_won 3,813,994 rows/17.6s · award_book 766,803/3.2s · firmographics 463,741/5.3s,
+all parity=OK):**
+- FY-won composite leg (won FY23–25 >$5M AND active AND CO): 790 ms → **347 ms**,
+  identical count (289) — semantic parity of the mart vs the raw group-by.
+- Employee-size leg: 10,000.5 ms → **40.6 ms** (246×). Count corrected 13,393 → 7,936:
+  the raw bridge join double-counted multi-match UEIs; the mart's best-row-per-uei
+  grain is the honest number.
+- Award-book leg (committed_value > $20M): 21 ms hand-written doctrine → **8.9 ms**
+  named columns. Count 4,572 → 4,610 (snapshot semantics: mart uses build-date
+  days_to_expiry per house convention + fresher award_state pin — expected drift class).
+- NEW predicate family live: set-aside WINNERS — 8(a) work won in FY25 = 3,198 firms /
+  $14.1B in 33.6 ms.
 
 **Guide updated in the same PR:** catalog rows for the three marts, header count, §4
 patterns.
