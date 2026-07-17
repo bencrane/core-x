@@ -69,9 +69,6 @@ from .src.routers.combo_work_summary_equipment_needs_v1 import (
     router as combo_work_summary_equipment_needs_router,
 )
 from .src.routers.combo_job_to_be_done_v1 import router as combo_job_to_be_done_router
-from .src.routers.active_awards_query_v1 import router as active_awards_query_router
-from .src.routers.market_collections_v1 import router as market_collections_router
-from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.epd_lec_status_v1 import router as epd_lec_status_router
 from .src.routers.map_ask_v1 import router as map_ask_router
 from .src.routers.title_normalize_v1 import router as title_normalize_router
@@ -262,19 +259,11 @@ app.include_router(equipment_finance_candidates_router)
 # normalization at land time. UPSERT on (naics_code, psc_code, model_id). Service-token gated.
 app.include_router(combo_work_summary_equipment_needs_router)
 app.include_router(combo_job_to_be_done_router)
-app.include_router(active_awards_query_router)
 
-# market-spec: live market definition on a call — count of entities fitting a
-# geo/$/designation/firmographic spec, served by the query-sidecar audience spine
-# (gtm_audience_entities). Contactability deliberately absent (operator ruling 2026-07-16).
-app.include_router(market_spec_router)
-
-# market-collections: the 22 durable pair-defined market collections
-# (gtm.market_collections; hq/MARKET_COLLECTIONS_PROGRAM.md v2) — list + live
-# member count with geo/band tuning. Member = FY23-25 won-in-band within the
-# collections' pairs AND >= 1 active in-scope award (PoP-filtered when
-# working_in is given — PoP relates to ACTIVE awards only, operator ruling).
-app.include_router(market_collections_router)
+# market/query routers (market-collections, market-spec, active-awards-query)
+# RELOCATED to catalyst_api 2026-07-17 (#1181) — composition reads isolated from
+# this service's automation deploy cadence. Consumers flipped in
+# rare-structure-hq #322.
 
 # epd-lec-status: raw, append-only landing of EPD / Buy-Clean / LEC compliance research payloads into
 # gtm.epd_lec_status (verbatim raw_payload + flat projection of epdLecStatus + justification + confidence
@@ -443,7 +432,6 @@ def _info() -> dict:
             "equipment_finance_candidates": True,  # /api/v1/equipment-finance-candidates/{land,check,stats}
             "combo_work_summary_equipment_needs": True,  # /api/v1/combo-work-summary-equipment-needs/land (combo-grain LLM equipment verdicts, UPSERT)
             "combo_job_to_be_done": True,  # /api/v1/combo-job-to-be-done/land (combo-grain 'to: …' job sentences, UPSERT)
-            "active_awards_query": True,  # /api/v1/market/active-awards-query + /jtbd-vocab (Q1 canonical query)
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
             "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
