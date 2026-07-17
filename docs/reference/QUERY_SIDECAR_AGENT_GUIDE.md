@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.33B rows across 100 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.37B rows across 102 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -144,6 +144,8 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `pdl_normalized_companies` | 1/pdl_company_id · 35.4M | pdl_company_id | Canonical PDL company: names, normalized_domain, **linkedin_slug** (the company LinkedIn URL), locality/region/country, industry, employee_size_range, year_founded. Hydrate matches via the bridge; domain-anchored matching joins `normalized_domain` (unsorted — seconds-class scan) |
 | `icypeas_company_scrapes` / `icypeas_dsbs_company_profiles` | 1/uei scraped · 6.6k / 5.8k | uei | Scraped company LinkedIn profiles (URL, headcount, industry, description); raw blobs excluded |
 | `icypeas_person_profiles` / `icypeas_person_profile_scrapes` | 14.8k / 9.5k | uei / person_linkedin_url_norm | Person-profile scrape ledger (status/found per input) and the scraped profile content (title, summary, company block, education); raw blobs excluded |
+| `pdl_slug_lookup` | 1/(linkedin_slug, pdl_company_id) · 35.4M | linkedin_slug | **LinkedIn-URL resolution hop** (2026-07-17): slug (lowercased at build) → pdl_company_id, company_name, normalized_domain, is_generic_domain. Slug probes prune to ms (unsorted probe on the base measured 18.4s). Registrants via `bridge_sam_pdl` (DISTINCT — the bridge carries dup rows) or the domain leg |
+| `entity_hierarchy` | 1/uei · 148,766 | uei | SAM parent hierarchy: immediate + **ultimate** parent uei/name, hierarchy_depth, in_cycle. THE family disambiguator for shared-domain/slug resolution and the rollup dimension for family analysis |
 | `bridge_dsbs_pdl_linkedin` | 1/uei · 53k | uei | DSBS→PDL/LinkedIn resolution (best_domain + matched pdl id + company_linkedin_url) |
 | `dsbs_poc_linkedin` · `exa_person_linkedin_candidates` | 821 · 33k | uei | Person-side LinkedIn resolution candidates (raw JSON excluded) |
 

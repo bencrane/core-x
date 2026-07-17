@@ -432,6 +432,19 @@ MANIFEST: list[dict] = [
     # normalized, 35M) deliberately excluded — linkedin_slug carries the URL.
     {"ds": "bridge_sam_pdl", "tier": "D", "sort": ["uei"]},
     {"ds": "pdl_normalized_companies", "tier": "D", "sort": ["pdl_company_id"]},
+    # linkedin-resolve cycle (2026-07-17, operator-directed): slug-sorted slim
+    # lookup — the LinkedIn-URL resolution hop for gc-hq list uploads. The
+    # unsorted linkedin_slug probe on the 35.4M base measured 18.4s (saturation
+    # class); this narrow copy prunes to ms. Grain 1/(slug, pdl_company_id);
+    # reducing projection -> aggregate parity. Local off the base table.
+    {"ds": "pdl_normalized_companies", "tier": "D", "dest": "pdl_slug_lookup",
+     "sort": ["linkedin_slug"],
+     "from_table": "pdl_normalized_companies", "slug_lookup": True, "aggregate": True},
+    # market-composition cycle rider (parked 2026-07-17, ships this build):
+    # SAM ultimate-parent hierarchy — the family disambiguator for shared-domain
+    # /shared-slug resolution candidates (akima.com -> NANA family) and the
+    # rollup dimension for family-based analysis. 148,766 rows, generic copy.
+    {"ds": "entity_hierarchy", "tier": "D", "sort": ["uei"]},
     # market-composition cycle (2026-07-17): uei-grain firmographics — the
     # employee-size / industry / founded predicate as a ms-class leg. Measured
     # 10.0s through the query-time bridge⋈PDL join (saturation class, not a
@@ -1031,6 +1044,20 @@ WHERE rn = 1
 ORDER BY uei
 """
 
+# linkedin-resolve cycle (2026-07-17): slug-sorted resolution hop. Narrow
+# projection; slug normalized to lowercase at build so probes are exact.
+_SLUG_LOOKUP_SQL = """
+CREATE TABLE pdl_slug_lookup AS
+SELECT lower(linkedin_slug)  AS linkedin_slug,
+       pdl_company_id,
+       company_name,
+       normalized_domain,
+       is_generic_domain
+FROM pdl_normalized_companies
+WHERE linkedin_slug IS NOT NULL AND linkedin_slug <> ''
+ORDER BY lower(linkedin_slug)
+"""
+
 # gap-pass-3 E1 residual (measured post-v8: the position ladder stayed 17-22s
 # because ANY join with an 83M-row side saturates the 2-thread/1.5GB serving
 # box): the snapshot position substrate — every order whose own or resolved-
@@ -1478,6 +1505,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_ENTITY_AWARD_BOOK_SQL)
         elif spec.get("entity_firmographics"):
             con.execute(_ENTITY_FIRMOGRAPHICS_SQL)
+        elif spec.get("slug_lookup"):
+            con.execute(_SLUG_LOOKUP_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')

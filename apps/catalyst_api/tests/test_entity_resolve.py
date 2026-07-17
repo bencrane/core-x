@@ -31,3 +31,14 @@ def test_values_clause_only_embeds_validated_tokens():
     assert not _DOMAIN_RE.match("a'b.com")
     assert not _UEI_RE.match("ABC'23DEF456")
     assert _values_clause(["acme.com", "b.co"]) == "('acme.com'), ('b.co')"
+
+
+def test_linkedin_normalization():
+    from apps.catalyst_api.src.routers.entity_resolve_v1 import normalize_linkedin
+
+    assert normalize_linkedin("https://www.linkedin.com/company/Akima-LLC/") == "akima-llc"
+    assert normalize_linkedin("linkedin.com/company/boeing?trk=x") == "boeing"
+    assert normalize_linkedin("https://uk.linkedin.com/company/bae-systems/about") == "bae-systems"
+    assert normalize_linkedin("boeing") == "boeing"  # bare slug tolerated
+    assert normalize_linkedin("https://linkedin.com/in/some-person") is None  # person, not company
+    assert normalize_linkedin("https://linkedin.com/company/bad'slug") is None  # quote refused
