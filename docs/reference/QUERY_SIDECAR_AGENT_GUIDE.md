@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.32B rows across 96 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.32B rows across 97 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -198,6 +198,7 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `people_canonical` | 1/canonical_person_id · 132k | canonical_person_id |
 | `firmographics_blitz` | 1/domain · 255k | domain_norm |
 | `federal_sites_lance` | 1/federal site · 300k | state_code, zip5 |
+| `military_installations` | 1/DoD MIRTA site point · 831 (792 USA-active) | state_code | Installation overlay: `site_name`, `feature_name`/`feature_description`, `component` (usa/usn/usaf/…), `operational_status` (`act` = active), `is_joint_base`, `latitude`/`longitude`. Filter `country='USA' AND operational_status='act'` for the serving overlay; join territory cuts via state or lat/lon distance |
 | `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` · `country_vocab` | code refs · 2.1k/6.1k/321k/75/~250 | code | ⚠ vintages: both reference tables carry multiple `source_vintage` rows per code; `psc_reference WHERE is_active` returns NULL names for retired-vintage codes that still carry award dollars. **Display names: join `v_psc_names` / `v_naics_names`** (active-else-latest-vintage, one row per code) |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
 
@@ -532,6 +533,13 @@ WHERE recipient_code_source = 'awarded_prime_contracts_in_code'
   AND context_code = '541712' AND subout_rate_lifetime >= 0.30;
 -- prime-anchored portrait: same columns on gtm_prime_subout_by_recipient_code (uei sort)
 ```
+
+-- Installations near a work territory (military_installations, 831 rows):
+-- active US installations within ~40km of a point (deg approx; fine at overlay grain)
+SELECT site_name, component, state_code
+FROM military_installations
+WHERE country = 'USA' AND operational_status = 'act'
+  AND abs(latitude - 32.72) < 0.36 AND abs(longitude - (-117.16)) < 0.44;
 
 ## 5. Performance model
 

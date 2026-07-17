@@ -392,6 +392,13 @@ MANIFEST: list[dict] = [
               "matched_psc_count", "materialized_at"]},  # -justification_payload
     {"ds": "equipment_rental_golden_overlap", "tier": "D", "sort": ["firm_domain"]},
     {"ds": "federal_sites_lance", "tier": "D", "sort": ["state_code", "zip5"]},
+    # installations cycle (2026-07-17, operator-directed): DoD MIRTA site points
+    # (831 rows — name, component, state, status, lat/lon) for territory-vs-
+    # installation overlay questions across ALL market collections. Generic copy,
+    # exact parity. Parked at source (not landed to Lance): isFirrmaSite/isCui
+    # compliance flags — no foreseeable GTM question; re-land + rebuild if asked.
+    {"ds": "military_installations_lance", "tier": "D",
+     "dest": "military_installations", "sort": ["state_code"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
     # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
     # Demand: SIDECAR_GAP_REPORT_2026-07-10-funding-tab-pdl-match (PDL bridge) +
