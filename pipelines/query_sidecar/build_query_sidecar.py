@@ -251,6 +251,19 @@ MANIFEST: list[dict] = [
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_recipient_month_pop",
      "sort": ["action_type_code", "pop_state", "pop_county_fips", "month"],
      "from_table": "txn_events_combo", "month_pop_rollup": True, "aggregate": True},
+    # market-composition cycle (2026-07-17, operator-directed — gc-hq platform
+    # users compose markets in arbitrary slicings; SIDECAR_MARKET_COMPOSITION_
+    # SUBSTRATE.md §3): entity × federal-FY won mart — the collections
+    # doctrine's headline measure ("won FY23–25" = Σ prime obligations in the
+    # FY window) as a ms-class uei-pruned leg instead of a 0.8s group-by over
+    # the 108M fact per composed market. Set-aside riders (any + the four big
+    # program families, codes probe-verified: NONE/None = no set-aside) ride
+    # the SAME scan — "actually WINS set-aside work" vs merely-certified is
+    # the foreseeable next predicate. Local off txn_events_combo (has fy +
+    # set_aside + award_key). Aggregate parity.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "gtm_entity_fy_won",
+     "sort": ["uei", "fy"],
+     "from_table": "txn_events_combo", "entity_fy_won": True, "aggregate": True},
     # award-grain sub-out rollup: joins the fact/award_state on award key —
     # "is this combo/geo/agency getting subbed out more or less".
     {"ds": "usaspending_subaward_canonical", "tier": "C", "dest": "award_subout_rollup",
@@ -286,6 +299,17 @@ MANIFEST: list[dict] = [
      "dest": "gtm_entity_pricing_mix", "sort": ["uei"],
      "from_table": "usaspending_fpds_prime_award_state",
      "entity_pricing_mix": True, "aggregate": True},
+    # market-composition cycle (2026-07-17): entity-grain award book — the
+    # ontology's active_committed_book / vehicle_capacity / headroom as named
+    # uei-sorted columns (doctrine: committed vs vehicle NEVER blended; zero
+    # floors per award). Median/avg committed award value ride the same scan
+    # (the award-size-texture predicate: "wins $1–10M contracts" ≠ "$10M
+    # book"); next expiry, active agency breadth, and set-aside committed
+    # value ride too (foreseeable composer legs). Local off award_state.
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
+     "dest": "gtm_entity_award_book", "sort": ["uei"],
+     "from_table": "usaspending_fpds_prime_award_state",
+     "entity_award_book": True, "aggregate": True},
     # pricing-terms cycle (2026-07-15, gap E1): action-type vocabulary — the
     # empirical majority description per code (source pairs are messy: 102
     # raw tuples, truncated/null/cross-contaminated variants) FULL-joined with
@@ -408,6 +432,16 @@ MANIFEST: list[dict] = [
     # normalized, 35M) deliberately excluded — linkedin_slug carries the URL.
     {"ds": "bridge_sam_pdl", "tier": "D", "sort": ["uei"]},
     {"ds": "pdl_normalized_companies", "tier": "D", "sort": ["pdl_company_id"]},
+    # market-composition cycle (2026-07-17): uei-grain firmographics — the
+    # employee-size / industry / founded predicate as a ms-class leg. Measured
+    # 10.0s through the query-time bridge⋈PDL join (saturation class, not a
+    # workaround). Bridge is NOT 1/uei (802k rows / 464k ueis) — deterministic
+    # best-row rule: prefer a row with employee_size_range, then a non-generic
+    # domain, then lowest pdl_company_id. Local join of two already-built
+    # tables, single pure-equality key. Aggregate parity (reduces to 1/uei).
+    {"ds": "bridge_sam_pdl", "tier": "D", "dest": "gtm_entity_firmographics",
+     "sort": ["uei"],
+     "from_table": "bridge_sam_pdl", "entity_firmographics": True, "aggregate": True},
     {"ds": "icypeas_company_scrapes", "tier": "D", "sort": ["uei"],
      "cols": ["uei", "company_linkedin_url", "name", "domain", "li_source",
               "source_class", "money24_usd", "in_dsbs", "status", "linkedin_url",
@@ -903,6 +937,100 @@ GROUP BY 1
 ORDER BY uei
 """
 
+# market-composition cycle (2026-07-17): entity × federal-FY won. fy is
+# precomputed on the combo fact; set-aside families per the probe-verified
+# code inventory ('NONE'/'None' = none; 8A/8AN, SDVOSB*, *WOSB*, HZ* are the
+# program families worth their own columns — everything else aggregates into
+# won_obl_set_aside). Pure GROUP BY over a local table — no join.
+_ENTITY_FY_WON_SQL = """
+CREATE TABLE gtm_entity_fy_won AS
+SELECT uei,
+       fy,
+       sum(obligation)                                                    AS won_obl,
+       count(*)                                                           AS action_ct,
+       count(DISTINCT award_key)                                          AS award_ct,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code IS NOT NULL
+                                 AND type_of_set_aside_code NOT IN ('NONE','None',''))
+                                                                          AS won_obl_set_aside,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code LIKE '8A%')   AS won_obl_8a,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code LIKE 'SDVOSB%') AS won_obl_sdvosb,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code LIKE '%WOSB%') AS won_obl_wosb,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code LIKE 'HZ%')   AS won_obl_hubzone
+FROM txn_events_combo
+WHERE uei IS NOT NULL AND uei <> '' AND fy IS NOT NULL
+GROUP BY 1, 2
+ORDER BY uei, fy
+"""
+
+# market-composition cycle (2026-07-17): entity-grain award book. Doctrine
+# encoded once: active = days_to_expiry > 0 AND NOT terminated; committed =
+# topology <> 'vehicle' (standalone + orders); every $ floored at 0 per award;
+# committed value/runway at current_total_value_of_award; vehicles at
+# potential_ceiling — reported as separate labeled columns, never summed.
+# Pure GROUP BY over the local award_state — no join.
+_ENTITY_AWARD_BOOK_SQL = """
+CREATE TABLE gtm_entity_award_book AS
+WITH a AS (
+    SELECT recipient_uei,
+           (days_to_expiry > 0 AND is_terminated = FALSE)            AS is_active,
+           (award_topology <> 'vehicle')                             AS is_committed,
+           greatest(coalesce(current_total_value_of_award, 0), 0)    AS cvalue,
+           greatest(coalesce(total_dollars_obligated_snapshot, 0), 0) AS obl,
+           greatest(coalesce(current_total_value_of_award, 0)
+                    - coalesce(total_dollars_obligated_snapshot, 0), 0) AS runway,
+           greatest(coalesce(potential_ceiling, 0), 0)               AS ceiling,
+           greatest(coalesce(remaining_ceiling_headroom, 0), 0)      AS headroom,
+           current_end_date,
+           awarding_agency_code,
+           (type_of_set_aside_code IS NOT NULL
+            AND type_of_set_aside_code NOT IN ('NONE','None',''))    AS is_set_aside
+    FROM usaspending_fpds_prime_award_state
+    WHERE recipient_uei IS NOT NULL AND recipient_uei <> ''
+)
+SELECT recipient_uei                                                      AS uei,
+       count(*)        FILTER (WHERE is_active AND is_committed)          AS committed_award_ct,
+       sum(cvalue)     FILTER (WHERE is_active AND is_committed)          AS committed_value,
+       sum(obl)        FILTER (WHERE is_active AND is_committed)          AS committed_obligated,
+       sum(runway)     FILTER (WHERE is_active AND is_committed)          AS committed_runway,
+       median(cvalue)  FILTER (WHERE is_active AND is_committed)          AS committed_award_median,
+       avg(cvalue)     FILTER (WHERE is_active AND is_committed)          AS committed_award_avg,
+       sum(cvalue)     FILTER (WHERE is_active AND is_committed AND is_set_aside)
+                                                                          AS committed_value_set_aside,
+       count(*)        FILTER (WHERE is_active AND NOT is_committed)      AS vehicle_ct,
+       sum(ceiling)    FILTER (WHERE is_active AND NOT is_committed)      AS vehicle_ceiling,
+       sum(headroom)   FILTER (WHERE is_active AND NOT is_committed)      AS vehicle_headroom,
+       min(current_end_date) FILTER (WHERE is_active AND is_committed)    AS next_committed_end_date,
+       count(DISTINCT awarding_agency_code) FILTER (WHERE is_active)      AS active_agency_ct
+FROM a
+GROUP BY 1
+ORDER BY uei
+"""
+
+# market-composition cycle (2026-07-17): uei-grain firmographics off the two
+# local tables. Single pure-equality join key (pdl_company_id); best-row-per-
+# uei rule is deterministic and documented in the manifest comment.
+_ENTITY_FIRMOGRAPHICS_SQL = """
+CREATE TABLE gtm_entity_firmographics AS
+WITH ranked AS (
+    SELECT b.uei, b.duns, p.pdl_company_id, p.company_name, p.normalized_domain,
+           p.is_generic_domain, p.linkedin_slug, p.locality, p.region, p.country,
+           p.industry, p.employee_size_range, p.year_founded,
+           row_number() OVER (
+               PARTITION BY b.uei
+               ORDER BY (p.employee_size_range IS NOT NULL) DESC,
+                        (coalesce(p.is_generic_domain, TRUE) = FALSE) DESC,
+                        p.pdl_company_id
+           ) AS rn
+    FROM bridge_sam_pdl b
+    JOIN pdl_normalized_companies p ON p.pdl_company_id = b.pdl_company_id
+)
+SELECT uei, duns, pdl_company_id, company_name, normalized_domain, is_generic_domain,
+       linkedin_slug, locality, region, country, industry, employee_size_range, year_founded
+FROM ranked
+WHERE rn = 1
+ORDER BY uei
+"""
+
 # gap-pass-3 E1 residual (measured post-v8: the position ladder stayed 17-22s
 # because ANY join with an 83M-row side saturates the 2-thread/1.5GB serving
 # box): the snapshot position substrate — every order whose own or resolved-
@@ -1344,6 +1472,12 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_MONTH_POP_SQL)
         elif spec.get("entity_pricing_mix"):
             con.execute(_ENTITY_PRICING_MIX_SQL)
+        elif spec.get("entity_fy_won"):
+            con.execute(_ENTITY_FY_WON_SQL)
+        elif spec.get("entity_award_book"):
+            con.execute(_ENTITY_AWARD_BOOK_SQL)
+        elif spec.get("entity_firmographics"):
+            con.execute(_ENTITY_FIRMOGRAPHICS_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')

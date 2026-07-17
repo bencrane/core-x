@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.32B rows across 97 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.33B rows across 100 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -89,6 +89,9 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
 | `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action state per award: `latest_plan`, `latest_pricing_code`, `latest_financing_code`, `latest_business_size`. **Since 2026-07-16 these are ALSO denormalized onto `usaspending_fpds_prime_award_state` — never join this to award_state at query time** (32–49 s measured; the 83M-join saturation class). Billing shapes read award_state single-table; entity-level mix reads `gtm_entity_pricing_mix` |
+| `gtm_entity_fy_won` | 1/(uei, federal FY) | uei, fy | **Market-composition cycle (2026-07-17): the FY-window won measure as a pruned leg.** `won_obl` (Σ obligations), `action_ct`, `award_ct`, and the set-aside WIN family — `won_obl_set_aside` (any) + `won_obl_8a/sdvosb/wosb/hubzone`. "Won FY23–25" = `SUM(won_obl) WHERE fy IN (2023,2024,2025)` per uei — the window stays a query-time dial deliberately. Replaces the 790ms 108M group-by |
+| `gtm_entity_award_book` | 1/uei | uei | **The ontology's committed/vehicle book as named columns** (doctrine pinned once: active = PoP live AND NOT terminated; committed = topology ≠ vehicle; every $ floored 0/award): `committed_award_ct/value/obligated/runway`, `committed_award_median/avg` (size texture), `committed_value_set_aside`, `vehicle_ct/ceiling/headroom` (NEVER blended with committed), `next_committed_end_date`, `active_agency_ct` |
+| `gtm_entity_firmographics` | 1/uei bridged · ~464k | uei | **The employee-size/industry predicate, ms-class** (was a 10.0s query-time bridge⋈PDL join): employee_size_range, industry, locality/region/country, year_founded, linkedin_slug, normalized_domain + is_generic_domain, company_name, duns, pdl_company_id. Best-row-per-uei (prefers employee_size, then non-generic domain). Coverage = the bridge (~464k of 2.0M registrants) — disclose |
 | `gtm_entity_pricing_mix` | 1/uei · 767k | uei | **The billing/demo lens** (2026-07-16): active vs total book by pricing class — `active_obl_fixed/cost/tm_lh/other` (class map: fixed A,B,J,K,L,M · cost R,S,T,U,V · tm_lh Y,Z), `active_ffp_unfinanced_ct`/`active_obl_ffp_unfinanced`, `active_obl_small_determined`, precomputed `active_fixed_share`/`active_ffp_unfinanced_share`. "Primes whose active book is ≥70% FFP" = one uei-sorted read, ms-class |
 | `action_type_vocab` | 1/action_type_code · 22 (21 codes + NULL base row) | — | **The action-type language layer** (2026-07-15): `source_description` (empirical majority — source pairs are messy: 102 raw tuples), `plain_english` (subject-first query phrase: "received additional funding", "had an option year exercised"), `family` (new_award\|more_work\|funding_only\|termination\|definitization\|closeout\|admin), `is_more_work` (A,B,D,G,L), `is_funding_released` (C,G — G carries BOTH: option exercise turns on work AND its money; C is the only pure-money event). NULL code row = base/initial award (FPDS stamps action type on mods only) |
 | `fpds_code_vocab` | 1/(field, code) · ~100 | field, code | Name resolution for the five pricing-terms code spaces: `field` ∈ pricing \| financing \| performance_based \| business_size_determination \| labor_standards, majority name per code |
@@ -438,6 +441,35 @@ ORDER BY d.recipients DESC NULLS LAST;
 -- cross to local medical-labor supply: join gtm_sam_entities on physical_state
 -- (2-letter) via substr(v.fips,1,2) → sam_county_fips_crosswalk.state_code, or
 -- to award geography directly on txn_events_combo_by_geo.pop_county_fips = v.fips.
+```
+
+### Market-composition legs (2026-07-17 cycle)
+
+Composed market = AND of predicate legs intersected on uei, ONE statement. The three
+entity-grain marts make the common legs ms-class:
+
+```sql
+-- "Won FY23-25 > $5M AND active committed book AND based in CO AND 11-200 people"
+WITH won AS (
+  SELECT uei, sum(won_obl) AS won
+  FROM gtm_entity_fy_won WHERE fy IN (2023, 2024, 2025)
+  GROUP BY 1 HAVING sum(won_obl) > 5e6)
+SELECT count(*)
+FROM won
+JOIN gtm_entity_award_book  bk USING(uei)
+JOIN gtm_sam_entities       e  USING(uei)
+JOIN gtm_entity_firmographics f USING(uei)
+WHERE bk.committed_award_ct > 0
+  AND e.physical_state = 'CO'
+  AND f.employee_size_range IN ('11-50', '51-200');
+
+-- set-aside WINNERS (not merely certified): actually won 8(a) work in the window
+SELECT uei, sum(won_obl_8a) FROM gtm_entity_fy_won
+WHERE fy IN (2024, 2025) GROUP BY 1 HAVING sum(won_obl_8a) > 0;
+
+-- award-size texture: firms whose typical committed award is $1-10M
+SELECT uei FROM gtm_entity_award_book
+WHERE committed_award_median BETWEEN 1e6 AND 1e7 AND committed_award_ct >= 3;
 ```
 
 ### Audience-spec counts (2026-07-15 cycle)
