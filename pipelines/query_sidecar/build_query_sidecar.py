@@ -360,6 +360,12 @@ MANIFEST: list[dict] = [
     # lender grain + the FDIC/NCUA name authorities (bracket sources) + the
     # equipment-finance candidate list (read-only reconciliation target).
     {"ds": "sam_ucc_lenders", "tier": "D", "sort": ["lender_key"]},
+    # full-corpus UCC layer (operator-directed 2026-07-16): the sam_ucc_* pair
+    # is the SAM intersection by construction; these lift the constraint —
+    # every CA/CO debtor (org + individual), uei/in_sam as nullable enrichment.
+    # Lender grain gains total_firms (all debtors) alongside sam_firms.
+    {"ds": "ucc_filings_all", "tier": "D", "sort": ["ucc_state", "debtor_name_norm"]},
+    {"ds": "ucc_lenders_all", "tier": "D", "sort": ["lender_key"]},
     {"ds": "fdic_institutions", "tier": "D", "sort": ["name"],
      "cols": ["name", "cert", "active", "city", "stalp", "stname", "zip",
               "webaddr", "asset", "charter"]},
