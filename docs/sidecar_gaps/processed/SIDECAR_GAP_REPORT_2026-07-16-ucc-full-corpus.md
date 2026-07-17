@@ -63,7 +63,10 @@ could register in SAM" — needs firmographics beyond this corpus, correctly-on-
 
 ### Measured results
 
-(filled post-build)
-- `ucc_filings_all`: rows / CA / CO / distinct uei —
-- `ucc_lenders_all`: rows / non_bank —
-- Serving: both tables DESCRIBE + count on the new artifact —
+- `ucc_filings_all` (Lance): **7,711,737 rows** (CA 5,743,105 / CO 1,968,632; 82,445
+  distinct uei enriched; 2,630,742 active financings; 0 orphans; all 5 pre-write gates
+  PASS). vs sam_ucc_filings 376,451 → 20× corpus expansion.
+- `ucc_lenders_all` (Lance): **135,153 lenders** (115,349 non_bank; 53,082 with active
+  book; 156 in_efc; CA 73,762 / CO 72,299 with firms). vs sam_ucc_lenders 21,686 → 6.2×.
+- Sidecar rebuild: artifact `query_sidecar_20260717T020529Z.duckdb`, 98 tables
+  (96 + the 2 promoted), 49.05 GiB, parity=OK on all marts, published + hot-swapped.
