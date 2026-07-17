@@ -9,10 +9,16 @@ Lance `entity_hierarchy` table) for user confirmation; nothing fuzzy, ever.
 
 Endpoint (service-token gated):
   POST /api/v1/resolve/entities
-    {"ueis"?: ["ABC...", ...], "domains"?: ["acme.com", ...]}   (≤2000 each)
+    {"ueis"?: [...], "domains"?: [...], "linkedin_urls"?: [...]}   (≤2000 each)
   → {"ueis": {<uei>: {uei, name, state, active} | null},
      "domains": {<domain>: [{uei, name, state, source, ultimate_parent_name}, ...]},
+     "linkedin_urls": {<url>: [candidates, same shape]},
      "elapsed_ms", "artifact"}
+
+LinkedIn path (2026-07-17): company URL → slug → `pdl_slug_lookup` (slug-sorted;
+the unsorted probe measured 18.4s) → registrant candidates via the SAM↔PDL
+bridge, UNION via the PDL company's non-generic domain against SAM
+registrations — both exact hops, one statement.
 
 Execution: one sidecar statement per identifier type (VALUES join — server-side
 SQL only, inputs validated against closed shapes, never interpolated as text)
@@ -67,6 +73,20 @@ def _family_map() -> dict[str, str]:
     return _hierarchy
 
 
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_.]{0,99}$")
+_LI_URL_RE = re.compile(
+    r"^(?:https?://)?(?:[a-z]{2,3}\.)?linkedin\.com/company/([^/?#]+)/?", re.IGNORECASE
+)
+
+
+def normalize_linkedin(raw: str) -> str | None:
+    """Company URL (or bare slug) → lowercase slug; None if not exact-parseable."""
+    s = raw.strip()
+    m = _LI_URL_RE.match(s)
+    slug = (m.group(1) if m else s).strip().lower()
+    return slug if _SLUG_RE.match(slug) else None
+
+
 def normalize_domain(raw: str) -> str | None:
     d = raw.strip().lower()
     d = re.sub(r"^[a-z][a-z0-9+.-]*://", "", d)   # scheme
@@ -102,9 +122,10 @@ async def _sidecar(sql: str, limit: int) -> dict[str, Any]:
 async def resolve_entities(body: dict[str, Any]) -> dict[str, Any]:
     raw_ueis = body.get("ueis") or []
     raw_domains = body.get("domains") or []
-    if not isinstance(raw_ueis, list) or not isinstance(raw_domains, list):
-        raise HTTPException(status_code=422, detail="ueis and domains must be lists")
-    if len(raw_ueis) > _MAX_BATCH or len(raw_domains) > _MAX_BATCH:
+    raw_linkedin = body.get("linkedin_urls") or []
+    if not all(isinstance(x, list) for x in (raw_ueis, raw_domains, raw_linkedin)):
+        raise HTTPException(status_code=422, detail="ueis/domains/linkedin_urls must be lists")
+    if max(len(raw_ueis), len(raw_domains), len(raw_linkedin)) > _MAX_BATCH:
         raise HTTPException(status_code=422, detail=f"batch limit {_MAX_BATCH} per identifier type")
 
     ueis = sorted({u.strip().upper() for u in raw_ueis if isinstance(u, str) and _UEI_RE.match(u.strip())})
@@ -113,7 +134,18 @@ async def resolve_entities(body: dict[str, Any]) -> dict[str, Any]:
     }
     domains = sorted({n for n in norm_map.values() if n})
 
-    out: dict[str, Any] = {"ueis": {}, "domains": {}, "elapsed_ms": 0.0, "artifact": None}
+    li_map: dict[str, str | None] = {
+        u: normalize_linkedin(u) for u in raw_linkedin if isinstance(u, str) and u.strip()
+    }
+    slugs = sorted({s for s in li_map.values() if s})
+
+    out: dict[str, Any] = {
+        "ueis": {},
+        "domains": {},
+        "linkedin_urls": {},
+        "elapsed_ms": 0.0,
+        "artifact": None,
+    }
 
     if ueis:
         sql = (
@@ -167,5 +199,49 @@ async def resolve_entities(body: dict[str, Any]) -> dict[str, Any]:
         # answer under the CALLER's raw keys so the uploader can map rows back
         for raw, norm in norm_map.items():
             out["domains"][raw] = by_domain.get(norm, []) if norm else []
+
+    if slugs:
+        # slug → PDL company (slug-sorted lookup) → registrants via the bridge,
+        # UNION via the PDL company's non-generic domain — one statement, both
+        # legs DISTINCT (the bridge carries duplicate rows, probe-verified).
+        sql = (
+            f"WITH s(slug) AS (VALUES {_values_clause(slugs)}), "
+            "p AS ("
+            "  SELECT s.slug, l.pdl_company_id, l.normalized_domain, l.is_generic_domain"
+            "  FROM s JOIN pdl_slug_lookup l ON l.linkedin_slug = s.slug"
+            "), cand AS ("
+            "  SELECT DISTINCT p.slug, b.uei, e.legal_business_name AS name,"
+            "         e.physical_state AS state, 'linkedin_bridge' AS source"
+            "  FROM p JOIN bridge_sam_pdl b ON b.pdl_company_id = p.pdl_company_id"
+            "  JOIN gtm_sam_entities e ON e.uei = b.uei"
+            "  UNION"
+            "  SELECT DISTINCT p.slug, e.uei, e.legal_business_name AS name,"
+            "         e.physical_state AS state, 'linkedin_domain' AS source"
+            "  FROM p JOIN gtm_sam_entities e ON e.normalized_domain = p.normalized_domain"
+            "  WHERE coalesce(p.is_generic_domain, TRUE) = FALSE"
+            ") "
+            "SELECT slug, uei, max(name) AS name, max(state) AS state, "
+            "       string_agg(DISTINCT source, '+' ORDER BY source) AS source "
+            "FROM cand GROUP BY slug, uei ORDER BY slug, uei"
+        )
+        payload = await _sidecar(sql, min(len(slugs) * _MAX_CANDIDATES_PER_DOMAIN, 50000))
+        out["elapsed_ms"] += payload.get("elapsed_ms") or 0
+        out["artifact"] = payload.get("artifact") or out["artifact"]
+        fam = _family_map()
+        by_slug: dict[str, list[dict[str, Any]]] = {s: [] for s in slugs}
+        for slug, uei, name, state, source in payload.get("rows") or []:
+            if len(by_slug.get(slug, [])) >= _MAX_CANDIDATES_PER_DOMAIN:
+                continue
+            by_slug.setdefault(slug, []).append(
+                {
+                    "uei": uei,
+                    "name": name,
+                    "state": state,
+                    "source": source,
+                    "ultimate_parent_name": fam.get(uei),
+                }
+            )
+        for raw, slug in li_map.items():
+            out["linkedin_urls"][raw] = by_slug.get(slug, []) if slug else []
 
     return out
