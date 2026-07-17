@@ -49,6 +49,7 @@ from .src import db
 from .src.map_decoders import DECODERS
 from .src.routers.active_awards_query_v1 import router as active_awards_query_router
 from .src.routers.market_collections_v1 import router as market_collections_router
+from .src.routers.entity_resolve_v1 import router as entity_resolve_router
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.card_html import render_card, render_not_found
 from .src.models import (
@@ -182,6 +183,10 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # src/service_token.py shim (same dependency name the routers already import).
 app.include_router(market_collections_router)
 app.include_router(market_spec_router)
+
+# entity-resolve: batch exact resolution for gc-hq uploaded entity lists
+# (uei verify + domain→registrant candidates w/ family names). 2026-07-17.
+app.include_router(entity_resolve_router)
 app.include_router(active_awards_query_router)
 
 
