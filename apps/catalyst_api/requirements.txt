@@ -5,3 +5,5 @@ fastapi>=0.115,<1
 uvicorn[standard]>=0.30
 pylance>=7        # provides `import lance` (lancedb does not re-export it)
 pyarrow>=17       # Arrow bridge for the Lance scanner → to_pylist()
+httpx>=0.27       # market/query routers → query-sidecar POSTs
+psycopg[binary,pool]>=3.2   # market routers → gtm.market_collections + vocab reads (HQX pg)

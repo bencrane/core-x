@@ -45,7 +45,11 @@ from .src import (
     sub_universe_store,
     subout_store,
 )
+from .src import db
 from .src.map_decoders import DECODERS
+from .src.routers.active_awards_query_v1 import router as active_awards_query_router
+from .src.routers.market_collections_v1 import router as market_collections_router
+from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.card_html import render_card, render_not_found
 from .src.models import (
     ActiveContract,
@@ -154,13 +158,31 @@ async def lifespan(_app: FastAPI):
 
     _threading.Thread(target=subout_store.prewarm_caches, daemon=True,
                       name="subout-cache-prewarm").start()
+    # Postgres pool for the market/query routers (gtm.market_collections + vocab
+    # reads). Best-effort: a missing HQX_DB_URL_POOLED degrades those routers to
+    # 500s without bricking the Lance gateway.
+    try:
+        await db.init_pool()
+        log.info("catalyst_api: hqx db pool ready")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("catalyst_api: hqx db pool unavailable (market routers degraded): %s", exc)
     yield
+    await db.close_pool()
 
 
 app = FastAPI(title="catalyst_api", version="1.0.0", lifespan=lifespan)
 # Gzip responses >1 KB. The map GeoJSON FeatureCollection is highly repetitive JSON
 # (~85-90% smaller gzipped); edge_api's httpx client auto-decodes. Internal hop, but free.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Market/query routers relocated from edge_api (2026-07-17): sidecar-compiled
+# read surfaces (market-collections, market-spec, active-awards-query) live on
+# this read-only gateway so product-facing composition reads are isolated from
+# edge_api's automation deploy cadence. Gated by CATALYST_API_TOKEN via the
+# src/service_token.py shim (same dependency name the routers already import).
+app.include_router(market_collections_router)
+app.include_router(market_spec_router)
+app.include_router(active_awards_query_router)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────
