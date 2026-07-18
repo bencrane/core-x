@@ -23,7 +23,8 @@ cd "$REPO_ROOT"
 git fetch -q origin main || echo "WARN: fetch failed; using cached origin/main" >&2
 MAIN_SHA="$(git rev-parse origin/main)"
 
-MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+# (no early-exit awk: with pipefail, awk's exit would SIGPIPE the git side)
+MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{if(!p){print $2;p=1}}')"
 
 # One pass over all process cwds (lsof +D per-worktree is a recursive scan — too slow).
 ALL_CWDS="$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true)"
