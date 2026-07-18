@@ -1,6 +1,0 @@
-# regenerable matchmaking scratch (shard inputs + raw per-shard agent outputs)
-mm_shards/
-mm_out/
-
-# regenerable DSBS×demand overlap parquet (reproduce via scripts/dsbs_active_demand_overlap.py)
-dsbs_overlap/*.parquet
