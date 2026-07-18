@@ -8,7 +8,12 @@ the demand-side bucket taxonomy, and publishes two marts:
                               carried category, bucket, match_source.
   equipment_yard_profile    — 1/uei: provider verdict fields + bucket set,
                               primary_bucket (by instance count), item/category
-                              counts, matched/unmatched instance counts.
+                              counts, matched/unmatched instance counts, plus
+                              (from gtm.equipment_yard_industries_served, latest
+                              row per uei) industries_served (lowercased/trimmed
+                              distinct list) and serves_government (any entry
+                              matching government/municipal/federal/military/
+                              public sector/dod).
 
 CLASSIFICATION IS FULLY DETERMINISTIC AT RUN TIME — no model calls:
   1. regex rules below (first match wins; the 5 heavy-iron bucket names match
@@ -150,13 +155,29 @@ def main() -> None:
     FROM (SELECT uei, CAST(raw_payload AS JSON) AS p
           FROM hqx.gtm.equipment_yard_website_research)""")
     con.execute("""
+    CREATE TABLE industries AS
+    SELECT uei,
+           list_sort(list_distinct(list(industry))) AS industries_served,
+           BOOL_OR(industry SIMILAR TO
+             '.*(government|municipal|federal|military|public sector|dod).*') AS serves_government
+    FROM (
+      SELECT t.uei, LOWER(TRIM(json_extract_string(i.value, '$'))) AS industry
+      FROM (SELECT uei, CAST(raw_payload AS JSON) AS p,
+                   ROW_NUMBER() OVER (PARTITION BY uei ORDER BY landed_at DESC) AS rn
+            FROM hqx.gtm.equipment_yard_industries_served) t,
+           json_each(COALESCE(json_extract(t.p, '$.industriesServed'), '[]'::JSON)) i
+      WHERE t.rn = 1 AND TRIM(COALESCE(json_extract_string(i.value, '$'), '')) <> '')
+    GROUP BY 1""")
+    con.execute("""
     CREATE TABLE profile AS
     SELECT v.uei,
            NOT v.explicit_negative AND v.n_items + v.n_categories > 0 AS is_equipment_provider,
            v.explicit_negative, v.confidence, v.n_items, v.n_categories,
            b.buckets, b.primary_bucket,
            COALESCE(b.matched_instances, 0) AS matched_instances,
-           COALESCE(b.unmatched_instances, 0) AS unmatched_instances
+           COALESCE(b.unmatched_instances, 0) AS unmatched_instances,
+           i.industries_served,
+           COALESCE(i.serves_government, FALSE) AS serves_government
     FROM verdict v
     LEFT JOIN (
       SELECT uei,
@@ -166,6 +187,7 @@ def main() -> None:
              SUM(cnt) FILTER (WHERE bucket IS NULL) AS unmatched_instances
       FROM (SELECT uei, bucket, COUNT(*) AS cnt FROM inv GROUP BY 1, 2)
       GROUP BY 1) b USING (uei)
+    LEFT JOIN industries i USING (uei)
     ORDER BY v.uei""")
 
     so = _r2_storage_options()
