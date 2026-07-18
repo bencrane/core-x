@@ -1,7 +1,7 @@
 # Macro PSC distribution across active federal awards — GTM vertical-prioritization probe
 
 **Mode:** READ-ONLY probe → report. **Snapshot:** 2026-06-21 (UTC). **Source:** `s3://data-sink/active/govcon_active_awards/` (Lance SoR).
-**Probe:** `scripts/psc_distribution_probe.py` — single R2 connection, one filtered base temp table, all aggregations off it, self-validating categorical histograms + in-script consistency assertions. Raw JSON: `/tmp/psc_probe.json`.
+**Probe:** `scripts/archive/psc_distribution_probe.py` — single R2 connection, one filtered base temp table, all aggregations off it, self-validating categorical histograms + in-script consistency assertions. Raw JSON: `/tmp/psc_probe.json`.
 
 **Active cohort (membership):** `active_current OR active_potential` — i.e. the directive's *"active_potential = true OR pop_current_end >= current_date."* `pop_unknown` awards (both PoP ends NULL) are out of scope by this definition; **0** such awards exist inside active membership, so nothing is silently dropped.
 
@@ -150,4 +150,4 @@ SCA flag = guaranteed labor-dependent services contract (janitorial, guard, basi
 - **PSC coverage:** 0 null/empty `psc_code` in the active cohort.
 - **Literal confirmation:** `labor_standards` and `subcontracting_plan_code` raw histograms emitted (not assumed).
 
-Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/psc_distribution_probe.py`.
+Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/psc_distribution_probe.py`.

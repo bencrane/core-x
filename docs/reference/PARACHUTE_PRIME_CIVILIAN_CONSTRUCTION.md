@@ -1,7 +1,7 @@
 # Parachute Prime & Civilian Construction Density — findings
 
 **As-of:** 2026-06-21 (UTC) · **Source:** read-only DuckDB probe of `s3://data-sink/active/govcon_active_awards/` (189,272 active prime awards) cross-referenced to `s3://data-sink/active/govcon_equipment_rental_construction_match/`.
-**Harness:** [`scripts/parachute_prime_probe.py`](../../scripts/parachute_prime_probe.py) — single R2 connection, one filtered base materialization, self-validating diagnostics. Re-run: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/parachute_prime_probe.py`.
+**Harness:** [`scripts/archive/parachute_prime_probe.py`](../../scripts/archive/parachute_prime_probe.py) — single R2 connection, one filtered base materialization, self-validating diagnostics. Re-run: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/parachute_prime_probe.py`.
 
 ## Definitions (locked)
 
@@ -124,7 +124,7 @@ Cross-referenced to `govcon_equipment_rental_construction_match` on `contract_aw
 
 # PSC decomposition — the 2,781 Parachute cohort
 
-**Harness:** [`scripts/parachute_psc_probe.py`](../../scripts/parachute_psc_probe.py). Reconciled: parachute = 2,781 (0 null PSC), golden-civilian = 282; macro categories sum to 2,781.
+**Harness:** [`scripts/archive/parachute_psc_probe.py`](../../scripts/archive/parachute_psc_probe.py). Reconciled: parachute = 2,781 (0 null PSC), golden-civilian = 282; macro categories sum to 2,781.
 
 ## Macro (Build vs. Fix)
 

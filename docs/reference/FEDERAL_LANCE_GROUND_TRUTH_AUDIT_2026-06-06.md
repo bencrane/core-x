@@ -19,12 +19,12 @@
 | Data staleness | `SELECT max(<date_col>)` streamed through DuckDB over a single projected column (giants capped at 150 s, cap recorded not dropped). |
 | Write mode / cadence | read from the worker scripts (`pipelines/**`) and Trigger tasks (`src/trigger/**`), not assumed. |
 
-Reproducible probe: [`scripts/lance_ground_truth_probe.py`](../../scripts/lance_ground_truth_probe.py) (complements the name-only [`scripts/data-factory-catalog.py`](../../scripts/data-factory-catalog.py)). Run:
+Reproducible probe: [`scripts/archive/lance_ground_truth_probe.py`](../../scripts/archive/lance_ground_truth_probe.py) (complements the name-only [`scripts/data-factory-catalog.py`](../../scripts/data-factory-catalog.py)). Run:
 
 ```bash
 doppler run -p core-x -c prd -- uv run --no-project \
   --with boto3 --with pylance --with duckdb \
-  python3 scripts/lance_ground_truth_probe.py > /tmp/lance_probe.json
+  python3 scripts/archive/lance_ground_truth_probe.py > /tmp/lance_probe.json
 ```
 
 **Surface size:** 166 leaf Lance datasets · 2,217,834,380 rows total. Federal subset: **64 leaf datasets · 879,877,313 rows.**

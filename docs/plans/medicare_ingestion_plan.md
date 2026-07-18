@@ -14,7 +14,7 @@ practice-acquisition questions can be asked on top of cleanly-landed, key-united
 **Provenance:** every mechanic below is lifted from an existing in-repo pattern (cited inline). The drift/topology
 facts were re-verified against the committed recon evidence
 ([`docs/reference/medicare_archive_recon_evidence.md`](../reference/medicare_archive_recon_evidence.md) — the full
-per-member schema/grain/drift ground truth, distilled by `scripts/recon_medicare_evidence.py`) after an Opus-4.8
+per-member schema/grain/drift ground truth, distilled by `scripts/archive/recon_medicare_evidence.py`) after an Opus-4.8
 adversarial review of the diagnostic; §1 records the corrections that review forced.
 
 ---

@@ -1,7 +1,7 @@
 # Parachute Prime — Equipment-Rental Targeting Recon (Target A / Target B)
 
 **As-of:** 2026-06-22 (UTC) · **Source:** read-only DuckDB probe of `s3://data-sink/active/govcon_active_awards/` (189,272 prime awards; **148,789 active + future-end**) × `s3://data-sink/active/sba_dsbs_certified_firms/` (67,234 certified firms).
-**Harness:** [`scripts/parachute_prime_targeting_recon.py`](../../scripts/parachute_prime_targeting_recon.py) — single R2 connection, one filtered base materialization, self-validating literal histograms. Re-run: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/parachute_prime_targeting_recon.py`.
+**Harness:** [`scripts/archive/parachute_prime_targeting_recon.py`](../../scripts/archive/parachute_prime_targeting_recon.py) — single R2 connection, one filtered base materialization, self-validating literal histograms. Re-run: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/parachute_prime_targeting_recon.py`.
 
 > **Verdict: database is READY to wire into the Catalyst-API / LLM translation layer.** Every predicate the two profiles need exists, is indexed, and was confirmed against live literals. **Two schema hurdles** must be encoded in the translation layer (state-code↔name mapping; NAICS depth via `naics_all_codes`) and **one architecture rule** must hold on the map (supply join is **radius**, not state equality). All three are detailed in §5.
 

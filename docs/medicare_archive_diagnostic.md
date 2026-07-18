@@ -2,11 +2,11 @@
 
 **Status:** reconnaissance only — zero ingest, zero extraction, zero rows written to Lance.
 **Source of record probed:** `s3://data-sink/landing/cms/medicare-datasets/` (Cloudflare R2, Gen-3 landing tier).
-**Probe:** [`scripts/recon_medicare_archive.py`](../scripts/recon_medicare_archive.py) — reproducible via
-`doppler run -p core-x -c prd -- python3 scripts/recon_medicare_archive.py > /tmp/medicare_recon.json`.
+**Probe:** [`scripts/archive/recon_medicare_archive.py`](../scripts/archive/recon_medicare_archive.py) — reproducible via
+`doppler run -p core-x -c prd -- python3 scripts/archive/recon_medicare_archive.py > /tmp/medicare_recon.json`.
 **Committed evidence:** the full per-member schema / grain / drift ground truth this report rests on is checked in at
 [`docs/reference/medicare_archive_recon_evidence.md`](reference/medicare_archive_recon_evidence.md) (distilled from
-the probe output by `scripts/recon_medicare_evidence.py`). **No claim here depends on an out-of-repo file** — the
+the probe output by `scripts/archive/recon_medicare_evidence.py`). **No claim here depends on an out-of-repo file** — the
 `/tmp` path above is only the raw intermediate the generator consumes.
 **Method (anti-OOM, strict):** each ZIP's central directory was read from the object **tail** via a handful of
 HTTP Range GETs (`_S3RangeReader` → stdlib `zipfile`); each data member was characterised by
@@ -335,8 +335,8 @@ from the append path.
 ### Appendix — reproduce
 
 ```bash
-doppler run -p core-x -c prd -- python3 scripts/recon_medicare_archive.py            # full prefix
-doppler run -p core-x -c prd -- python3 scripts/recon_medicare_archive.py "by provider and service"  # one family
+doppler run -p core-x -c prd -- python3 scripts/archive/recon_medicare_archive.py            # full prefix
+doppler run -p core-x -c prd -- python3 scripts/archive/recon_medicare_archive.py "by provider and service"  # one family
 ```
 
 Required env (Doppler `core-x/prd`): `R2_ENDPOINT` (or `R2_ACCOUNT_ID`), `R2_ACCESS_KEY_ID`,

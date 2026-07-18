@@ -2,7 +2,7 @@
 
 **Mode:** READ-ONLY probe → report. **Snapshot:** 2026-06-21 (UTC). **Recency window:** last 90 days (≥ 2026-03-23).
 **Sources:** `govcon_active_awards` (full-coverage award substrate) ⨝ `govcon_award_scope_requirements` (PDF extractions, partial coverage).
-**Probe:** [`scripts/cash_crunch_probe.py`](scripts/cash_crunch_probe.py) — single R2 connection, SB base temp table, self-validating business-size histogram + explicit join-coverage denominators. Raw JSON: `/tmp/cash_crunch.json`.
+**Probe:** [`scripts/archive/cash_crunch_probe.py`](scripts/archive/cash_crunch_probe.py) — single R2 connection, SB base temp table, self-validating business-size histogram + explicit join-coverage denominators. Raw JSON: `/tmp/cash_crunch.json`.
 
 **Small-Business definition (authoritative FPDS determination):** `business_size_code='S'` (raw `business_size='SMALL BUSINESS'`). Confirmed literal: S = **83,400**, O = 65,388, blank = 1 (active cohort = 148,789). Expanding to "any small/disadvantaged set-aside flag" adds only **+949 awards (+1.1%)** — the COD determination already captures the universe, so all sections run on it.
 
@@ -129,4 +129,4 @@ Across the three crunch cohorts, awards with a `latest_action_date` (latest modi
 - Equipment/bonding cardinality emitted so field noise is visible, not hidden (218 vs 84 distinct).
 - `act_null=0` — recency is exact across the cohort.
 
-Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/cash_crunch_probe.py`.
+Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/cash_crunch_probe.py`.
