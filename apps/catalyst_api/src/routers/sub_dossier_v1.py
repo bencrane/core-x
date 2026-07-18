@@ -36,12 +36,39 @@ Hard-won rules encoded here (do not relax):
 - Zero model calls. Deterministic. All user tokens validated against typed
   ranges/regexes; nothing user-supplied is interpolated as free text.
 
+Archetypes (2026-07-18 operator ruling — the hybrid prime+sub dossier):
+  "sub"        — the original pure-subawardee calculus above (default).
+  "prime_sub"  — firms with a healthy prime business AND meaningful subawarding
+                 (band floors: prime ≥ hybrid_prime_floor AND sub ≥
+                 hybrid_sub_floor within [band_min, band_max] total). Same
+                 market chassis (seeds → seed-lookalike primes), with two
+                 sharpenings, both ruled:
+                 (1) the target's WORK SHAPE is its own PRIME lanes (side=
+                     'prime' in gtm_entity_code_lanes) — the prime record is
+                     the evidence-grade capability statement; sub-reported
+                     codes are inherited from the prime award and stay
+                     secondary;
+                 (2) the market gate is demonstrated sub-out TO THE TARGET'S
+                     SHAPE: candidates must have subaward edges to recipients
+                     whose OWN PRIME HISTORY sits in the target's prime NAICS
+                     codes (gtm_prime_subout_by_recipient_code,
+                     recipient_code_source='awarded_prime_contracts_in_code',
+                     single context type to keep dollars dedup-clean).
+                 The market is never firms shaped like the target — it is
+                 buyers: primes that look like the seeds and verifiably farm
+                 out work to firms like the target. Payload adds a
+                 prime_business section (own prime signature + book); the
+                 competitor ladder needs no change (branch 1 prime-sig cosine
+                 already fires when the target primes).
+
 Endpoints (service-token gated):
-  POST /api/v1/sub-dossier/build     {"uei": "...", "dials"?: {...}}
+  POST /api/v1/sub-dossier/build     {"uei": "...", "archetype"?: "sub"|"prime_sub",
+                                      "dials"?: {...}}
        → the frozen dossier payload (version sub_dossier_v2)
-  GET  /api/v1/sub-dossier/eligible?band_min&band_max&limit
+  GET  /api/v1/sub-dossier/eligible?band_min&band_max&limit&archetype
        → the target-band population with targeting-richness columns
-         (n_seeds, max_seed_last_action, family_flag) [F6, S4]
+         (n_seeds, max_seed_last_action, family_flag) [F6, S4];
+         archetype=prime_sub adds the per-side floors
 """
 from __future__ import annotations
 
@@ -74,6 +101,13 @@ _NON_ALNUM_RE = re.compile(r"[^A-Z0-9 ]")
 
 _BAND_FYS = (2023, 2024, 2025)
 _JV_SIGNAL_TYPES = ("jv_8a_certified", "jv_econ_disadv", "jv_women_owned")
+_ARCHETYPES = ("sub", "prime_sub")
+# The recipient-shape lens for the hybrid market gate. ONE source lens per
+# query (the cube's lenses overlap); ONE context type so dollars within a
+# recipient_code are dedup-clean (a subaward has exactly one context NAICS).
+_SHAPE_LENS_SOURCE = "awarded_prime_contracts_in_code"
+_SHAPE_CONTEXT_TYPE = "naics"
+_SHAPE_RECIPIENT_TYPE = "naics"
 
 # Dials (SUBAWARDEE_DOSSIER_PROGRAM.md §3/§8). Every value is returned
 # verbatim in method.dials; overrides are range-validated in _merge_dials.
@@ -95,13 +129,16 @@ DEFAULT_DIALS: dict[str, Any] = {
     "competitor_limit": 15,
     "min_market_rows": 5,           # render floors [F6]
     "min_competitors": 3,
+    "hybrid_prime_floor": 1_000_000.0,  # prime_sub archetype: per-side band floors
+    "hybrid_sub_floor": 1_000_000.0,
 }
 
 _INT_DIALS = {"sig_rank", "min_lane_hits", "market_size", "recency_months",
               "history_limit", "peer_scoring_cap", "competitor_limit",
               "min_market_rows", "min_competitors"}
 _FLOAT_DIALS = {"band_min", "band_max", "shape_floor", "sig_share",
-                "market_prime_floor", "size_cap"}
+                "market_prime_floor", "size_cap",
+                "hybrid_prime_floor", "hybrid_sub_floor"}
 _DIAL_BOUNDS: dict[str, tuple[float, float]] = {
     "band_min": (0, 1e12), "band_max": (0, 1e12), "shape_floor": (0, 1e10),
     "sig_rank": (1, 20), "sig_share": (0.0, 1.0), "min_lane_hits": (1, 10),
@@ -110,6 +147,7 @@ _DIAL_BOUNDS: dict[str, tuple[float, float]] = {
     "peer_scoring_cap": (10, 1200), "size_cap": (0, 1e13),
     "competitor_limit": (1, 100), "min_market_rows": (0, 50),
     "min_competitors": (0, 50),
+    "hybrid_prime_floor": (0, 1e12), "hybrid_sub_floor": (0, 1e12),
 }
 
 _PEER_CHUNK = 400          # IN-list chunk size for peer hydration statements
@@ -125,6 +163,14 @@ def _valid_uei(raw: Any) -> str:
     if not isinstance(raw, str) or not _UEI_RE.match(raw.strip()):
         raise _refuse("uei must be a 12-character SAM UEI")
     return raw.strip().upper()
+
+
+def _valid_archetype(raw: Any) -> str:
+    if raw is None:
+        return "sub"
+    if not isinstance(raw, str) or raw not in _ARCHETYPES:
+        raise _refuse(f"archetype must be one of {_ARCHETYPES}")
+    return raw
 
 
 def _merge_dials(overrides: Any) -> dict[str, Any]:
@@ -272,7 +318,11 @@ FROM gtm_prime_code_signature WHERE uei IN ({_uei_list_sql(ueis)})"""
 
 
 def sql_market(uei: str, seeds: list[str], target_naics: list[str],
-               target_psc: list[str], dials: dict[str, Any]) -> str:
+               target_psc: list[str], dials: dict[str, Any],
+               shape_naics: list[str] | None = None) -> str:
+    """shape_naics (prime_sub archetype only): candidates must ALSO have
+    demonstrated sub-out to recipients whose own prime history sits in these
+    codes — the ruled recipient-shape gate. None = the original sub calculus."""
     seeds_sql = _uei_list_sql(seeds)
     excl_sql = _uei_list_sql(seeds + [uei])
     if target_naics or target_psc:
@@ -284,6 +334,21 @@ def sql_market(uei: str, seeds: list[str], target_naics: list[str],
         fo_where = " OR ".join(conds)
     else:
         fo_where = "1 = 0"
+    if shape_naics:
+        shape_cte = f""",
+shape_out AS (
+  SELECT prime_awardee_uei AS uei, MAX(last_subaward_action_date) AS shape_last
+  FROM gtm_prime_subout_by_recipient_code
+  WHERE recipient_code_source = '{_SHAPE_LENS_SOURCE}'
+    AND recipient_code_type = '{_SHAPE_RECIPIENT_TYPE}'
+    AND context_code_type = '{_SHAPE_CONTEXT_TYPE}'
+    AND recipient_code IN ({_code_list_sql(shape_naics)})
+    AND subaward_amt_total > 0
+  GROUP BY 1)"""
+        shape_join = "JOIN shape_out sh ON sh.uei = c.uei"
+    else:
+        shape_cte = ""
+        shape_join = ""
     fetch = int(dials["market_size"]) * 2  # over-fetch for JV/family trim [F3, F4]
     return f"""
 WITH seed_sig AS (
@@ -314,12 +379,13 @@ fo AS (
   SELECT uei, SUM(farmout_amt_60mo) AS fo_amt
   FROM gtm_prime_farmout_combo_lanes
   WHERE {fo_where}
-  GROUP BY 1)
+  GROUP BY 1){shape_cte}
 SELECT c.uei, c.lane_hits, c.wt, so.subout_5y, so.last_sub, b.prime_obl_60mo
 FROM cand c
 JOIN gtm_entity_behavior_rollup b USING(uei)
 JOIN sub_out so ON so.prime_uei = c.uei
 LEFT JOIN fo ON fo.uei = c.uei
+{shape_join}
 WHERE b.prime_obl_60mo >= {float(dials["market_prime_floor"])}
   AND (so.last_sub >= current_date - INTERVAL {int(dials["recency_months"])} MONTH
        OR COALESCE(fo.fo_amt, 0) > 0)
@@ -383,6 +449,26 @@ WHERE prime_awardee_uei IN ({_uei_list_sql(ueis)})
   AND subawardee_uei <> prime_awardee_uei
   {naics_pred}
 GROUP BY 1"""
+
+
+def sql_market_shape_subout(ueis: list[str], shape_naics: list[str]) -> str:
+    """Hybrid hydration: per (candidate, recipient_code) the CLEAN dollars
+    subbed out to recipients whose own prime history sits in that code
+    (single source lens + single context type — no double count within a
+    code; dollars are NEVER summed across recipient codes, the same subaward
+    edge can satisfy several shape codes)."""
+    return f"""
+SELECT prime_awardee_uei AS uei, recipient_code,
+       SUM(subaward_amt_total) AS amt, SUM(subaward_edge_ct) AS edge_ct,
+       MAX(last_subaward_action_date) AS last_action
+FROM gtm_prime_subout_by_recipient_code
+WHERE prime_awardee_uei IN ({_uei_list_sql(ueis)})
+  AND recipient_code_source = '{_SHAPE_LENS_SOURCE}'
+  AND recipient_code_type = '{_SHAPE_RECIPIENT_TYPE}'
+  AND context_code_type = '{_SHAPE_CONTEXT_TYPE}'
+  AND recipient_code IN ({_code_list_sql(shape_naics)})
+  AND subaward_amt_total > 0
+GROUP BY 1, 2"""
 
 
 def sql_triangle(uei: str, market: list[str], seeds: list[str], cap: int) -> str:
@@ -474,7 +560,14 @@ WHERE subaward_action_date >= current_date - INTERVAL 30 MONTH
 GROUP BY 1 ORDER BY 1"""
 
 
-def sql_eligible(band_min: float, band_max: float, limit: int) -> str:
+def sql_eligible(band_min: float, band_max: float, limit: int,
+                 prime_floor: float = 0.0, sub_floor: float = 0.0) -> str:
+    """prime_floor/sub_floor > 0 = the prime_sub archetype's per-side floors."""
+    floors = ""
+    if prime_floor > 0:
+        floors += f"\n  AND COALESCE(p.prime_won, 0) >= {float(prime_floor)}"
+    if sub_floor > 0:
+        floors += f"\n  AND s.sub_amt >= {float(sub_floor)}"
     return f"""
 WITH sub AS (
   SELECT subawardee_uei AS uei, SUM(subaward_amount_num) AS sub_amt,
@@ -502,7 +595,7 @@ JOIN gtm_sam_entities e USING(uei)
 LEFT JOIN seeds sd USING(uei)
 LEFT JOIN entity_hierarchy h USING(uei)
 LEFT JOIN gtm_entity_behavior_rollup pb ON pb.uei = h.ultimate_parent_uei
-WHERE s.sub_amt + COALESCE(p.prime_won, 0) BETWEEN {float(band_min)} AND {float(band_max)}
+WHERE s.sub_amt + COALESCE(p.prime_won, 0) BETWEEN {float(band_min)} AND {float(band_max)}{floors}
 ORDER BY s.sub_amt + COALESCE(p.prime_won, 0) DESC
 LIMIT {int(limit)}"""
 
@@ -629,7 +722,8 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
 # Build orchestration
 # ---------------------------------------------------------------------------
 
-async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
+async def _build_dossier(uei: str, dials: dict[str, Any],
+                         archetype: str = "sub") -> dict[str, Any]:
     timings: list[dict[str, Any]] = []
     artifact: str | None = None
     statement_count = 0
@@ -678,6 +772,9 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
         band_prime = sum(float(prime_by_fy.get(fy, {}).get("prime_won") or 0) for fy in _BAND_FYS)
         band_sub = sum(float(sub_by_fy.get(fy, {}).get("sub_amt") or 0) for fy in _BAND_FYS)
         in_band = dials["band_min"] <= (band_prime + band_sub) <= dials["band_max"]
+        if archetype == "prime_sub":
+            in_band = (in_band and band_prime >= dials["hybrid_prime_floor"]
+                       and band_sub >= dials["hybrid_sub_floor"])
         target_primes_ever = any(float(r.get("prime_won") or 0) != 0 for r in fy_prime)
 
         n_history_total = int(totals.get("n_rows") or 0)
@@ -731,12 +828,6 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
         # ---- target shape + signature ------------------------------------
         lanes = await run("target_lanes", sql_target_lanes(uei), 1000)
         sub_lanes = [r for r in lanes if r.get("side") == "sub"]
-        top_naics = [r["code"] for r in sub_lanes
-                     if r.get("code_type") == "naics"
-                     and float(r.get("obl_lifetime") or 0) >= dials["shape_floor"]][:12]
-        top_psc = [r["code"] for r in sub_lanes
-                   if r.get("code_type") == "psc"
-                   and float(r.get("obl_lifetime") or 0) >= dials["shape_floor"]][:12]
         target_sub_codes = {f"{r['code_type']}:{r['code']}" for r in sub_lanes if r.get("code")}
 
         target_sig_rows = await run("target_signature", sql_signature_rows([uei]),
@@ -748,6 +839,31 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
                                      _SIG_ROW_LIMIT)
         target_decl = {f"{r['code_type']}:{r['code']}" for r in target_decl_rows
                        if r.get("code")}
+
+        # Work-shape codes feed the market's farm-out/deal-size context and,
+        # for prime_sub, the recipient-shape gate. sub archetype: demonstrated
+        # sub lanes. prime_sub archetype: the target's OWN PRIME lanes (ruled —
+        # the prime record is the evidence-grade shape statement), with the
+        # prime signature as fallback when every lane sits under the floor.
+        def _lane_codes(rows: list[dict[str, Any]], code_type: str) -> list[str]:
+            return [r["code"] for r in rows
+                    if r.get("code_type") == code_type
+                    and float(r.get("obl_lifetime") or 0) >= dials["shape_floor"]][:12]
+
+        def _sig_codes(code_type: str) -> list[str]:
+            pref = f"{code_type}:"
+            ranked = sorted(target_vec.items(), key=lambda kv: -kv[1])
+            return [k.split(":", 1)[1] for k, _ in ranked if k.startswith(pref)][:12]
+
+        shape_naics: list[str] | None = None
+        if archetype == "prime_sub":
+            prime_lanes = [r for r in lanes if r.get("side") == "prime"]
+            top_naics = _lane_codes(prime_lanes, "naics") or _sig_codes("naics")
+            top_psc = _lane_codes(prime_lanes, "psc") or _sig_codes("psc")
+            shape_naics = top_naics
+        else:
+            top_naics = _lane_codes(sub_lanes, "naics")
+            top_psc = _lane_codes(sub_lanes, "psc")
 
         # ---- freshness [F5] ----------------------------------------------
         fresh_rows = await run("freshness", sql_freshness(), 100)
@@ -763,19 +879,55 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
             "timings": timings,
             "freshness": freshness,
             "dials": dials,
-            "disclosures": _DISCLOSURES,
+            "disclosures": (_DISCLOSURES + _HYBRID_DISCLOSURES
+                            if archetype == "prime_sub" else _DISCLOSURES),
         }
+
+        # ---- prime business (prime_sub archetype) -------------------------
+        prime_business: dict[str, Any] | None = None
+        if archetype == "prime_sub":
+            sig_sorted = sorted(target_sig_rows,
+                                key=lambda r: (r.get("rank_lifetime") or 9999))
+            prime_business = {
+                "signature": [{
+                    "code_type": r.get("code_type"), "code": r.get("code"),
+                    "share_lifetime": r.get("share_lifetime"),
+                    "rank_lifetime": r.get("rank_lifetime"),
+                    "obl_lifetime": r.get("obl_lifetime"),
+                } for r in sig_sorted[:20]],
+                "prime_obl_lifetime": ident.get("prime_obl_lifetime"),
+                "active_award_ct": ident.get("active_award_ct"),
+                "fy_set_aside": [{
+                    "fy": int(r["fy"]),
+                    "any": float(r.get("sa_any") or 0),
+                    "8a": float(r.get("sa_8a") or 0),
+                    "sdvosb": float(r.get("sa_sdvosb") or 0),
+                    "wosb": float(r.get("sa_wosb") or 0),
+                    "hubzone": float(r.get("sa_hubzone") or 0),
+                } for r in fy_prime if r.get("fy") is not None],
+                "shape_naics": list(shape_naics or []),
+            }
 
         # ---- degradation ladder: no seeds → reality-only dossier [F14] ----
         if not seeds:
             method_base["statement_count"] = statement_count
             return _payload(uei, ident, in_band, band_prime, band_sub, reality,
                             seed_payload, None, "no_seeds", None, "no_seeds",
-                            target_family, method_base, [], artifact)
+                            target_family, method_base, [], artifact,
+                            archetype, prime_business)
+
+        # ---- hybrid guard: no prime shape → market not composable ---------
+        if archetype == "prime_sub" and not shape_naics:
+            method_base["statement_count"] = statement_count
+            return _payload(uei, ident, in_band, band_prime, band_sub, reality,
+                            seed_payload, None, "no_prime_shape", None,
+                            "no_prime_shape", target_family, method_base, [],
+                            artifact, archetype, prime_business)
 
         # ---- market composition [F2, F9] ---------------------------------
         market_rows = await run(
-            "market", sql_market(uei, seeds, top_naics, top_psc, dials),
+            "market", sql_market(uei, seeds, top_naics, top_psc, dials,
+                                 shape_naics=shape_naics),
             dials["market_size"] * 2)
         market_ueis_raw = [r["uei"] for r in market_rows if r.get("uei")]
 
@@ -861,6 +1013,28 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
                     })
         if not market:
             market_reason = "no_market"
+
+        # ---- hybrid: recipient-shape sub-out hydration --------------------
+        # Displayed per-code (clean dollars); never summed across shape codes
+        # (one subaward edge can satisfy several codes).
+        if archetype == "prime_sub" and market and shape_naics:
+            shp: dict[str, list[dict[str, Any]]] = {}
+            for r in await run(
+                    "market_shape_subout",
+                    sql_market_shape_subout([m["uei"] for m in market], shape_naics),
+                    _SIG_ROW_LIMIT):
+                shp.setdefault(r["uei"], []).append(r)
+            for m in market:
+                rows = sorted(shp.get(m["uei"], []),
+                              key=lambda r: -(float(r.get("amt") or 0)))
+                m["subout_to_your_shape"] = {
+                    "matched_code_ct": len(rows),
+                    "top_code": rows[0]["recipient_code"] if rows else None,
+                    "top_code_amt": float(rows[0].get("amt") or 0) if rows else 0.0,
+                    "top_code_edge_ct": int(rows[0].get("edge_ct") or 0) if rows else 0,
+                    "last_action": max((str(r.get("last_action")) for r in rows
+                                        if r.get("last_action")), default=None),
+                }
 
         # ---- closing: triangle + three-layer calculus ---------------------
         competitors: list[dict[str, Any]] = []
@@ -1010,7 +1184,8 @@ async def _build_dossier(uei: str, dials: dict[str, Any]) -> dict[str, Any]:
                         {"competitors": competitors, "stats": closing_stats}
                         if competitors else None,
                         closing_reason, target_family, method_base,
-                        _below_floor(market, competitors, dials), artifact)
+                        _below_floor(market, competitors, dials), artifact,
+                        archetype, prime_business)
 
 
 def _months_ago_iso(months: int) -> str:
@@ -1039,6 +1214,11 @@ _DISCLOSURES = [
     "The competitor table excludes firms whose combined FY2023-FY2025 prime and subaward dollars exceed the size cap (display filter; does not affect scoring).",
 ]
 
+_HYBRID_DISCLOSURES = [
+    "This dossier's work shape is taken from the firm's own prime award record (contracting-officer-coded NAICS/PSC); FSRS-reported subaward codes are inherited from the prime award and are not used to characterize the firm.",
+    "Market rows are additionally gated on demonstrated sub-out to recipients whose own prime history sits in the firm's prime NAICS codes; 'subs out to your shape' dollars are reported for the single best-matching code and are never summed across codes (one subaward can satisfy several).",
+]
+
 
 def _payload(uei: str, ident: dict[str, Any], in_band: bool, band_prime: float,
              band_sub: float, reality: dict[str, Any],
@@ -1046,11 +1226,13 @@ def _payload(uei: str, ident: dict[str, Any], in_band: bool, band_prime: float,
              market_reason: str | None, closing: dict[str, Any] | None,
              closing_reason: str | None, target_family: str,
              method: dict[str, Any], sections_below_floor: list[str],
-             artifact: str | None) -> dict[str, Any]:
+             artifact: str | None, archetype: str = "sub",
+             prime_business: dict[str, Any] | None = None) -> dict[str, Any]:
     method = dict(method)
     method["sections_below_floor"] = sections_below_floor
     return {
         "version": "sub_dossier_v2",
+        "archetype": archetype,
         "artifact": artifact,
         "target": {
             "uei": uei,
@@ -1065,6 +1247,7 @@ def _payload(uei: str, ident: dict[str, Any], in_band: bool, band_prime: float,
             "prime_won_fy23_25": round(band_prime, 2),
             "sub_amt_fy23_25": round(band_sub, 2),
         },
+        "prime_business": prime_business,
         "reality": reality,
         "seed_primes": seed_payload,
         "market": {"reason": market_reason, "primes": market or []},
@@ -1086,27 +1269,34 @@ async def build(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise _refuse("body must be an object")
     uei = _valid_uei(body.get("uei"))
+    archetype = _valid_archetype(body.get("archetype"))
     dials = _merge_dials(body.get("dials"))
     t0 = time.monotonic()
     try:
-        payload = await _build_dossier(uei, dials)
+        payload = await _build_dossier(uei, dials, archetype)
     except ArtifactMoved:
         logger.warning("sub-dossier build restarted once: artifact moved (uei=%s)", uei)
-        payload = await _build_dossier(uei, dials)   # restart exactly once
+        payload = await _build_dossier(uei, dials, archetype)   # restart exactly once
     payload["method"]["build_wall_ms"] = round((time.monotonic() - t0) * 1000, 1)
     return payload
 
 
 @router.get("/eligible", dependencies=[Depends(require_service_token)])
 async def eligible(band_min: float = 1_000_000.0, band_max: float = 100_000_000.0,
-                   limit: int = 100) -> dict[str, Any]:
+                   limit: int = 100, archetype: str = "sub",
+                   prime_floor: float = 1_000_000.0,
+                   sub_floor: float = 1_000_000.0) -> dict[str, Any]:
     if not (0 <= band_min <= band_max <= 1e12):
         raise _refuse("band_min/band_max out of range")
     if not (1 <= limit <= 5000):
         raise _refuse("limit must be 1..5000")
+    archetype = _valid_archetype(archetype)
+    if not (0 <= prime_floor <= 1e12 and 0 <= sub_floor <= 1e12):
+        raise _refuse("prime_floor/sub_floor out of range")
+    pf, sf = (prime_floor, sub_floor) if archetype == "prime_sub" else (0.0, 0.0)
     async with httpx.AsyncClient(timeout=90.0) as client:
-        payload = await _run_sidecar(client, sql_eligible(band_min, band_max, limit),
-                                     limit + 10)
+        payload = await _run_sidecar(
+            client, sql_eligible(band_min, band_max, limit, pf, sf), limit + 10)
     rows = _rows_as_dicts(payload)
     out = []
     for r in rows:
@@ -1130,7 +1320,8 @@ async def eligible(band_min: float = 1_000_000.0, band_max: float = 100_000_000.
     return {
         "entities": out,
         "count": len(out),
-        "band": {"min": band_min, "max": band_max},
+        "band": {"min": band_min, "max": band_max, "archetype": archetype,
+                 "prime_floor": pf, "sub_floor": sf},
         "elapsed_ms": payload.get("elapsed_ms"),
         "artifact": payload.get("artifact"),
     }
