@@ -1,6 +1,6 @@
 # SAM attachment-link substrate — coverage of active awards (do we still need to "go get the links"?)
 
-**Mode:** READ-ONLY probe. **Snapshot:** 2026-06-21 (UTC). **Probe:** [`scripts/attach_substrate_coverage_probe.py`](scripts/attach_substrate_coverage_probe.py). Raw JSON: `/tmp/attach_cov.json`.
+**Mode:** READ-ONLY probe. **Snapshot:** 2026-06-21 (UTC). **Probe:** [`scripts/archive/attach_substrate_coverage_probe.py`](scripts/archive/attach_substrate_coverage_probe.py). Raw JSON: `/tmp/attach_cov.json`.
 **Context:** runs the Award→Sol#→attachments bridge that `pipelines/sam_gov/REFERENCE_sam_attachment_terminology_and_state.md` (§3.4) flagged as "not yet run." Refreshes that doc's 2026-06-07 numbers.
 
 ## The distinction that matters
@@ -60,7 +60,7 @@ Scoped by *vertical/entity footprint* (A&D `play1`, remediation, equipment-renta
 
 The 24% figure is diluted by the un-gettable floor. Removing it (denominator = awards that
 carry, or can recover, a Sol#) roughly **doubles** the real coverage rate. Probe:
-[`scripts/attach_gettable_coverage_probe.py`](scripts/attach_gettable_coverage_probe.py).
+[`scripts/archive/attach_gettable_coverage_probe.py`](scripts/archive/attach_gettable_coverage_probe.py).
 "Gettable" also folds in a SAM-universe recovery (FPDS-blank Sol# recovered via `award_id_piid`
 → universe `award_number` → `solicitation_number`) — but that recovers only **+944** of ~80K
 floor awards, so **the no-Sol# floor is effectively fixed; the PIID bridge does not rescue it.**
@@ -95,4 +95,4 @@ Two opposing gradients, both material:
 - **Attachment-link substrate: ~24% of active awards (~21% of SB).** Not "by and large" — the manifests are vertical-scoped.
 - **Order of operations to grow coverage:** (1) download+extract the ~10K SB awards whose links are already harvested; (2) Stage-2 crawl the un-harvested Sol#-bearing notices; (3) accept the ~54% no-Sol# floor as an FPDS data limit, not a harvest gap.
 
-Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/attach_substrate_coverage_probe.py`.
+Reproduce: `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/attach_substrate_coverage_probe.py`.

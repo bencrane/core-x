@@ -3,10 +3,10 @@
 **Mode:** READ-ONLY recon (R2 ground-truth probes + pipeline code archaeology). **Snapshot:** 2026-06-21 (UTC).
 **Question:** size the compute / API cost / wall-clock to re-run the LLM labor lane with an *uncapped (free-form job-title)* prompt over the active **Big-Three** IT/Professional cohort `psc_code ∈ ('DA01','R425','R499')`, to decide greenlight.
 **Probes (reproducible, read-only, zero spend):**
-[`scripts/bigthree_reextract_sizing_recon.py`](../../scripts/bigthree_reextract_sizing_recon.py) (schema lock),
-[`scripts/bigthree_reextract_sizing_probe.py`](../../scripts/bigthree_reextract_sizing_probe.py) (cohort funnel + bytes),
-[`scripts/bigthree_reextract_chunks_probe.py`](../../scripts/bigthree_reextract_chunks_probe.py) (sink-direct chunk inventory),
-[`scripts/bigthree_reextract_census_probe.py`](../../scripts/bigthree_reextract_census_probe.py) (exact LLM-lane token census — imports the pipeline's own `select_chunks`/`compute_input_set`).
+[`scripts/archive/bigthree_reextract_sizing_recon.py`](../../scripts/archive/bigthree_reextract_sizing_recon.py) (schema lock),
+[`scripts/archive/bigthree_reextract_sizing_probe.py`](../../scripts/archive/bigthree_reextract_sizing_probe.py) (cohort funnel + bytes),
+[`scripts/archive/bigthree_reextract_chunks_probe.py`](../../scripts/archive/bigthree_reextract_chunks_probe.py) (sink-direct chunk inventory),
+[`scripts/archive/bigthree_reextract_census_probe.py`](../../scripts/archive/bigthree_reextract_census_probe.py) (exact LLM-lane token census — imports the pipeline's own `select_chunks`/`compute_input_set`).
 Raw JSON: `/tmp/bigthree_{sizing,chunks,census}.json`.
 
 ---

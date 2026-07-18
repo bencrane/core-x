@@ -6,7 +6,7 @@ Gen-3 LanceDB system of record (``s3://data-sink/active/``), one Lance dataset p
 physically clustered for the longitudinal per-provider queries a PE acquirer asks, united
 ONLY on the published ``npi`` and CMS ``ENRLMT_ID`` keys.
 
-Directive: docs/plans/medicare_ingestion_plan.md. Companion recon: docs/medicare_archive_diagnostic.md.
+Directive: docs/plans/medicare_ingestion_plan.md. Companion recon: docs/analysis/medicare_archive_diagnostic.md.
 Every mechanic is lifted from an in-repo pattern, cited inline.
 
 PROVENANCE / REUSE

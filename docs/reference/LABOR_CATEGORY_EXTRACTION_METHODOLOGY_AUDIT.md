@@ -2,7 +2,7 @@
 
 **Mode:** READ-ONLY recon (code archaeology + R2 ground-truth probes). **Snapshot:** 2026-06-21 (UTC).
 **Question:** provenance of `govcon_award_scope_requirements.labor_category_values` before building GTM campaigns on it — given prior noise in *equipment* extractions.
-**Probes (reproducible, read-only):** [`scripts/labor_category_pulse_probe.py`](scripts/labor_category_pulse_probe.py) (§4 pulse), [`scripts/award_requirements_provenance_probe.py`](scripts/award_requirements_provenance_probe.py) (extractor-tag distribution). Raw JSON: `/tmp/labor_pulse.json`, `/tmp/req_prov.json`.
+**Probes (reproducible, read-only):** [`scripts/archive/labor_category_pulse_probe.py`](scripts/archive/labor_category_pulse_probe.py) (§4 pulse), [`scripts/archive/award_requirements_provenance_probe.py`](scripts/archive/award_requirements_provenance_probe.py) (extractor-tag distribution). Raw JSON: `/tmp/labor_pulse.json`, `/tmp/req_prov.json`.
 
 ---
 

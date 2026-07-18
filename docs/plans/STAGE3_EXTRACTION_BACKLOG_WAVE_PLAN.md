@@ -2,7 +2,7 @@
 
 **Mode:** PLANNING + READ-ONLY SIZING. **Snapshot:** 2026-06-21 (UTC), R2 Gen-3 Lance SoR `s3://data-sink/active/`. Zero writes, zero harvest, zero LLM spend in producing this plan.
 **Business goal:** grow the PDF-derived signals exposed by `govcon_award_scope_requirements` — the `insurance_bonding` + `equipment_capability` arrays and `labor_category` — for the GovCon Capital Partners GTM (payroll funders, factoring, equipment finance, **and surety/bonding brokers**). The surety/bonding signal (`payment_bond`, `performance_bond`, `bid_bond`, `insurance:*`) is a first-class co-product, not an afterthought. Priority cohort: Small-Business primes (`business_size_code='S'`), especially `current_total_value_of_award > $500K`.
-**Probes (reproducible, read-only):** [`scripts/_plan_stage3_backlog_probe.py`](../../scripts/_plan_stage3_backlog_probe.py) (funnel + bonding yield), [`scripts/_plan_static_partition_probe.py`](../../scripts/_plan_static_partition_probe.py) (static shard verification), [`scripts/_plan_claim_model_sim.py`](../../scripts/_plan_claim_model_sim.py) (rejected dynamic model, kept as the counter-example). Raw JSON: `/tmp/_plan_stage3_backlog.json`, `/tmp/_plan_static_partition.json`.
+**Probes (reproducible, read-only):** [`scripts/archive/_plan_stage3_backlog_probe.py`](../../scripts/archive/_plan_stage3_backlog_probe.py) (funnel + bonding yield), [`scripts/archive/_plan_static_partition_probe.py`](../../scripts/archive/_plan_static_partition_probe.py) (static shard verification), [`scripts/archive/_plan_claim_model_sim.py`](../../scripts/archive/_plan_claim_model_sim.py) (rejected dynamic model, kept as the counter-example). Raw JSON: `/tmp/_plan_stage3_backlog.json`, `/tmp/_plan_static_partition.json`.
 
 ---
 
@@ -28,7 +28,7 @@ All counts at **file grain** unless noted; cohort bridge = active SB award (`act
 
 ```
 doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb \
-  python3 scripts/_plan_stage3_backlog_probe.py > /tmp/_plan_stage3_backlog.json
+  python3 scripts/archive/_plan_stage3_backlog_probe.py > /tmp/_plan_stage3_backlog.json
 ```
 
 | Cohort | Link files | **Download-pending** | **Extract-pending** | **Fully-pending** | Awards w/ link | **Awards fully extract-pending** | Sol# w/ link |
@@ -69,7 +69,7 @@ Among the **10,300** already-extracted SB files:
 
 ### Design rationale — why STATIC, not dynamic runtime claiming
 
-The earlier instinct was a runtime atomic claim/lease ledger. **That is wrong for this substrate and is explicitly rejected.** R2/Lance is **append-only with eventual landing and has no transactional claim store**. A worker can be mid-extraction (work-in-process, not yet committed to R2) while another worker claims the same `resource_id`; the *in-process-before-commit* gap is a race a non-transactional store cannot arbitrate, producing double-work and, absent perfect idempotency, double-append. A simulation of the dynamic model ([`_plan_claim_model_sim.py`](../../scripts/_plan_claim_model_sim.py)) "passes" **only because it assumes an atomic queue pop that the real substrate does not provide** — it is retained here as the counter-example, not the design.
+The earlier instinct was a runtime atomic claim/lease ledger. **That is wrong for this substrate and is explicitly rejected.** R2/Lance is **append-only with eventual landing and has no transactional claim store**. A worker can be mid-extraction (work-in-process, not yet committed to R2) while another worker claims the same `resource_id`; the *in-process-before-commit* gap is a race a non-transactional store cannot arbitrate, producing double-work and, absent perfect idempotency, double-append. A simulation of the dynamic model ([`_plan_claim_model_sim.py`](../../scripts/archive/_plan_claim_model_sim.py)) "passes" **only because it assumes an atomic queue pop that the real substrate does not provide** — it is retained here as the counter-example, not the design.
 
 **First-principles derivation** (objective / constraints / asset):
 - **Objective:** maximize net-new extracted awards — especially SB>$500K and the surety/bonding co-product — per unit agent-time, with **zero double-work** and **safe resume**.
@@ -95,7 +95,7 @@ shard = abs(hash(resource_id)) % N_TOTAL_SHARDS        # N_TOTAL_SHARDS = 96
 
 ```
 doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb \
-  python3 scripts/_plan_static_partition_probe.py > /tmp/_plan_static_partition.json
+  python3 scripts/archive/_plan_static_partition_probe.py > /tmp/_plan_static_partition.json
 ```
 
 Over the **46,464** pending SB `resource_id`s:

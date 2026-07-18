@@ -37,3 +37,7 @@ node_modules/
 
 # scratch query/probe outputs (not source)
 query_outputs/
+
+# Bulk data outputs (kept on disk, not in git)
+exports/
+reports/

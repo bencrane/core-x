@@ -1,6 +1,6 @@
 # CMS Medicare Archive — Full-Archive Ingestion & Composition Plan
 
-**Companion to:** [`docs/medicare_archive_diagnostic.md`](../medicare_archive_diagnostic.md) (the layout/grain/drift recon).
+**Companion to:** [`docs/analysis/medicare_archive_diagnostic.md`](../medicare_archive_diagnostic.md) (the layout/grain/drift recon).
 **Scope:** land the entire CMS Medicare archive from the raw landing tier
 (`s3://data-sink/landing/cms/medicare-datasets/`, 35 zips / 17.03 GB compressed / **89.78 GB logical**) into the
 LanceDB system of record (`s3://data-sink/active/`) — **physically optimized for the longitudinal, 13-year
@@ -14,7 +14,7 @@ practice-acquisition questions can be asked on top of cleanly-landed, key-united
 **Provenance:** every mechanic below is lifted from an existing in-repo pattern (cited inline). The drift/topology
 facts were re-verified against the committed recon evidence
 ([`docs/reference/medicare_archive_recon_evidence.md`](../reference/medicare_archive_recon_evidence.md) — the full
-per-member schema/grain/drift ground truth, distilled by `scripts/recon_medicare_evidence.py`) after an Opus-4.8
+per-member schema/grain/drift ground truth, distilled by `scripts/archive/recon_medicare_evidence.py`) after an Opus-4.8
 adversarial review of the diagnostic; §1 records the corrections that review forced.
 
 ---
@@ -30,7 +30,7 @@ adversarial review of the diagnostic; §1 records the corrections that review fo
 | 5 | Money → `DECIMAL(14,2)` | provider-year *totals* can exceed 10¹² → overflow NULLs the largest providers | **`DECIMAL(18,2)`** for A1/C/Part-D totals; `(14,2)` only for A2 averages |
 | 6 | `program_year` under BTREE | NDV ≤13 | index as **`BITMAP`** |
 | 7 | A1 grain = "1 row = NPI per year" (asserted) | head-50-bound, self-fulfilling on sorted data — **unproven PK** | prove `(npi, program_year)` with `GROUP BY … HAVING count(*)>1 = 0` before indexing |
-| 8 | NPI→EIN→Form 5500 bridge via NPPES org records | **NPPES redacts EIN to constant `<UNAVAIL>`** (`docs/nppes_structural_diagnostic.md`); Form 5500 carries no NPI | no deterministic key exists → **Form 5500 / corporate-identity resolution is OUT OF SCOPE**; no fuzzy name/geo crosswalk is built (§8.2) |
+| 8 | NPI→EIN→Form 5500 bridge via NPPES org records | **NPPES redacts EIN to constant `<UNAVAIL>`** (`docs/analysis/nppes_structural_diagnostic.md`); Form 5500 carries no NPI | no deterministic key exists → **Form 5500 / corporate-identity resolution is OUT OF SCOPE**; no fuzzy name/geo crosswalk is built (§8.2) |
 
 Validated-correct in the diagnostic (kept): grain separation / never-union; NPI VARCHAR; append-per-year;
 geography exclusion from NPI mirrors; A2 financials are averages; suppression three-state model; dedup of the `-2`
@@ -217,7 +217,7 @@ before index builds), directive priority (decade+ totals first).
 ## §8 — Composition with the existing graph (the payoff)
 
 ### 8.1 The NPI join spine (already proven live)
-`docs/cms_nppes_relational_diagnostic.md` measured this spine with live R2 data:
+`docs/analysis/cms_nppes_relational_diagnostic.md` measured this spine with live R2 data:
 - **NPPES is the NPI master:** `nppes_provider` (1/NPI, **9,551,447 verified-unique**, BTREE `npi`),
   `nppes_provider_taxonomy` (specialty axis, BITMAP `taxonomy_code`), `nppes_provider_identifier` (external-ID→NPI).
 - **Open Payments keys:** general/research `covered_recipient_npi`, ownership `physician_npi`. **Research is 96.39%
@@ -236,8 +236,8 @@ before index builds), directive priority (decade+ totals first).
 
 ### 8.2 Form 5500 & corporate identity — explicitly OUT OF SCOPE
 No **deterministic** key links Medicare to Form 5500: NPPES redacts EIN to a constant `'<UNAVAIL>'` sentinel
-(`docs/nppes_structural_diagnostic.md`) and Form 5500 carries no NPI anywhere — it is `ACK_ID` / `SPONS_DFE_EIN`-keyed,
-and every detail-table `*_EIN` is a *counterparty*, not the sponsor (`docs/form5500_relational_diagnostic.md`). The
+(`docs/analysis/nppes_structural_diagnostic.md`) and Form 5500 carries no NPI anywhere — it is `ACK_ID` / `SPONS_DFE_EIN`-keyed,
+and every detail-table `*_EIN` is a *counterparty*, not the sponsor (`docs/analysis/form5500_relational_diagnostic.md`). The
 only way to bridge them is **fuzzy name+geo matching, which is non-deterministic and a business judgment — explicitly
 excluded from this plan.** **No `crosswalk_*_form5500` dataset is built.**
 
@@ -259,7 +259,7 @@ correctly and optimally so those questions *can* be asked, not to answer the ide
 
 ### 8.4 The analytical surface — `provider_360` (deterministic composition, key-united only)
 Built **on top of** the landed data, uniting **only on unequivocal keys** (NPI; `ENRLMT_ID`). Per
-`docs/entity-360-master-plan.md` and `docs/nppes_analytical_implementation_plan.md` (per-snapshot derived serving
+`docs/analysis/entity-360-master-plan.md` and `docs/analysis/nppes_analytical_implementation_plan.md` (per-snapshot derived serving
 layer `…/snapshot=YYYY-MM/`), the NPI-grain analogue:
 
 - **`provider_360`** — 1 row / NPI, base `nppes_provider` (the 9.55M verified-unique key set), LEFT JOINs on canonical

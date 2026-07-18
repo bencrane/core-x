@@ -10,7 +10,7 @@
 > - **CUT** redundant `cms_ownership` re-aggregation (the Open Payments rollup already carries it).
 > - **+5 gates** (§7) and the **`practice_group_360`** companion — 1 row per buyable practice unit (§12).
 **Owner of context:** this doc is self-contained. A fresh agent should be able to read it top-to-bottom and start building without prior session context.
-**Companion specs:** [`docs/entity-360-master-plan.md`](../entity-360-master-plan.md), [`docs/nppes_analytical_implementation_plan.md`](../nppes_analytical_implementation_plan.md).
+**Companion specs:** [`docs/analysis/entity-360-master-plan.md`](../entity-360-master-plan.md), [`docs/analysis/nppes_analytical_implementation_plan.md`](../nppes_analytical_implementation_plan.md).
 **Closest code precedent:** [`pipelines/cms_open_payments/materialize_resolution.py`](../../pipelines/cms_open_payments/materialize_resolution.py) (the 1-row-per-NPI rollup this generalizes) and [`pipelines/nppes/materialize_analytical.py`](../../pipelines/nppes/materialize_analytical.py) (the per-snapshot serving-layer pattern + gates).
 
 ---

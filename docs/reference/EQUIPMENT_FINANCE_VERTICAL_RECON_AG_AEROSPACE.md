@@ -2,7 +2,7 @@
 
 **Mode:** READ-ONLY probe → market sizing. **Date:** 2026-06-22 (UTC).
 **SoR:** `s3://data-sink/active/govcon_active_awards/` (Lance v2.1) · `as_of_date` = 2026-06-20 · 189,272 rows / 127 cols.
-**Probe:** [`scripts/equipment_finance_vertical_recon.py`](../../scripts/equipment_finance_vertical_recon.py) (read-only; no writes, no index changes).
+**Probe:** [`scripts/archive/equipment_finance_vertical_recon.py`](../../scripts/archive/equipment_finance_vertical_recon.py) (read-only; no writes, no index changes).
 **Active filter (all figures):** `pop_current_end >= CURRENT_DATE` — the directive's literal, on the BTREE-indexed date column.
 
 ---
@@ -186,4 +186,4 @@ WHERE <vertical_filter> AND pop_current_end >= CURRENT_DATE
 GROUP BY 1 ORDER BY awards DESC LIMIT 10;
 ```
 
-**Reproduce:** `doppler run --project core-x --config prd -- python3 scripts/equipment_finance_vertical_recon.py`
+**Reproduce:** `doppler run --project core-x --config prd -- python3 scripts/archive/equipment_finance_vertical_recon.py`

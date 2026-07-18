@@ -5,8 +5,8 @@ carry a **canonical government designation** of a financial institution — FDIC
 charter, Fed RSSD, SEC CIK/CRD, GLEIF LEI, federal-regulator agency code — so UCC secured
 parties (lenders) can be classified by **deterministic join instead of LLM inference**.
 
-- **Harnesses (non-mutating):** [`scripts/fininst_registry_probe.py`](../../scripts/fininst_registry_probe.py)
-  (schema/identifier/classification audit) · [`scripts/ucc_lender_designation_overlap_probe.py`](../../scripts/ucc_lender_designation_overlap_probe.py)
+- **Harnesses (non-mutating):** [`scripts/archive/fininst_registry_probe.py`](../../scripts/archive/fininst_registry_probe.py)
+  (schema/identifier/classification audit) · [`scripts/archive/ucc_lender_designation_overlap_probe.py`](../../scripts/archive/ucc_lender_designation_overlap_probe.py)
   (UCC↔registry coverage).
 - **Attestation:** `lance.dataset(...).scanner()/count_rows()/list_indices()` + DuckDB `SELECT`. Zero writes. Probe run 2026-06-21.
 - **Pairs with:** [UCC_CA_CO_LENDER_GTM_RECON.md](UCC_CA_CO_LENDER_GTM_RECON.md) (the UCC side — established there is **no** stored lender taxonomy).
@@ -157,7 +157,7 @@ Mirror the established crosswalk pattern (UCC↔SoS bridge; `crosswalk_sam_usasp
 
 Sizing the LLM/manual workload after the canonical join. Appearances summed across both
 states (same normalized name → one row, per operator framing). Harness:
-[`scripts/ucc_unmatched_lender_bands_probe.py`](../../scripts/ucc_unmatched_lender_bands_probe.py).
+[`scripts/archive/ucc_unmatched_lender_bands_probe.py`](../../scripts/archive/ucc_unmatched_lender_bands_probe.py).
 
 Combined distinct org-lender names **145,826** · matched **3,966** (2.7%) · **unmatched 141,860**
 (97.3%) carrying **5,304,470** appearances.
@@ -221,9 +221,9 @@ it further. A hand-curatable / single-LLM-pass set, not a 142k-name problem.
 
 Decision: ingest the full FDIC (BankFind) + NCUA charter directories, or have SBA+HMDA
 already captured the depository universe deductively? Harnesses:
-[`scripts/ucc_unmatched_bank_signal_probe.py`](../../scripts/ucc_unmatched_bank_signal_probe.py)
+[`scripts/archive/ucc_unmatched_bank_signal_probe.py`](../../scripts/archive/ucc_unmatched_bank_signal_probe.py)
 (lexical depository signal × match status) ·
-[`scripts/ucc_bank_canon_recovery_probe.py`](../../scripts/ucc_bank_canon_recovery_probe.py)
+[`scripts/archive/ucc_bank_canon_recovery_probe.py`](../../scripts/archive/ucc_bank_canon_recovery_probe.py)
 (variant-vs-novel split).
 
 **Answer: by and large, no — the unmatched residual is NOT banks.** Of 6,693,736 org
@@ -287,7 +287,7 @@ lender (GE Money Bank, Norwest, First Republic). Attaching `filing_date` by join
 `secured_parties→filings` on `ucc1_num/ucc3_num`; CO `→co_ucc_transactions` on `file_id`, min date
 per key; **100% join coverage, no fan-out — 6,693,736 appearances preserved exactly**) recasts the
 heads on trailing windows. Harness:
-[`scripts/ucc_lender_recency_bands_probe.py`](../../scripts/ucc_lender_recency_bands_probe.py).
+[`scripts/archive/ucc_lender_recency_bands_probe.py`](../../scripts/archive/ucc_lender_recency_bands_probe.py).
 
 **Most of the volume is old:** only **5.3%** of appearances fall in the last 12 months, **10.9%** in
 the last 24, **17.2%** in the last 36 (ref date 2026-06-01).

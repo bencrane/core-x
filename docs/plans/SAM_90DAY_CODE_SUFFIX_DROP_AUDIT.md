@@ -22,7 +22,7 @@
 
 **3 ops SQL files:** `pipelines/sam_gov/ops_sam_attachment_download_90day_runs.sql`, `ops_sam_attachment_gtm_scope_90day_runs.sql`, `ops_sam_extraction_90day_runs.sql`.
 
-**8 docs:** `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`, `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `..._ADVERSARIAL_REVIEW.md`, `..._V2.md`, `SAM_90DAY_FILENAME_TAXONOMY_SIZING.md`, `SAM_ATTACHMENT_90DAY_HARVEST_AND_FORENSIC_RECORD.md`, `docs/usaspending_90day_diagnostic.md`.
+**8 docs:** `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`, `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `..._ADVERSARIAL_REVIEW.md`, `..._V2.md`, `SAM_90DAY_FILENAME_TAXONOMY_SIZING.md`, `SAM_ATTACHMENT_90DAY_HARVEST_AND_FORENSIC_RECORD.md`, `docs/analysis/usaspending_90day_diagnostic.md`.
 
 ---
 
@@ -33,11 +33,11 @@ Legend — **Live evidence**: `imp=N` (real `from … import` count, tests inclu
 | Module | Suffix-free counterpart? | Same/different | Live / dead + evidence | Modal app? | Classification | Recommended new name |
 |---|---|---|---|---|---|---|
 | `sam_attachment_extract_90day.py` | **absent** | — | **LIVE — the hub.** `imp=11` real importers incl. 6 build/serving modules + 5 tests (`govcon_gtm_schemas.py:46`, `serving/materialize_sub_targeting.py:49`, `build_*_capability_*`, `classify_sub_self_reported_tags.py:37`, `subaward_scope_append.py:41`, `govcon_p0_uniqueness_preflight.py:28`, `embed_90day:41`, `labor_demand:90`, `marking_fullbody:61`). `main`. Writes live `ops.sam_extraction_runs` (22 rows, max 2026-06-20). | No `modal.App` | **RENAME** (highest blast radius) | `sam_attachment_extract.py` |
-| `sam_labor_demand_extract_90day.py` | absent | — | **LIVE.** `imp=4` (3 tests + dynamic `importlib.import_module("sam_labor_demand_extract_90day")` at `scripts/bigthree_reextract_census_probe.py:29`). `main`. `FEED="sam_labor_demand_extract_90day"`. `import modal` for GPU but **no `modal.App`** here. | No | **RENAME** + FEED + dynamic-import fix | `sam_labor_demand_extract.py` |
+| `sam_labor_demand_extract_90day.py` | absent | — | **LIVE.** `imp=4` (3 tests + dynamic `importlib.import_module("sam_labor_demand_extract_90day")` at `scripts/archive/bigthree_reextract_census_probe.py:29`). `main`. `FEED="sam_labor_demand_extract_90day"`. `import modal` for GPU but **no `modal.App`** here. | No | **RENAME** + FEED + dynamic-import fix | `sam_labor_demand_extract.py` |
 | `sam_marking_fullbody_90day.py` | absent | — | **LIVE.** `imp=1` (`test_sam_marking_fullbody.py:20`); referenced by extract/labor as Phase-0 pre-pass. `main`. `FEED="sam_marking_fullbody_90day"`, `EXTRACTOR_TAG="sam_marking_fullbody_90day@v1"`, `SAM90_MARKING_*` env. | No | **RENAME** + FEED/TAG | `sam_marking_fullbody.py` |
 | `sam_attachment_gtm_scope_90day.py` | absent | — | **LIVE.** `main`; writes `ops.sam_attachment_gtm_scope_runs` (2 rows). `FEED="sam_attachment_gtm_scope"` (**already suffix-free**). Stale docstring `:36` still says `ops.sam_attachment_gtm_scope_90day_runs`. | No | **RENAME** | `sam_attachment_gtm_scope.py` |
 | `sam_attachment_embed_90day.py` | absent (twin = `sam_attachment_embed_modal.py`, the GPU Modal app `govcon-embed`) | different (modal twin is self-contained) | **LIVE.** Local/in-stack CPU embed; `main`; imports extract hub (`:41`). Modal twin `embed_modal.py` mirrors it but is a *separate* file. | No (the **twin** `embed_modal.py` has `modal.App("govcon-embed")` — name is **hardcoded, not filename-derived**) | **RENAME** | `sam_attachment_embed.py` |
-| `sam_opps_attachment_manifest_90day_winners.py` | absent | — | **LIVE.** `main` (`… manifest_90day_winners.py bridge`). Referenced by `download_90day.py:5`, `scripts/sam_attachment_size_probe.py:62`. The `_winners` + `90day` describe the API-fresh window; substrate URI is the de-suffixed `sam_opps_attachment_manifest_winners/`. | No | **RENAME** (keep `_winners`) | `sam_opps_attachment_manifest_winners.py` |
+| `sam_opps_attachment_manifest_90day_winners.py` | absent | — | **LIVE.** `main` (`… manifest_90day_winners.py bridge`). Referenced by `download_90day.py:5`, `scripts/archive/sam_attachment_size_probe.py:62`. The `_winners` + `90day` describe the API-fresh window; substrate URI is the de-suffixed `sam_opps_attachment_manifest_winners/`. | No | **RENAME** (keep `_winners`) | `sam_opps_attachment_manifest_winners.py` |
 | `sam_attachment_download_90day.py` | **`sam_attachment_download.py` EXISTS** | **DIFFERENT** (665 vs 684 L) | **`_90day` = CURRENT.** Writes the **canonical** live ledger `sam_attachment_files/` + `sam_attachment_blobs/` + `ops.sam_attachment_download_runs` (90-day column schema that WON in prod). Last edit #542. Its docstring (`:9`) names "historical `sam_attachment_download.py`" as the thing it **supersedes**. `main`. `FEED="sam_attachment_download_90day"`. | No | **RESOLVE-COLLISION** | `sam_attachment_download.py` (after legacy file removed/archived) |
 | `sam_attachment_reconcile_90day.py` | **`sam_attachment_reconcile.py` EXISTS** | **DIFFERENT** (217 vs 152 L) | **`_90day` = CURRENT.** Backstop for `download_90day`; reconciles the same canonical `sam_attachment_files/`+`blobs/`+`worklist/`. Last edit #542 (2026-06-19). The suffix-free twin last touched #275 (2026-06-06), untouched since, points at the legacy harvest. `main`. | No | **RESOLVE-COLLISION** | `sam_attachment_reconcile.py` (after legacy file removed/archived) |
 | `pipelines/usaspending/govcon_teaming_edges_90day.py` | absent | — | **LIVE but ISOLATED.** `imp=0` (zero importers). `main` (`build\|verify`). Dataset URI from `govcon_gtm_schemas.TEAMING_EDGES_URI` (already de-suffixed). `FEED="govcon_teaming_edges"` (**already suffix-free**). `90day` is **misleading** — substrate is a 5-yr corpus UNIONed with a 90-day fresh feed. | No | **RENAME** (cleanest of all — no imports) | `govcon_teaming_edges.py` |
@@ -76,7 +76,7 @@ Real `from … import` statements that move when a module is renamed (verified `
 
 `sam_labor_demand_extract_90day` (4 sites):
 - tests: `tests/test_sam_labor_demand_extract.py:19`, `tests/test_sam_labor_h2_gates.py:20`, `tests/test_govcon_llm_lane.py:20,211`
-- **dynamic:** `scripts/bigthree_reextract_census_probe.py:29` `importlib.import_module("sam_labor_demand_extract_90day")` — string literal, won't be caught by an IDE rename; must be edited by hand.
+- **dynamic:** `scripts/archive/bigthree_reextract_census_probe.py:29` `importlib.import_module("sam_labor_demand_extract_90day")` — string literal, won't be caught by an IDE rename; must be edited by hand.
 
 `sam_marking_fullbody_90day` (1 site): `tests/test_sam_marking_fullbody.py:20`.
 
@@ -122,7 +122,7 @@ Real `from … import` statements that move when a module is renamed (verified `
 | `docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC_ADVERSARIAL_REVIEW.md` | historical review artifact | **KEEP**. |
 | `docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `…_V2.md` | describe **current** behavior; cited by `govcon_gtm_schemas`/gtm-mcp | RENAME (drop `90DAY`) + update body, or add the WINDOW-AS-DATA note. `_V2` is the live spec. |
 | `docs/reference/SAM_90DAY_FILENAME_TAXONOMY_SIZING.md` | describes current filename taxonomy | RENAME + reconcile with this audit. |
-| `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `docs/usaspending_90day_diagnostic.md` | diagnostics (point-in-time) | KEEP as records, or RENAME if treated as living runbooks (operator call). |
+| `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `docs/analysis/usaspending_90day_diagnostic.md` | diagnostics (point-in-time) | KEEP as records, or RENAME if treated as living runbooks (operator call). |
 
 ---
 
@@ -156,7 +156,7 @@ Confirm the verified finding: for `download` and `reconcile`, the **`_90day` fil
 
 ### Step 4 — Rename remaining leaf modules (PURE-CODE)
 - `git mv` each: `embed_90day→embed`, `gtm_scope_90day→gtm_scope`, `labor_demand_extract_90day→labor_demand_extract`, `marking_fullbody_90day→marking_fullbody`, `opps_attachment_manifest_90day_winners→opps_attachment_manifest_winners`, `usaspending/govcon_teaming_edges_90day→govcon_teaming_edges`.
-- Update: the 3 `labor`/`marking` test imports; the **dynamic** `importlib.import_module("sam_labor_demand_extract_90day")` at `scripts/bigthree_reextract_census_probe.py:29`; `scripts/sam_attachment_size_probe.py:62`; `scripts/v2_labor_regression_guard.py:4`; cross-references inside `embed→extract`, `labor→extract`, `marking→extract` (already handled if Step 3 done first — do Step 3 before 4).
+- Update: the 3 `labor`/`marking` test imports; the **dynamic** `importlib.import_module("sam_labor_demand_extract_90day")` at `scripts/archive/bigthree_reextract_census_probe.py:29`; `scripts/archive/sam_attachment_size_probe.py:62`; `scripts/v2_labor_regression_guard.py:4`; cross-references inside `embed→extract`, `labor→extract`, `marking→extract` (already handled if Step 3 done first — do Step 3 before 4).
 - **Gate:** G-pytest, G-import, G-grep.
 
 ### Step 5 — Identifier hygiene (PURE-CODE, optional, low-risk)

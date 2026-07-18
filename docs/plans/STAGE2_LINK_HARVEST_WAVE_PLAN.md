@@ -2,7 +2,7 @@
 
 **Mode:** PLANNING + READ-ONLY SIZING. **Snapshot:** 2026-06-21 (UTC), R2 Gen-3 Lance SoR `s3://data-sink/active/`, SAM universe `s3://data-sink/sam-gov-opps/{active,archived}/`. Zero crawl, zero writes, zero SAM.gov requests in producing this plan.
 **Stage scope:** Stage **2** of the 3-stage pipeline (`pipelines/sam_gov/REFERENCE_sam_attachment_terminology_and_state.md` Part 2): per-notice `GET /opportunities/{notice_id}/resources` crawl that produces `sam_opps_attachment_manifest*` rows (`resource_id`, `download_url`, `file_name`, `mime_type`, `size_bytes`, notice/solicitation keys) — the attachment **pointer layer, NO bytes**. This plan FEEDS the already-shipped Stage-3 plan (`docs/plans/STAGE3_EXTRACTION_BACKLOG_WAVE_PLAN.md`); it does NOT re-plan Stage 3.
-**Probes (reproducible, read-only):** [`scripts/_plan2_link_harvest_probe.py`](../../scripts/_plan2_link_harvest_probe.py) (resolve + size + partition), [`scripts/_plan2_resolution_diag.py`](../../scripts/_plan2_resolution_diag.py) (the resolution-ceiling decomposition — the correctness crux), [`scripts/_plan2_notice_type_diag.py`](../../scripts/_plan2_notice_type_diag.py) (notice-type composition + per-band funnel). Raw JSON: `/tmp/_plan2_link_harvest.json`, `/tmp/_plan2_resolution_diag.json`, `/tmp/_plan2_notice_type.json`.
+**Probes (reproducible, read-only):** [`scripts/archive/_plan2_link_harvest_probe.py`](../../scripts/archive/_plan2_link_harvest_probe.py) (resolve + size + partition), [`scripts/archive/_plan2_resolution_diag.py`](../../scripts/archive/_plan2_resolution_diag.py) (the resolution-ceiling decomposition — the correctness crux), [`scripts/archive/_plan2_notice_type_diag.py`](../../scripts/archive/_plan2_notice_type_diag.py) (notice-type composition + per-band funnel). Raw JSON: `/tmp/_plan2_link_harvest.json`, `/tmp/_plan2_resolution_diag.json`, `/tmp/_plan2_notice_type.json`.
 
 ---
 
@@ -38,9 +38,9 @@ Cohort bridge = active SB award (`active_current OR active_potential`, `business
 Reproduce:
 ```
 doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb \
-  python3 scripts/_plan2_link_harvest_probe.py     > /tmp/_plan2_link_harvest.json
+  python3 scripts/archive/_plan2_link_harvest_probe.py     > /tmp/_plan2_link_harvest.json
 doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb \
-  python3 scripts/_plan2_notice_type_diag.py        > /tmp/_plan2_notice_type.json
+  python3 scripts/archive/_plan2_notice_type_diag.py        > /tmp/_plan2_notice_type.json
 ```
 
 | Cohort | Crawlable awards¹ | Crawlable Sol# | **Resolvable Sol#** (in SAM) | **Target notices** | active / archived | Already harvested | **Genuinely un-harvested** | Forecast manifest rows (mean·median) |
@@ -58,7 +58,7 @@ doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance 
 
 ```
 doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb \
-  python3 scripts/_plan2_resolution_diag.py > /tmp/_plan2_resolution_diag.json
+  python3 scripts/archive/_plan2_resolution_diag.py > /tmp/_plan2_resolution_diag.json
 ```
 
 | Fact | Value | Meaning |

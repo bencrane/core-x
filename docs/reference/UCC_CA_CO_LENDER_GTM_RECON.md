@@ -4,8 +4,8 @@ Read-only DuckDB/Lance probe of the California and Colorado UCC datasets in the 
 system of record (`s3://data-sink/active/`, Cloudflare R2). Scopes the **secured-party
 (lender)** surface for a GTM targeting alternative lenders / equipment financiers.
 
-- **Harness (reproducible, non-mutating):** [`scripts/ucc_ca_co_recon_probe.py`](../../scripts/ucc_ca_co_recon_probe.py)
-  — `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/ucc_ca_co_recon_probe.py`
+- **Harness (reproducible, non-mutating):** [`scripts/archive/ucc_ca_co_recon_probe.py`](../../scripts/archive/ucc_ca_co_recon_probe.py)
+  — `doppler run -p core-x -c prd -- uv run --no-project --with boto3 --with pylance --with duckdb python3 scripts/archive/ucc_ca_co_recon_probe.py`
 - **Attestation:** every figure is from `lance.dataset(...).count_rows()/scanner()/list_indices()` + DuckDB `SELECT`. Zero writes.
 - **Snapshot:** CA `as_of 2026-05-31`; CO ledger `2026-05-31`; CO companion party tables `2026-05-08`. Probe run 2026-06-21.
 

@@ -63,8 +63,8 @@ from core.name_norm import legal_name_base as _legal_name_base, name_norm as _na
 BUCKET = "data-sink"
 
 # Logical name → (R2 URI, debtor org-name source col, debtor zip source col).
-# URIs env-overridable with the SAME names the ingest workers use (ca_ucc/ingest.py,
-# co_ucc/companions_bulk.py) so every worker resolves one truth.
+# URIs env-overridable with the SAME names the ingest workers used (ca_ucc/ingest.py)
+# so every worker resolves one truth.
 DATASETS: dict[str, dict[str, str]] = {
     "ca_ucc_debtors": {
         "uri": os.environ.get("CA_UCC_DEBTORS_URI", "s3://data-sink/active/ca_ucc/debtors/"),
