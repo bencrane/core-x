@@ -901,7 +901,8 @@ def enrich_companies(
 
         # 3) Create the group + add runs (≤1000/POST), default_task_spec = ONE wrapped schema.
         grp = create_task_group(metadata={"spec_id": spec, "run_id": run_id, "run_kind": run_kind})
-        group_id = grp.get("task_group_id") or grp.get("id")
+        # Live wire shape (observed 2026-07-17): the id key is ``taskgroup_id``.
+        group_id = grp.get("taskgroup_id") or grp.get("task_group_id") or grp.get("id")
         if not group_id:
             status, error = "failed", f"group create returned no id: {str(grp)[:200]}"
             return _terminal("failed", reraise_msg=error)
@@ -1085,13 +1086,19 @@ def run_explicit(csv_path: str, spec: str, prompt_file: str, schema_file: str,
         schema = _json.load(f)
     rows = list(_csv.DictReader(open(csv_path, encoding="utf-8")))
     explicit: list[dict] = []
+    skipped_no_domain = 0
     for r in rows:
         e = {k: (v or "") for k, v in r.items()}
         e["company_name"] = r.get("company_name") or r.get("sub_name") or r.get("name") or ""
+        # Operator ruling (2026-07-17): a firm with no domain is SKIPPED, never sent name-only.
+        if not _bare_domain(e.get("domain") or e.get("normalized_domain")):
+            skipped_no_domain += 1
+            continue
         explicit.append(e)
     if max_runs and max_runs > 0:
         explicit = explicit[:max_runs]
-    print(f"entities={len(explicit)} spec={spec} processor={processor} mode={mode}")
+    print(f"entities={len(explicit)} skipped_no_domain={skipped_no_domain} "
+          f"spec={spec} processor={processor} mode={mode}")
 
     if mode == "dry":
         first = _normalize_explicit(explicit, limit=1)
