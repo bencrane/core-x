@@ -901,7 +901,8 @@ def enrich_companies(
 
         # 3) Create the group + add runs (≤1000/POST), default_task_spec = ONE wrapped schema.
         grp = create_task_group(metadata={"spec_id": spec, "run_id": run_id, "run_kind": run_kind})
-        group_id = grp.get("task_group_id") or grp.get("id")
+        # Live wire shape (observed 2026-07-17): the id key is ``taskgroup_id``.
+        group_id = grp.get("taskgroup_id") or grp.get("task_group_id") or grp.get("id")
         if not group_id:
             status, error = "failed", f"group create returned no id: {str(grp)[:200]}"
             return _terminal("failed", reraise_msg=error)
