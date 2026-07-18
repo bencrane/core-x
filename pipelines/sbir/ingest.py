@@ -4,7 +4,7 @@ Manual in-session load: the operator landed two CSVs at s3://data-sink/landing/s
 (award_data.csv 394MB w/ Abstract; award_data_no_abstract.csv 91MB). This worker
 ingests the FULL file only (the lean file is a strict column-subset). Clean-room data
 plane: DuckDB does 100% of the transform, Lance is written straight to R2. Enforces the
-cleaning contract proven in docs/sbir_structural_diagnostic.md.
+cleaning contract proven in docs/analysis/sbir_structural_diagnostic.md.
 
   doppler run -- python pipelines/sbir/ingest.py                                  # read R2 landing
   doppler run -- python pipelines/sbir/ingest.py --source /tmp/sbir_audit/award_data.csv

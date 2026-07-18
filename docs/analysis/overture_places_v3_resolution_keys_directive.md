@@ -1,7 +1,7 @@
 # Overture Places — v3 Resolution-Keys Re-Ingest Directive
 
 **Audience:** an AI agent executing against the `core-x` data plane, cold, with no prior context.
-**Companions:** [docs/overture_places_optimization_directive.md](overture_places_optimization_directive.md) (the v2 migration this builds on) · [docs/overture_places_structural_diagnostic.md](overture_places_structural_diagnostic.md) (the read-only diagnostic).
+**Companions:** [docs/analysis/overture_places_optimization_directive.md](overture_places_optimization_directive.md) (the v2 migration this builds on) · [docs/analysis/overture_places_structural_diagnostic.md](overture_places_structural_diagnostic.md) (the read-only diagnostic).
 **Target SoR:** `s3://data-sink/active/overture_places/` (Gen-3 Lance, R2). 16,273,123 rows.
 **Nature:** a **one-shot, source-RE-INGEST** that rebuilds the SoR from the Overture source **pinned to the same release the live SoR was built from (`2026-05-20.0`)** so v3 is a true row-superset of v2, carrying the deterministic resolution keys (`domain`, `phone`, `street`) the v2 ingest dropped. The SoR URI does **not** change.
 **Authority:** the engineering decisions in §2 are **locked** — execute the runbook in §6. The re-ingest **overwrites the SoR**; it is gated (build → LOCAL hard-verify → R2 backup → publish → post-publish verify → restore-on-fail), re-run-safe (clean no-op if already v3), ledgered, and reversible.

@@ -11,7 +11,7 @@
 """Form 5500 (2025) post-ingest structural diagnostic + cross-graph overlap probe.
 
 READ-ONLY / ZERO-MUTATION. No dataset, index, or fragment is written, compacted, or
-deleted. The only write is the Markdown report at docs/form5500_post_ingest_diagnostic.md.
+deleted. The only write is the Markdown report at docs/analysis/form5500_post_ingest_diagnostic.md.
 
 Three phases, exactly the directive:
 
@@ -564,8 +564,8 @@ def render(stats: list[dict], xg: dict, started: dt.datetime, elapsed: float) ->
 def main() -> int:
     ap = argparse.ArgumentParser(description="Form 5500 post-ingest diagnostic + cross-graph probe (read-only).")
     here = os.path.dirname(os.path.abspath(__file__))
-    default_out = os.path.normpath(os.path.join(here, "..", "..", "docs", "form5500_post_ingest_diagnostic.md"))
-    ap.add_argument("--out", default=default_out, help="report path (default: docs/form5500_post_ingest_diagnostic.md)")
+    default_out = os.path.normpath(os.path.join(here, "..", "..", "docs", "analysis", "form5500_post_ingest_diagnostic.md"))
+    ap.add_argument("--out", default=default_out, help="report path (default: docs/analysis/form5500_post_ingest_diagnostic.md)")
     args = ap.parse_args()
 
     import duckdb

@@ -2,8 +2,8 @@
 
 **Owner of record:** Principal Data Engineer. This is the canonical end-to-end spec; execute against it verbatim.
 **Repo:** `core-x` · **Doppler:** `core-x/prd` · **Mode:** BUILD — append-only, idempotent, per-snapshot. Mutates only NEW derived prefixes; the raw NPPES SoR is read-only and untouched.
-**Descends from:** [`docs/nppes_structural_diagnostic.md`](nppes_structural_diagnostic.md) (#208, #211) — every decision traces to a measured finding there (`(diag §N)` inline).
-**Validated against live data:** the model decisions, runtime mechanics, and gate values below were independently verified on the live `snapshot=2026-05` (pinned `pylance 7.0.0` / `duckdb 1.5.3`); the validation record is [`docs/nppes_analytical_plan_adversarial_review.md`](nppes_analytical_plan_adversarial_review.md) (#222). Numbers stated as exact (e.g. row counts, NDV, gate targets) are measured, not estimated.
+**Descends from:** [`docs/analysis/nppes_structural_diagnostic.md`](nppes_structural_diagnostic.md) (#208, #211) — every decision traces to a measured finding there (`(diag §N)` inline).
+**Validated against live data:** the model decisions, runtime mechanics, and gate values below were independently verified on the live `snapshot=2026-05` (pinned `pylance 7.0.0` / `duckdb 1.5.3`); the validation record is [`docs/analysis/nppes_analytical_plan_adversarial_review.md`](nppes_analytical_plan_adversarial_review.md) (#222). Numbers stated as exact (e.g. row counts, NDV, gate targets) are measured, not estimated.
 
 ---
 
@@ -371,7 +371,7 @@ The correctness assertions (G1–G5, G8–G12) are absolute build-fail gates; th
 5. Publish to R2 (the three `snapshot=2026-05` prefixes) via the local-stage→boto3 path; run `verify` against the published datasets; confirm the gate passes on R2.
 6. Apply `ops.nppes_analytical_runs` (`init_state`) and confirm a run row landed.
 7. Commit, push, open PR vs `main`, **self-merge** (`gh pr merge --squash --delete-branch`), **pull into `/Users/benjamincrane/core-x`**, verify `git log -1 --oneline`. (Base on current `main`; never stack on an unmerged branch — squash drops post-squash commits.)
-8. Optional: update `docs/nppes_structural_diagnostic.md` §5/§7 with a one-line "implemented in <PR>" pointer.
+8. Optional: update `docs/analysis/nppes_structural_diagnostic.md` §5/§7 with a one-line "implemented in <PR>" pointer.
 
 ---
 

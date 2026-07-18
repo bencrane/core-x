@@ -5,7 +5,7 @@ indexed, append-only Lance fact table of **negotiated commercial rates for a
 target NPI cohort** — the input to off-market clinical-acquisition rate-positioning.
 
 Full design, measured metrics, and the nationwide projection:
-[`docs/tic_payer_integration_poc.md`](../../docs/tic_payer_integration_poc.md).
+[`docs/analysis/tic_payer_integration_poc.md`](../../docs/analysis/tic_payer_integration_poc.md).
 
 ## Files
 - `reverse_map.py` — out-of-core engine. Two-source streaming join: stream

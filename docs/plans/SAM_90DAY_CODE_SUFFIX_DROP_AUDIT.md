@@ -22,7 +22,7 @@
 
 **3 ops SQL files:** `pipelines/sam_gov/ops_sam_attachment_download_90day_runs.sql`, `ops_sam_attachment_gtm_scope_90day_runs.sql`, `ops_sam_extraction_90day_runs.sql`.
 
-**8 docs:** `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`, `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `..._ADVERSARIAL_REVIEW.md`, `..._V2.md`, `SAM_90DAY_FILENAME_TAXONOMY_SIZING.md`, `SAM_ATTACHMENT_90DAY_HARVEST_AND_FORENSIC_RECORD.md`, `docs/usaspending_90day_diagnostic.md`.
+**8 docs:** `docs/plans/SAM_GOVCON_90DAY_RENAME_MIGRATION.md`, `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `..._ADVERSARIAL_REVIEW.md`, `..._V2.md`, `SAM_90DAY_FILENAME_TAXONOMY_SIZING.md`, `SAM_ATTACHMENT_90DAY_HARVEST_AND_FORENSIC_RECORD.md`, `docs/analysis/usaspending_90day_diagnostic.md`.
 
 ---
 
@@ -122,7 +122,7 @@ Real `from … import` statements that move when a module is renamed (verified `
 | `docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC_ADVERSARIAL_REVIEW.md` | historical review artifact | **KEEP**. |
 | `docs/reference/SAM_90DAY_EXTRACTION_PIPELINE_SPEC.md`, `…_V2.md` | describe **current** behavior; cited by `govcon_gtm_schemas`/gtm-mcp | RENAME (drop `90DAY`) + update body, or add the WINDOW-AS-DATA note. `_V2` is the live spec. |
 | `docs/reference/SAM_90DAY_FILENAME_TAXONOMY_SIZING.md` | describes current filename taxonomy | RENAME + reconcile with this audit. |
-| `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `docs/usaspending_90day_diagnostic.md` | diagnostics (point-in-time) | KEEP as records, or RENAME if treated as living runbooks (operator call). |
+| `docs/reference/GOVCON_90DAY_TRIGGER_DIAGNOSTIC.md`, `docs/analysis/usaspending_90day_diagnostic.md` | diagnostics (point-in-time) | KEEP as records, or RENAME if treated as living runbooks (operator call). |
 
 ---
 

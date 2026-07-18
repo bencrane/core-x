@@ -89,7 +89,7 @@ STREAM_BATCH_ROWS = 1048576
 # deterministic resolution keys domain/phone; BITMAP region + category. The
 # per-axis lon/lat BTREEs were dropped (2-D bbox via two 1-D BTREEs measured
 # 38.9s; bbox is served by an exact lon/lat predicate + zone-map pruning). See
-# docs/overture_places_optimization_directive.md + the v3 resolution-keys directive.
+# docs/analysis/overture_places_optimization_directive.md + the v3 resolution-keys directive.
 OVERTURE_BTREE_INDEXES = T.OPTIMIZED_BTREE_INDEXES
 OVERTURE_BITMAP_INDEXES = T.OPTIMIZED_BITMAP_INDEXES
 

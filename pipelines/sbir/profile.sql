@@ -1,5 +1,5 @@
 -- SBIR/STTR award data — structural profiling harness (read-only, non-mutating).
--- Reproduces docs/sbir_structural_diagnostic.md against the landed CSVs.
+-- Reproduces docs/analysis/sbir_structural_diagnostic.md against the landed CSVs.
 --
 --   rclone copy r2:data-sink/landing/sbir /tmp/sbir_audit
 --   duckdb :memory: < pipelines/sbir/profile.sql

@@ -11,7 +11,7 @@
 # ///
 """Targeted ingest — DOL Form 5500 (2025) high-signal core → type-safe Lance on R2.
 
-Executes the Targeted Ingestion Strategy from docs/form5500_relational_diagnostic.md:
+Executes the Targeted Ingestion Strategy from docs/analysis/form5500_relational_diagnostic.md:
 bypass the high-volume / low-signal actuarial long tables and land ONLY the asset,
 participant, and counterparty-fee spine as independent, indexed, type-safe `.lance`
 datasets in the R2 system of record.

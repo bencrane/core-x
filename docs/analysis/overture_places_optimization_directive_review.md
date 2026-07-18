@@ -1,7 +1,7 @@
 # Overture Places Optimization Directive — Adversarial Review
 
 **Reviewer stance:** adversarial. Default: the plan is flawed until proven otherwise. Every verdict below carries reproducible, executable evidence against the installed stack (pylance 7.0.0, duckdb 1.5.3, pyarrow 24.0.0) and the live SoR (read-only).
-**Date:** 2026-06-06 · **Scope:** `docs/overture_places_optimization_directive.md` (THE PLAN), `docs/overture_places_structural_diagnostic.md`, `pipelines/overture_maps/places.py`.
+**Date:** 2026-06-06 · **Scope:** `docs/analysis/overture_places_optimization_directive.md` (THE PLAN), `docs/analysis/overture_places_structural_diagnostic.md`, `pipelines/overture_maps/places.py`.
 **SoR mutation:** none. All R2 access was read-only. No Modal worker run.
 
 ---

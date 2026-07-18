@@ -1,8 +1,8 @@
 # Adversarial Review — Form 5500 Orphan Materialization Runbook
 
 **Reviewer mode:** adversarial, read-only. No SoR mutation, no git mutation, no runbook/pipeline edit.
-**Target:** `docs/form5500_orphan_materialization_runbook.md`
-**Cross-checked against:** `pipelines/form5500/ingest_form5500.py`, `pipelines/form5500/diagnose_post_ingest.py`, `docs/form5500_ingestion_reconciliation.md`, `docs/form5500_relational_diagnostic.md`, live R2 (`s3://data-sink/{active,landing}/`), local lake `~/core-x-lake/active/`.
+**Target:** `docs/analysis/form5500_orphan_materialization_runbook.md`
+**Cross-checked against:** `pipelines/form5500/ingest_form5500.py`, `pipelines/form5500/diagnose_post_ingest.py`, `docs/analysis/form5500_ingestion_reconciliation.md`, `docs/analysis/form5500_relational_diagnostic.md`, live R2 (`s3://data-sink/{active,landing}/`), local lake `~/core-x-lake/active/`.
 **Date:** 2026-06-07
 
 ---
@@ -19,7 +19,7 @@ Both are surgical to fix and neither touches Phases A/B. After the §5 dependenc
 
 ### [CRITICAL] §5 line 127+146 — Phase C verification script crashes 100% of runs (missing `pandas` dependency)
 
-**Location:** `docs/form5500_orphan_materialization_runbook.md:127` (PEP-723 deps) and `:146` (`.df()` call).
+**Location:** `docs/analysis/form5500_orphan_materialization_runbook.md:127` (PEP-723 deps) and `:146` (`.df()` call).
 
 **What's wrong:** The heredoc declares `# dependencies = ["duckdb>=1.5,<2", "pylance>=7", "pyarrow>=17"]`. Line 146 is:
 ```python
@@ -48,7 +48,7 @@ heads  = con.sql("SELECT ACK_ID FROM main UNION SELECT ACK_ID FROM sf").to_arrow
 
 ### [MAJOR] DoD line 15 + §3.4 reconciliation — runbook never re-publishes `sch_a_broker`, so the FORM_ID index it claims on "both sides" never lands
 
-**Location:** Runbook DoD `:15` ("the `(ACK_ID, FORM_ID)` carrier↔broker composite join resolves"), Phase A `:75-76`, Phase B `:105-107`; corroborated against `ingest_form5500.py:120` and `docs/form5500_ingestion_reconciliation.md:46,167`.
+**Location:** Runbook DoD `:15` ("the `(ACK_ID, FORM_ID)` carrier↔broker composite join resolves"), Phase A `:75-76`, Phase B `:105-107`; corroborated against `ingest_form5500.py:120` and `docs/analysis/form5500_ingestion_reconciliation.md:46,167`.
 
 **What's wrong:** PR #300 backfilled `FORM_ID` into `sch_a_broker`'s `biz_keys` (`ingest_form5500.py:120`: `{"stem": "F_SCH_A_PART1", "name": "sch_a_broker", "biz_keys": ["FORM_ID"], ...}`), and the reconciliation doc states the composite join is "now BTREE both sides" (`:167`) and "backfilled by the patch" (`:46`). But the runbook's Phase A and Phase B commands both run `--only sch_a_carrier,sch_c_indirect,sch_c_eligible,sch_c_terminated` — **`sch_a_broker` is not in the list.** The patch only changed the in-code registry; the index is materialized at ingest time via `ds.create_scalar_index`. Without re-running `--only sch_a_broker`, the deployed broker dataset keeps its v1 index set.
 
@@ -125,7 +125,7 @@ The `<1%` ceiling is an acceptable guard against a partial/torn `main` slice; do
 
 ### [MINOR] reconciliation doc §3.3 line 135 + Appendix line 215 — "45 NUMERIC / 45 TEXT" for F_SCH_A is wrong (actual 36/54); cosmetic, no behavior impact
 
-**Location:** `docs/form5500_ingestion_reconciliation.md:135` ("**45 numeric / 45 string** + 3 provenance") and `:215` ("90 cols, 45 TEXT / 45 NUMERIC").
+**Location:** `docs/analysis/form5500_ingestion_reconciliation.md:135` ("**45 numeric / 45 string** + 3 provenance") and `:215` ("90 cols, 45 TEXT / 45 NUMERIC").
 
 **What's wrong:** The F_SCH_A EFAST2 layout has 90 fields split **36 NUMERIC / 54 TEXT**, not 45/45. This is a supporting-doc inaccuracy, not a runbook defect, and it does not change landed output because the pipeline computes types at runtime from the live layout + precedence rules.
 

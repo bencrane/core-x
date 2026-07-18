@@ -1,7 +1,7 @@
 # NPPES Analytical Layer — Adversarial Review
 
-**Artifact under review:** [`docs/nppes_analytical_implementation_plan.md`](nppes_analytical_implementation_plan.md)
-**Evidence base:** [`docs/nppes_structural_diagnostic.md`](nppes_structural_diagnostic.md) · `pipelines/nppes/ingest.py` · convention check across `pipelines/*/materialize_*.py`
+**Artifact under review:** [`docs/analysis/nppes_analytical_implementation_plan.md`](nppes_analytical_implementation_plan.md)
+**Evidence base:** [`docs/analysis/nppes_structural_diagnostic.md`](nppes_structural_diagnostic.md) · `pipelines/nppes/ingest.py` · convention check across `pipelines/*/materialize_*.py`
 **Method:** read-only live-data verification against `s3://data-sink/active/nppes/snapshot=2026-05/` (9,551,447 rows, 334 cols, v4, Lance v2.1) via the pinned `/tmp/nppes_diag_venv` (`pylance 7.0.0`, `duckdb 1.5.3`); local Lance micro-datasets built to prove fragment-pruning + metadata round-trip mechanics. Every empirical claim shows the command and literal output. No mutation of the SoR; no git.
 **Date:** 2026-06-06
 

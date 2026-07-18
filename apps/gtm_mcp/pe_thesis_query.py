@@ -6,7 +6,7 @@ rank the highest-compensated individual physicians in a given specialty (NUCC ta
 code) and state by total CMS Open Payments received (general + research), decorated with
 NPPES provider identity. **Read-only. No dataset is materialized.**
 
-Every architectural choice traces to `docs/cms_nppes_relational_diagnostic.md`:
+Every architectural choice traces to `docs/analysis/cms_nppes_relational_diagnostic.md`:
 
   • Finding A.1 — `covered_recipient_npi` is 96.39% NULL in research; the resolution key
     is `coalesce(covered_recipient_npi, principal_investigator_1_npi)`. The research

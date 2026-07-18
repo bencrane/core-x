@@ -6,7 +6,7 @@ SoR READ-ONLY and writes ONLY the three derived prefixes, so a failure here can 
 corrupt the raw monthly capture. Clean-room data plane: DuckDB does 100% of the transform,
 Lance is the system of record on R2.
 
-WHY THIS LAYER EXISTS (docs/nppes_structural_diagnostic.md §7). The raw NPPES snapshot at
+WHY THIS LAYER EXISTS (docs/analysis/nppes_structural_diagnostic.md §7). The raw NPPES snapshot at
 ``s3://data-sink/active/nppes/snapshot=YYYY-MM/`` is physically pristine but stored in raw
 CMS dissemination shape, not analytical shape: dates are ``MM/DD/YYYY`` strings (naive range
 filters silently return 0 — diag §6.3), specialty is shattered across ``taxonomy_code_1..15``
@@ -112,7 +112,7 @@ INDEX_PLAN: dict[str, dict[str, list[str]]] = {
                    "practice_state", "enumeration_year"],
     },
     "nppes_provider_taxonomy": {
-        # npi BTREE dropped per diagnostic §E.4 (docs/cms_nppes_relational_diagnostic.md):
+        # npi BTREE dropped per diagnostic §E.4 (docs/analysis/cms_nppes_relational_diagnostic.md):
         # the table is (taxonomy_code, npi)-clustered, so the npi BTREE delivered row
         # selection but ZERO fragment pruning (12/12 frags, 320 IOPs) at 147.43 MiB — 90%
         # of this table's index budget for a non-pruning path. Batch npi→taxonomy now routes
