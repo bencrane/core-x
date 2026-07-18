@@ -50,6 +50,7 @@ from .src.map_decoders import DECODERS
 from .src.routers.active_awards_query_v1 import router as active_awards_query_router
 from .src.routers.market_collections_v1 import router as market_collections_router
 from .src.routers.entity_resolve_v1 import router as entity_resolve_router
+from .src.routers.list_report_v1 import router as list_report_router
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.market_query_v1 import router as market_query_router
 from .src.card_html import render_card, render_not_found
@@ -190,6 +191,10 @@ app.include_router(market_query_router)
 # (uei verify + domain→registrant candidates w/ family names). 2026-07-17.
 app.include_router(entity_resolve_router)
 app.include_router(active_awards_query_router)
+
+# list-report: the federal state of affairs for an uploaded entity list —
+# six uei-sorted probes, aggregates computed server-side. 2026-07-17.
+app.include_router(list_report_router)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────
