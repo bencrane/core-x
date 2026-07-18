@@ -209,12 +209,6 @@ def test_recent_actions_new_award_is_null_action_type() -> None:
     assert "INTERVAL '3 months'" in expr
 
 
-def test_recent_actions_more_work_via_vocab() -> None:
-    expr, _, _ = _compile([{"term": "recent_award_actions", "family": "more_work",
-                            "within_months": 12}])
-    assert "action_type_vocab WHERE is_more_work" in expr
-
-
 def test_profile_changes_closed_field_set() -> None:
     with pytest.raises(HTTPException):
         _compile([{"term": "sam_profile_changes", "fields": ["ceo_changed"],
@@ -242,3 +236,53 @@ def test_no_free_text_reaches_sql() -> None:
     ):
         with pytest.raises(HTTPException):
             _compile(preds)
+
+
+# ── pricing×financing cycle (2026-07-17) ─────────────────────────────────────
+
+def test_momentum_targets_sorted_copy_with_literal_codes() -> None:
+    expr, _, _ = _compile([{"term": "recent_award_actions", "family": "more_work",
+                            "within_months": 12}])
+    assert "txn_recipient_month_by_type" in expr
+    assert "action_type_code IN ('A','B','D','G','L')" in expr
+    assert "action_type_vocab" not in expr  # literal lists prune; subqueries don't
+
+
+def test_combo_cell_any_pricing() -> None:
+    expr, echoes, _ = _compile([{"term": "active_award_pricing_mix",
+                                 "combos": [{"financing": "progress_payments",
+                                             "min_dollars": 1_000_000}]}])
+    assert "COALESCE(active_obl_fin_prog, 0) >= 1000000.0" in expr
+    assert echoes[0]["combos"][0]["financing"] == "progress_payments"
+
+
+def test_combo_cell_full_matrix_share() -> None:
+    expr, _, _ = _compile([{"term": "active_award_pricing_mix",
+                            "combos": [{"pricing": "fixed", "financing": "performance_based",
+                                        "min_share": 0.5}]}])
+    assert "active_obl_fixed_perf" in expr and ">= 0.5" in expr
+
+
+def test_combo_unknown_financing_refuses() -> None:
+    with pytest.raises(HTTPException):
+        _compile([{"term": "active_award_pricing_mix",
+                   "combos": [{"financing": "crypto"}]}])
+
+
+def test_min_financed_share_dial() -> None:
+    expr, _, _ = _compile([{"term": "active_award_pricing_mix", "min_financed_share": 0.3}])
+    assert "active_financed_share" in expr
+
+
+def test_instrument_dial_active_purchase_order() -> None:
+    expr, _, _ = _compile([{"term": "active_awards", "instrument": "purchase_order"}])
+    assert "gtm_entity_pricing_mix" in expr and "active_purchase_order_ct >= 1" in expr
+
+
+def test_instrument_dial_lifetime_negated() -> None:
+    expr, _, _ = _compile([
+        {"term": "active_awards", "instrument": "purchase_order"},
+        {"term": "active_awards", "instrument": "definitive_contract",
+         "instrument_scope": "lifetime", "value": False},
+    ])
+    assert "EXCEPT" in expr and "lifetime_definitive_ct >= 1" in expr

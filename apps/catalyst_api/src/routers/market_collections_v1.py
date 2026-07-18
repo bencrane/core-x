@@ -164,6 +164,50 @@ async def list_collections() -> dict[str, Any]:
     }
 
 
+@router.get("/{slug}/scope", dependencies=[Depends(require_service_token)])
+async def collection_scope(slug: str) -> dict[str, Any]:
+    """The collection's pair-set scope, with the plain-language work rendering
+    (naics_psc_deliverable.what_was_done) per pair — the Markets Explore
+    surface's seed (2026-07-17 filter-first cycle). One sidecar VALUES probe."""
+    await _load_collections()
+    c = _cache["collections"].get(slug)
+    if c is None:
+        raise _refuse(f"unknown collection '{slug}'")
+    pairs = sorted(c["pairs"])
+    language: dict[tuple[str, str], str] = {}
+    token = os.environ.get("QUERY_SIDECAR_TOKEN")
+    if token and pairs:
+        values = ",".join(f"('{n}','{p_}')" for n, p_ in pairs)
+        sql = (
+            "SELECT pr.naics_code, pr.psc_code, d.what_was_done "
+            f"FROM (VALUES {values}) pr(naics_code, psc_code) "
+            "LEFT JOIN naics_psc_deliverable d "
+            "ON d.naics_code = pr.naics_code AND d.psc_code = pr.psc_code"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    f"{SIDECAR_URL}/api/v1/sql",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"sql": sql, "limit": 20000},
+                )
+            if r.status_code == 200:
+                for n, p_, w in r.json().get("rows") or []:
+                    if w:
+                        language[(n, p_)] = w
+        except httpx.HTTPError:
+            logger.warning("scope language probe failed for %s; serving codes only", slug)
+    return {
+        "slug": slug,
+        "title": c["title"],
+        "description": c["description"],
+        "pairs": [
+            {"naics": n, "psc": p_, "what_was_done": language.get((n, p_))}
+            for n, p_ in pairs
+        ],
+    }
+
+
 @router.post("/count", dependencies=[Depends(require_service_token)])
 async def count_market(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
