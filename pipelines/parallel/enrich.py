@@ -37,6 +37,13 @@ WHAT THIS WORKER DOES
     Single-entity SMOKE path (``smoke_one``): POST /v1/tasks/runs + blocking
     GET /result?timeout=600 — for inline inspection of one company's content + Basis.
 
+    EXPLICIT-LIST + OPERATOR-PROMPT path (govcon subawardee dossiers): ``enrich_companies``
+    accepts ``companies_explicit`` (caller-keyed entity list — the key, e.g. a UEI, rides in
+    the company_id slot end-to-end) and ``prompt_template`` (an operator-authored prompt
+    rendered per entity via ``{{token}}`` substitution and sent as the STRING task input).
+    Launcher: ``modal run pipelines/parallel/enrich.py::run_explicit`` with mode=dry|smoke|live
+    (dry renders without spend; smoke bills one run; live dispatches the group).
+
 TIER CEILING = ``core``. lite|base|core settle in seconds-to-minutes → bounded Modal
 burst (the internal group poll). ``ultra`` (hours) needs Parallel's per-run webhook →
 trigger token (deferred per §0/§9) and is REJECTED here.
@@ -57,6 +64,7 @@ SECRETS
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import modal
 
@@ -79,9 +87,12 @@ ENRICHMENT_ROOT = os.environ.get("PARALLEL_ENRICHMENT_ROOT", f"{_ACTIVE}/enrichm
 # raw). We do NOT discard what the provider returns; the raw payload is the SoR for a run.
 ENRICHMENT_RAW_ROOT = os.environ.get("PARALLEL_ENRICHMENT_RAW_ROOT", f"{_ACTIVE}/enrichment_raw")
 
-# Tier ceiling (§0/§9): enrichment v1 caps at 'core'. ultra needs the per-run webhook path.
-ALLOWED_PROCESSORS = ("lite", "base", "core")
-PROCESSOR_CEILING = "core"
+# Tier ceiling (§0/§9): 'ultra' needs the per-run webhook path (hours-long runs) and stays
+# rejected. 'pro' is admitted for explicit-list dossier runs — it settles within the group
+# poll budget + the widened fn timeout (pro is minutes-class, not hours-class; the original
+# core cap was a latency choice, not a webhook constraint).
+ALLOWED_PROCESSORS = ("lite", "base", "core", "pro")
+PROCESSOR_CEILING = "pro"
 
 # Group completion poll — bounded under the Modal fn timeout. lite/base/core settle in
 # seconds-to-minutes; this is the icypeas short-poll class, NOT exa's 50-min hold (§0).
@@ -220,6 +231,47 @@ def _bare_domain(raw: str | None) -> str | None:
     d = d.split("/", 1)[0]
     d = d.rstrip(".")
     return d or None
+
+
+# ── Explicit-list resolution (caller-supplied entity set; no audience round-trip) ─────────
+def _normalize_explicit(companies_explicit: list[dict], limit: int) -> list[dict]:
+    """Normalize a caller-supplied entity list → the worker's company shape.
+
+    Each entry needs a key (``key`` | ``uei`` | ``company_id`` — first present wins) and a
+    ``company_name``; ``domain``/``normalized_domain`` is optional. The key rides in the
+    ``company_id`` slot END-TO-END (metadata round-trip, typed rows, merge_insert, BTREE) —
+    for a UEI-keyed spec the ``company_id`` COLUMN of that spec's dataset carries the UEI.
+    That is a documented per-spec key semantic, not a spine company_id. Every OTHER string
+    field on the entry is preserved verbatim so ``{{token}}`` prompt rendering can use it
+    (e.g. ``state``, ``federal_context``)."""
+    out: list[dict] = []
+    for e in companies_explicit[: int(limit)]:
+        if not isinstance(e, dict):
+            continue
+        key = e.get("key") or e.get("uei") or e.get("company_id")
+        if not key:
+            continue
+        row = {k: v for k, v in e.items() if isinstance(v, str)}
+        row["company_id"] = str(key)
+        row["company_name"] = e.get("company_name") or e.get("name") or ""
+        row["normalized_domain"] = e.get("normalized_domain") or e.get("domain")
+        out.append(row)
+    return out
+
+
+def _render_prompt(template: str, company: dict) -> str:
+    """Render the operator's EXACT prompt for one entity: every ``{{field}}`` token whose
+    field exists on the company dict is substituted (``company_website`` ← the bare
+    domain); unknown tokens are left intact (visible in smoke output, never silently
+    blanked). The template text itself is never altered beyond token substitution."""
+    rendered = template
+    values = dict(company)
+    dom = _bare_domain(company.get("normalized_domain"))
+    values["company_website"] = dom or ""
+    for k, v in values.items():
+        if isinstance(v, str):
+            rendered = rendered.replace("{{" + k + "}}", v)
+    return rendered
 
 
 # ── Audience resolution (read corex.audience, run its SQL on the Lance plane) ─────────────
@@ -718,7 +770,7 @@ def _build_rows(companies: list[dict], results: dict[str, dict], *, schema_props
         modal.Secret.from_name("r2-credentials"),
         modal.Secret.from_name("hqx-postgres"),
     ],
-    timeout=60 * 60,
+    timeout=60 * 120,  # widened for pro-tier groups; poll budget stays the inner bound
     memory=8192,
     cpu=4.0,
 )
@@ -733,13 +785,23 @@ def enrich_companies(
     max_runs: int = 0,
     idempotency_key: str | None = None,
     cost_cap: float | None = None,
+    companies_explicit: list[dict] | None = None,
+    prompt_template: str | None = None,
 ) -> dict:
     """Enrich a resolved company audience into typed cited columns → per-spec Lance dataset.
 
     ``output_schema`` is the PURE JSON-Schema data-column object (wrapped here as §0
     requires). ``processor`` ∈ {lite,base,core} (ultra rejected). ``max_runs`` hard-caps the
     company set (the launch tool also enforces this pre-dispatch). Terminal state →
-    ops.parallel_runs + Trigger callback. Re-raises only on genuine failure."""
+    ops.parallel_runs + Trigger callback. Re-raises only on genuine failure.
+
+    EXPLICIT-LIST PATH: ``companies_explicit`` (entries per ``_normalize_explicit`` — key
+    rides in the ``company_id`` slot end-to-end, e.g. a UEI) bypasses audience resolution;
+    ``audience_id`` is then ignored. ``prompt_template`` switches the per-run task input
+    from the structured ``{company_name, company_website}`` object to the template rendered
+    per entity via ``{{token}}`` substitution (``_render_prompt``) — the path for running
+    an operator-authored prompt VERBATIM. Both parameters compose with everything else
+    (groups, basis, raw capture, confidence gate, ledger)."""
     import datetime as dt
     import uuid
 
@@ -802,23 +864,34 @@ def enrich_companies(
         schema_props = output_schema.get("properties") or {}
         limit = max_runs if max_runs and max_runs > 0 else MAX_ROWS_PER_FILE
 
-        # 1) Resolve the audience.
-        companies = _resolve_audience_companies(audience_id, limit=limit)
-        if not companies:
-            status, error = "success", "audience resolved to 0 companies"
-            return _terminal("success") or {"status": "success", "companies": 0}
+        # 1) Resolve the entity set — explicit list when supplied, else the audience.
+        if companies_explicit:
+            companies = _normalize_explicit(companies_explicit, limit=limit)
+            if not companies:
+                status, error = "rejected", "companies_explicit had no usable entries (key + name)"
+                return _terminal(status) or {"status": status, "error": error}
+        else:
+            companies = _resolve_audience_companies(audience_id, limit=limit)
+            if not companies:
+                status, error = "success", "audience resolved to 0 companies"
+                return _terminal("success") or {"status": "success", "companies": 0}
         counts["requested"] = len(companies)
 
         # 2) Build one input per company (bare-domain website; null-domain → name-only, counted).
+        #    With a prompt_template the input is the rendered template STRING (§0 allows string
+        #    or object input); otherwise the structured {company_name, company_website} object.
         wrapped = wrap_json_schema(output_schema)
         inputs: list[dict] = []
         for c in companies:
             dom = _bare_domain(c.get("normalized_domain"))
             if not dom:
                 counts["skipped_no_domain"] += 1
-            payload_input = {"company_name": c.get("company_name") or ""}
-            if dom:
-                payload_input["company_website"] = dom
+            if prompt_template:
+                payload_input: Any = _render_prompt(prompt_template, c)
+            else:
+                payload_input = {"company_name": c.get("company_name") or ""}
+                if dom:
+                    payload_input["company_website"] = dom
             inputs.append({
                 "input": payload_input,
                 "processor": proc,
@@ -916,20 +989,31 @@ def enrich_companies(
 # ── Single-entity smoke path (§0: POST /runs + blocking GET /result) ─────────────────────
 @app.function(secrets=[modal.Secret.from_name("parallel-api")], timeout=60 * 12)
 def smoke_one(company_name: str, company_website: str = "", processor: str = "core",
-              output_schema: dict | None = None) -> dict:
+              output_schema: dict | None = None, prompt_template: str | None = None,
+              extra_fields: dict | None = None) -> dict:
     """One company through the SINGLE-run path: POST /v1/tasks/runs + blocking
     GET /result?timeout=600 (§0). Returns {run_id, status, content, basis} for inline
     inspection. No Lance write, no ledger — purely a latency/shape probe (it DOES bill one
-    run, so it is gated behind a manual entrypoint, never auto-invoked)."""
+    run, so it is gated behind a manual entrypoint, never auto-invoked).
+
+    ``prompt_template`` mirrors the batch path: the input becomes the template rendered via
+    ``{{token}}`` substitution over {company_name, company_website, **extra_fields} — the
+    single-firm validation of an operator-authored prompt before a group dispatch."""
     import time
 
     if processor.strip().lower() not in ALLOWED_PROCESSORS:
         return {"status": "rejected",
                 "error": f"processor must be one of {ALLOWED_PROCESSORS} (ultra deferred)"}
-    inp = {"company_name": company_name}
     dom = _bare_domain(company_website)
-    if dom:
-        inp["company_website"] = dom
+    inp: Any
+    if prompt_template:
+        company = {"company_name": company_name, "normalized_domain": dom,
+                   **{k: v for k, v in (extra_fields or {}).items() if isinstance(v, str)}}
+        inp = _render_prompt(prompt_template, company)
+    else:
+        inp = {"company_name": company_name}
+        if dom:
+            inp["company_website"] = dom
     task_spec = {"output_schema": wrap_json_schema(output_schema)} if output_schema else None
     run = create_task_run(input_=inp, processor=processor.strip().lower(),
                           task_spec=task_spec, beta_field_basis=True)
@@ -973,3 +1057,64 @@ def apply_ops_ddl() -> dict:
 def init_ops() -> None:
     """Apply the ops DDL (HQX). Safe — no Parallel calls, no spend."""
     print(apply_ops_ddl.remote())
+
+
+@app.local_entrypoint()
+def run_explicit(csv_path: str, spec: str, prompt_file: str, schema_file: str,
+                 processor: str = "core", max_runs: int = 0,
+                 mode: str = "dry") -> None:
+    """Launch an EXPLICIT-LIST enrichment from a CSV — the operator-prompt dossier path.
+
+    CSV columns: a key column (``uei`` | ``key`` | ``company_id``), a name column
+    (``company_name`` | ``sub_name`` | ``name``), optional ``domain``; every other column
+    rides along verbatim as a ``{{token}}`` for the prompt template. ``prompt_file`` is the
+    operator's prompt with ``{{company_name}}`` / ``{{company_website}}`` (+ any extra
+    column tokens); ``schema_file`` is the pure JSON-Schema object for typed output.
+
+    ``mode`` is the spend gate:
+      dry   — render + print entity count and the FIRST fully-rendered prompt; NO spend.
+      smoke — bill ONE run (first row) via smoke_one; prints content + basis.
+      live  — dispatch the full group (bills every row; ``max_runs`` caps).
+    """
+    import csv as _csv
+    import json as _json
+
+    with open(prompt_file, encoding="utf-8") as f:
+        template = f.read()
+    with open(schema_file, encoding="utf-8") as f:
+        schema = _json.load(f)
+    rows = list(_csv.DictReader(open(csv_path, encoding="utf-8")))
+    explicit: list[dict] = []
+    for r in rows:
+        e = {k: (v or "") for k, v in r.items()}
+        e["company_name"] = r.get("company_name") or r.get("sub_name") or r.get("name") or ""
+        explicit.append(e)
+    if max_runs and max_runs > 0:
+        explicit = explicit[:max_runs]
+    print(f"entities={len(explicit)} spec={spec} processor={processor} mode={mode}")
+
+    if mode == "dry":
+        first = _normalize_explicit(explicit, limit=1)
+        if first:
+            print("── first rendered prompt ──")
+            print(_render_prompt(template, first[0]))
+        return
+    if mode == "smoke":
+        first = _normalize_explicit(explicit, limit=1)[0]
+        out = smoke_one.remote(
+            company_name=first.get("company_name") or "",
+            company_website=first.get("normalized_domain") or "",
+            processor=processor, output_schema=schema, prompt_template=template,
+            extra_fields={k: v for k, v in first.items() if isinstance(v, str)},
+        )
+        print(_json.dumps(out, indent=2, default=str)[:8000])
+        return
+    if mode == "live":
+        out = enrich_companies.remote(
+            spec_id=spec, output_schema=schema, processor=processor,
+            run_kind="live", max_runs=max_runs or 0,
+            companies_explicit=explicit, prompt_template=template,
+        )
+        print(_json.dumps(out, indent=2, default=str)[:4000])
+        return
+    raise SystemExit(f"unknown mode {mode!r} — use dry | smoke | live")
