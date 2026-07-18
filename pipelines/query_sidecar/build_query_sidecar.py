@@ -390,6 +390,14 @@ MANIFEST: list[dict] = [
     # Lender grain gains total_firms (all debtors) alongside sam_firms.
     {"ds": "ucc_filings_all", "tier": "D", "sort": ["ucc_state", "debtor_name_norm"]},
     {"ds": "ucc_lenders_all", "tier": "D", "sort": ["lender_key"]},
+    # lender-book cycle (operator-directed 2026-07-17): lender_key-grain
+    # filing bridge — one lender's full debtor book as a pruned probe instead
+    # of a 4s normalize-scan of secured_parties over the 7.7M corpus (which
+    # also row-capped mega-lender books). Local off ucc_filings_all; blobs
+    # (secured_parties, collateral_text) stay one equality join behind.
+    {"ds": "ucc_filings_all", "tier": "D", "dest": "ucc_lender_filings",
+     "sort": ["lender_key", "uei"],
+     "from_table": "ucc_filings_all", "ucc_lender_filings": True, "aggregate": True},
     {"ds": "fdic_institutions", "tier": "D", "sort": ["name"],
      "cols": ["name", "cert", "active", "city", "stalp", "stname", "zip",
               "webaddr", "asset", "charter"]},
@@ -1136,6 +1144,63 @@ WHERE linkedin_slug IS NOT NULL AND linkedin_slug <> ''
 ORDER BY lower(linkedin_slug)
 """
 
+# lender-book cycle (operator-directed 2026-07-17): lender_key-grain filing
+# bridge. "A lender's full debtor book" previously required normalizing +
+# LIKE-scanning secured_parties across all 7.7M filings (~4s, and any book
+# over 50k filings exceeded the API row cap). This explodes secured_parties
+# once at build, normalizes each party with the SAME expression that mints
+# lender_key in sam_ucc_debtor_overlap.py (_LK — keep in lockstep), and
+# clusters on lender_key so one lender's book is a pruned probe. Grain:
+# 1/(lender_key, ucc_state, filing_id, debtor_key) — GROUP BY collapses
+# spelling variants of the same lender on one filing; any_value() picks the
+# raw name (all other columns are functionally dependent on the filing key).
+# Blob columns (secured_parties, collateral_text) deliberately stay behind:
+# both remain one pure-equality join away on (ucc_state, filing_id,
+# debtor_key) against ucc_filings_all, and duplicating them here would grow
+# the artifact by ~1GB for detail no first-read needs. Explode changes the
+# row count -> aggregate parity.
+_UCC_LENDER_FILINGS_SQL = """
+CREATE TABLE ucc_lender_filings AS
+WITH exploded AS (
+    SELECT trim(p.party) AS lender_name,
+           f.ucc_state, f.filing_id, f.debtor_key, f.uei, f.sos_entity_key,
+           f.in_sam, f.is_org, f.debtor_name, f.debtor_name_norm,
+           f.debtor_city, f.debtor_state, f.debtor_zip,
+           f.first_filing_date, f.last_filing_date, f.lapse_date,
+           f.filing_class, f.terminated, f.is_active_financing, f.is_lease,
+           f.n_secured_parties
+    FROM ucc_filings_all f,
+         unnest(string_split(f.secured_parties, '; ')) AS p(party)
+    WHERE f.secured_parties IS NOT NULL
+)
+SELECT trim(regexp_replace(regexp_replace(upper(lender_name), '[^A-Z0-9 ]', '', 'g'),
+        ' (INC|LLC|LP|LLP|CORP|CORPORATION|CO|COMPANY|NA|NATIONAL ASSOCIATION|ASSOCIATION|LTD|THE)$',
+        '', 'g'))                        AS lender_key,
+       any_value(lender_name)            AS lender_name,
+       ucc_state, filing_id, debtor_key,
+       any_value(uei)                    AS uei,
+       any_value(sos_entity_key)         AS sos_entity_key,
+       any_value(in_sam)                 AS in_sam,
+       any_value(is_org)                 AS is_org,
+       any_value(debtor_name)            AS debtor_name,
+       any_value(debtor_name_norm)       AS debtor_name_norm,
+       any_value(debtor_city)            AS debtor_city,
+       any_value(debtor_state)           AS debtor_state,
+       any_value(debtor_zip)             AS debtor_zip,
+       any_value(first_filing_date)      AS first_filing_date,
+       any_value(last_filing_date)       AS last_filing_date,
+       any_value(lapse_date)             AS lapse_date,
+       any_value(filing_class)           AS filing_class,
+       any_value(terminated)             AS terminated,
+       any_value(is_active_financing)    AS is_active_financing,
+       any_value(is_lease)               AS is_lease,
+       any_value(n_secured_parties)      AS n_secured_parties
+FROM exploded
+WHERE length(lender_name) > 3
+GROUP BY 1, ucc_state, filing_id, debtor_key
+ORDER BY 1, uei
+"""
+
 # gap-pass-3 E1 residual (measured post-v8: the position ladder stayed 17-22s
 # because ANY join with an 83M-row side saturates the 2-thread/1.5GB serving
 # box): the snapshot position substrate — every order whose own or resolved-
@@ -1583,6 +1648,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_ENTITY_AWARD_BOOK_SQL)
         elif spec.get("entity_firmographics"):
             con.execute(_ENTITY_FIRMOGRAPHICS_SQL)
+        elif spec.get("ucc_lender_filings"):
+            con.execute(_UCC_LENDER_FILINGS_SQL)
         elif spec.get("slug_lookup"):
             con.execute(_SLUG_LOOKUP_SQL)
         else:
