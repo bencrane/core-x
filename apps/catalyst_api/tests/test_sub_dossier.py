@@ -99,6 +99,52 @@ def test_market_sql_no_shape_codes_degrades_safely():
     assert "1 = 0" in sql   # farm-out OR-leg disabled, not broken
 
 
+def test_archetype_validation():
+    assert sd._valid_archetype(None) == "sub"
+    assert sd._valid_archetype("prime_sub") == "prime_sub"
+    with pytest.raises(HTTPException):
+        sd._valid_archetype("peer")
+    with pytest.raises(HTTPException):
+        sd._valid_archetype(1)
+
+
+def test_hybrid_dial_bounds():
+    d = sd._merge_dials({"hybrid_prime_floor": 2e6, "hybrid_sub_floor": 5e5})
+    assert d["hybrid_prime_floor"] == 2e6 and d["hybrid_sub_floor"] == 5e5
+    with pytest.raises(HTTPException):
+        sd._merge_dials({"hybrid_prime_floor": -1})
+
+
+def test_market_sql_hybrid_recipient_shape_gate():
+    dials = dict(sd.DEFAULT_DIALS)
+    sql = sd.sql_market(UEI, SEEDS, ["541712"], ["R425"], dials,
+                        shape_naics=["541712", "541330"])
+    # the ruled gate: ONE source lens, ONE context type, INNER JOIN at selection
+    assert "recipient_code_source = 'awarded_prime_contracts_in_code'" in sql
+    assert "recipient_code_type = 'naics'" in sql
+    assert "context_code_type = 'naics'" in sql
+    assert "JOIN shape_out sh ON sh.uei = c.uei" in sql
+    # sub archetype emits no shape gate
+    sub_sql = sd.sql_market(UEI, SEEDS, ["541712"], ["R425"], dials)
+    assert "shape_out" not in sub_sql
+
+
+def test_shape_subout_sql_per_code_and_single_lens():
+    sql = sd.sql_market_shape_subout(SEEDS, ["541712"])
+    assert "recipient_code_source = 'awarded_prime_contracts_in_code'" in sql
+    assert "context_code_type = 'naics'" in sql
+    assert "GROUP BY 1, 2" in sql          # per (candidate, code) — never cross-code
+    assert "subaward_amt_total > 0" in sql
+
+
+def test_eligible_sql_hybrid_floors():
+    plain = sd.sql_eligible(1e6, 1e8, 100)
+    assert "COALESCE(p.prime_won, 0) >=" not in plain
+    floored = sd.sql_eligible(1e6, 1e8, 100, prime_floor=1e6, sub_floor=2e6)
+    assert "COALESCE(p.prime_won, 0) >= 1000000.0" in floored
+    assert "s.sub_amt >= 2000000.0" in floored
+
+
 def test_inferred_sql_is_code_anchored():  # [F1]
     sql = sd.sql_peer_inferred(SEEDS, "naics", ["541712", "541330"])
     code_pos = sql.index("code_type = 'naics'")
@@ -351,6 +397,92 @@ def test_build_end_to_end_through_seams(fake):
     assert set(payload["method"]["sections_below_floor"]) == {"market", "closing"}
 
 
+class FakeHybridSidecar(FakeSidecar):
+    """The same fixture universe, but the target HAS a prime business:
+    prime FY won rows, prime-side code lanes, and its own prime signature."""
+
+    def _match(self, sql: str):
+        if "WITH seed_sig AS" in sql:
+            return super()._match(sql)          # market SQL (contains cube CTE)
+        if "SUM(subaward_amt_total)" in sql:    # sql_market_shape_subout
+            return (["uei", "recipient_code", "amt", "edge_ct", "last_action"],
+                    [[MKT_OK, "541712", 3_500_000.0, 7, "2026-01-20"],
+                     [MKT_OK, "541330", 800_000.0, 2, "2025-11-02"]])
+        if "FROM gtm_entity_fy_won WHERE uei" in sql:
+            return (["fy", "prime_won", "sa_any", "sa_8a", "sa_sdvosb",
+                     "sa_wosb", "sa_hubzone"],
+                    [[2023, 2_000_000.0, 1e6, 0, 0, 0, 0],
+                     [2024, 2_000_000.0, 0, 0, 0, 0, 0],
+                     [2025, 2_000_000.0, 0, 0, 0, 0, 0]])
+        if "FROM gtm_entity_code_lanes" in sql:
+            return (["side", "code_type", "code", "obl_lifetime", "obl_60mo",
+                     "action_ct"],
+                    [["prime", "naics", "541712", 6_000_000.0, 5_000_000.0, 9],
+                     ["prime", "psc", "R425", 5_000_000.0, 4_000_000.0, 8],
+                     ["sub", "naics", "561210", 4_000_000.0, 3_000_000.0, 5]])
+        if "FROM gtm_prime_code_signature WHERE uei IN" in sql and f"'{T}'" in sql:
+            return (["uei", "code_type", "code", "share_lifetime",
+                     "rank_lifetime", "obl_lifetime"],
+                    [[T, "naics", "541712", 0.9, 1, 6_000_000.0],
+                     [T, "psc", "R425", 0.8, 1, 5_000_000.0]])
+        return super()._match(sql)
+
+
+@pytest.fixture()
+def fake_hybrid(monkeypatch):
+    fs = FakeHybridSidecar()
+
+    async def fake_run(client, sql, limit, require_artifact=None):
+        assert isinstance(limit, int) and limit >= 1
+        return fs.respond(sql, limit)
+
+    monkeypatch.setattr(sd, "_run_sidecar", fake_run)
+    return fs
+
+
+def test_hybrid_build_end_to_end(fake_hybrid):
+    payload = asyncio.run(sd._build_dossier(T, dict(sd.DEFAULT_DIALS), "prime_sub"))
+    assert payload["archetype"] == "prime_sub"
+    # band: prime 6M + sub 9M, both over the $1M floors → in band
+    assert payload["target"]["in_band"] is True
+    assert payload["target"]["prime_won_fy23_25"] == pytest.approx(6_000_000.0)
+    # prime business: own signature + shape codes from PRIME lanes
+    pb = payload["prime_business"]
+    assert pb is not None
+    assert pb["shape_naics"] == ["541712"]
+    assert pb["signature"][0]["code"] in ("541712", "R425")
+    assert pb["fy_set_aside"][0]["any"] == pytest.approx(1e6)
+    # the market SQL carried the recipient-shape gate
+    market_sql = next(s for s in fake_hybrid.calls if "WITH seed_sig AS" in s)
+    assert "recipient_code_source = 'awarded_prime_contracts_in_code'" in market_sql
+    assert "JOIN shape_out sh ON sh.uei = c.uei" in market_sql
+    # market rows carry per-code shape evidence, top code first, never summed
+    mkt = payload["market"]["primes"]
+    assert [m["uei"] for m in mkt] == [MKT_OK]
+    shp = mkt[0]["subout_to_your_shape"]
+    assert shp["matched_code_ct"] == 2
+    assert shp["top_code"] == "541712"
+    assert shp["top_code_amt"] == pytest.approx(3_500_000.0)
+    # hybrid disclosures present
+    assert any("own prime award record" in d
+               for d in payload["method"]["disclosures"])
+
+
+def test_hybrid_band_floor_enforced(fake_hybrid):
+    dials = dict(sd.DEFAULT_DIALS)
+    dials["hybrid_prime_floor"] = 10_000_000.0   # prime 6M sits under the floor
+    payload = asyncio.run(sd._build_dossier(T, dials, "prime_sub"))
+    assert payload["target"]["in_band"] is False
+
+
+def test_sub_archetype_payload_untouched(fake):
+    payload = asyncio.run(sd._build_dossier(T, dict(sd.DEFAULT_DIALS)))
+    assert payload["archetype"] == "sub"
+    assert payload["prime_business"] is None
+    assert all("own prime award record" not in d
+               for d in payload["method"]["disclosures"])
+
+
 def test_build_unknown_uei_404(monkeypatch):
     async def fake_run(client, sql, limit, require_artifact=None):
         return {"columns": [], "rows": [], "artifact": "A", "elapsed_ms": 1.0}
@@ -363,7 +495,7 @@ def test_build_unknown_uei_404(monkeypatch):
 def test_artifact_moved_restarts_once(monkeypatch):
     attempts = {"n": 0}
 
-    async def fake_build(uei, dials):
+    async def fake_build(uei, dials, archetype="sub"):
         attempts["n"] += 1
         if attempts["n"] == 1:
             raise sd.ArtifactMoved()
