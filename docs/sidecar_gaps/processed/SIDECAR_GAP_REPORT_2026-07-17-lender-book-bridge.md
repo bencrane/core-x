@@ -65,6 +65,24 @@ active/lapsed split ✓ · filings-by-year trend ✓ · SAM slice → uei joins 
 lender aggregates (`ucc_lenders_all`) ✓ · lender_class at read time (equality
 join to `ucc_lenders_all`) ✓ · collateral text (equality join-back, parked) ✓.
 
-## Disposition
+## Disposition (build `query_sidecar_20260718T021418Z`, 105 tables, 51.75 GiB)
 
-*(appended post-build)*
+| Entry | Verdict | Shipped | Measured |
+|---|---|---|---|
+| 1 (lender → full book) | **Promote** | `ucc_lender_filings` — 8,003,937 rows, built in 9.0s, sorted (lender_key, uei), aggregate parity OK | Before: ~4.0–4.6s corpus scan per shape, 50k-row API cap made JPMORGAN-class books unservable. After: **18.1 ms** pruned probe (222×) for the full CNB book aggregate; count parity exact (10,690 filings · 9,206 debtors · 936 UEIs) |
+
+**Adjacency riders shipped** (rationale in the build scope block): full debtor
+identity/geo + all filing attributes + raw `lender_name` — the entire book-side
+read of the lender-book surface is one probe.
+
+**Parked structural candidates** (unchanged from the scope block): blob columns
+(`secured_parties`, `collateral_text`) stay one pure-equality join behind on
+`(ucc_state, filing_id, debtor_key)`; filing-key sort copy of `ucc_filings_all`;
+debtor-key sort copy of the bridge for co-lender overlap.
+
+**Consumers landed in the same cycle:** catalyst `lender_book_v1` router
+(#1191) — book aggregates, per-UEI financing state, contracting-role and
+financing-relationship splits, and the first-principles derived market
+(blended signature → tuning ladder → credit-moment overlays) all read the
+bridge; hq `design-artifacts/capital-providers/lender-book/generate.py`
+switched from the corpus scan to the pruned probe.
