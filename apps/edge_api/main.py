@@ -56,6 +56,7 @@ from .src.routers.internal_engagement_templates_v1 import router as internal_eng
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_enrich_companies_v1 import router as clay_enrich_companies_router
+from .src.routers.staffing_website_research_v1 import router as staffing_website_research_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.clay_person_work_history_v1 import router as clay_person_work_history_router
 from .src.routers.contacts_v1 import router as contacts_router
@@ -210,6 +211,13 @@ app.include_router(clay_find_companies_router)
 # company_linkedin_url = raw_payload->>'url'; NO explode). PK = sha256(canonical payload), so refreshes
 # append as history. Distinct from clay-find-companies (the discovery grain). Service-token gated.
 app.include_router(clay_enrich_companies_router)
+
+# staffing-website-research: raw-ONLY, append-only landing of per-agency website/LinkedIn research
+# payloads (rolesPlaced / placementModel / workCategories / geographiesServed /
+# clearanceAndFederalIntent) into gtm.staffing_website_research. UEI travels as a TOP-LEVEL connect
+# key next to the verbatim raw_payload (NO explode). PK = sha256(uei + canonical payload) — re-research
+# appends as history. Service-token gated.
+app.include_router(staffing_website_research_router)
 
 # contacts: curated GTM contact intake — flat singular fields (full_name, work_email[optional],
 # job_title, is_main_contact, city/state/country, company_name/domain/linkedin_url) → gtm.contacts.
@@ -423,6 +431,7 @@ def _info() -> dict:
             "clay_person_work_history": True,  # /api/v1/clay/person-work-history/{land,stats}
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "clay_enrich_companies": True,  # /api/v1/clay/enrich-companies/{land,stats}
+            "staffing_website_research": True,  # /api/v1/staffing/website-research/{land,stats}
             "contacts": True,          # /api/v1/contacts/{land,check,stats}
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}
