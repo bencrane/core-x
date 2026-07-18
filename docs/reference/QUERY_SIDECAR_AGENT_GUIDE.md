@@ -161,6 +161,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|---|---|
 | `sam_ucc_lenders` | 1/normalized lender · ~17k | lender_key | Secured parties on SAM-firm financing filings, classified `lender_class` = bank_or_cu (FDIC/NCUA authority match + token) \| filing_agent \| government_sba \| **non_bank**; `in_efc` = name-matched to equipment_finance_candidates (incumbent vs whitespace); sam_firms/filings/active_filings, CA/CO firm splits, first/last filing dates. Known residual: vendor/trade creditors (equipment makers filing their own paper) classify non_bank — curate on use |
 | `ucc_lenders_all` | 1/normalized lender | lender_key | Full-corpus analogue of sam_ucc_lenders (same class brackets + `in_efc`): counts over ALL CA/CO debtors — **`total_firms`** (every distinct debtor) alongside `sam_firms` (SAM-registered subset; the ratio = federal-exposure share), filings/active_filings, CA/CO firm splits, first/last filing dates |
+| `ucc_lender_filings` | 1/(lender_key, ucc_state, filing_id, debtor_key) · ~9M | lender_key, uei | **The lender→book bridge** (lender-book cycle 2026-07-17): `secured_parties` exploded + normalized at build (lockstep with `_LK` in sam_ucc_debtor_overlap.py), so one lender's FULL debtor book is a pruned probe (was a ~4s corpus scan that also row-capped mega-lenders). Carries raw `lender_name` as filed + full debtor identity/geo (`debtor_name/_norm/_city/_state/_zip`, `is_org`, `uei`/`sos_entity_key`/`in_sam` nullable) + all filing attributes (`filing_class`, `terminated`, `is_active_financing`, `is_lease`, first/last/lapse dates, `n_secured_parties`). Blobs (`secured_parties`, `collateral_text`) deliberately absent — join back to `ucc_filings_all` on `(ucc_state, filing_id, debtor_key)` when needed. `lender_class` at read time: join `ucc_lenders_all` on `lender_key` |
 | `fdic_institutions` | 1/bank · 27.8k | name | Slim authority: name, cert, active, city/state, webaddr, asset |
 | `ncua_credit_unions` | 1/CU · 4.3k | credit_union_name | Slim authority: name, charter, location, members, total_assets |
 | `equipment_finance_candidates` | 1/candidate · 429 | company_name | The GTM candidate list (name, domain, LinkedIn; verdict unset — another lane's dataset, read-only here). Reconcile: join `sam_ucc_lenders.in_efc` or name-match |
@@ -344,6 +345,19 @@ LEFT JOIN (SELECT uei, max(has_active_lien) has_active_lien
 WHERE NOT EXISTS (SELECT 1 FROM sam_ucc_filings x
                   WHERE x.uei = fr.uei AND x.first_filing_date > fr.last_award)
 ORDER BY fr.new_money DESC;
+
+-- LENDER BOOK (lender-book cycle 2026-07-17): a lender's full CA/CO debtor
+-- book as a pruned probe — never scan ucc_filings_all for this. lender_key =
+-- the normalized key from ucc_lenders_all (probe that table by name first).
+SELECT count(DISTINCT debtor_key)                                    AS debtors,
+       count(DISTINCT uei)                                           AS sam_ueis,
+       count(*) FILTER (WHERE filing_class='financing'
+                          AND is_active_financing)                   AS active_financings
+FROM ucc_lender_filings WHERE lender_key = 'CITY NATIONAL BANK';
+-- ...then hydrate the federal slice: DISTINCT uei -> gtm_sam_entities /
+-- gtm_entity_award_book / gtm_entity_fy_won / gtm_award_expiry_months.
+-- Collateral text (CO) or the co-lender list for specific filings: equality
+-- join back to ucc_filings_all ON (ucc_state, filing_id, debtor_key).
 
 -- Enrichment coverage funnel: PDL / LinkedIn / profile coverage of a firm set, one pass
 SELECT count(*) firms,
