@@ -41,6 +41,7 @@ from pipelines._shared.lance_local_publish import write_indexed_dataset  # noqa:
 
 SRC_URI = "s3://data-sink/active/staffing_website_research/"
 ALIAS_URI = "s3://data-sink/active/occupation_alias_lookup/"
+TOKEN_MAP_URI = "s3://data-sink/active/staffing_role_token_map/"
 DATASET_URI = "s3://data-sink/active/staffing_market_inputs/"
 
 STATES = {
@@ -207,11 +208,20 @@ def norm_geo(raw: str | None) -> tuple[bool, list[str], list[str]]:
     return is_national, sorted(states), unresolved
 
 
-def norm_roles(raw: str | None, alias_to_soc: dict[str, set[str]]) -> tuple[list[str], list[str], list[str]]:
-    """→ (soc_codes, soc_major_groups, unresolved_tokens)."""
+def norm_roles(
+    raw: str | None,
+    alias_to_soc: dict[str, set[str]],
+    token_map: dict[str, dict],
+) -> tuple[list[str], list[str], list[str], bool]:
+    """→ (soc_codes, soc_major_groups, unresolved_tokens, used_llm_map).
+
+    Resolution ladder per token: exact alias (SOC) → FUNCTION_MAP (major group)
+    → LLM token map (grounded SOC codes and/or major; non-occupational tokens
+    drop silently) → unresolved."""
     socs: set[str] = set()
     majors: set[str] = set()
     unresolved: list[str] = []
+    used_llm = False
     for tok in _split(raw):
         n = _norm(tok)
         if not n or n in _EMPTYISH:
@@ -223,11 +233,22 @@ def norm_roles(raw: str | None, alias_to_soc: dict[str, set[str]]) -> tuple[list
             majors.add(FUNCTION_MAP[n])
         elif _singular(n) in FUNCTION_MAP:
             majors.add(FUNCTION_MAP[_singular(n)])
+        elif n in token_map:
+            m = token_map[n]
+            used_llm = True
+            if not m["occupational"]:
+                continue  # classified non-role language — drop, not unresolved
+            if m["soc_codes"]:
+                socs.update(m["soc_codes"])
+            if m["soc_major"]:
+                majors.add(m["soc_major"])
+            if not m["soc_codes"] and not m["soc_major"]:
+                unresolved.append(tok)
         else:
             unresolved.append(tok)
     # occupations imply their major group too
     majors.update(s[:2] for s in socs)
-    return sorted(socs), sorted(majors), unresolved
+    return sorted(socs), sorted(majors), unresolved, used_llm
 
 
 def norm_placement(raw: str | None) -> list[str]:
@@ -242,6 +263,13 @@ def main() -> None:
     src = lance.dataset(SRC_URI, storage_options=so)
     rows = src.to_table(columns=["record_id", "uei", "raw_payload", "landed_at"]).to_pylist()
 
+    token_map: dict[str, dict] = {}
+    try:
+        tm = lance.dataset(TOKEN_MAP_URI, storage_options=so)
+        token_map = {r["token_norm"]: r for r in tm.to_table().to_pylist()}
+    except Exception:
+        pass  # map not built yet — pure deterministic run
+
     alias_ds = lance.dataset(ALIAS_URI, storage_options=so)
     alias_to_soc: dict[str, set[str]] = {}
     for r in alias_ds.to_table(columns=["alias_norm", "code_type", "code"]).to_pylist():
@@ -252,7 +280,7 @@ def main() -> None:
     for r in rows:
         p = json.loads(r["raw_payload"])
         is_national, states, geo_un = norm_geo(p.get("geographiesServed"))
-        socs, majors, roles_un = norm_roles(p.get("rolesPlaced"), alias_to_soc)
+        socs, majors, roles_un, used_llm = norm_roles(p.get("rolesPlaced"), alias_to_soc, token_map)
         cf = p.get("clearanceAndFederalIntent") or ""
         out.append({
             "record_id": r["record_id"],
@@ -268,7 +296,7 @@ def main() -> None:
             "has_vehicle_language": bool(VEHICLE_RE.search(cf)),
             "has_set_aside_language": bool(SET_ASIDE_RE.search(cf)),
             "confidence": p.get("confidence"),
-            "provenance": "deterministic_v1",
+            "provenance": "deterministic_v1+llm_map_v1" if used_llm else "deterministic_v1",
             "landed_at": r["landed_at"],
         })
 
