@@ -69,6 +69,7 @@ from typing import Any
 import modal
 
 from core.parallel_client import (
+    ACTIVE_STATUSES,
     add_group_runs,
     create_task_group,
     create_task_run,
@@ -130,7 +131,7 @@ CREATE TABLE IF NOT EXISTS ops.parallel_runs (
     id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     spec_id            text NOT NULL,
     workflow           text NOT NULL CHECK (workflow IN ('enrich','deep_research','search')),
-    run_kind           text NOT NULL CHECK (run_kind IN ('test','full')),
+    run_kind           text NOT NULL CHECK (run_kind IN ('test','full','live')),
     group_id           text,
     audience_id        uuid,
     idempotency_key    text,
@@ -168,6 +169,16 @@ CREATE TABLE IF NOT EXISTS ops.parallel_review (
 CREATE INDEX IF NOT EXISTS parallel_review_spec_idx       ON ops.parallel_review (spec_id);
 CREATE INDEX IF NOT EXISTS parallel_review_company_idx    ON ops.parallel_review (company_id);
 CREATE INDEX IF NOT EXISTS parallel_review_unresolved_idx ON ops.parallel_review (resolved) WHERE NOT resolved;
+"""
+
+# One-time idempotent migrations for EXISTING deployments (CREATE IF NOT EXISTS above cannot
+# alter a live table). Applied by apply_ops_ddl / init_ops, not on the per-run hot path.
+OPS_MIGRATIONS = """
+ALTER TABLE ops.parallel_runs DROP CONSTRAINT IF EXISTS parallel_runs_run_kind_check;
+ALTER TABLE ops.parallel_runs ADD CONSTRAINT parallel_runs_run_kind_check
+    CHECK (run_kind IN ('test','full','live'));
+CREATE INDEX IF NOT EXISTS parallel_runs_idem_idx ON ops.parallel_runs (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 """
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
@@ -405,21 +416,37 @@ def _names_dataset(sql: str, name: str) -> bool:
 
 
 # ── Parallel Task Group wait (§0) ────────────────────────────────────────────────────────
+def _group_is_terminal(doc: dict) -> bool:
+    """Terminal test for a group document. Live wire shape (observed 2026-07-17): the doc
+    carries NO ``is_active`` field — relying on it poll-spins for the full budget after all
+    runs finished (the window that exposed the preemption double-bill). Terminal = the
+    status counts exist, at least one run is counted, and no run is in an active status.
+    ``is_active == False`` (if the field ever appears) is honoured as terminal too."""
+    if doc.get("is_active") is False:
+        return True
+    counts = (doc.get("status") or {}).get("task_run_status_counts") or {}
+    if not counts:
+        return False
+    total = sum(v for v in counts.values() if isinstance(v, int))
+    active = sum(counts.get(s, 0) or 0 for s in ACTIVE_STATUSES)
+    return total > 0 and active == 0
+
+
 def _wait_group_terminal(group_id: str) -> dict:
-    """Poll GET /v1/tasks/groups/{id} until is_active==false (§0), bounded by the budget.
-    Returns the final group document (carries status.task_run_status_counts)."""
+    """Poll GET /v1/tasks/groups/{id} until terminal (see ``_group_is_terminal``), bounded
+    by the budget. Returns the final group document (carries task_run_status_counts)."""
     import time
 
     waited, idx = 0.0, 0
     last = get_group(group_id)
-    while last.get("is_active", True) and waited < GROUP_POLL_BUDGET_S:
+    while not _group_is_terminal(last) and waited < GROUP_POLL_BUDGET_S:
         sleep = GROUP_POLL_BACKOFF_S[min(idx, len(GROUP_POLL_BACKOFF_S) - 1)]
         time.sleep(sleep)
         waited += sleep
         idx += 1
         last = get_group(group_id)
         counts = (last.get("status") or {}).get("task_run_status_counts") or {}
-        print(f"  group +{int(waited)}s is_active={last.get('is_active')} counts={counts}")
+        print(f"  group +{int(waited)}s terminal={_group_is_terminal(last)} counts={counts}")
     return last
 
 
@@ -591,6 +618,46 @@ def _write_enrichment_raw(raw_uri: str, rows: list[dict], so: dict) -> int:
 
 
 # ── ops.* writes ─────────────────────────────────────────────────────────────────────────
+def _find_reattach_group(idempotency_key: str, spec: str) -> str | None:
+    """Reattach anchor lookup — the restart/re-invocation safety that keeps paid-for work
+    from being dispatched twice (the 2026-07-17 preemption double-bill class).
+
+    A dispatch-time ledger row (status='dispatched') records the Parallel group_id under the
+    caller's idempotency_key BEFORE any waiting. On any later entry with the same key + spec
+    (Modal preemption restart, or a manual re-launch of the identical batch), the worker finds
+    that group, verifies it still exists at Parallel, and resumes at wait/fetch — zero new
+    runs, zero new spend. Returns None (→ fresh dispatch) only when no anchor exists or the
+    recorded group is no longer retrievable."""
+    import psycopg
+
+    dsn = _hqx_dsn()
+    if not dsn or not idempotency_key:
+        return None
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT group_id FROM ops.parallel_runs
+                WHERE idempotency_key = %s AND spec_id = %s AND group_id IS NOT NULL
+                ORDER BY recorded_at DESC LIMIT 1
+                """,
+                (idempotency_key, spec),
+            )
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 — a ledger read problem must not block the run
+        print(f"WARN: reattach lookup failed ({exc}); proceeding as fresh dispatch.")
+        return None
+    if not row or not row[0]:
+        return None
+    gid = str(row[0])
+    try:
+        get_group(gid)  # verify the group is still retrievable at Parallel
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: anchored group {gid} not retrievable ({exc}); fresh dispatch.")
+        return None
+    return gid
+
+
 def _record_run(row: dict) -> None:
     """Terminal run row → ops.parallel_runs (psycopg). Best-effort."""
     import psycopg
@@ -787,6 +854,7 @@ def enrich_companies(
     cost_cap: float | None = None,
     companies_explicit: list[dict] | None = None,
     prompt_template: str | None = None,
+    reattach_only: bool = False,
 ) -> dict:
     """Enrich a resolved company audience into typed cited columns → per-spec Lance dataset.
 
@@ -899,22 +967,49 @@ def enrich_companies(
                 "metadata": {"company_id": str(c["company_id"]), "spec_id": spec},
             })
 
-        # 3) Create the group + add runs (≤1000/POST), default_task_spec = ONE wrapped schema.
-        grp = create_task_group(metadata={"spec_id": spec, "run_id": run_id, "run_kind": run_kind})
-        # Live wire shape (observed 2026-07-17): the id key is ``taskgroup_id``.
-        group_id = grp.get("taskgroup_id") or grp.get("task_group_id") or grp.get("id")
-        if not group_id:
-            status, error = "failed", f"group create returned no id: {str(grp)[:200]}"
-            return _terminal("failed", reraise_msg=error)
-        default_task_spec = {"output_schema": wrapped}
-        for i in range(0, len(inputs), 1000):
-            add_group_runs(group_id, inputs[i:i + 1000],
-                           default_task_spec=default_task_spec, beta_field_basis=True)
-        print(f"  group {group_id}: queued {len(inputs)} runs (processor={proc})")
+        # 3) REATTACH-OR-DISPATCH. An idempotency_key is the spend guard: if a prior entry
+        #    already dispatched this exact work (dispatch-time anchor row below), resume its
+        #    group instead of creating a new one — a preemption restart or duplicate launch
+        #    costs seconds, never a second billing of the whole group.
+        prior_group = _find_reattach_group(idempotency_key, spec) if idempotency_key else None
+        if prior_group:
+            group_id = prior_group
+            print(f"  REATTACH group {group_id} (idempotency_key={idempotency_key}) — "
+                  "no new runs dispatched, no new spend.")
+        elif reattach_only:
+            # Spend-proof mode: the caller asserts the work was already paid for. No anchor
+            # found → REFUSE rather than dispatch. Structurally cannot bill.
+            status, error = "rejected", (
+                f"reattach_only set but no dispatched group found for key {idempotency_key!r} "
+                f"/ spec {spec!r} — refusing to dispatch new runs."
+            )
+            return _terminal(status) or {"status": status, "error": error}
+        else:
+            grp = create_task_group(metadata={"spec_id": spec, "run_id": run_id, "run_kind": run_kind})
+            # Live wire shape (observed 2026-07-17): the id key is ``taskgroup_id``.
+            group_id = grp.get("taskgroup_id") or grp.get("task_group_id") or grp.get("id")
+            if not group_id:
+                status, error = "failed", f"group create returned no id: {str(grp)[:200]}"
+                return _terminal("failed", reraise_msg=error)
+            default_task_spec = {"output_schema": wrapped}
+            for i in range(0, len(inputs), 1000):
+                add_group_runs(group_id, inputs[i:i + 1000],
+                               default_task_spec=default_task_spec, beta_field_basis=True)
+            print(f"  group {group_id}: queued {len(inputs)} runs (processor={proc})")
+            # Dispatch-time anchor row — written the moment spend is committed, BEFORE any
+            # waiting, so a restart at any later point finds the group and reattaches.
+            _record_run({
+                "spec_id": spec, "run_kind": run_kind, "group_id": group_id,
+                "audience_id": audience_id or None, "idempotency_key": idempotency_key,
+                "requested": counts["requested"], "skipped_no_domain": counts["skipped_no_domain"],
+                "completed": 0, "failed": 0, "failed_company_ids": [], "processor": proc,
+                "cost_estimate": None, "cost_cap": cost_cap, "dataset_uri": dataset_uri,
+                "status": "dispatched", "error": None, "started_at": started, "completed_at": None,
+            })
 
         # 4) Wait Parallel's way: poll group to is_active==false, then fetch results.
         final = _wait_group_terminal(group_id)
-        if final.get("is_active", True):
+        if not _group_is_terminal(final):
             status, error = "partial", f"group still active after {GROUP_POLL_BUDGET_S}s poll budget"
             print(f"  WARN {error}")
         run_recs = get_group_runs(group_id, include_output=True, beta_field_basis=True)
@@ -1049,8 +1144,9 @@ def apply_ops_ddl() -> dict:
         raise RuntimeError("HQX_DB_URL_POOLED not set in the hqx-postgres secret.")
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute(OPS_DDL)
+        cur.execute(OPS_MIGRATIONS)
         conn.commit()
-    print("ops.parallel_specs + ops.parallel_runs + ops.parallel_review ready.")
+    print("ops.parallel_specs + ops.parallel_runs + ops.parallel_review ready (migrations applied).")
     return {"tables": ["ops.parallel_specs", "ops.parallel_runs", "ops.parallel_review"]}
 
 
@@ -1073,9 +1169,12 @@ def run_explicit(csv_path: str, spec: str, prompt_file: str, schema_file: str,
     column tokens); ``schema_file`` is the pure JSON-Schema object for typed output.
 
     ``mode`` is the spend gate:
-      dry   — render + print entity count and the FIRST fully-rendered prompt; NO spend.
-      smoke — bill ONE run (first row) via smoke_one; prints content + basis.
-      live  — dispatch the full group (bills every row; ``max_runs`` caps).
+      dry      — render + print entity count and the FIRST fully-rendered prompt; NO spend.
+      smoke    — bill ONE run (first row) via smoke_one; prints content + basis.
+      live     — dispatch the full group (bills every row; ``max_runs`` caps). Reattaches
+                 to a prior identical dispatch automatically (idempotency key).
+      reattach — SPEND-PROOF: resume/land a previously dispatched identical batch; refuses
+                 to dispatch anything new if no anchor exists.
     """
     import csv as _csv
     import json as _json
@@ -1097,8 +1196,20 @@ def run_explicit(csv_path: str, spec: str, prompt_file: str, schema_file: str,
         explicit.append(e)
     if max_runs and max_runs > 0:
         explicit = explicit[:max_runs]
+
+    # Content-derived idempotency key: same spec + prompt + schema + entity set + tier →
+    # same key. A Modal preemption restart OR an accidental duplicate launch of the identical
+    # batch reattaches to the already-paid group instead of re-billing it. Any change to the
+    # inputs (prompt edit, different firms, tier change) produces a new key → fresh dispatch.
+    import hashlib as _hashlib
+    keys = sorted((e.get("uei") or e.get("key") or e.get("company_id") or "") for e in explicit)
+    material = "|".join([spec, processor,
+                         _hashlib.sha256(template.encode()).hexdigest(),
+                         _hashlib.sha256(_json.dumps(schema, sort_keys=True).encode()).hexdigest(),
+                         ",".join(keys)])
+    idem_key = "xl-" + _hashlib.sha256(material.encode()).hexdigest()[:32]
     print(f"entities={len(explicit)} skipped_no_domain={skipped_no_domain} "
-          f"spec={spec} processor={processor} mode={mode}")
+          f"spec={spec} processor={processor} mode={mode} idempotency_key={idem_key}")
 
     if mode == "dry":
         first = _normalize_explicit(explicit, limit=1)
@@ -1116,12 +1227,13 @@ def run_explicit(csv_path: str, spec: str, prompt_file: str, schema_file: str,
         )
         print(_json.dumps(out, indent=2, default=str)[:8000])
         return
-    if mode == "live":
+    if mode in ("live", "reattach"):
         out = enrich_companies.remote(
             spec_id=spec, output_schema=schema, processor=processor,
             run_kind="live", max_runs=max_runs or 0,
             companies_explicit=explicit, prompt_template=template,
+            idempotency_key=idem_key, reattach_only=(mode == "reattach"),
         )
         print(_json.dumps(out, indent=2, default=str)[:4000])
         return
-    raise SystemExit(f"unknown mode {mode!r} — use dry | smoke | live")
+    raise SystemExit(f"unknown mode {mode!r} — use dry | smoke | live | reattach")
