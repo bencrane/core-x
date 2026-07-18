@@ -57,3 +57,28 @@
 
 **Ranking (recurrence × cost)**: 1 (directive, recurring, per-conjunction cost) ≫
 3 (free rider) > 2 (routing fix, no build).
+
+---
+
+## DISPOSITION (2026-07-17, build `query_sidecar_20260717T234653Z`)
+
+**Build scope block (adjacency sweep, frozen pre-build):**
+- From demand (entry 1, operator directive): financing classes (unfin/prog/perf/comm/othfin,
+  legacy text twins folded per class) as `active_obl_fin_*`/`active_fin_*_ct` +
+  `active_financed_share`; the FULL 4×5 pricing×financing matrix ($ + ct per cell).
+- Adjacency riders (same committed award_state scan, one line each):
+  instrument split D/B active+lifetime (entry 3 — unpends "lifetime = new build" entirely);
+  counts alongside every matrix dollar cell (next-question: "how many awards").
+- Parked structural-gated: financing trend-over-time (month fact carries no financing);
+  small-determined × financing cross; subcontracting-plan split (latest_plan domain unprobed);
+  financing code 'F' decode (undocumented in probed inventory → othfin, disclosed).
+
+| Entry | Verdict | Shipped | Measured (before → after) |
+|---|---|---|---|
+| 1 combo matrix | **PROMOTE (column-grain)** | `gtm_entity_pricing_mix` 14→71 cols | per-entity combo predicates: impossible → ms-class. "≥30% progress-payment-financed active book" = 840 firms in 22ms; cost×performance-based cell = 13 firms/$2.3B in 10ms |
+| 2 momentum 3.1s | **ROUTING FIX** (no build) | `market_query_v1` → `txn_recipient_month_by_type` + literal code families (vocab-parity-exact A,B,D,G,L / C,G / E,F,N,X) | 3,117ms → 37ms (84×), count-identical (4,640) |
+| 3 lifetime instrument | **PROMOTE (adjacency rider)** | lifetime/active definitive+PO cts, active obl splits | forbidden full-scan → 13ms (lifetime PO-only firms = 493,516) |
+
+Router dials shipped in the same PR: `active_award_pricing_mix.combos[]` (+`min_financed_share`),
+`active_awards.instrument`/`instrument_scope`. Guide catalog row updated in the same PR.
+Fixture through dispatch SQL, EXPLAIN gate clean; catalyst suite 430 passed.
