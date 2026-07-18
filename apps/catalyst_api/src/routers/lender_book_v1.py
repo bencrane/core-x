@@ -498,7 +498,8 @@ async def lender_book(body: dict[str, Any]) -> dict[str, Any]:
                                f"{int(_CORE_FFP_SHARE * 100)}% of active "
                                "obligations", "count": core_ct},
                     {"step": "employee_size",
-                     "filter": f"{_SIZE_BANDS[0]}–{_SIZE_BANDS[-1].split('-')[-1]} "
+                     "filter": f"{_SIZE_BANDS[0].split('-')[0]}–"
+                               f"{_SIZE_BANDS[-1].split('-')[-1]} "
                                "employees (the book's bands)", "count": size_ct},
                     {"step": "registered_in_state",
                      "filter": f"registered in {state} (footprint)",
