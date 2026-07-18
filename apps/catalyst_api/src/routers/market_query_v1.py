@@ -152,14 +152,18 @@ _PROFILE_FIELDS = {
     "entity_structure", "cage_code",
 }
 
-# recent_award_actions family → server-side condition over the month rollup.
-# new_award is FPDS's NULL action type (the base award row); the rest resolve
-# through action_type_vocab flags so the class definition lives in ONE place.
+# recent_award_actions family → server-side condition, served by the
+# (action_type_code, month)-sorted copy txn_recipient_month_by_type so the
+# class+window predicate PRUNES (routing fix, gap report 2026-07-17 entry 2:
+# the uei-sorted base table full-scanned at 3.1s). Literal code lists (zone-map
+# prunable, unlike IN-subqueries) transcribed from action_type_vocab flags —
+# vocab remains the semantic authority; parity asserted in tests.
+# new_award is FPDS's NULL action type (the base award row).
 _ACTION_FAMILY_COND = {
     "new_award": "action_type_code IS NULL",
-    "more_work": "action_type_code IN (SELECT action_type_code FROM action_type_vocab WHERE is_more_work)",
-    "funding_released": "action_type_code IN (SELECT action_type_code FROM action_type_vocab WHERE is_funding_released)",
-    "termination": "action_type_code IN (SELECT action_type_code FROM action_type_vocab WHERE family = 'termination')",
+    "more_work": "action_type_code IN ('A','B','D','G','L')",
+    "funding_released": "action_type_code IN ('C','G')",
+    "termination": "action_type_code IN ('E','F','N','X')",
 }
 
 _UEI_RE = re.compile(r"^[A-Z0-9]{12}$")
@@ -429,11 +433,41 @@ def _c_inferred(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, echo
 
 
+# instrument dial → gtm_entity_pricing_mix rider columns (standalone split,
+# test-log entry 9: definitive contract D vs purchase order B; active + lifetime).
+_INSTRUMENT_COL = {
+    ("definitive_contract", "active"): "active_definitive_ct",
+    ("definitive_contract", "lifetime"): "lifetime_definitive_ct",
+    ("purchase_order", "active"): "active_purchase_order_ct",
+    ("purchase_order", "lifetime"): "lifetime_purchase_order_ct",
+}
+
+
 def _c_active_awards(spec: dict) -> tuple[str, str, dict]:
     term = "active_awards"
     value = spec.get("value")
     mn = _req_int(spec, "min_count", term, 1, 100000)
     mx = _req_int(spec, "max_count", term, 0, 100000)
+    instrument = spec.get("instrument")
+    scope = str(spec.get("instrument_scope", "active"))
+    if instrument is not None:
+        col = _INSTRUMENT_COL.get((str(instrument), scope))
+        if col is None:
+            raise _refuse(f"{term}.instrument must be definitive_contract | purchase_order "
+                          "(instrument_scope: active | lifetime)")
+        if value is False:
+            if mn is not None or mx is not None:
+                raise _refuse(f"{term}: value:false cannot combine with count dials")
+            sql = f"SELECT uei FROM gtm_entity_pricing_mix WHERE {col} >= 1"
+            return "negative", sql, {"term": term, "value": False,
+                                     "instrument": instrument, "instrument_scope": scope}
+        preds = [f"{col} >= {mn if mn is not None else 1}"]
+        if mx is not None:
+            preds.append(f"{col} <= {mx}")
+        sql = "SELECT uei FROM gtm_entity_pricing_mix WHERE " + " AND ".join(preds)
+        return "affirmative", sql, {"term": term, "instrument": instrument,
+                                    "instrument_scope": scope,
+                                    "min_count": mn if mn is not None else 1, "max_count": mx}
     if value is False:
         if mn is not None or mx is not None:
             raise _refuse(f"{term}: value:false cannot combine with count dials")
@@ -602,26 +636,73 @@ def _c_sam_active(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, {"term": term, "value": value}
 
 
+_PRICING_CLASS_COL = {"fixed": "fixed", "cost": "cost", "tm_lh": "tm_lh", "other": "other"}
+_FINANCING_CLASS_COL = {
+    "unfinanced": "unfin",
+    "progress_payments": "prog",
+    "performance_based": "perf",
+    "commercial": "comm",
+    "other": "othfin",
+}
+
+
 def _c_pricing_mix(spec: dict) -> tuple[str, str, dict]:
     term = "active_award_pricing_mix"
     fixed = spec.get("min_fixed_share")
     ffp = spec.get("min_ffp_unfinanced_share")
+    financed = spec.get("min_financed_share")
     mn_obl = _req_num(spec, "min_active_obligations", term)
     preds = []
     for name, v, col in (("min_fixed_share", fixed, "active_fixed_share"),
-                         ("min_ffp_unfinanced_share", ffp, "active_ffp_unfinanced_share")):
+                         ("min_ffp_unfinanced_share", ffp, "active_ffp_unfinanced_share"),
+                         ("min_financed_share", financed, "active_financed_share")):
         if v is not None:
             if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 < float(v) <= 1):
                 raise _refuse(f"{term}.{name} must be a number in (0, 1]")
             preds.append(f"COALESCE({col}, 0) >= {float(v)}")
     if mn_obl is not None:
         preds.append(f"COALESCE(active_obl, 0) >= {mn_obl}")
+    # pricing×financing combo cells (2026-07-17 operator directive: first-class).
+    # combos: [{pricing: fixed|cost|tm_lh|other|any, financing: <class>,
+    #           min_dollars? , min_share?}] — entries AND together.
+    combos = spec.get("combos")
+    combos_echo = None
+    if combos is not None:
+        if not isinstance(combos, list) or not combos or len(combos) > 8:
+            raise _refuse(f"{term}.combos must be a non-empty list (≤8)")
+        combos_echo = []
+        for i, cb in enumerate(combos):
+            if not isinstance(cb, dict):
+                raise _refuse(f"{term}.combos[{i}] must be an object")
+            pc = str(cb.get("pricing", "any"))
+            fc = str(cb.get("financing", ""))
+            fcol = _FINANCING_CLASS_COL.get(fc)
+            if fcol is None:
+                raise _refuse(f"{term}.combos[{i}].financing must be one of "
+                              f"{' | '.join(sorted(_FINANCING_CLASS_COL))}")
+            if pc == "any":
+                col = f"active_obl_fin_{fcol}"
+            elif pc in _PRICING_CLASS_COL:
+                col = f"active_obl_{pc}_{fcol}"
+            else:
+                raise _refuse(f"{term}.combos[{i}].pricing must be fixed | cost | tm_lh | other | any")
+            mn_d = _req_num(cb, "min_dollars", f"{term}.combos[{i}]")
+            mn_s = cb.get("min_share")
+            if mn_s is not None:
+                if not isinstance(mn_s, (int, float)) or isinstance(mn_s, bool) or not (0 < float(mn_s) <= 1):
+                    raise _refuse(f"{term}.combos[{i}].min_share must be a number in (0, 1]")
+                preds.append(f"COALESCE({col}, 0) / NULLIF(COALESCE(active_obl, 0), 0) >= {float(mn_s)}")
+            if mn_d is not None:
+                preds.append(f"COALESCE({col}, 0) >= {mn_d}")
+            if mn_d is None and mn_s is None:
+                preds.append(f"COALESCE({col}, 0) > 0")
+            combos_echo.append({"pricing": pc, "financing": fc, "min_dollars": mn_d, "min_share": mn_s})
     if not preds:
-        raise _refuse(f"{term} needs at least one of min_fixed_share | "
-                      "min_ffp_unfinanced_share | min_active_obligations")
+        raise _refuse(f"{term} needs at least one of min_fixed_share | min_ffp_unfinanced_share | "
+                      "min_financed_share | min_active_obligations | combos")
     sql = "SELECT uei FROM gtm_entity_pricing_mix WHERE " + " AND ".join(preds)
     echo = {"term": term, "min_fixed_share": fixed, "min_ffp_unfinanced_share": ffp,
-            "min_active_obligations": mn_obl}
+            "min_financed_share": financed, "min_active_obligations": mn_obl, "combos": combos_echo}
     return "affirmative", sql, echo
 
 
@@ -696,7 +777,7 @@ def _c_recent_actions(spec: dict) -> tuple[str, str, dict]:
     if mn_actions is not None:
         having.append(f"sum(n_actions) >= {mn_actions}")
     having_sql = (" HAVING " + " AND ".join(having)) if having else ""
-    sql = (f"SELECT uei FROM gtm_txn_recipient_month_rollup "
+    sql = (f"SELECT DISTINCT uei FROM txn_recipient_month_by_type "
            f"WHERE {cond} "
            f"AND month >= date_trunc('month', current_date) - INTERVAL '{months} months' "
            f"GROUP BY uei{having_sql}")
@@ -848,7 +929,9 @@ VOCABULARY: list[dict[str, Any]] = [
      "dials": {"side": "prime | sub", "code_type": "naics | psc", "codes": "EXACT codes only, ≤50"}},
     {"term": "active_awards", "family": "lifecycle",
      "definition": "The firm holds active (period of performance running, not terminated) prime awards.",
-     "dials": {"value": "false to require NO active awards", "min_count/max_count": "award count bounds"}},
+     "dials": {"value": "false to require NO active awards", "min_count/max_count": "award count bounds",
+               "instrument": "definitive_contract | purchase_order (optional standalone-instrument filter)",
+               "instrument_scope": "active | lifetime (default active)"}},
     {"term": "awards_expiring", "family": "lifecycle",
      "definition": "The firm has awards whose period of performance ends within N months.",
      "dials": {"within_months": "1–36 (required)", "min_count": "default 1", "min_obligated": "dollars"}},
@@ -880,8 +963,11 @@ VOCABULARY: list[dict[str, Any]] = [
      "definition": "The firm's SAM registration is currently active (or explicitly inactive with value:false).",
      "dials": {"value": "true | false (default true)"}},
     {"term": "active_award_pricing_mix", "family": "pricing",
-     "definition": "Shape of the firm's active obligations by contract pricing type (fixed-price share, unfinanced-FFP share).",
-     "dials": {"min_fixed_share": "(0,1]", "min_ffp_unfinanced_share": "(0,1]", "min_active_obligations": "dollars"}},
+     "definition": "Shape of the firm's active obligations by contract pricing type × government financing (fixed/cost/T&M crossed with unfinanced, progress payments, performance-based, commercial).",
+     "dials": {"min_fixed_share": "(0,1]", "min_ffp_unfinanced_share": "(0,1]",
+               "min_financed_share": "(0,1] (any government financing)",
+               "min_active_obligations": "dollars",
+               "combos": "[{pricing: fixed|cost|tm_lh|other|any, financing: unfinanced|progress_payments|performance_based|commercial|other, min_dollars?, min_share?}] ≤8, ANDed"}},
     {"term": "contracting_role", "family": "relationships",
      "definition": "The firm acts as prime (trailing 24mo), subcontractor (trailing 60mo), or both.",
      "dials": {"role": "prime | subcontractor | both"}},

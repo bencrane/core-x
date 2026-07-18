@@ -922,10 +922,27 @@ WITH cls AS (
                 WHEN latest_pricing_code IN ('R','S','T','U','V')     THEN 'cost'
                 WHEN latest_pricing_code IN ('Y','Z')                 THEN 'tm_lh'
                 ELSE 'other' END AS pricing_class,
+           -- pricing×financing cycle (2026-07-17, operator directive): financing
+           -- class from latest_financing_code. Legacy rows keep description TEXT
+           -- in the code column (same noise pattern as 'NOT APPLICABLE') — each
+           -- class lists its text twins. F/N/X are undocumented in the probed
+           -- inventory -> othfin (disposition records the parked decode).
+           CASE WHEN latest_financing_code IS NULL
+                  OR latest_financing_code IN ('Z','NOT APPLICABLE')            THEN 'unfin'
+                WHEN latest_financing_code IN ('A','B','E',
+                     'FAR 52.232-16 PROGRESS PAYMENTS',
+                     'UNUSUAL PROGRESS PAYMENTS OR ADVANCE PAYMENTS',
+                     'PERCENTAGE OF COMPLETION PROGRESS PAYMENTS')              THEN 'prog'
+                WHEN latest_financing_code IN ('C','PERFORMANCE-BASED FINANCING') THEN 'perf'
+                WHEN latest_financing_code IN ('D','COMMERCIAL FINANCING')      THEN 'comm'
+                ELSE 'othfin' END AS financing_class,
            (latest_pricing_code = 'J') AS is_ffp,
            (latest_financing_code IS NULL
             OR latest_financing_code IN ('Z', 'NOT APPLICABLE'))      AS is_unfinanced,
-           (latest_business_size = 'S')                               AS is_small_det
+           (latest_business_size = 'S')                               AS is_small_det,
+           -- instrument riders (test-log entry 9): standalone split D vs B
+           (award_type_code = 'D') AS is_definitive,
+           (award_type_code = 'B') AS is_purchase_order
     FROM usaspending_fpds_prime_award_state
     WHERE recipient_uei IS NOT NULL AND recipient_uei <> ''
 )
@@ -944,7 +961,68 @@ SELECT recipient_uei                                                   AS uei,
        sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed')
            / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_fixed_share,
        sum(obl)  FILTER (WHERE is_active AND is_ffp AND is_unfinanced)
-           / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_ffp_unfinanced_share
+           / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_ffp_unfinanced_share,
+       -- financing-class rollups (any pricing)
+       sum(obl)  FILTER (WHERE is_active AND financing_class = 'unfin')  AS active_obl_fin_unfin,
+       count(*)  FILTER (WHERE is_active AND financing_class = 'unfin')  AS active_fin_unfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND financing_class = 'prog')   AS active_obl_fin_prog,
+       count(*)  FILTER (WHERE is_active AND financing_class = 'prog')   AS active_fin_prog_ct,
+       sum(obl)  FILTER (WHERE is_active AND financing_class = 'perf')   AS active_obl_fin_perf,
+       count(*)  FILTER (WHERE is_active AND financing_class = 'perf')   AS active_fin_perf_ct,
+       sum(obl)  FILTER (WHERE is_active AND financing_class = 'comm')   AS active_obl_fin_comm,
+       count(*)  FILTER (WHERE is_active AND financing_class = 'comm')   AS active_fin_comm_ct,
+       sum(obl)  FILTER (WHERE is_active AND financing_class = 'othfin') AS active_obl_fin_othfin,
+       count(*)  FILTER (WHERE is_active AND financing_class = 'othfin') AS active_fin_othfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND financing_class <> 'unfin')
+           / NULLIF(sum(obl) FILTER (WHERE is_active), 0)              AS active_financed_share,
+       -- the full pricing×financing matrix (first-class combo predicates)
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'unfin') AS active_obl_fixed_unfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'unfin') AS active_fixed_unfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'prog') AS active_obl_fixed_prog,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'prog') AS active_fixed_prog_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'perf') AS active_obl_fixed_perf,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'perf') AS active_fixed_perf_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'comm') AS active_obl_fixed_comm,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'comm') AS active_fixed_comm_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'othfin') AS active_obl_fixed_othfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'fixed' AND financing_class = 'othfin') AS active_fixed_othfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'unfin') AS active_obl_cost_unfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'unfin') AS active_cost_unfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'prog') AS active_obl_cost_prog,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'prog') AS active_cost_prog_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'perf') AS active_obl_cost_perf,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'perf') AS active_cost_perf_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'comm') AS active_obl_cost_comm,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'comm') AS active_cost_comm_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'othfin') AS active_obl_cost_othfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'cost' AND financing_class = 'othfin') AS active_cost_othfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'unfin') AS active_obl_tm_lh_unfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'unfin') AS active_tm_lh_unfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'prog') AS active_obl_tm_lh_prog,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'prog') AS active_tm_lh_prog_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'perf') AS active_obl_tm_lh_perf,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'perf') AS active_tm_lh_perf_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'comm') AS active_obl_tm_lh_comm,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'comm') AS active_tm_lh_comm_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'othfin') AS active_obl_tm_lh_othfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'tm_lh' AND financing_class = 'othfin') AS active_tm_lh_othfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'unfin') AS active_obl_other_unfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'unfin') AS active_other_unfin_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'prog') AS active_obl_other_prog,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'prog') AS active_other_prog_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'perf') AS active_obl_other_perf,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'perf') AS active_other_perf_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'comm') AS active_obl_other_comm,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'comm') AS active_other_comm_ct,
+       sum(obl)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'othfin') AS active_obl_other_othfin,
+       count(*)  FILTER (WHERE is_active AND pricing_class = 'other' AND financing_class = 'othfin') AS active_other_othfin_ct,
+       -- instrument riders: standalone split, lifetime AND active (free on this scan)
+       count(*)  FILTER (WHERE is_definitive)                          AS lifetime_definitive_ct,
+       count(*)  FILTER (WHERE is_purchase_order)                      AS lifetime_purchase_order_ct,
+       count(*)  FILTER (WHERE is_active AND is_definitive)            AS active_definitive_ct,
+       count(*)  FILTER (WHERE is_active AND is_purchase_order)        AS active_purchase_order_ct,
+       sum(obl)  FILTER (WHERE is_active AND is_definitive)            AS active_obl_definitive,
+       sum(obl)  FILTER (WHERE is_active AND is_purchase_order)        AS active_obl_purchase_order
 FROM cls
 GROUP BY 1
 ORDER BY uei
