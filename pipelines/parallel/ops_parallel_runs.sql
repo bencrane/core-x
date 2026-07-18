@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS ops.parallel_runs (
     workflow           text NOT NULL
                        CHECK (workflow IN ('enrich','deep_research','search')),
     run_kind           text NOT NULL
-                       CHECK (run_kind IN ('test','full')),
+                       CHECK (run_kind IN ('test','full','live')),
     group_id           text,                       -- Parallel task_group_id (enrich) / run_id (research/search)
     audience_id        uuid,
     idempotency_key    text,
