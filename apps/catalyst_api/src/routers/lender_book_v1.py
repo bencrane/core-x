@@ -69,8 +69,23 @@ _LENDER_KEY_RE = re.compile(r"^[A-Z0-9 ]{4,80}$")
 
 _SEED_MAX = 2000          # list-report / lookalike batch ceiling
 _UEI_READ_MAX = 10000     # per-uei lien-state read ceiling (disclosed if hit)
-_MARKET_PAIRS = 25        # signature pairs carried into the derived market
-_MARKET_FY_LOOKBACK = 2   # fy_start = current FY - 2 (a tunable dial, echoed)
+
+# ── derived-market composition (first-principles cycle, operator-directed
+#    2026-07-17 late session). The market is derived from the substrate FIRST;
+#    the predicate grammar is an EXPORT format, never the constraint.
+#    Derivation: blended work signature (top pairs by book-firm count UNION
+#    top pairs by book prime dollars — firm-ranked alone buries where the
+#    book's balance sheet is), a broad base market (anyone paid under the
+#    signature in the window), then an articulated TUNING LADDER of literal
+#    filters down to the working-capital core, with credit-moment overlays
+#    as segments. Measured on CNB 2026-07-17: base 12,910 → ≥$250K 5,473 →
+#    FFP-unfinanced≥50% 2,945 → 11-500 employees / CA as further dials.
+_SIG_TOP_FIRMS = 15       # signature pairs ranked by distinct book firms
+_SIG_TOP_DOLLARS = 15     # signature pairs ranked by book prime obligations
+_MARKET_FY_LOOKBACK = 2   # window: current FY - 2 → current (a dial, echoed)
+_CORE_FFP_SHARE = 0.5     # working-capital structure rung (FFP-unfinanced)
+_SIZE_BANDS = ("11-50", "51-200", "201-500")
+_FLOOR_MIN, _FLOOR_MAX, _FLOOR_ROUND = 50_000, 1_000_000, 50_000
 
 DISCLOSURES = [
     "Debtor-book coverage is the California and Colorado Secretary of State UCC "
@@ -197,27 +212,94 @@ def financing_relationship_split(members: list[dict[str, Any]],
     }
 
 
-def derived_market_spec(signature: list[dict[str, Any]], current_fy: int) -> dict[str, Any] | None:
-    """The book's prime combo signature restated as a market-query predicate
-    spec. Every parameter is an explicit dial; the consumer tunes, the grammar
-    recompiles — nothing here is bespoke."""
-    safe = [
-        s for s in signature
-        if _CODE_RE.match(str(s.get("naics_code") or ""))
-        and _CODE_RE.match(str(s.get("psc_code") or ""))
-    ][:_MARKET_PAIRS]
-    if not safe:
-        return None
+def _sql_blended_signature(cvals: str) -> str:
+    """Top pairs by book-firm count UNION top pairs by book prime dollars."""
+    return (
+        f"WITH u(uei) AS (VALUES {cvals}), "
+        "lanes AS (SELECT l.naics_code, l.psc_code, "
+        "  COUNT(DISTINCT l.uei) AS book_firms, SUM(l.prime_obl_lifetime) AS book_obligations "
+        "  FROM gtm_prime_combo_lanes l JOIN u ON u.uei = l.uei "
+        "  WHERE l.naics_code IS NOT NULL AND l.psc_code IS NOT NULL "
+        "    AND l.psc_code <> '9999' GROUP BY 1, 2), "
+        f"byf AS (SELECT *, 'firms' AS basis FROM lanes ORDER BY book_firms DESC, book_obligations DESC LIMIT {_SIG_TOP_FIRMS}), "
+        f"byo AS (SELECT *, 'dollars' AS basis FROM lanes ORDER BY book_obligations DESC LIMIT {_SIG_TOP_DOLLARS}) "
+        "SELECT naics_code, psc_code, max(book_firms) AS book_firms, "
+        "max(book_obligations) AS book_obligations, "
+        "string_agg(DISTINCT basis, '+' ORDER BY basis) AS basis "
+        "FROM (SELECT * FROM byf UNION ALL SELECT * FROM byo) "
+        "GROUP BY 1, 2 ORDER BY book_obligations DESC"
+    )
+
+
+def _sql_book_scale(cvals: str, fy_start: int) -> str:
+    """Median of per-firm obligations won in the window — the scale floor seed."""
+    return (
+        f"WITH u(uei) AS (VALUES {cvals}), "
+        "w AS (SELECT w.uei, SUM(w.won_obl) AS tot FROM gtm_entity_fy_won w "
+        f"JOIN u ON u.uei = w.uei WHERE w.fy >= {fy_start} "
+        "GROUP BY 1 HAVING SUM(w.won_obl) > 0) "
+        "SELECT median(tot) AS median_won FROM w"
+    )
+
+
+def _sql_book_texture(cvals: str) -> str:
+    """The book's active pricing×financing texture — the evidence behind the
+    working-capital rung's default."""
+    return (
+        f"WITH u(uei) AS (VALUES {cvals}) "
+        "SELECT COUNT(*) AS firms, SUM(m.active_obl) AS active_obl, "
+        "SUM(m.active_obl_ffp_unfinanced) AS active_obl_ffp_unfinanced "
+        "FROM u JOIN gtm_entity_pricing_mix m ON m.uei = u.uei "
+        "WHERE m.active_award_ct > 0"
+    )
+
+
+def _scale_floor(median_won: float | None) -> int:
+    if not median_won or median_won != median_won:
+        return _FLOOR_MIN
+    stepped = int(round(median_won / _FLOOR_ROUND)) * _FLOOR_ROUND
+    return max(_FLOOR_MIN, min(_FLOOR_MAX, stepped))
+
+
+def _market_base_expr(pair_values: str, window_start: str, floor: int) -> str:
+    """The broad market: every firm paid as prime under the signature pairs in
+    the window, at or above the floor (floor 0 = the base, net-positive only)."""
+    having = f"SUM(t.obligation) >= {floor}" if floor > 0 else "SUM(t.obligation) > 0"
+    return (
+        "SELECT t.uei FROM gtm_txn_events_slim t "
+        f"JOIN (VALUES {pair_values}) pr(n, p) "
+        "ON t.naics_code = pr.n AND t.psc_code = pr.p "
+        f"WHERE t.action_date >= DATE '{window_start}' "
+        f"GROUP BY t.uei HAVING {having}"
+    )
+
+
+def _core_expr(pair_values: str, window_start: str, floor: int) -> str:
+    return (
+        f"WITH m AS ({_market_base_expr(pair_values, window_start, floor)}) "
+        "SELECT m.uei FROM m JOIN gtm_entity_pricing_mix x ON x.uei = m.uei "
+        f"WHERE x.active_ffp_unfinanced_share >= {_CORE_FFP_SHARE}"
+    )
+
+
+def exportable_predicates(pairs: list[list[str]], fy_start: int, fy_end: int,
+                          floor: int) -> dict[str, Any]:
+    """The derived market re-expressed in the market-query grammar — an EXPORT
+    of the derivation, not its source. Optional legs list the further rungs."""
     return {
         "predicates": [
-            {
-                "term": "obligations_under_naics_psc_pairs",
-                "pairs": [[str(s["naics_code"]), str(s["psc_code"])] for s in safe],
-                "fy_start": current_fy - _MARKET_FY_LOOKBACK,
-                "fy_end": current_fy,
-                "min": 1,
-            }
-        ]
+            {"term": "obligations_under_naics_psc_pairs", "pairs": pairs,
+             "fy_start": fy_start, "fy_end": fy_end, "min": floor},
+            {"term": "active_award_pricing_mix",
+             "min_ffp_unfinanced_share": _CORE_FFP_SHARE},
+        ],
+        "optional_predicates": [
+            {"term": "employee_size", "note": f"bands {list(_SIZE_BANDS)} mirror the book"},
+            {"term": "registered_in_state", "note": "footprint segment — default open"},
+            {"term": "awards_expiring", "note": "the re-compete / refinance moment"},
+            {"term": "recent_award_actions", "note": "the mobilization moment"},
+            {"term": "ucc_financing", "note": "known CA/CO credit consumers"},
+        ],
     }
 
 
@@ -307,7 +389,7 @@ async def lender_book(body: dict[str, Any]) -> dict[str, Any]:
         role_split = contracting_role_split(members)
         fin_split = financing_relationship_split(members, lien_by_uei)
 
-        signature = await run(_sql_signature(vals), _MARKET_PAIRS + 5)
+        signature = await run(_sql_signature(vals), 30)
         prime_lookalikes: list[dict[str, Any]] = []
         sub_lookalikes: list[dict[str, Any]] = []
         market: dict[str, Any] | None = None
@@ -331,29 +413,101 @@ async def lender_book(body: dict[str, Any]) -> dict[str, Any]:
                 sub_lookalikes = await run(
                     _sql_sub_lens(vals, pairs, limit_sub), limit_sub + 10)
 
-            spec = derived_market_spec(signature, fy_now)
-            if spec:
-                expr, echoes, spec_disclosures = compile_predicates(spec)
-                count_payload = await _run_market_sidecar(
-                    f"SELECT count(*) AS n FROM (\n{expr}\n)", 1)
-                market_count = (count_payload["rows"][0][0]
-                                if count_payload.get("rows") else 0)
-                overlap_payload = await _run_market_sidecar(
-                    f"SELECT count(*) AS n FROM ((\n{expr}\n) "
-                    f"INTERSECT (SELECT uei FROM (VALUES {vals}) b(uei)))", 1)
-                overlap = (overlap_payload["rows"][0][0]
-                           if overlap_payload.get("rows") else 0)
-                out["elapsed_ms"] += (count_payload.get("elapsed_ms") or 0) + (
-                    overlap_payload.get("elapsed_ms") or 0)
-                market = {
-                    "spec": spec,
-                    "compiled_spec": {"predicates": echoes},
-                    "market_firm_ct": market_count,
-                    "book_firms_in_market": overlap,
-                    "expansion_firm_ct": market_count - overlap,
-                    "disclosures": spec_disclosures,
-                    "artifact": count_payload.get("artifact"),
-                }
+        # ── derived market: first-principles composition (grammar = export) ──
+        blended = await run(_sql_blended_signature(vals),
+                            _SIG_TOP_FIRMS + _SIG_TOP_DOLLARS + 5)
+        blended = [b for b in blended
+                   if _CODE_RE.match(str(b["naics_code"]))
+                   and _CODE_RE.match(str(b["psc_code"]))]
+        if blended:
+            pv = ", ".join(f"('{b['naics_code']}', '{b['psc_code']}')" for b in blended)
+            fy_start = fy_now - _MARKET_FY_LOOKBACK
+            window_start = f"{fy_start - 1}-10-01"
+
+            scale_rows = await run(_sql_book_scale(vals, fy_start), 5)
+            floor = _scale_floor(scale_rows[0]["median_won"] if scale_rows else None)
+            texture_rows = await run(_sql_book_texture(vals), 5)
+            texture = texture_rows[0] if texture_rows else {}
+
+            async def cnt(sql: str) -> int:
+                rows = await run(f"SELECT count(*) AS n FROM ({sql})", 5)
+                return int(rows[0]["n"]) if rows else 0
+
+            base = _market_base_expr(pv, window_start, 0)
+            floored = _market_base_expr(pv, window_start, floor)
+            core = _core_expr(pv, window_start, floor)
+
+            base_ct = await cnt(base)
+            floored_ct = await cnt(floored)
+            core_ct = await cnt(core)
+            size_ct = await cnt(
+                f"SELECT c.uei FROM ({core}) c JOIN gtm_entity_firmographics f "
+                f"ON f.uei = c.uei WHERE f.employee_size_range IN "
+                f"({', '.join(repr(b) for b in _SIZE_BANDS)})")
+            state = lender.get("ca_firms", 0) >= lender.get("co_firms", 0) and "CA" or "CO"
+            state_ct = await cnt(
+                f"SELECT c.uei FROM ({core}) c JOIN gtm_sam_entities e "
+                f"ON e.uei = c.uei WHERE e.physical_state = '{state}'")
+
+            moment_rows = await run(
+                f"WITH c AS ({core}) SELECT "
+                "(SELECT COUNT(DISTINCT x.uei) FROM gtm_award_expiry_months x "
+                " JOIN c ON c.uei = x.uei "
+                " WHERE x.end_month >= date_trunc('month', current_date) "
+                "  AND x.end_month < date_trunc('month', current_date) + INTERVAL 12 MONTH) "
+                " AS awards_expiring_12mo, "
+                "(SELECT COUNT(*) FROM c JOIN gtm_entity_behavior_rollup b "
+                " ON b.uei = c.uei WHERE b.last_action_date >= current_date - 90) "
+                " AS award_action_90d, "
+                "(SELECT COUNT(*) FROM c JOIN "
+                " (SELECT DISTINCT uei FROM sam_ucc_debtor_overlap) d ON d.uei = c.uei) "
+                " AS known_ucc_debtor_ca_co, "
+                f"(SELECT COUNT(*) FROM c WHERE c.uei NOT IN "
+                f" (SELECT uei FROM (VALUES {vals}) b(uei))) AS expansion_firms", 5)
+            moments = moment_rows[0] if moment_rows else {}
+
+            export = exportable_predicates(
+                [[b["naics_code"], b["psc_code"]] for b in blended],
+                fy_start, fy_now, floor)
+            # importability guarantee: the export must compile in the grammar
+            compile_predicates({"predicates": export["predicates"]})
+
+            market = {
+                "derivation": {
+                    "signature_pairs": blended,
+                    "book_texture": {
+                        "active_firms": texture.get("firms"),
+                        "active_obligations": texture.get("active_obl"),
+                        "active_obligations_ffp_unfinanced":
+                            texture.get("active_obl_ffp_unfinanced"),
+                    },
+                    "scale_floor": floor,
+                    "window": {"fy_start": fy_start, "fy_end": fy_now},
+                },
+                "definition": {
+                    "description": "every firm paid as prime under the book's "
+                                   "work signature in the window",
+                    "count": base_ct,
+                },
+                "ladder": [
+                    {"step": "scale_floor",
+                     "filter": f"≥ ${floor:,} obligations under the signature "
+                               "in the window", "count": floored_ct},
+                    {"step": "working_capital_structure",
+                     "filter": f"firm-fixed-price, unfinanced ≥ "
+                               f"{int(_CORE_FFP_SHARE * 100)}% of active "
+                               "obligations", "count": core_ct},
+                    {"step": "employee_size",
+                     "filter": f"{_SIZE_BANDS[0]}–{_SIZE_BANDS[-1].split('-')[-1]} "
+                               "employees (the book's bands)", "count": size_ct},
+                    {"step": "registered_in_state",
+                     "filter": f"registered in {state} (footprint)",
+                     "count": state_ct},
+                ],
+                "moments": {"basis": "working_capital_structure rung", **moments},
+                "exportable_predicates": export,
+                "artifact": out["artifact"],
+            }
 
     return {
         **response,

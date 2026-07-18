@@ -6,11 +6,14 @@ from fastapi import HTTPException
 from apps.catalyst_api.src.routers.lender_book_v1 import (
     _LENDER_KEY_RE,
     _k,
+    _market_base_expr,
+    _scale_floor,
+    _sql_blended_signature,
     _sql_book_aggregates,
     _sql_filings_by_year,
     _sql_uei_financing_state,
     contracting_role_split,
-    derived_market_spec,
+    exportable_predicates,
     financing_relationship_split,
 )
 
@@ -81,26 +84,41 @@ def test_financing_relationship_split_current_vs_former():
     assert s["remaining_current_value_former_borrowers"] == 10.0
 
 
-def test_derived_market_spec_is_a_tunable_predicate_list():
-    signature = [
-        {"naics_code": "236220", "psc_code": "Y1AA"},
-        {"naics_code": "561720", "psc_code": "S201"},
-        {"naics_code": "bad'code", "psc_code": "S201"},   # refused, not raised
-    ]
-    spec = derived_market_spec(signature, 2026)
-    assert spec is not None
-    (p,) = spec["predicates"]
-    assert p["term"] == "obligations_under_naics_psc_pairs"
-    assert p["pairs"] == [["236220", "Y1AA"], ["561720", "S201"]]
-    # every parameter is an explicit dial the consumer can edit
-    assert p["fy_start"] == 2024 and p["fy_end"] == 2026 and p["min"] == 1
-    assert derived_market_spec([], 2026) is None
+def test_blended_signature_unions_firm_and_dollar_rankings():
+    sql = _sql_blended_signature("('ABC123DEF456')")
+    # firm-ranked alone buries where the book's balance sheet is — both
+    # rankings union into the signature (first-principles ruling 2026-07-17)
+    assert "ORDER BY book_firms DESC" in sql
+    assert "ORDER BY book_obligations DESC" in sql
+    assert "UNION ALL" in sql
+    assert "'9999'" in sql  # placeholder PSC excluded
 
 
-def test_derived_market_spec_compiles_through_the_platform_grammar():
+def test_scale_floor_rounds_to_step_and_clamps():
+    assert _scale_floor(256_155.5) == 250_000
+    assert _scale_floor(12_000) == 50_000        # clamped to the minimum
+    assert _scale_floor(8_000_000) == 1_000_000  # clamped to the maximum
+    assert _scale_floor(None) == 50_000
+    assert _scale_floor(float("nan")) == 50_000
+
+
+def test_market_base_is_net_positive_at_floor_zero():
+    base = _market_base_expr("('236220','Y1AA')", "2023-10-01", 0)
+    assert "HAVING SUM(t.obligation) > 0" in base
+    floored = _market_base_expr("('236220','Y1AA')", "2023-10-01", 250_000)
+    assert "HAVING SUM(t.obligation) >= 250000" in floored
+
+
+def test_exportable_predicates_compile_through_the_platform_grammar():
+    # the grammar is an EXPORT format for the derived market, never its source —
+    # but the export must always be importable by the platform
     from apps.catalyst_api.src.routers.market_query_v1 import compile_predicates
 
-    spec = derived_market_spec([{"naics_code": "236220", "psc_code": "Y1AA"}], 2026)
-    expr, echoes, _ = compile_predicates(spec)
+    export = exportable_predicates([["236220", "Y1AA"]], 2024, 2026, 250_000)
+    expr, echoes, _ = compile_predicates({"predicates": export["predicates"]})
     assert "gtm_txn_events_slim" in expr
-    assert echoes[0]["term"] == "obligations_under_naics_psc_pairs"
+    assert {e["term"] for e in echoes} == {
+        "obligations_under_naics_psc_pairs", "active_award_pricing_mix"}
+    # the further rungs ride as named optional legs
+    assert {p["term"] for p in export["optional_predicates"]} >= {
+        "employee_size", "registered_in_state", "awards_expiring"}
