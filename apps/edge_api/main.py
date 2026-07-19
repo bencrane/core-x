@@ -57,6 +57,10 @@ from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_enrich_companies_v1 import router as clay_enrich_companies_router
 from .src.routers.staffing_website_research_v1 import router as staffing_website_research_router
+from .src.routers.equipment_website_research_v1 import router as equipment_website_research_router
+from .src.routers.equipment_industries_served_v1 import router as equipment_industries_served_router
+from .src.routers.equipment_service_areas_v1 import router as equipment_service_areas_router
+from .src.routers.equipment_provider_service_areas_v1 import router as equipment_provider_service_areas_router
 from .src.routers.clay_find_people_v1 import router as clay_find_people_router
 from .src.routers.clay_person_work_history_v1 import router as clay_person_work_history_router
 from .src.routers.contacts_v1 import router as contacts_router
@@ -218,6 +222,30 @@ app.include_router(clay_enrich_companies_router)
 # key next to the verbatim raw_payload (NO explode). PK = sha256(uei + canonical payload) — re-research
 # appends as history. Service-token gated.
 app.include_router(staffing_website_research_router)
+
+# equipment-website-research: raw-ONLY, append-only landing of per-yard website research
+# payloads (evidence / reasoning / categories / providerModes / equipmentItems — negative
+# verdicts included) into gtm.equipment_yard_website_research. UEI travels as a TOP-LEVEL
+# connect key next to the verbatim raw_payload (NO explode; the domain-keyed
+# equipment-provider surface is the PRIOR cycle — this one is roster/UEI-keyed).
+# PK = sha256(uei + canonical payload) — re-research appends as history. Service-token gated.
+app.include_router(equipment_website_research_router)
+
+# equipment-industries-served: raw-ONLY, append-only landing of per-yard industries/verticals
+# research (sources / reasoning / industriesServed[]) into gtm.equipment_yard_industries_served.
+# UEI-keyed (the provider-roster id; the domain-keyed /industries-served surface is a different,
+# earlier grain). PK = sha256(uei + canonical payload). Service-token gated.
+app.include_router(equipment_industries_served_router)
+
+# equipment-service-areas: raw-ONLY, append-only landing of per-yard service-area/geography
+# research (summary / serviceAreas[] with type/value/parsed/sourceUrl) into
+# gtm.equipment_yard_service_areas. UEI-keyed. PK = sha256(uei + canonical payload).
+app.include_router(equipment_service_areas_router)
+
+# equipment-service-areas-by-domain: the DOMAIN-keyed sibling for the beyond-SAM provider
+# plane (no UEI exists; domain_norm bridges to equipment_provider / firmographics_blitz).
+# Same raw-only append-only contract into gtm.equipment_provider_service_areas.
+app.include_router(equipment_provider_service_areas_router)
 
 # contacts: curated GTM contact intake — flat singular fields (full_name, work_email[optional],
 # job_title, is_main_contact, city/state/country, company_name/domain/linkedin_url) → gtm.contacts.
@@ -432,6 +460,10 @@ def _info() -> dict:
             "clay_find_companies": True,  # /api/v1/clay/find-companies/{land,stats}
             "clay_enrich_companies": True,  # /api/v1/clay/enrich-companies/{land,stats}
             "staffing_website_research": True,  # /api/v1/staffing/website-research/{land,stats}
+            "equipment_website_research": True,  # /api/v1/equipment/website-research/{land,stats}
+            "equipment_industries_served": True,  # /api/v1/equipment/industries-served/{land,stats}
+            "equipment_service_areas": True,  # /api/v1/equipment/service-areas/{land,stats}
+            "equipment_service_areas_by_domain": True,  # /api/v1/equipment/service-areas-by-domain/{land,stats}
             "contacts": True,          # /api/v1/contacts/{land,check,stats}
             "equipment_catalog": True,    # /api/v1/equipment-catalog/{land,stats}
             "industries_served": True,    # /api/v1/industries-served/{land,check,stats}

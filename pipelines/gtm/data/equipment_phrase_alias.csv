@@ -1,0 +1,366 @@
+phrase,bucket
+10 ft storage containers,material_handling_cranes
+13-yard dumpster,trucks_heavy_haul
+15 yard dumpster,trucks_heavy_haul
+1600 mhz antenna,climate_survey_other
+20 ft storage containers,material_handling_cranes
+20 yard dumpster,trucks_heavy_haul
+40 ft storage containers,material_handling_cranes
+ag equipment,landscaping_agriculture
+aggregate,heavy_earthmoving_civil
+aggregate equipment,heavy_earthmoving_civil
+agricultural equipment,landscaping_agriculture
+agriculture,landscaping_agriculture
+agriculture equipment,landscaping_agriculture
+air dryers,industrial_power_support
+air equipment,industrial_power_support
+air handling units,industrial_power_support
+air handling units (ahus),industrial_power_support
+air sampling,climate_survey_other
+aluminum trench shields,heavy_earthmoving_civil
+amplifiers,event_av_party
+amusement rentals,event_av_party
+antennas,climate_survey_other
+apxx,heavy_earthmoving_civil
+arrowboard,tools_small_equipment
+atv,trucks_heavy_haul
+automated guided vehicles,material_handling_cranes
+automotive tools,tools_small_equipment
+back hoes,heavy_earthmoving_civil
+backline,event_av_party
+balers,heavy_earthmoving_civil
+ball valves,industrial_power_support
+barrels,tools_small_equipment
+bars,event_av_party
+batteries,industrial_power_support
+batteries & chargers,industrial_power_support
+battery energy storage system (bess) solutions,industrial_power_support
+battery energy storage systems (bess),industrial_power_support
+battery solutions,industrial_power_support
+beam clamps,material_handling_cranes
+boats,trucks_heavy_haul
+boltless shelving,material_handling_cranes
+boom,aerial_access
+broom badger,trucks_heavy_haul
+bunk houses,material_handling_cranes
+burners,industrial_power_support
+bus,event_av_party
+cabling,climate_survey_other
+can-am commander,trucks_heavy_haul
+can-am defender,trucks_heavy_haul
+can-am outlander,trucks_heavy_haul
+cantilever rack,material_handling_cranes
+carpet cleaners,tools_small_equipment
+carpet installation,tools_small_equipment
+carpet/floor/wall,tools_small_equipment
+cars,event_av_party
+chargers,industrial_power_support
+chassis,material_handling_cranes
+cleaning equipment,tools_small_equipment
+climate control,industrial_power_support
+climbing formwork,concrete_masonry
+combines,landscaping_agriculture
+combines/harvesting,landscaping_agriculture
+commercial buses,event_av_party
+communication systems,climate_survey_other
+communications,climate_survey_other
+compact construction,heavy_earthmoving_civil
+compact equipment,heavy_earthmoving_civil
+compressed air,industrial_power_support
+concession rentals,event_av_party
+concessions,event_av_party
+confidence monitors,event_av_party
+connex,material_handling_cranes
+container handlers,material_handling_cranes
+container handling equipment,material_handling_cranes
+containers,material_handling_cranes
+containers & mobile offices,material_handling_cranes
+control panels,industrial_power_support
+cooling,industrial_power_support
+cooling towers,industrial_power_support
+cots,event_av_party
+crawler carriers,trucks_heavy_haul
+custom toolboxes,tools_small_equipment
+cutter,tools_small_equipment
+dehumidification,industrial_power_support
+dehumidification equipment,industrial_power_support
+delineators,tools_small_equipment
+demolition,heavy_earthmoving_civil
+demolition & recycling equipment,heavy_earthmoving_civil
+desiccant dehumidification,industrial_power_support
+dethatchers,landscaping_agriculture
+digger derricks,heavy_earthmoving_civil
+dinnerware,event_av_party
+disks,landscaping_agriculture
+display equipment,event_av_party
+dock equipment,material_handling_cranes
+draglines,heavy_earthmoving_civil
+drain cleaning equipment,tools_small_equipment
+drape,event_av_party
+drapery,event_av_party
+duct work,industrial_power_support
+dump,trucks_heavy_haul
+dump & water,trucks_heavy_haul
+dumpers,trucks_heavy_haul
+dumpster rental,trucks_heavy_haul
+dumpster rentals,trucks_heavy_haul
+dumpsters,trucks_heavy_haul
+dust collectors,tools_small_equipment
+earth movers,heavy_earthmoving_civil
+earth moving,heavy_earthmoving_civil
+earth moving equipment,heavy_earthmoving_civil
+electric equipment,industrial_power_support
+electric heat,industrial_power_support
+evaporative cooling,industrial_power_support
+event & site services,event_av_party
+event accessories,event_av_party
+event furnishings,event_av_party
+events,event_av_party
+excavation,heavy_earthmoving_civil
+farm equipment,landscaping_agriculture
+fastening equipment,tools_small_equipment
+flatware,event_av_party
+floor & carpet equipment,tools_small_equipment
+floor care,tools_small_equipment
+floor care equipment,tools_small_equipment
+floor cleaning equipment,tools_small_equipment
+floor dryer,tools_small_equipment
+floor scrubbers,tools_small_equipment
+flooring,tools_small_equipment
+flooring equipment,tools_small_equipment
+fluid solutions,industrial_power_support
+flxx,heavy_earthmoving_civil
+forage/hay,landscaping_agriculture
+forestry,landscaping_agriculture
+fryers,event_av_party
+furniture,event_av_party
+general tool,tools_small_equipment
+general tools,tools_small_equipment
+glassware,event_av_party
+global positioning systems,climate_survey_other
+golf cars,trucks_heavy_haul
+gooseneck,trucks_heavy_haul
+grade control systems,climate_survey_other
+grain handling,landscaping_agriculture
+ground penetrating radar,climate_survey_other
+guitars,event_av_party
+hand tools,tools_small_equipment
+hand-washing stations,event_av_party
+handheld tools,tools_small_equipment
+handwashing stations,industrial_power_support
+hay & forage,landscaping_agriculture
+hay and forage equipment,landscaping_agriculture
+hazardous material storage containers,material_handling_cranes
+heavy equipment,heavy_earthmoving_civil
+heavy equipment rentals,heavy_earthmoving_civil
+humidifiers,industrial_power_support
+hxx,heavy_earthmoving_civil
+hydraulic crimper,tools_small_equipment
+hydraulic crimpers,tools_small_equipment
+hydraulic gantries,material_handling_cranes
+hydraulic mining shovels,heavy_earthmoving_civil
+hydraulic shears,heavy_earthmoving_civil
+ic bus,event_av_party
+ice machines,event_av_party
+indoor air quality,industrial_power_support
+industrial engines,industrial_power_support
+industrial tooling,tools_small_equipment
+industrial vacuums,tools_small_equipment
+industrial vehicles,trucks_heavy_haul
+interpreter booths,event_av_party
+jack up barges,trucks_heavy_haul
+jacks,material_handling_cranes
+kubota u17,heavy_earthmoving_civil
+land management tools,landscaping_agriculture
+lawn & garden,landscaping_agriculture
+lawn & garden equipment,landscaping_agriculture
+lawn & garden equipment rentals,landscaping_agriculture
+lawn and garden equipment,landscaping_agriculture
+lawn and property owner,landscaping_agriculture
+laymor sweeper 300,trucks_heavy_haul
+lecterns,event_av_party
+led video walls,event_av_party
+lekos,event_av_party
+lift,aerial_access
+liftgates,material_handling_cranes
+lifting accessories,material_handling_cranes
+lifts,aerial_access
+lifts / lifting equipment,aerial_access
+light construction tools,tools_small_equipment
+light solutions,industrial_power_support
+lights,event_av_party
+load bank solutions,industrial_power_support
+load banks,industrial_power_support
+log splitters,landscaping_agriculture
+lounge furniture,event_av_party
+low speed vehicles,trucks_heavy_haul
+magnetometers,climate_survey_other
+magnets,tools_small_equipment
+mast climbers,aerial_access
+mast climbing work platforms,aerial_access
+material handler,material_handling_cranes
+material handlers,material_handling_cranes
+material handling equipment,material_handling_cranes
+"material handling, lift & warehouse",material_handling_cranes
+mechanical trade tools,tools_small_equipment
+message boards,tools_small_equipment
+mezzanines,material_handling_cranes
+mining,heavy_earthmoving_civil
+mining equipment,heavy_earthmoving_civil
+misc. material handling,material_handling_cranes
+mobile kitchens,event_av_party
+mobile office,material_handling_cranes
+mobile offices,material_handling_cranes
+mobile processing equipment,heavy_earthmoving_civil
+mobile restrooms,event_av_party
+mobile showers,industrial_power_support
+modular buildings,material_handling_cranes
+modular kitchens,event_av_party
+modular office buildings,material_handling_cranes
+modular offices,material_handling_cranes
+office containers,material_handling_cranes
+onyx rx32 scrubber,tools_small_equipment
+order pickers,material_handling_cranes
+packaged units,industrial_power_support
+pallet rack,material_handling_cranes
+paving,heavy_earthmoving_civil
+pedestrian barriers,tools_small_equipment
+personnel,aerial_access
+planter,landscaping_agriculture
+planters,landscaping_agriculture
+planting and seeding equipment,landscaping_agriculture
+planting equipment,landscaping_agriculture
+plumbing,tools_small_equipment
+plumbing equipment,tools_small_equipment
+plumbing snakes,tools_small_equipment
+pneumatic,industrial_power_support
+polishers & scrubbers,tools_small_equipment
+pool dehumidification,industrial_power_support
+port & container handling equipment,material_handling_cranes
+porta potty,industrial_power_support
+porta-potty,event_av_party
+post hole digger,heavy_earthmoving_civil
+presses,tools_small_equipment
+pressure diggers,heavy_earthmoving_civil
+projection systems,event_av_party
+pulverizers,heavy_earthmoving_civil
+radiation equipment,climate_survey_other
+radios,climate_survey_other
+reach forks,material_handling_cranes
+reach stackers,material_handling_cranes
+recreational vehicles,trucks_heavy_haul
+recycling and forestry,landscaping_agriculture
+refrigerated containers,industrial_power_support
+refrigerated storage containers,material_handling_cranes
+refrigeration,industrial_power_support
+regulators,industrial_power_support
+repeaters,climate_survey_other
+respirators,tools_small_equipment
+restrooms,industrial_power_support
+ride-on floor scrubbers,tools_small_equipment
+ride-on scrubbers,tools_small_equipment
+risers,event_av_party
+road construction,heavy_earthmoving_civil
+road reclaimers,heavy_earthmoving_civil
+roadwork equipment,heavy_earthmoving_civil
+roll off dumpsters,trucks_heavy_haul
+roll-offs,trucks_heavy_haul
+roofing equipment,tools_small_equipment
+rough terrain,aerial_access
+rough terrain lifts,aerial_access
+round balers,landscaping_agriculture
+rv,trucks_heavy_haul
+school buses,event_av_party
+scissor,aerial_access
+scrap processing / demolition equipment,heavy_earthmoving_civil
+sectional barges,trucks_heavy_haul
+self-propelled,landscaping_agriculture
+sewer cleaning gear,tools_small_equipment
+shears,heavy_earthmoving_civil
+shelving,material_handling_cranes
+shipping containers,material_handling_cranes
+shower units,event_av_party
+shredders,heavy_earthmoving_civil
+site fueling solutions,industrial_power_support
+slab,aerial_access
+smart thermostats,industrial_power_support
+snowcats,trucks_heavy_haul
+snowmobile,trucks_heavy_haul
+snowmobiles,trucks_heavy_haul
+solar,industrial_power_support
+spectrum analyzers,climate_survey_other
+spider lifts,aerial_access
+split systems,industrial_power_support
+sprayer,landscaping_agriculture
+sprayers,landscaping_agriculture
+stackers,material_handling_cranes
+steel grit recyclers,tools_small_equipment
+steel plates,heavy_earthmoving_civil
+stock pickers,material_handling_cranes
+storage container,material_handling_cranes
+storage containers,material_handling_cranes
+storage solutions,material_handling_cranes
+storage solutions & containers,material_handling_cranes
+subwoofers,event_av_party
+surface prep,tools_small_equipment
+surface preparation,tools_small_equipment
+surface preparation & cleaning,tools_small_equipment
+surface preparation equipment,tools_small_equipment
+surface treatment,tools_small_equipment
+suv,trucks_heavy_haul
+swamp coolers,industrial_power_support
+sweepers,trucks_heavy_haul
+sweepers / broom equipment,trucks_heavy_haul
+swivels,material_handling_cranes
+telemetry,climate_survey_other
+telescopic,aerial_access
+temperature control,industrial_power_support
+temporary dining facilities,event_av_party
+temporary fence panels,tools_small_equipment
+test and measurement equipment,climate_survey_other
+threading machine,tools_small_equipment
+threading machines,tools_small_equipment
+tillage,landscaping_agriculture
+tillage equipment,landscaping_agriculture
+tires,trucks_heavy_haul
+tool connex’s,material_handling_cranes
+tooling,tools_small_equipment
+tools,tools_small_equipment
+toro,landscaping_agriculture
+towers,industrial_power_support
+tracked lifts,aerial_access
+transfer switches,industrial_power_support
+transit,climate_survey_other
+trash chutes,tools_small_equipment
+truss,event_av_party
+tubing,tools_small_equipment
+tug boats,trucks_heavy_haul
+turf renovation,landscaping_agriculture
+two-way radios,climate_survey_other
+two-way radios & communications equipment,climate_survey_other
+umbrellas,event_av_party
+underbridge platforms,aerial_access
+utility and jobsite vehicles,trucks_heavy_haul
+utility equipment,heavy_earthmoving_civil
+utility installation,heavy_earthmoving_civil
+vacuum & sweeper,tools_small_equipment
+vacuum boxes,industrial_power_support
+vacuums,tools_small_equipment
+vacuums and dust control,tools_small_equipment
+vehicles,trucks_heavy_haul
+versahandlers,material_handling_cranes
+vertical balers,heavy_earthmoving_civil
+vertical lifts,aerial_access
+video,event_av_party
+video equipment,event_av_party
+video monitors,event_av_party
+video production,event_av_party
+video switchers,event_av_party
+walk behind floor scrubbers,tools_small_equipment
+wall formwork,concrete_masonry
+warehouse lifts diesel or lpg,material_handling_cranes
+water equipment,water_filtration_irrigation
+water quality meters,climate_survey_other
+water softener,water_filtration_irrigation
+wireless communications,climate_survey_other
+xrf analyzers,climate_survey_other
