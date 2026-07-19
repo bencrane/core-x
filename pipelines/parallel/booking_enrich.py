@@ -28,8 +28,9 @@ KEYING
     equi-join; ``enrich_run_id`` (the Trigger run id) is also stamped onto the booking for
     run-level traceability, and ``run_id``/``parallel_run_id`` ride along as columns.
 
-TIER ceiling = ``core`` (lite|base|core). ``ultra`` deferred (per-run webhook path), as the
-other Parallel workers. Default ``lite`` — firmographics are shallow + bookings are low-volume.
+TIER ceiling = ``pro`` (lite|base|core|pro). ``ultra`` deferred (per-run webhook path), as the
+other Parallel workers. Capital-provider column set (2026-07-19) runs on ``pro`` — the field
+set is wide and pro holds quality; bookings are low-volume so cost is per-call trivial.
 
 SECRETS: parallel-api · r2-credentials · hqx-postgres.
 
@@ -61,22 +62,76 @@ _OUTPUT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "industry": {"type": "string",
-                     "description": "The company's primary industry / sector, in a few words."},
-        "employee_size_band": {"type": "string",
-                               "description": "Approximate employee headcount as a band: one of "
-                               "'1-10', '11-50', '51-200', '201-500', '501-1000', '1001-5000', '5000+'."},
+        # ── identity ─────────────────────────────────────────────────────────
+        "company_linkedin_url": {"type": "string",
+            "description": "The company's LinkedIn company-page URL (https://www.linkedin.com/company/...); empty if none found."},
         "hq_location": {"type": "string",
                         "description": "Headquarters location as 'City, State/Region, Country'."},
         "founded_year": {"type": "string",
                          "description": "The 4-digit year the company was founded; empty if unknown."},
+        "employee_size_band": {"type": "string",
+                               "description": "Approximate employee headcount as a band: one of "
+                               "'1-10', '11-50', '51-200', '201-500', '501-1000', '1001-5000', '5000+'."},
+        # ── capital-provider model ───────────────────────────────────────────
+        "lender_model": {"type": "string",
+            "description": "One of 'direct' (lends from its own balance sheet / own funds), 'broker' "
+            "(places deals with a lender network), 'hybrid', or 'unknown'. Judge from the firm's own "
+            "language and evidence, not assumption."},
+        "geographic_coverage": {"type": "string",
+            "description": "Stated lending geography: 'nationwide', or the explicit states/regions served "
+            "(e.g. 'CA, AZ, NV'); empty if unstated."},
+        "industries_served": {"type": "string",
+            "description": "Semicolon-separated list of the industries/verticals the firm itself names as "
+            "borrower segments (e.g. 'staffing; trucking; manufacturing; government contractors')."},
+        "serves_government_contractors": {"type": "string",
+            "description": "'yes', 'no', or 'unknown' — whether government contractors are named as a "
+            "borrower segment anywhere (incl. government receivables factoring, contract/mobilization "
+            "financing, assignment of claims, federal invoice timing)."},
+        # ── financial products offered ('yes' / 'no' / 'unknown', per firm's own materials) ──
+        "offers_ar_factoring": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — accounts-receivable factoring or invoice factoring/purchase."},
+        "offers_abl": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — asset-based lending: revolvers on AR/inventory borrowing bases."},
+        "offers_equipment_financing": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — equipment finance, equipment loans, or equipment leasing."},
+        "offers_term_loans": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — term loans (incl. M&E term debt)."},
+        "offers_lines_of_credit": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — lines of credit (non-ABL working-capital lines)."},
+        "offers_sba_loans": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — SBA program lending (7(a), 504, Express)."},
+        "offers_mca": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — merchant cash advance / revenue-based advances."},
+        "offers_po_financing": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — purchase-order financing."},
+        "offers_bridge_or_mezz": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — bridge loans or mezzanine/subordinated capital."},
+        "offers_unsecured": {"type": "string",
+            "description": "'yes'/'no'/'unknown' — unsecured business loans or lines."},
+        "products_other": {"type": "string",
+            "description": "Any OTHER financing products the firm explicitly names (semicolon-separated, "
+            "their own terms: e.g. 'sale-leaseback; freight factoring; fuel cards'); empty if none."},
+        # ── published parameters ─────────────────────────────────────────────
+        "ticket_min_usd": {"type": "string",
+            "description": "Published minimum deal/facility/ticket size in USD as digits only "
+            "(e.g. '250000'); empty if unpublished."},
+        "ticket_max_usd": {"type": "string",
+            "description": "Published maximum deal/facility/ticket size in USD as digits only "
+            "(e.g. '20000000'); empty if unpublished."},
+        "min_annual_revenue_usd": {"type": "string",
+            "description": "Published borrower minimum annual revenue in USD as digits only; empty if unpublished."},
+        "turnaround_language": {"type": "string",
+            "description": "The firm's published speed claims, near-verbatim (e.g. 'approval in 24 hours; "
+            "funding in 3-5 days'); empty if none."},
+        "personal_guarantee": {"type": "string",
+            "description": "'required', 'not required', or 'unknown' — the firm's published personal-guarantee posture."},
     },
     "required": [],
 }
 # ── ▲▲▲ EDIT HERE ▲▲▲ ────────────────────────────────────────────────────────────────────────
 
-ALLOWED_PROCESSORS = ("lite", "base", "core")
-PROCESSOR_CEILING = "core"
+ALLOWED_PROCESSORS = ("lite", "base", "core", "pro")
+PROCESSOR_CEILING = "pro"
 
 RESULT_HOLD_S = 300            # blocking GET /result server hold (§0)
 RESULT_408_BACKOFF_S = 5
