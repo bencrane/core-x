@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import config
-from ..cal import enrich, materialize, normalize, queries, research
+from ..cal import enrich, leadmagic, materialize, normalize, queries, research
 from ..cal.signature import verify_signature
 from ..db import get_db_connection
 
@@ -95,11 +95,13 @@ async def cal_webhook(
     research_result = None
     enrich_result = None
     materialize_result = None
+    leadmagic_result = None
     if isinstance(normalized, dict) and normalized.get("action") == "created":
         ical_uid = normalized.get("ical_uid")
         research_result = await _kick_research(trigger_event, envelope, ical_uid)
         enrich_result = await _kick_enrich(trigger_event, envelope, ical_uid)
         materialize_result = await _kick_materialize(ical_uid)
+        leadmagic_result = await _kick_leadmagic(trigger_event, envelope)
 
     return {
         "ok": True,
@@ -109,6 +111,7 @@ async def cal_webhook(
         "research": research_result,
         "enrich": enrich_result,
         "materialize": materialize_result,
+        "leadmagic": leadmagic_result,
     }
 
 
@@ -171,6 +174,25 @@ async def _kick_enrich(
     except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
         logger.warning("enrich ref stamp failed for %s: %s", ical_uid, exc)
     return {"triggered": True, "run_id": run_id}
+
+
+async def _kick_leadmagic(trigger_event: str, envelope: dict[str, Any]) -> dict[str, Any]:
+    """Fetch LeadMagic company firmographics for a new booking's domain (company-grain,
+    fetch-once). Best-effort sibling of research/enrich — never affects the webhook."""
+    fields = normalize.extract(trigger_event, envelope)
+    domain = fields.get("domain")
+    if not domain:
+        return {"fetched": False, "reason": "no domain"}
+    try:
+        async with get_db_connection() as conn:
+            result = await leadmagic.fetch_and_store(
+                conn, domain=domain, company_name=fields.get("company_name")
+            )
+            await conn.commit()
+        return result
+    except Exception as exc:  # noqa: BLE001 — best-effort lane
+        logger.warning("leadmagic kick failed for %s: %s", domain, exc)
+        return {"fetched": False, "reason": str(exc)[:200]}
 
 
 async def _kick_materialize(ical_uid: str | None) -> dict[str, Any]:
