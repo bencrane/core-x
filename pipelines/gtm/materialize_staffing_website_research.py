@@ -26,16 +26,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from pipelines._shared.lance_local_publish import write_indexed_dataset  # noqa: E402
 
 DATASET_URI = "s3://data-sink/active/staffing_website_research/"
-INDEXES = [("uei", "BTREE"), ("record_id", "BTREE")]
+INDEXES = [("uei", "BTREE"), ("domain", "BTREE"), ("record_id", "BTREE")]
 
 PROJECTION_SQL = """
 SELECT record_id,
        uei,
+       domain,
        source,
        CAST(raw_payload AS VARCHAR) AS raw_payload,
        landed_at
 FROM hqx.gtm.staffing_website_research
-ORDER BY uei, landed_at
+ORDER BY coalesce(uei, domain), landed_at
 """
 
 
