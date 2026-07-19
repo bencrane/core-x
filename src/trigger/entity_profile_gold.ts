@@ -31,7 +31,8 @@ interface EntityProfileGoldCallback {
 
 export const entityProfileGold = schedules.task({
   id: "entity-profile-gold",
-  cron: { pattern: "0 19 * * *", timezone: "UTC" },
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate).
+  // cron: { pattern: "0 19 * * *", timezone: "UTC" },
   maxDuration: 9000,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

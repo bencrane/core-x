@@ -29,7 +29,8 @@ interface AwardSummaryCallback {
 
 export const contractorAwardSummary = schedules.task({
   id: "contractor-award-summary",
-  cron: { pattern: "0 18 * * *", timezone: "UTC" },
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate).
+  // cron: { pattern: "0 18 * * *", timezone: "UTC" },
   maxDuration: 7800,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

@@ -30,7 +30,8 @@ interface SamPocsCallback {
 
 export const samPocs = schedules.task({
   id: "sam-pocs",
-  cron: { pattern: "30 16 * * *", timezone: "UTC" },
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate).
+  // cron: { pattern: "30 16 * * *", timezone: "UTC" },
   maxDuration: 3900,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

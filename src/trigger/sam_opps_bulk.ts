@@ -26,7 +26,8 @@ interface IngestCallback {
 
 export const samOppsBulkDispatcher = schedules.task({
   id: "sam-opps-bulk-dispatcher",
-  cron: { pattern: "0 12 * * *", timezone: "UTC" },
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate).
+  // cron: { pattern: "0 12 * * *", timezone: "UTC" },
   // Generous cap; the durable wait itself consumes no compute while suspended.
   maxDuration: 3900,
   run: async (_payload, { ctx }) => {
