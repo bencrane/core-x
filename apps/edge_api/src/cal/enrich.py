@@ -10,8 +10,9 @@ best-effort contract (never fails the webhook). It is a STANDALONE workflow: no 
 spec registry. The enrichment column set is fixed worker-side (pipelines/parallel/
 booking_enrich.py ``_OUTPUT_SCHEMA``); edit it there to change what is pulled back.
 
-Idempotent on ``ical_uid``: the Trigger-run idempotency key collapses cal's duplicate
-deliveries to a SINGLE enrichment run (one Parallel spend).
+Idempotent on the COMPANY (``domain``, operator ruling 2026-07-19): repeat bookings for
+the same firm reuse the existing enrichment run; cal's duplicate deliveries collapse the
+same way (one Parallel spend per company).
 """
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ async def trigger_enrich(*, ical_uid: str, company_name: str | None, domain: str
         "processor": ENRICH_PROCESSOR,
     }
     try:
-        run = await trigger_task(ENRICH_TASK, payload, idempotency_key=f"booking-enrich:{ical_uid}")
+        run = await trigger_task(ENRICH_TASK, payload, idempotency_key=f"booking-enrich:{domain}")
     except Exception as exc:  # noqa: BLE001 — best-effort kickoff; never fail the webhook
         logger.warning("booking-enrich trigger failed for %s: %s", ical_uid, exc)
         return None

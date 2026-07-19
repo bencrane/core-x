@@ -9,7 +9,7 @@ booking→deep-research path instead of bending a batch/audience pipeline around
 SHAPE
     edge_api (cal webhook) → Trigger ``booking-enrich`` → Universal Dispatcher → THIS Modal app
     → ONE Parallel Task run (POST /v1/tasks/runs + blocking GET /result, §0) → typed columns →
-    s3://data-sink/active/booking_enrichment/ (merge_insert on ``ical_uid``) → flat callback.
+    s3://data-sink/active/booking_enrichment/ (merge_insert on ``normalized_domain`` — company grain) → flat callback.
     The COMPLETE Parallel result is ALSO captured verbatim to booking_enrichment_raw (keyed by
     parallel_run_id, append-only) — the provider's raw output is never discarded.
 
@@ -341,8 +341,10 @@ def _evolve_columns(ds, want_cols, uri: str, so: dict):
 
 
 def _write_enrichment(table, so: dict) -> int:
-    """merge_insert on ``ical_uid`` (refresh on re-enrich, insert on first). CREATE only when
-    genuinely absent; a merge failure RAISES (terminal) — never an overwrite that clobbers."""
+    """merge_insert on ``normalized_domain`` — ONE row per company, freshest booking wins
+    (operator ruling 2026-07-19: enrichment is company-grain, not booking-grain; ``ical_uid``
+    rides along as the latest booking's anchor). CREATE only when genuinely absent; a merge
+    failure RAISES (terminal) — never an overwrite that clobbers."""
     import lance
 
     if table.num_rows == 0:
@@ -364,7 +366,7 @@ def _write_enrichment(table, so: dict) -> int:
     else:
         ds = lance.dataset(ENRICH_URI, storage_options=so)
         ds = _evolve_columns(ds, _all_columns(), ENRICH_URI, so)
-        ds.merge_insert("ical_uid").when_matched_update_all().when_not_matched_insert_all().execute(table)
+        ds.merge_insert("normalized_domain").when_matched_update_all().when_not_matched_insert_all().execute(table)
 
     ds = lance.dataset(ENRICH_URI, storage_options=so)
     names = [f.name for f in ds.schema]

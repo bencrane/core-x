@@ -10,9 +10,9 @@ The prompt is NOT hardcoded: the ACTIVE version lives in ``corex.research_prompt
 only a fallback so the kickoff never breaks if the registry row is missing — same
 resilience as the proposal-template registry.
 
-Idempotent on ``ical_uid``: cal double-delivers every event, but the trigger-run
-idempotency key collapses duplicate deliveries to a SINGLE research run (one Parallel
-spend). edge_api triggers via the Trigger.dev REST API (``trigger_dev_client``) — no
+Idempotent on the COMPANY (``domain``, operator ruling 2026-07-19): repeat bookings for
+the same firm reuse the existing research run instead of re-running and overwriting —
+cal's duplicate deliveries collapse the same way (one Parallel spend per company). edge_api triggers via the Trigger.dev REST API (``trigger_dev_client``) — no
 Modal webhook, no callback; the task itself dispatches to Modal downstream.
 """
 from __future__ import annotations
@@ -56,8 +56,8 @@ async def trigger_research(
 
     ``template`` is the active registry prompt; None → the built-in fallback. Best-effort:
     logs + returns None on any failure (the booking is already stored). The trigger-run
-    idempotency key is derived from ``ical_uid`` so cal's duplicate deliveries (and retries)
-    resolve to ONE run."""
+    idempotency key is derived from ``domain`` so repeat bookings for the same company (and
+    cal's duplicate deliveries) resolve to ONE run."""
     payload: dict[str, Any] = {
         "objective": render(template or _DEFAULT_TEMPLATE, company_name, domain),
         "grain": "topic",
@@ -68,13 +68,13 @@ async def trigger_research(
         # `research:topic:full` and every booking resolves on the first run's cached token. Makes
         # edge_api correct independent of the Trigger task deploy order; redundant once the task's
         # run-unique fallback ships, but harmless (same booking → same key both layers).
-        "idempotencyKey": f"research:{ical_uid}",
+        "idempotencyKey": f"research:{domain}",
         # Carried for traceability in the Trigger run view (the task reads `objective`).
         "domain": domain,
         "company_name": company_name,
     }
     try:
-        run = await trigger_task(RESEARCH_TASK, payload, idempotency_key=f"research:{ical_uid}")
+        run = await trigger_task(RESEARCH_TASK, payload, idempotency_key=f"research:{domain}")
     except Exception as exc:  # noqa: BLE001 — best-effort kickoff; never fail the webhook
         logger.warning("parallel-deep-research trigger failed for %s: %s", ical_uid, exc)
         return None
