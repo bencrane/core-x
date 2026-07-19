@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 ENRICH_TASK = "booking-enrich"
 # Parallel TASK-API processor tier (lite|base|core). 'lite' is cheapest — firmographics are
 # shallow and bookings are low-volume. Bump worker-side / here if a richer schema needs depth.
-ENRICH_PROCESSOR = "lite"
+ENRICH_PROCESSOR = "pro"  # capital-provider column set is wide; pro holds quality (2026-07-19)
 
 
 async def trigger_enrich(*, ical_uid: str, company_name: str | None, domain: str) -> str | None:
