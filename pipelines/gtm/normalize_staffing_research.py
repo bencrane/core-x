@@ -261,7 +261,7 @@ def norm_placement(raw: str | None) -> list[str]:
 def main() -> None:
     so = _r2_storage_options()
     src = lance.dataset(SRC_URI, storage_options=so)
-    rows = src.to_table(columns=["record_id", "uei", "raw_payload", "landed_at"]).to_pylist()
+    rows = src.to_table(columns=["record_id", "uei", "domain", "raw_payload", "landed_at"]).to_pylist()
 
     token_map: dict[str, dict] = {}
     try:
@@ -285,6 +285,7 @@ def main() -> None:
         out.append({
             "record_id": r["record_id"],
             "uei": r["uei"],
+            "domain": r.get("domain"),
             "is_national": is_national,
             "states": states,
             "geo_unresolved": geo_un,
@@ -301,7 +302,7 @@ def main() -> None:
         })
 
     schema = pa.schema([
-        ("record_id", pa.string()), ("uei", pa.string()),
+        ("record_id", pa.string()), ("uei", pa.string()), ("domain", pa.string()),
         ("is_national", pa.bool_()), ("states", pa.list_(pa.string())),
         ("geo_unresolved", pa.list_(pa.string())),
         ("soc_codes", pa.list_(pa.string())), ("soc_major_groups", pa.list_(pa.string())),
@@ -313,7 +314,7 @@ def main() -> None:
         ("landed_at", pa.timestamp("us", tz="UTC")),
     ])
     tbl = pa.Table.from_pylist(out, schema=schema)
-    ds = write_indexed_dataset(tbl, DATASET_URI, [("uei", "BTREE")], so)
+    ds = write_indexed_dataset(tbl, DATASET_URI, [("uei", "BTREE"), ("domain", "BTREE")], so)
 
     n = len(out)
     geo_ok = sum(1 for o in out if o["is_national"] or o["states"])

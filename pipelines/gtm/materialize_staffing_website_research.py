@@ -56,7 +56,9 @@ def _r2_storage_options() -> dict[str, str]:
 
 
 def main() -> None:
-    dsn = os.environ["HQX_DB_URL_POOLED"]
+    # transaction pooler first: the session pooler (15-max) is consumed by live
+    # lander traffic while a batch is arriving.
+    dsn = os.environ.get("HQX_DB_URL_TRANSACTION") or os.environ["HQX_DB_URL_POOLED"]
     con = duckdb.connect()
     con.execute("INSTALL postgres; LOAD postgres;")
     con.execute(f"ATTACH '{dsn}' AS hqx (TYPE postgres, READ_ONLY)")
