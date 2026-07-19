@@ -358,3 +358,49 @@ async def list_templates() -> list[TemplateOption]:
     async with get_db_connection() as conn:
         rows = await deal_queries.list_org_templates(conn, None)
     return [TemplateOption(**t) for t in rows]
+
+
+@router.get("/templates/{template_id}/fields", dependencies=[Depends(require_service_token)])
+async def template_fields(template_id: int) -> dict:
+    """The template's field vocabulary for the origination-details editor: per label, the
+    prefill-config default + read_only flag (business.documenso_template_document_prefill_configs
+    — the same field_settings generate resolves against). Falls back to the mirrored envelope's
+    labelled value fields when no config exists (labels only, empty defaults). 404 on a template
+    the mirror doesn't carry."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT env.documenso_id, env.title,
+                       pc.field_settings,
+                       env.documenso_response
+                  FROM business.documenso_envelopes env
+             LEFT JOIN business.documenso_template_document_prefill_configs pc
+                    ON pc.template_documenso_id = env.documenso_id
+                 WHERE env.documenso_id = %s AND env.type = 'template' AND env.deleted_at IS NULL
+                 LIMIT 1
+                """,
+                (template_id,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    fields: list[dict] = []
+    settings = row["field_settings"] or {}
+    if settings:
+        for label, fs in settings.items():
+            if isinstance(fs, dict):
+                fields.append({
+                    "label": label,
+                    "default": str(fs.get("default_document_field_value") or ""),
+                    "read_only": fs.get("read_only") is True,
+                })
+    else:
+        seen: set[str] = set()
+        for f in (row["documenso_response"] or {}).get("fields", []):
+            label = f.get("label") if isinstance(f, dict) else None
+            if isinstance(label, str) and label.strip() and label not in seen:
+                seen.add(label)
+                fields.append({"label": label, "default": "", "read_only": False})
+    fields.sort(key=lambda f: (f["read_only"], f["label"].lower()))
+    return {"documenso_id": row["documenso_id"], "title": row["title"], "fields": fields}
