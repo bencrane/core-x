@@ -37,29 +37,27 @@ async def list_deals(limit: int = 100) -> list[DealSummary]:
     return [DealSummary.from_row(d) for d in rows]
 
 
-# POST /api/v1/deals — the MANUAL deal lane (Settings → New Deal): mint a deal from an operator
-# payload with NO booking upstream (the parallel to the Cal.com producer). Same grain (one deal per
-# account) and same upsert semantics as deals/materialize.py; the signatory is required. The returned
-# deal_handle keys the follow-ups (PUT details to attach a template + field_values, then originate).
+# POST /api/v1/deals — the MANUAL deal lane: mint a deal from an operator payload with NO booking
+# upstream (the parallel to the Cal.com producer). Same grain (one deal per account) and same upsert
+# semantics as deals/materialize.py. Ontology ruling 2026-07-19: signatory-free — a deal is
+# company_name (+domain); person fields are optional plain-contact data. The returned deal_handle
+# keys the follow-ups (POST /deals/{handle}/agreements → generate).
 @router.post("", dependencies=[Depends(require_service_token)])
 async def create_deal(body: DealCreate) -> DealCreated:
     company = body.company_name.strip()
-    email = body.email.strip()
-    first, last = body.first_name.strip(), body.last_name.strip()
     if not company:
         raise HTTPException(status_code=422, detail="company_name is required")
-    if not email or "@" not in email:
-        raise HTTPException(status_code=422, detail="a valid signatory email is required")
-    if not first or not last:
-        raise HTTPException(status_code=422, detail="signatory first_name and last_name are required")
+    email = (body.email or "").strip()
+    if email and "@" not in email:
+        raise HTTPException(status_code=422, detail="email is not a valid email")
     async with get_db_connection() as conn:
         result = await create.create_deal_manual(
             conn,
             company_name=company,
             domain=body.domain,
-            first_name=first,
-            last_name=last,
-            email=email,
+            first_name=(body.first_name or "").strip() or None,
+            last_name=(body.last_name or "").strip() or None,
+            email=email or None,
             title=(body.title or "").strip() or None,
         )
         await conn.commit()
@@ -124,6 +122,8 @@ async def update_deal_details(handle: str, body: DealDetailsUpdate) -> DealDetai
 # from its attached template. Resolves the signatory contact + template off the deal, stamps the
 # public deal_handle as the envelope externalId (the prospect-link capability + sign-gate anchor),
 # and returns the /p/m/{deal_handle}/{document_id} sign link. No email is sent; payment is Phase 3.
+# DEPRECATED (2026-07-19): superseded by POST /api/v1/agreements/{id}/generate — the Agreement owns
+# template/values/signatory/lifecycle now (agreements_v1.py). Do not extend this route.
 @router.post("/{handle}/originate", dependencies=[Depends(require_service_token)])
 async def originate_deal(handle: str) -> DealOriginated:
     async with get_db_connection() as conn:

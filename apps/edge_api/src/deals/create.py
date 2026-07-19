@@ -12,10 +12,10 @@ PARITY WITH THE BOOKING PRODUCER — same grain, same keys, same upsert semantic
     has one UPDATES that deal (fills missing company identity, never regresses status) and
     the response says so (``action: updated``);
   • accounts dedupe on domain (``UNIQUE (domain)``), contacts on (account_id, lower(email));
-  • the signatory contact is REQUIRED (email + name) — originate 422s without one, so the
-    manual lane refuses at the door instead of minting an unoriginatable deal;
-  • the contact attaches to the deal as a signatory (``deal_contacts``, DO NOTHING on
-    conflict so an operator's later toggle survives).
+  • person fields are OPTIONAL (ontology ruling 2026-07-19: the signatory lives on the
+    AGREEMENT — ``business.agreements.signatory_contact_id`` — and agreement generation is
+    the enforcement point); when given, the person attaches as a plain deal contact
+    (``deal_contacts``, is_signatory=false, DO NOTHING on conflict).
 
 IDEMPOTENCY — keyed on the natural keys only (domain → account → uq_deals_account; email →
 contact). A payload WITHOUT a domain has no account dedupe key: each call inserts a fresh
@@ -37,16 +37,17 @@ async def create_deal_manual(
     *,
     company_name: str,
     domain: str | None,
-    first_name: str,
-    last_name: str,
-    email: str,
-    title: str | None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    email: str | None = None,
+    title: str | None = None,
 ) -> dict[str, Any]:
-    """Project the operator payload into account → contact → deal (+ a deal_contacts
-    signatory link). Idempotent on the natural keys. Does NOT commit. Returns a structured
-    result (action + ids + deal_handle + status) the router surfaces."""
+    """Project the operator payload into account → deal (+ optionally a contact). Idempotent
+    on the natural keys. Does NOT commit. Ontology ruling 2026-07-19: the signatory lives on
+    the AGREEMENT — person fields are optional here; when ``email`` is absent the contact and
+    deal_contacts steps are skipped entirely and ``contact_id`` returns None."""
     domain = (domain or "").strip().lower() or None
-    email = email.strip()
+    email = (email or "").strip() or None
     company = company_name.strip()
 
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -69,30 +70,33 @@ async def create_deal_manual(
             )
         account_id = (await cur.fetchone())["id"]
 
-        # ── 2) Contact (the signatory person). Dedupe by (account_id, lower(email)); claim
-        # primary only if the account has none yet (≤1-primary partial unique). ──────────────
-        await cur.execute(
-            """
-            INSERT INTO business.contacts AS c
-                (account_id, first_name, last_name, email, title, is_primary)
-            VALUES (
-                %(account_id)s::uuid, %(first)s, %(last)s, %(email)s, %(title)s,
-                NOT EXISTS (SELECT 1 FROM business.contacts x
-                            WHERE x.account_id = %(account_id)s::uuid
-                              AND x.is_primary AND x.deleted_at IS NULL)
+        # ── 2) Contact (optional person). Dedupe by (account_id, lower(email)); claim
+        # primary only if the account has none yet (≤1-primary partial unique). Skipped
+        # entirely when no email — signatory identity is Agreement-stage data. ───────────────
+        contact_id = None
+        if email:
+            await cur.execute(
+                """
+                INSERT INTO business.contacts AS c
+                    (account_id, first_name, last_name, email, title, is_primary)
+                VALUES (
+                    %(account_id)s::uuid, %(first)s, %(last)s, %(email)s, %(title)s,
+                    NOT EXISTS (SELECT 1 FROM business.contacts x
+                                WHERE x.account_id = %(account_id)s::uuid
+                                  AND x.is_primary AND x.deleted_at IS NULL)
+                )
+                ON CONFLICT (account_id, lower(email)) WHERE deleted_at IS NULL AND email IS NOT NULL
+                DO UPDATE SET
+                    first_name = COALESCE(c.first_name, EXCLUDED.first_name),
+                    last_name  = COALESCE(c.last_name,  EXCLUDED.last_name),
+                    title      = COALESCE(c.title,       EXCLUDED.title),
+                    updated_at = now()
+                RETURNING id::text AS id
+                """,
+                {"account_id": account_id, "first": first_name, "last": last_name,
+                 "email": email, "title": title},
             )
-            ON CONFLICT (account_id, lower(email)) WHERE deleted_at IS NULL AND email IS NOT NULL
-            DO UPDATE SET
-                first_name = COALESCE(c.first_name, EXCLUDED.first_name),
-                last_name  = COALESCE(c.last_name,  EXCLUDED.last_name),
-                title      = COALESCE(c.title,       EXCLUDED.title),
-                updated_at = now()
-            RETURNING id::text AS id
-            """,
-            {"account_id": account_id, "first": first_name, "last": last_name,
-             "email": email, "title": title},
-        )
-        contact_id = (await cur.fetchone())["id"]
+            contact_id = (await cur.fetchone())["id"]
 
         # ── 3) Deal — one per ACCOUNT (uq_deals_account); no booking columns on this lane.
         # On conflict, fill the company identity if missing and NEVER regress status. ─────────
@@ -110,15 +114,17 @@ async def create_deal_manual(
         )
         deal = await cur.fetchone()
 
-        # ── 4) Attach the signatory (DO NOTHING preserves an operator's later toggle). ───────
-        await cur.execute(
-            """
-            INSERT INTO business.deal_contacts (deal_id, contact_id, is_signatory)
-            VALUES (%s::uuid, %s::uuid, true)
-            ON CONFLICT (deal_id, contact_id) DO NOTHING
-            """,
-            (deal["id"], contact_id),
-        )
+        # ── 4) Attach the person as a deal contact when given (NOT a signatory — that role
+        # is an Agreement fact now; DO NOTHING preserves an operator's later toggle). ────────
+        if contact_id:
+            await cur.execute(
+                """
+                INSERT INTO business.deal_contacts (deal_id, contact_id, is_signatory)
+                VALUES (%s::uuid, %s::uuid, false)
+                ON CONFLICT (deal_id, contact_id) DO NOTHING
+                """,
+                (deal["id"], contact_id),
+            )
 
     return {
         "action": "created" if deal["inserted"] else "updated",

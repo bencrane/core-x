@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/documenso", tags=["documenso-webhooks"])
 
+# Documenso lifecycle events → business.agreements.status (the ~15-line projector ruled in
+# the 2026-07-19 agreement-cycle plan §6). DOCUMENT_SIGNED fires per recipient; both it and
+# the terminal DOCUMENT_COMPLETED map to 'signed' (the guard below never regresses terminals).
+_AGREEMENT_EVENT_STATUS = {
+    "DOCUMENT_SENT": "sent",
+    "DOCUMENT_OPENED": "sent",
+    "DOCUMENT_SIGNED": "signed",
+    "DOCUMENT_COMPLETED": "signed",
+    "DOCUMENT_CANCELLED": "void",
+    "DOCUMENT_REJECTED": "void",
+}
+
 
 def _dig(obj: Any, *keys: str) -> Any:
     """First present, non-null key from a dict (defensive across payload-shape variants)."""
@@ -74,6 +86,28 @@ async def documenso_webhook(
             external_id=str(external_id) if external_id is not None else None,
             payload=raw,
         )
+        # AGREEMENT STATUS PROJECTOR — one guarded statement advancing the agreement row this
+        # document belongs to (matched by envelope OR numeric document id; unknown envelopes —
+        # legacy traffic — match nothing). Terminal states never regress; timestamps stamp once.
+        mapped = _AGREEMENT_EVENT_STATUS.get(str(event or "").upper())
+        if mapped and envelope_id is not None:
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        UPDATE business.agreements
+                           SET status = %(status)s,
+                               sent_at   = CASE WHEN %(status)s = 'sent'   THEN COALESCE(sent_at,   now()) ELSE sent_at   END,
+                               signed_at = CASE WHEN %(status)s = 'signed' THEN COALESCE(signed_at, now()) ELSE signed_at END,
+                               voided_at = CASE WHEN %(status)s = 'void'   THEN COALESCE(voided_at, now()) ELSE voided_at END
+                         WHERE (documenso_envelope_id = %(eid)s OR documenso_document_id::text = %(eid)s)
+                           AND status NOT IN ('signed', 'void')
+                        """,
+                        {"status": mapped, "eid": str(envelope_id)},
+                    )
+                await conn.commit()
+            except Exception:  # noqa: BLE001 — raw capture is the SoR; projection is best-effort
+                logger.warning("agreement status projection failed for envelope %s", envelope_id)
     logger.info("documenso webhook captured: id=%s event=%s envelope=%s", event_id, event, envelope_id)
 
     # ENVELOPE MIRROR — schedule the async projector to run AFTER this 200 is sent (it pulls the FULL
