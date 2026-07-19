@@ -15,7 +15,7 @@ import { task, wait, logger } from "@trigger.dev/sdk";
  * The enrichment OUTPUT SCHEMA is fixed worker-side (pipelines/parallel/booking_enrich.py,
  * `_OUTPUT_SCHEMA`) — edit it there to change the columns. This task carries no schema.
  *
- * Tier: lite|base|core (default lite). `ultra` is rejected worker-side (per-run webhook path).
+ * Tier: lite|base|core|pro (default lite). `ultra` is rejected worker-side (per-run webhook path).
  * Billing task → no blind retry.
  */
 
@@ -26,8 +26,8 @@ interface BookingEnrichPayload {
   domain: string;
   /** Prospect company name (optional but recommended — steers the extraction). */
   companyName?: string;
-  /** lite | base | core. Default lite. ultra rejected worker-side. */
-  processor?: "lite" | "base" | "core";
+  /** lite | base | core | pro. Default lite. ultra rejected worker-side. */
+  processor?: "lite" | "base" | "core" | "pro";
   /** Advisory USD cap recorded on the ledger. */
   maxUsd?: number;
   /** Idempotency key override. Defaults to a per-booking key. */
@@ -47,7 +47,7 @@ interface BookingEnrichCallback {
   error?: string | null;
 }
 
-const ALLOWED_PROCESSORS = ["lite", "base", "core"];
+const ALLOWED_PROCESSORS = ["lite", "base", "core", "pro"];
 
 export const bookingEnrich = task({
   id: "booking-enrich",
@@ -69,7 +69,7 @@ export const bookingEnrich = task({
     const processor = String(payload?.processor ?? "lite");
     if (!ALLOWED_PROCESSORS.includes(processor)) {
       throw new Error(
-        `processor ${JSON.stringify(processor)} not allowed — booking-enrich caps at 'core' ` +
+        `processor ${JSON.stringify(processor)} not allowed — booking-enrich caps at 'pro' ` +
           `(ultra needs the per-run webhook path, deferred).`,
       );
     }
