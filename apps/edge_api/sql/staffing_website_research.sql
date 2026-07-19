@@ -27,3 +27,11 @@ CREATE TABLE IF NOT EXISTS gtm.staffing_website_research (
 
 CREATE INDEX IF NOT EXISTS staffing_website_research_uei_idx
     ON gtm.staffing_website_research (uei);
+
+-- 2026-07-18b: domain-keyed sibling landings (the non-SAM staffing population has no UEI;
+-- normalized domain is its connect key). Exactly one of (uei, domain) per row — enforced by
+-- the lander, not a constraint, to keep the DDL idempotent and additive.
+ALTER TABLE gtm.staffing_website_research ALTER COLUMN uei DROP NOT NULL;
+ALTER TABLE gtm.staffing_website_research ADD COLUMN IF NOT EXISTS domain text;
+CREATE INDEX IF NOT EXISTS staffing_website_research_domain_idx
+    ON gtm.staffing_website_research (domain);

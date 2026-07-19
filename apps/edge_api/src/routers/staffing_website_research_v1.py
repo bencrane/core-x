@@ -1,7 +1,9 @@
 """Staffing-agency website research — raw landing surface (append-only, raw-only).
 
 Endpoints (mounted at ``/api/v1/staffing/website-research``, service-token gated):
-  POST /land   → land ONE research payload for one UEI, idempotent
+  POST /land            → land ONE research payload for one UEI, idempotent
+  POST /land-by-domain  → sibling for the non-SAM population: connect key is the
+                          normalized domain (no UEI exists); same storage, same grain
   GET  /stats  → row / distinct-uei / distinct-record counts
 
 The research grain for the SAM-matched staffing agencies (outbound CSV
@@ -50,9 +52,18 @@ _INSERT_SQL = (
     "ON CONFLICT (record_id) DO NOTHING"
 )
 
+_INSERT_BY_DOMAIN_SQL = (
+    "INSERT INTO gtm.staffing_website_research (record_id, domain, source, raw_payload) "
+    "VALUES (%s, %s, %s, %s) "
+    "ON CONFLICT (record_id) DO NOTHING"
+)
+
+_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{2,253}\.[a-z]{2,}$")
+
 _STATS_SQL = """
     SELECT count(*)                 AS rows,
            count(DISTINCT uei)      AS distinct_ueis,
+           count(DISTINCT domain)   AS distinct_domains,
            count(DISTINCT record_id) AS distinct_records
     FROM gtm.staffing_website_research
 """
@@ -95,10 +106,39 @@ async def land(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.post("/land-by-domain", dependencies=[Depends(require_service_token)])
+async def land_by_domain(body: dict[str, Any]) -> dict[str, Any]:
+    """Land ONE research payload keyed by normalized domain (non-SAM population).
+    Body is ``{"domain": "acmestaffing.com", "raw_payload": {...}}``. Verbatim, no explode."""
+    domain = body.get("domain")
+    domain = domain.strip().lower() if isinstance(domain, str) else None
+    if not domain or not _DOMAIN_RE.match(domain):
+        logger.warning("staffing website-research land-by-domain rejected: bad domain=%r", body.get("domain"))
+        raise HTTPException(status_code=422, detail="unidentifiable: top-level domain (normalized, e.g. acmestaffing.com) is required")
+
+    rec = body.get("raw_payload")
+    if not isinstance(rec, dict) or not rec:
+        raise HTTPException(status_code=422, detail="raw_payload must be a non-empty object")
+
+    record_id = _record_id(f"domain:{domain}", rec)
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_INSERT_BY_DOMAIN_SQL, (record_id, domain, _SOURCE, Jsonb(rec)))
+            landed = cur.rowcount == 1
+        await conn.commit()
+
+    return {
+        "landed": landed,
+        "already_present": not landed,
+        "record_id": record_id,
+        "domain": domain,
+    }
+
+
 @router.get("/stats", dependencies=[Depends(require_service_token)])
 async def stats() -> dict[str, Any]:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(_STATS_SQL)
             r = await cur.fetchone()
-    return {"rows": r[0], "distinct_ueis": r[1], "distinct_records": r[2]}
+    return {"rows": r[0], "distinct_ueis": r[1], "distinct_domains": r[2], "distinct_records": r[3]}
