@@ -181,3 +181,25 @@ async def originate_deal(handle: str) -> DealOriginated:
         status="pending",
         documenso_host=config.documenso_api_url(),
     )
+
+
+@router.get("/company-intel", dependencies=[Depends(require_service_token)])
+async def company_intel(domain: str) -> dict:
+    """Firmographic intel for a domain — currently the verbatim LeadMagic company payload
+    (corex.company_leadmagic, fetch-once at booking). Serves the gc Mandate page's
+    recognition band. Returns {found: bool, status, fetched_at, payload}."""
+    d = (domain or "").strip().lower()
+    if not d:
+        raise HTTPException(status_code=422, detail="domain required")
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT payload, status, fetched_at FROM corex.company_leadmagic WHERE domain = %s",
+                (d,),
+            )
+            row = await cur.fetchone()
+    if not row:
+        return {"found": False, "domain": d}
+    payload, status, fetched_at = row
+    return {"found": True, "domain": d, "status": status,
+            "fetched_at": fetched_at.isoformat() if fetched_at else None, "payload": payload}
