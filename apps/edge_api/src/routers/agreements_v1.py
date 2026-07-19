@@ -404,3 +404,46 @@ async def template_fields(template_id: int) -> dict:
                 fields.append({"label": label, "default": "", "read_only": False})
     fields.sort(key=lambda f: (f["read_only"], f["label"].lower()))
     return {"documenso_id": row["documenso_id"], "title": row["title"], "fields": fields}
+
+
+class TemplateDefaultsPut(BaseModel):
+    """Per-label default values for the template's prefill config (Settings editor).
+    Only defaults move here; read_only flags are preserved (new labels enter unlocked)."""
+
+    defaults: dict[str, str]
+
+
+@router.put("/templates/{template_id}/fields", dependencies=[Depends(require_service_token)])
+async def put_template_defaults(template_id: int, body: TemplateDefaultsPut) -> dict:
+    """Upsert the template's prefill-config DEFAULTS (business.documenso_template_document_
+    prefill_configs.field_settings.default_document_field_value per label). These are the
+    baseline every deal's origination details starts from and what generate resolves when a
+    deal doesn't override. Labels absent from the existing config are added (read_only=false);
+    existing read_only flags never change here."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT field_settings FROM business.documenso_template_document_prefill_configs "
+                "WHERE template_documenso_id = %s LIMIT 1",
+                (template_id,),
+            )
+            existing = await cur.fetchone()
+            settings: dict = dict((existing or {}).get("field_settings") or {})
+            for label, value in body.defaults.items():
+                entry = dict(settings.get(label) or {"read_only": False})
+                entry["default_document_field_value"] = str(value)
+                settings[label] = entry
+            if existing:
+                await cur.execute(
+                    "UPDATE business.documenso_template_document_prefill_configs "
+                    "SET field_settings = %s, updated_at = now() WHERE template_documenso_id = %s",
+                    (Jsonb(settings), template_id),
+                )
+            else:
+                await cur.execute(
+                    "INSERT INTO business.documenso_template_document_prefill_configs "
+                    "(template_documenso_id, field_settings) VALUES (%s, %s)",
+                    (template_id, Jsonb(settings)),
+                )
+        await conn.commit()
+    return await template_fields(template_id)
