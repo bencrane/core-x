@@ -25,7 +25,8 @@ interface CompactionCallback {
 
 export const usaspendingFreshCompaction = schedules.task({
   id: "usaspending-fresh-compaction",
-  cron: { pattern: "0 9 * * 0", timezone: "UTC" }, // Sun 09:00 UTC — off-peak vs the daily append
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate). // Sun 09:00 UTC — off-peak vs the daily append
+  // cron: { pattern: "0 9 * * 0", timezone: "UTC" },
   maxDuration: 5400,
   run: async (_payload, { ctx }) => {
     const targets = [

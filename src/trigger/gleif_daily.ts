@@ -42,7 +42,8 @@ const LEVELS: Array<{ level: string; feed: string }> = [
 export const gleifDaily = schedules.task({
   id: "gleif-daily",
   // 06:00 UTC — comfortably after GLEIF's 00:00 UTC daily golden-copy publish.
-  cron: { pattern: "0 6 * * *", timezone: "UTC" },
+  // PARKED (operator ruling 2026-07-19: no scheduled cadence for now; restore to reinstate).
+  // cron: { pattern: "0 6 * * *", timezone: "UTC" },
   maxDuration: 7200,
   run: async (payload) => {
     logger.info("GLEIF daily starting", {
