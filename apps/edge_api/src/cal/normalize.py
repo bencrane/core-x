@@ -131,7 +131,7 @@ def extract(trigger_event: str | None, envelope: dict[str, Any]) -> dict[str, An
         # company (form custom fields)
         "company_name": _find_response(responses, ["Company-Name"], ["company name"]),
         "domain": _apex(_find_response(responses, ["Company-Website"], ["company website", "website", "domain"])),
-        "title": None,  # no job-title field on the event-type form (stays null for now)
+        "title": _find_response(responses, ["Job-Title", "title"], ["job title"]),
         # timing
         "start_time": _parse_ts(inner.get("startTime")),
         "end_time": _parse_ts(inner.get("endTime")),
