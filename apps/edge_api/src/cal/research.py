@@ -25,9 +25,10 @@ from ..services.trigger_dev_client import trigger_task
 logger = logging.getLogger(__name__)
 
 RESEARCH_TASK = "parallel-deep-research"
-# Parallel TASK-API processor tier (lite|base|core|pro) — NOT the deep-research
-# "Pro/Ultra" UI tiers. 'lite' is the cheapest; bump later if the brief needs depth.
-RESEARCH_PROCESSOR = "lite"
+# Parallel processor tier for this deep-research run. 'pro' is the deep-research
+# floor (operator ruling 2026-07-19: capital-provider institutional profiles run on
+# pro; the SIBLING booking-enrich Task-API run stays 'lite' — do not conflate).
+RESEARCH_PROCESSOR = "pro"
 
 # The active prompt is the `company-brief` slug in corex.research_prompts.
 RESEARCH_PROMPT_SLUG = "company-brief"
