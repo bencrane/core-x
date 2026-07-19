@@ -49,7 +49,8 @@ interface MaterializeCallback {
 export const nppesMonthly = schedules.task({
   id: "nppes-monthly",
   // 12:00 UTC on the 15th — CMS has published the new monthly full replacement by then.
-  cron: { pattern: "0 12 15 * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 12 15 * *", timezone: "UTC" },
   // Download (~1 GB) + ~10 GB CSV transform + index + ~6 GB publish; the durable wait
   // consumes no compute while suspended.
   maxDuration: 14400,

@@ -29,7 +29,8 @@ interface IngestCallback {
 export const edgarIdentitySpine = schedules.task({
   id: "edgar-identity-spine",
   // Mondays 06:00 ET. The mapping changes slowly; a weekly refresh keeps the spine current.
-  cron: { pattern: "0 6 * * 1", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 6 * * 1", timezone: "America/New_York" },
   maxDuration: 1800,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({ timeout: "1h", tags: ["edgar", "cik-map"] });

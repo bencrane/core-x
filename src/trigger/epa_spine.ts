@@ -25,7 +25,8 @@ export const epaSpineDispatcher = schedules.task({
   id: "epa-spine-dispatcher",
   // 12:00 UTC on the 2nd — ~6h after the EPA multi-media refresh dispatch, so the source
   // datasets the spine reads are the freshly-materialized ones.
-  cron: { pattern: "0 12 2 * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 12 2 * *", timezone: "UTC" },
   maxDuration: 28800, // durable wait consumes no compute while suspended (heavy NPDES DMR scan)
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

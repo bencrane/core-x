@@ -33,7 +33,8 @@ interface IngestCallback {
 export const overturePlaces = schedules.task({
   id: "overture-places-ingest",
   // Monthly, 5th @ 06:00 UTC — the latest Overture release has settled by then.
-  cron: { pattern: "0 6 5 * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 6 5 * *", timezone: "UTC" },
   // Generous compute cap; the durable wait itself consumes no compute while
   // suspended (the token timeout, not maxDuration, bounds the wait window).
   maxDuration: 5400,

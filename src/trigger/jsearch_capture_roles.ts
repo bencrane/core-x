@@ -116,7 +116,8 @@ async function harvestThenMaterialize(
 // Scheduled incremental — daily 13:00 UTC. The durable waits consume no compute while suspended.
 export const jsearchCaptureRolesDaily = schedules.task({
   id: "jsearch-capture-roles-daily",
-  cron: { pattern: "0 13 * * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 13 * * *", timezone: "UTC" },
   maxDuration: 3900,
   run: async (_payload, { ctx }) => {
     logger.info("jsearch capture-roles daily incremental starting", { triggerRunId: ctx.run.id });

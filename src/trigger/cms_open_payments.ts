@@ -42,7 +42,8 @@ export const cmsOpenPaymentsRefresh = schedules.task({
   id: "cms-open-payments-refresh",
   // 06:00 UTC on the 1st of Jan/Apr/Jul/Oct — quarterly, to catch CMS's annual publish
   // plus rolling late submissions / corrections.
-  cron: { pattern: "0 6 1 1,4,7,10 *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 6 1 1,4,7,10 *", timezone: "UTC" },
   // Generous ceiling: the durable wait consumes no compute while suspended; the actual
   // work (a full historical backfill — General alone is ~8 GB/year × all years) runs on
   // Modal and is bounded by the worker's own 10 h function timeout + the 12 h token below.

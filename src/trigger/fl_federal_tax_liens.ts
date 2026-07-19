@@ -37,7 +37,8 @@ interface IngestCallback {
 export const flFederalTaxLiens = schedules.task({
   id: "fl-federal-tax-liens-ingest",
   // 16:00 UTC on the 12th of each quarter's first month — after the quarterly FLR drop lands.
-  cron: { pattern: "0 16 12 1,4,7,10 *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 16 12 1,4,7,10 *", timezone: "UTC" },
   // One Modal invocation builds + indexes the dataset; the durable wait consumes no compute.
   maxDuration: 3600,
   run: async (payload) => {

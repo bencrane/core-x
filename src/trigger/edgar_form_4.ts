@@ -34,7 +34,8 @@ export const form4Quarterly = schedules.task({
   id: "edgar-form-4-quarterly",
   // 09:00 ET on the 10th of Jan/Apr/Jul/Oct — SEC posts the prior quarter within days of
   // quarter-end; the 10th leaves comfortable margin. Worker resolves the latest available file.
-  cron: { pattern: "0 9 10 1,4,7,10 *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 9 10 1,4,7,10 *", timezone: "America/New_York" },
   maxDuration: 3600,
   run: async (_payload) => {
     logger.info("edgar form_4 quarterly ingest starting");

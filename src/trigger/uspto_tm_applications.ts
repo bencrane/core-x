@@ -31,7 +31,8 @@ const DATASET = "applications";
 export const applicationsDelta = schedules.task({
   id: "uspto-tm-applications-delta",
   // 08:00 ET daily — comfortably after the 24:00 ET daily-file posting.
-  cron: { pattern: "0 8 * * *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 8 * * *", timezone: "America/New_York" },
   maxDuration: 3600,
   run: async (payload) => {
     logger.info("apc delta starting", { scheduledAt: payload.timestamp });

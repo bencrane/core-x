@@ -43,7 +43,8 @@ export const crosswalkHmdaGleif = schedules.task({
   id: "crosswalk-hmda-gleif",
   // 08:00 UTC daily — a 2h offset after gleif-daily (06:00 UTC); the build is
   // overwrite-idempotent so it can never go stale relative to the published sources.
-  cron: { pattern: "0 8 * * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 8 * * *", timezone: "UTC" },
   // Generous cap; the durable wait itself consumes no compute while suspended.
   maxDuration: 1800,
   run: async (_payload, { ctx }) => {

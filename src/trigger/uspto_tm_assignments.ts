@@ -24,7 +24,8 @@ const DATASET = "assignments";
 
 export const assignmentsDelta = schedules.task({
   id: "uspto-tm-assignments-delta",
-  cron: { pattern: "0 8 * * *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 8 * * *", timezone: "America/New_York" },
   maxDuration: 3600,
   run: async (payload) => {
     logger.info("asb delta starting", { scheduledAt: payload.timestamp });

@@ -38,7 +38,8 @@ const DAILY_FEEDS: Array<{ feed: string; fn: string }> = [
 export const fmcsaDaily = schedules.task({
   id: "fmcsa-daily",
   // 15:00 UTC ≈ 11:00 ET — after FMCSA's overnight snapshot publish.
-  cron: { pattern: "0 15 * * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 15 * * *", timezone: "UTC" },
   maxDuration: 7200,
   run: async (payload) => {
     const snapshotDate = payload.timestamp.toISOString().slice(0, 10);
