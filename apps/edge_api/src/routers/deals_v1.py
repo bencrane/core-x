@@ -183,6 +183,56 @@ async def originate_deal(handle: str) -> DealOriginated:
     )
 
 
+# POST /api/v1/deals/{handle}/intel — fire the three company-grain intel lanes for a deal's
+# domain ON DEMAND (the manual parallel to the Cal-webhook kickoff): Parallel deep-research +
+# Parallel enrichment (Trigger.dev, domain-keyed idempotency — repeat fires reuse runs) +
+# LeadMagic firmographics (fetch-once). Fire-and-forget: returns per-lane dispatch results.
+@router.post("/{handle}/intel", dependencies=[Depends(require_service_token)])
+async def fire_deal_intel(handle: str) -> dict:
+    from ..cal import enrich as cal_enrich, leadmagic, queries as cal_queries, research
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT company_name, company_domain FROM business.deals WHERE deal_handle = %s LIMIT 1",
+                (handle,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="deal not found")
+    company_name, domain = row
+    if not domain:
+        raise HTTPException(status_code=422, detail="deal has no domain — intel lanes key on it")
+
+    synthetic_uid = f"deal:{handle}"  # no booking row; the stamp update matches nothing (fine)
+
+    prompt_id = None
+    template = None
+    try:
+        async with get_db_connection() as conn:
+            active = await cal_queries.get_active_research_prompt(conn, research.RESEARCH_PROMPT_SLUG)
+        if active:
+            prompt_id, template = active
+    except Exception:  # noqa: BLE001 — fall back to the built-in template
+        pass
+    research_run = await research.trigger_research(
+        ical_uid=synthetic_uid, company_name=company_name, domain=domain, template=template
+    )
+    enrich_run = await cal_enrich.trigger_enrich(
+        ical_uid=synthetic_uid, company_name=company_name, domain=domain
+    )
+    async with get_db_connection() as conn:
+        lm = await leadmagic.fetch_and_store(conn, domain=domain, company_name=company_name)
+        await conn.commit()
+    return {
+        "deal_handle": handle,
+        "domain": domain,
+        "research": {"run_id": research_run, "prompt_id": prompt_id},
+        "enrich": {"run_id": enrich_run},
+        "leadmagic": lm,
+    }
+
+
 @router.get("/company-intel", dependencies=[Depends(require_service_token)])
 async def company_intel(domain: str) -> dict:
     """Firmographic intel for a domain — currently the verbatim LeadMagic company payload
