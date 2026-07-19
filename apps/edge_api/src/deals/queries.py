@@ -20,7 +20,8 @@ _SELECT_COLS = (
     "d.id::text AS deal_id, d.deal_handle, d.status, d.created_at, "
     "d.company_name, d.company_domain AS domain, "
     "c.first_name, c.last_name, c.email, c.title, "
-    "d.last_booking_id::text AS last_booking_id, bk.booked_at"
+    "d.last_booking_id::text AS last_booking_id, bk.booked_at, "
+    "ag.status AS latest_agreement_status"
 )
 
 
@@ -32,6 +33,11 @@ async def list_recent(conn, limit: int = 100) -> list[Deal]:
              LEFT JOIN business.contacts c
                     ON c.account_id = d.account_id AND c.is_primary AND c.deleted_at IS NULL
              LEFT JOIN corex.bookings bk ON bk.booking_id = d.last_booking_id
+             LEFT JOIN LATERAL (
+                       SELECT a.status FROM business.agreements a
+                        WHERE a.deal_id = d.id
+                        ORDER BY a.created_at DESC LIMIT 1
+                  ) ag ON true
               ORDER BY d.created_at DESC
                  LIMIT %s""",
             (limit,),

@@ -44,6 +44,7 @@ from .src.mcp_bearer import bearer_token_app
 from .src.routers.agent_runs_v1 import router as agent_runs_router
 from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.deals_v1 import router as deals_router
+from .src.routers.agreements_v1 import router as agreements_router
 from .src.routers.internal_deals_v1 import router as internal_deals_router
 from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
@@ -340,6 +341,11 @@ app.include_router(bookings_router)
 # The first-class pipeline entity replacing the booking->opportunity projection for the cockpit
 # list + Application detail. Service-token gated; the BFF brokers it with the operator session.
 app.include_router(deals_router)
+
+# agreements: the contractual instrument (business.agreements, child of a deal) — draft →
+# generate (Documenso mint, externalId = agreement_handle) → webhook-projected lifecycle.
+# Ontology ruling 2026-07-19; supersedes the deal_document_configs originate chain.
+app.include_router(agreements_router)
 
 # deals (internal): the materialization PRODUCER. The deal-materialize Trigger.dev task
 # (fired by the cal webhook on a new booking) calls /internal/deals/materialize to project the

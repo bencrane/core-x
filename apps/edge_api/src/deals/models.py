@@ -28,6 +28,7 @@ class Deal(BaseModel):
     title: str | None = None
     last_booking_id: str | None = None
     booked_at: _dt.datetime | None = None
+    latest_agreement_status: str | None = None
 
 
 class DealSummary(BaseModel):
@@ -46,6 +47,7 @@ class DealSummary(BaseModel):
     title: str | None
     last_booking_id: str | None
     booked_at: str | None
+    latest_agreement_status: str | None = None
 
     @classmethod
     def from_row(cls, d: "Deal") -> "DealSummary":
@@ -62,6 +64,7 @@ class DealSummary(BaseModel):
             title=d.title,
             last_booking_id=d.last_booking_id,
             booked_at=d.booked_at.isoformat() if d.booked_at else None,
+            latest_agreement_status=d.latest_agreement_status,
         )
 
 
@@ -104,16 +107,17 @@ class DealDetailsUpdate(BaseModel):
 
 
 class DealCreate(BaseModel):
-    """POST body for the MANUAL deal lane (Settings → New Deal) — the operator-authored parallel
-    to the booking producer. The signatory is REQUIRED (first/last/email): originate 422s without
-    a signatory email, so this lane refuses at the door rather than minting an unoriginatable deal.
-    ``domain`` is the account dedupe key when present; ``title`` is the person's job title."""
+    """POST body for the MANUAL deal lane — the operator-authored parallel to the booking
+    producer. Ontology ruling 2026-07-19: the signatory lives on the AGREEMENT, not the deal —
+    person fields here are OPTIONAL (attached as a plain contact when given); agreement
+    generation is the enforcement point (422 without a signatory). ``domain`` is the account
+    dedupe key when present; ``title`` is the person's job title."""
 
     company_name: str
     domain: str | None = None
-    first_name: str
-    last_name: str
-    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
     title: str | None = None
 
 
@@ -127,7 +131,7 @@ class DealCreated(BaseModel):
     deal_handle: str
     status: str
     account_id: str
-    contact_id: str
+    contact_id: str | None = None
 
 
 class DealOriginated(BaseModel):
