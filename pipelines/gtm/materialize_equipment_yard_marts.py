@@ -34,6 +34,7 @@ Run (in-session scale):
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import sys
@@ -45,7 +46,42 @@ from pipelines._shared.lance_local_publish import write_indexed_dataset  # noqa:
 
 INVENTORY_URI = "s3://data-sink/active/equipment_yard_inventory/"
 PROFILE_URI = "s3://data-sink/active/equipment_yard_profile/"
+FOOTPRINT_URI = "s3://data-sink/active/equipment_provider_service_footprint/"
 ALIAS_CSV = os.path.join(os.path.dirname(__file__), "data", "equipment_phrase_alias.csv")
+
+# ── deterministic state extraction (service-area `parsed` strings) ───────────
+_US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN",
+    "mississippi": "MS", "missouri": "MO", "montana": "MT", "nebraska": "NE",
+    "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
+    "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR",
+    "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "district of columbia": "DC",
+}
+_STATE_CODES = set(_US_STATES.values())
+_STATE_NAME_RE = re.compile(
+    "|".join(sorted((re.escape(k) for k in _US_STATES), key=len, reverse=True)))
+_CODE_TOKEN_RE = re.compile(r"\b([A-Z]{2})\b")
+
+
+def parse_states(parsed: str | None) -> set[str]:
+    """States named in a service-area `parsed` string — full names (case-
+    insensitive) plus uppercase two-letter codes. Deterministic; unknown
+    tokens ignored."""
+    if not parsed:
+        return set()
+    out = {_US_STATES[m] for m in _STATE_NAME_RE.findall(parsed.lower())}
+    out |= {c for c in _CODE_TOKEN_RE.findall(parsed) if c in _STATE_CODES}
+    return out
 
 # First match wins; ordered specific → general. The first five bucket names are
 # the naics_psc_equipment_needs vocabulary VERBATIM (the demand join key).
@@ -154,6 +190,45 @@ def main() -> None:
            json_array_length(COALESCE(json_extract(p, '$.categories'), '[]'::JSON)) AS n_categories
     FROM (SELECT uei, CAST(raw_payload AS JSON) AS p
           FROM hqx.gtm.equipment_yard_website_research)""")
+    def service_geo(table: str, key_col: str) -> list[tuple]:
+        """Latest payload per key → (key, footprint_types, service_states,
+        has_nationwide, n_areas). States parsed deterministically from the
+        entries' `parsed` strings; nationwide entries contribute no states."""
+        rows = con.execute(f"""
+            SELECT {key_col}, CAST(raw_payload AS VARCHAR)
+            FROM (SELECT {key_col}, raw_payload,
+                         ROW_NUMBER() OVER (PARTITION BY {key_col}
+                                            ORDER BY landed_at DESC) AS rn
+                  FROM hqx.gtm.{table}) t
+            WHERE rn = 1""").fetchall()
+        out = []
+        for key, payload in rows:
+            try:
+                areas = json.loads(payload).get("serviceAreas") or []
+            except (json.JSONDecodeError, AttributeError):
+                areas = []
+            types, states = set(), set()
+            for a in areas:
+                if not isinstance(a, dict):
+                    continue
+                t = (a.get("type") or "").strip()
+                if t:
+                    types.add(t)
+                if t != "nationwide":
+                    states |= parse_states(a.get("parsed"))
+            out.append((key, sorted(types), sorted(states),
+                        "nationwide" in types, len(areas)))
+        return out
+
+    con.execute("""CREATE TABLE geo_uei (uei VARCHAR, footprint_types VARCHAR[],
+                   service_states VARCHAR[], has_nationwide BOOLEAN, n_service_areas INT)""")
+    con.executemany("INSERT INTO geo_uei VALUES (?,?,?,?,?)",
+                    service_geo("equipment_yard_service_areas", "uei"))
+    con.execute("""CREATE TABLE geo_dom (domain_norm VARCHAR, footprint_types VARCHAR[],
+                   service_states VARCHAR[], has_nationwide BOOLEAN, n_service_areas INT)""")
+    con.executemany("INSERT INTO geo_dom VALUES (?,?,?,?,?)",
+                    service_geo("equipment_provider_service_areas", "domain_norm"))
+
     con.execute("""
     CREATE TABLE industries AS
     SELECT uei,
@@ -177,7 +252,10 @@ def main() -> None:
            COALESCE(b.matched_instances, 0) AS matched_instances,
            COALESCE(b.unmatched_instances, 0) AS unmatched_instances,
            i.industries_served,
-           COALESCE(i.serves_government, FALSE) AS serves_government
+           COALESCE(i.serves_government, FALSE) AS serves_government,
+           g.footprint_types, g.service_states,
+           COALESCE(g.has_nationwide, FALSE) AS has_nationwide,
+           COALESCE(g.n_service_areas, 0) AS n_service_areas
     FROM verdict v
     LEFT JOIN (
       SELECT uei,
@@ -188,18 +266,22 @@ def main() -> None:
       FROM (SELECT uei, bucket, COUNT(*) AS cnt FROM inv GROUP BY 1, 2)
       GROUP BY 1) b USING (uei)
     LEFT JOIN industries i USING (uei)
+    LEFT JOIN geo_uei g USING (uei)
     ORDER BY v.uei""")
 
     so = _r2_storage_options()
     inv_tbl = con.execute("SELECT * FROM inventory").to_arrow_table()
     prof_tbl = con.execute("SELECT * FROM profile").to_arrow_table()
+    fp_tbl = con.execute("SELECT * FROM geo_dom ORDER BY domain_norm").to_arrow_table()
     ds_i = write_indexed_dataset(inv_tbl, INVENTORY_URI, [("uei", "BTREE")], so)
     ds_p = write_indexed_dataset(prof_tbl, PROFILE_URI, [("uei", "BTREE")], so)
+    ds_f = write_indexed_dataset(fp_tbl, FOOTPRINT_URI, [("domain_norm", "BTREE")], so)
     cov = con.execute(
         "SELECT COUNT(*) FILTER (WHERE bucket IS NOT NULL) * 1.0 / COUNT(*) FROM inv"
     ).fetchone()[0]
     print(f"published {INVENTORY_URI} rows={ds_i.count_rows():,}")
     print(f"published {PROFILE_URI} rows={ds_p.count_rows():,}")
+    print(f"published {FOOTPRINT_URI} rows={ds_f.count_rows():,}")
     print(f"instance bucket coverage: {cov:.1%}")
 
 
