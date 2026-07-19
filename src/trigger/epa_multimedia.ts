@@ -22,7 +22,8 @@ interface IngestCallback {
 export const epaMultimediaDispatcher = schedules.task({
   id: "epa-multimedia-dispatcher",
   // 06:00 UTC on the 2nd of each month (after EPA's monthly bulk refresh settles).
-  cron: { pattern: "0 6 2 * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 6 2 * *", timezone: "UTC" },
   maxDuration: 10800, // durable wait consumes no compute while suspended
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

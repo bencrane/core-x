@@ -34,7 +34,8 @@ interface IngestCallback {
 export const oshaSniperDispatcher = schedules.task({
   id: "osha-sniper-dispatcher",
   // Daily 13:00 UTC. Object form pins the timezone explicitly (no ambiguity).
-  cron: { pattern: "0 13 * * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 13 * * *", timezone: "UTC" },
   // Generous cap; the durable wait itself consumes no compute while suspended.
   maxDuration: 1800,
   run: async (_payload, { ctx }) => {

@@ -31,7 +31,8 @@ interface DiversificationCallback {
 
 export const subDiversification = schedules.task({
   id: "sub-diversification",
-  cron: { pattern: "0 11 * * 1", timezone: "UTC" }, // Mon 11:00 UTC — off-peak, post-weekend appends
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate. // Mon 11:00 UTC — off-peak, post-weekend appends
+  // cron: { pattern: "0 11 * * 1", timezone: "UTC" },
   maxDuration: 9000, // 2.5h — full-universe ANN is ~8x the captive build
   run: async () => {
     const token = await wait.createToken({

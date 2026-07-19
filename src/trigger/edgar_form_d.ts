@@ -34,7 +34,8 @@ export const formDQuarterly = schedules.task({
   id: "edgar-form-d-quarterly",
   // 09:30 ET on the 10th of Jan/Apr/Jul/Oct (staggered 30m after form_4 to avoid a
   // simultaneous dispatch burst). Worker resolves the latest available file.
-  cron: { pattern: "30 9 10 1,4,7,10 *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "30 9 10 1,4,7,10 *", timezone: "America/New_York" },
   maxDuration: 3600,
   run: async (_payload) => {
     logger.info("edgar form_d quarterly ingest starting");

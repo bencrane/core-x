@@ -35,7 +35,8 @@ const MONTHLY_FEEDS: Array<{ feed: string; fn: string }> = [
 export const fmcsaMonthly = schedules.task({
   id: "fmcsa-monthly",
   // 16:00 UTC on the 6th — after FMCSA's monthly SMS publish settles.
-  cron: { pattern: "0 16 6 * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 16 6 * *", timezone: "UTC" },
   maxDuration: 10800,
   run: async (payload) => {
     const snapshotDate = payload.timestamp.toISOString().slice(0, 10);

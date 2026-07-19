@@ -35,7 +35,8 @@ function requireEnv(name: string): string {
 
 export const querySidecarRebuild = schedules.task({
   id: "query-sidecar-rebuild",
-  cron: { pattern: "0 11 * * *", timezone: "UTC" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 11 * * *", timezone: "UTC" },
   maxDuration: 3600,
   run: async (_payload, { ctx }) => {
     const token = await wait.createToken({

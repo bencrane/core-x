@@ -55,7 +55,8 @@ export const secAdvDataset = task({
 export const secAdvMonthly = schedules.task({
   id: "sec-adv-monthly",
   // 09:00 America/New_York on the 1st of every month.
-  cron: { pattern: "0 9 1 * *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 9 1 * *", timezone: "America/New_York" },
   // The parent suspends at a single batch waitpoint (zero compute) while the dataset
   // child runs fan out in Modal.
   maxDuration: 5400,
@@ -125,7 +126,8 @@ export const secAdvMonthly = schedules.task({
 export const secAdvPrivateFundsMonthly = schedules.task({
   id: "sec-adv-private-funds-monthly",
   // 11:00 America/New_York on the 2nd (part1 refreshes at 09:00 ET on the 1st).
-  cron: { pattern: "0 11 2 * *", timezone: "America/New_York" },
+  // PARKED (Trigger free-plan 10-schedule cap, 2026-07-19): cron removed; restore to reinstate.
+  // cron: { pattern: "0 11 2 * *", timezone: "America/New_York" },
   maxDuration: 10800,
   run: async () => {
     logger.info("sec-adv private funds monthly ingest starting");
