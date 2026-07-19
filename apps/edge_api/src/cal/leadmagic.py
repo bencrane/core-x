@@ -68,7 +68,13 @@ async def fetch_and_store(conn, *, domain: str | None, company_name: str | None)
         http_status = resp.status_code
         if resp.status_code == 200:
             payload_json = resp.text
-            status = "found"
+            # LeadMagic returns 200 + {message} for no-hits — 'found' requires identity fields.
+            try:
+                body = resp.json()
+                has_identity = bool(body.get("companyName") or body.get("description"))
+            except Exception:  # noqa: BLE001
+                has_identity = False
+            status = "found" if has_identity else "not_found"
         elif resp.status_code == 404:
             payload_json = resp.text
             status = "not_found"
