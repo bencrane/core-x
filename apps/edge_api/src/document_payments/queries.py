@@ -61,6 +61,39 @@ async def get_fee_and_contact(conn, opportunity_id: str) -> dict | None:
     return {"field_values": row[0] or {}, "recipient_email": row[1], "recipient_name": row[2]}
 
 
+async def get_agreement_fee_and_contact(conn, agreement_handle: str) -> dict | None:
+    """Resolve, by the public ``agreement_handle``: the agreement's raw ``field_values`` (operator
+    overrides, keyed by template field LABEL), the bound template's prefill-config ``field_settings``
+    (label → defaults — the other half of the generate-time merge), and the signatory contact. The
+    caller merges via ``deals.originate.resolve_field_values`` so the resolved fee equals what generate
+    stamped (and locked) into the signed document. None when the handle is unknown."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT a.field_values,
+                   COALESCE(pfc.field_settings, '{}'::jsonb),
+                   c.email,
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
+              FROM business.agreements a
+              LEFT JOIN business.documenso_template_document_prefill_configs pfc
+                     ON pfc.template_documenso_id::text = a.template_documenso_id
+              LEFT JOIN business.contacts c ON c.id = a.signatory_contact_id
+             WHERE a.agreement_handle = %s
+             LIMIT 1
+            """,
+            (agreement_handle,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "field_values": row[0] or {},
+        "field_settings": row[1] or {},
+        "recipient_email": row[2],
+        "recipient_name": row[3],
+    }
+
+
 async def get_stripe_mode_selection(conn) -> str | None:
     """The operator's selected Stripe mode ('test'|'live') from operator_settings, or None to fall
     back to the STRIPE_MODE env. SINGLE-OPERATOR PLATFORM: Stripe mode is global (one Stripe account)

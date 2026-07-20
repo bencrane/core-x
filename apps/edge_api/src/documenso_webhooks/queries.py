@@ -51,7 +51,33 @@ _PROVIDER_SIGNING_DOMAINS = (
     "rarestructure.com",
     "activeoperators.com",
     "governmentcontracted.com",
+    # The template Provider slot carries its placeholder email (provider@example.com) through to the
+    # derived document — create_document_from_template leaves fixed-email recipients untouched — so the
+    # provider's own signature arrives from example.com. IETF-reserved, so it can never be a prospect.
+    "example.com",
+    # Operator mailbox domain — covers a provider slot bound via "Add Myself" with the real address.
+    "engineereddemand.com",
 )
+
+
+async def get_agreement_signatory_email(conn, agreement_handle: str) -> str | None:
+    """The agreement's SIGNATORY contact email by its public ``agreement_handle`` — the email bound to
+    the Participant recipient at generate (``externalId = agreement_handle``). The sign-token read
+    tries this FIRST (the /sign/{agreement_handle} flow), then falls back to the deal-handle lookup
+    below (the older deal-keyed links). None when the handle/signatory is unknown."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT c.email
+              FROM business.agreements a
+              JOIN business.contacts c ON c.id = a.signatory_contact_id
+             WHERE a.agreement_handle = %s
+             LIMIT 1
+            """,
+            (agreement_handle,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row and row[0] else None
 
 
 async def get_deal_signatory_email(conn, deal_handle: str) -> str | None:

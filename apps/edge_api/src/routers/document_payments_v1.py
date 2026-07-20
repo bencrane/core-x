@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException
 
 from .. import config
 from ..db import get_db_connection
+from ..deals import originate
 from ..documenso_webhooks import queries as sign_queries
 from ..document_payments import amount as amount_resolver
 from ..document_payments import queries as pay_queries
@@ -108,8 +109,22 @@ async def create_document_payment_intent(
         if not state["signed"]:
             raise HTTPException(status_code=409, detail="agreement not yet signed")
 
-        # AMOUNT + customer, resolved from the opportunity (by its 8-char handle).
+        # AMOUNT + customer. The handle in the pair is the opportunity's 8-char handle on the legacy
+        # /p/m links and the AGREEMENT handle on the /sign/{agreement_handle} flow — resolve through
+        # whichever world knows it. The agreement fee is the generate-time merge (prefill-config
+        # defaults ⊕ agreement overrides, via resolve_field_values) so the charge equals the value
+        # stamped read-only into the signed document, same construction as the opportunity path.
         info = await pay_queries.get_fee_and_contact(conn, opportunity_id)
+        if not info:
+            ag = await pay_queries.get_agreement_fee_and_contact(conn, opportunity_id)
+            if ag:
+                info = {
+                    "field_values": originate.resolve_field_values(
+                        ag["field_settings"], ag["field_values"]
+                    ),
+                    "recipient_email": ag["recipient_email"],
+                    "recipient_name": ag["recipient_name"],
+                }
         if not info:
             raise HTTPException(status_code=404, detail="opportunity not found")
         charge_cents = amount_resolver.resolve_fee_cents(info["field_values"])
