@@ -4,7 +4,7 @@
 
 Documenso is repointed here from the legacy ``/api/v1/proposals/webhook`` (same shared
 ``DOCUMENSO_WEBHOOK_SECRET``). This route verifies the secret and append-inserts the RAW body into
-``business.documenso_webhook_events`` — EVERY event type, no filtering, no normalization, no
+``gc.documenso_webhook_events`` — EVERY event type, no filtering, no normalization, no
 projection. The legacy proposals webhook is untouched (it simply stops receiving deliveries).
 
 Projection of these raw events into engagement/signing state is a SEPARATE, revisable step decided
@@ -111,7 +111,7 @@ async def documenso_webhook(
     logger.info("documenso webhook captured: id=%s event=%s envelope=%s", event_id, event, envelope_id)
 
     # ENVELOPE MIRROR — schedule the async projector to run AFTER this 200 is sent (it pulls the FULL
-    # live envelope and upserts business.documenso_envelopes verbatim). Only for events that carry an
+    # live envelope and upserts gc.documenso_envelopes verbatim). Only for events that carry an
     # envelope: an event name present AND a numeric inner id. The 200 above does NOT wait on this.
     if event is not None and isinstance(inner, dict) and inner.get("id") is not None:
         background_tasks.add_task(project_envelope_event, str(event), raw)
@@ -127,7 +127,7 @@ async def read_sign_state(
     PAIR carried in the signing link (``/p/m/{opportunity_id}/{document_id}``).
 
     FULLY OFFLINE — ZERO Documenso calls. ``signed`` is derived at read time from the RAW webhook
-    capture (``business.documenso_webhook_events``) for the pair ``external_id = {opportunity_id} AND
+    capture (``gc.documenso_webhook_events``) for the pair ``external_id = {opportunity_id} AND
     envelope_id = {document_id}``: true once the COUNTERPARTY (the prospect) has signed — a captured
     payload shows a SIGNED recipient whose email DOMAIN is not a provider domain — INDEPENDENT of
     whether the provider has countersigned (a terminal ``DOCUMENT_COMPLETED`` row also satisfies it).

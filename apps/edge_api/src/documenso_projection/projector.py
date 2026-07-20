@@ -1,4 +1,4 @@
-"""Async ENVELOPE projector — mirror a Documenso webhook event into business.documenso_envelopes.
+"""Async ENVELOPE projector — mirror a Documenso webhook event into gc.documenso_envelopes.
 
 Runs as a FastAPI BackgroundTask AFTER the webhook route returns 200 (ack fast, sync after). The route
 already landed the RAW event (the system of record); this pulls the FULL live envelope and upserts a
@@ -40,7 +40,7 @@ def _lower_str(v: Any) -> str:
 
 
 async def project_envelope_event(event: str, raw_payload: dict) -> None:
-    """Mirror one Documenso webhook event into business.documenso_envelopes.
+    """Mirror one Documenso webhook event into gc.documenso_envelopes.
 
     DELETE events (event ends in ``DELETED``) soft-delete the matching row with NO API pull. Every other
     event pulls the FULL live envelope (GET /api/v2/envelope/{envelopeId}) and upserts it verbatim.

@@ -33,7 +33,7 @@ async def _resolve_envelope_id(documenso_id: int) -> str | None:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT envelope_id FROM business.documenso_envelopes WHERE documenso_id = %s",
+                "SELECT envelope_id FROM gc.documenso_envelopes WHERE documenso_id = %s",
                 (documenso_id,),
             )
             row = await cur.fetchone()
