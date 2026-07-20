@@ -11,6 +11,7 @@ WIRE CONTRACT::
       "domain":               "wagnerequipment.com",             # REQUIRED (bridge key)
       "company_linkedin_url": "https://www.linkedin.com/...",    # optional (if known)
       "description":          "Cat dealer serving Colorado...",  # optional (prospeo description)
+      "clay_table_url":       "https://app.clay.com/...",        # optional provenance (Clay table)
       "raw_payload":          { ... the LLM capital-provider object, EXACTLY as emitted ... }
     }
 
@@ -88,7 +89,7 @@ _COLS = (
     "record_id", "company_name", "domain", "domain_norm", "company_linkedin_url", "description",
     "capital_provider_type_category", "provides_capital", "confidence", "reasoning",
     "source_urls", "evidence_phrases", "steps_taken",
-    "source", "raw_payload",
+    "source", "clay_table_url", "raw_payload",
 )
 _INSERT_SQL = (
     f"INSERT INTO gtm.company_capital_providers ({', '.join(_COLS)}) "
@@ -124,17 +125,20 @@ def _to_row(body: dict[str, Any], rec: dict[str, Any]) -> tuple | None:
         _s(rec.get("capitalType")), _b(rec.get("providesCapital")), _s(rec.get("confidence")),
         _s(rec.get("reasoning")),
         _j(source_urls), _j(evidence_phrases), _j(steps_taken),
-        _SOURCE, Jsonb(rec),
+        _SOURCE, _s(body.get("clay_table_url")), Jsonb(rec),
     )
 
 
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: dict[str, Any]) -> dict[str, Any]:
     """Land ONE capital-provider record. Body is
-    ``{"domain": "...", "raw_payload": {...}, company_name?, company_linkedin_url?, description?}``."""
+    ``{"domain": "...", "raw_payload": {...}, company_name?, company_linkedin_url?, description?,
+    clay_table_url?}``. The domain comes from the body only — raw_payload is never consulted."""
     rec = body.get("raw_payload")
     if not isinstance(rec, dict):
         raise HTTPException(status_code=422, detail="raw_payload must be a JSON object")
+    if body.get("clay_table_url") is not None and not isinstance(body.get("clay_table_url"), str):
+        raise HTTPException(status_code=422, detail="clay_table_url must be a string when present")
     domain_in = body.get("domain") or body.get("company_domain")
     if not isinstance(domain_in, str) or not domain_in.strip():
         raise HTTPException(status_code=422, detail="domain is required (non-empty string)")
