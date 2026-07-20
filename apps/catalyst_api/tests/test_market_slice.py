@@ -8,6 +8,8 @@ from apps.catalyst_api.src.routers.market_slice_v1 import (
     _load_overlay,
     _parse_band,
     build_count_sql,
+    build_entities_sql,
+    build_grammar_entities_sql,
     build_pack_sql,
 )
 
@@ -67,7 +69,8 @@ def test_band_negative_refuses() -> None:
 
 def test_pack_has_all_sections() -> None:
     sql = build_pack_sql(PAIRS, dict(_DEFAULT_BAND), None)
-    assert set(sql) == {"tiles", "over_band", "cadence", "book", "states", "top_pairs", "size_bands"}
+    assert set(sql) == {"tiles", "over_band", "cadence", "book", "states", "top_pairs",
+                       "size_bands", "series"}
 
 
 def test_cohort_encodes_card_definition() -> None:
@@ -119,3 +122,67 @@ def test_tot_denominator_respects_predicates() -> None:
     assert "JOIN m_any USING (uei)" in tiles
     m_any = tiles.split("m_any AS (")[1].split("\n)")[0]
     assert "physical_state IN ('TX')" in m_any
+
+
+# ── series section (Explore/page FY trend) ───────────────────────────────────
+
+def test_series_reads_fy_won_over_cohort() -> None:
+    series = build_pack_sql(PAIRS, dict(_DEFAULT_BAND), None)["series"]
+    assert "gtm_entity_fy_won" in series
+    assert "FROM m JOIN" in series  # cohort-joined, never universe-wide
+    assert "GROUP BY 1 ORDER BY 1" in series
+
+
+# ── entities SQL (the Explore map/table read) ────────────────────────────────
+
+def test_entities_sql_shape() -> None:
+    sql = build_entities_sql(PAIRS, dict(_DEFAULT_BAND), None, 500)
+    assert "('562111','S205')" in sql  # same cohort CTE as the pack
+    assert "LEFT JOIN gtm_sam_entities e" in sql
+    assert "LEFT JOIN gtm_entity_geo g" in sql
+    assert "GROUP BY m.uei" in sql
+    assert "ORDER BY unfin_usd DESC" in sql
+    assert sql.strip().endswith("LIMIT 500")
+    # money = unfinanced-in-scope only
+    assert "FILTER (WHERE s.unfin)" in sql
+
+
+def test_entities_predicate_leg_rides_cohort() -> None:
+    expr, _, _ = compile_predicates(
+        {"predicates": [{"term": "registered_in_state", "states": ["CA"]}]}
+    )
+    sql = build_entities_sql(PAIRS, dict(_DEFAULT_BAND), expr, 100)
+    assert "s.uei IN (" in sql and "physical_state IN ('CA')" in sql
+
+
+def test_entities_count_pairs_with_count_sql() -> None:
+    # /entities count parity: the endpoint runs build_count_sql for the SAME body —
+    # the count statement must stay cohort-only (no hydration joins).
+    cnt = build_count_sql(PAIRS, dict(_DEFAULT_BAND), None)
+    assert "gtm_entity_geo" not in cnt
+
+
+# ── grammar-only entities SQL (slug-less Explore) ────────────────────────────
+
+def test_grammar_entities_sql_shape() -> None:
+    ent, cnt = build_grammar_entities_sql("SELECT uei FROM gtm_sam_entities", None, 100)
+    assert "LEFT JOIN gtm_entity_geo g USING (uei)" in ent
+    assert "round(coalesce(p.active_obl, 0), 0) AS active_obl" in ent
+    assert "ORDER BY active_obl DESC" in ent
+    assert ent.strip().endswith("LIMIT 100")
+    assert cnt.strip().startswith("SELECT count(*) AS firms")
+    assert "gtm_entity_geo" not in cnt  # count never pays the hydration joins
+
+
+def test_grammar_entities_band_filters_both_statements() -> None:
+    ent, cnt = build_grammar_entities_sql(
+        "SELECT uei FROM gtm_sam_entities", {"min": 1e6, "max": 1e8}, 100
+    )
+    for sql in (ent, cnt):
+        assert "coalesce(p.active_obl, 0) >= 1000000.0" in sql
+        assert "coalesce(p.active_obl, 0) <= 100000000.0" in sql
+
+
+def test_grammar_entities_no_band_no_where() -> None:
+    ent, cnt = build_grammar_entities_sql("SELECT uei FROM gtm_sam_entities", None, 50)
+    assert "active_obl, 0) >=" not in ent and "active_obl, 0) >=" not in cnt
