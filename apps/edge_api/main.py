@@ -46,12 +46,8 @@ from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.deals_v1 import router as deals_router
 from .src.routers.agreements_v1 import router as agreements_router
 from .src.routers.internal_deals_v1 import router as internal_deals_router
-from .src.routers.engagement_mappings_v1 import router as engagement_mappings_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
-from .src.routers.documenso_templates_v1 import router as documenso_templates_router
 from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
-from .src.routers.documenso_prefill_configs_v1 import router as documenso_prefill_configs_router
-from .src.routers.documenso_template_defaults_v1 import router as documenso_template_defaults_router
 from .src.routers.engagement_templates_v1 import router as engagement_templates_router
 from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
@@ -361,10 +357,6 @@ app.include_router(internal_deals_router, prefix="/internal")
 # normalize -> corex.bookings -> materialize pipeline runs unchanged (closed loop, no double-write).
 app.include_router(internal_cal_router, prefix="/internal")
 
-# engagement-mappings: the Dossier engagement picker — visible prospect-facing mappings
-# (business.engagement_documenso_template_mappings) scoped to the operator's org domain.
-app.include_router(engagement_mappings_router)
-
 # operator-settings: the per-operator cockpit config (render_mode + direct_to_documenso_lane) the BFF
 # resolves at originate. Service-token gated; the BFF asserts the validated auth_user_id on the path.
 # RETIRES the BFF's direct Supabase service-role access to public.operator_settings — edge_api is now
@@ -374,31 +366,11 @@ app.include_router(operator_settings_router)
 # documenso-template-fields: the Settings "Documenso Templates" defaults editor — reads/writes the
 # live Documenso template's fields (set per-field default values via /envelope/field/update-many).
 app.include_router(documenso_template_fields_router)
-# documenso-templates: the Settings → Documenso → Manage Templates table — lists every
-# business.documenso_templates row (active + archived) for the operator's org.
-app.include_router(documenso_templates_router)
-
 # documenso-envelopes: the envelope MIRROR surface — LIST the mirrored TEMPLATE envelopes
-# (business.documenso_envelopes, verbatim) and on-demand RE-GRAB one or all of them. Re-grab reuses the
-# webhook projector's exact get_envelope → upsert_envelope pull (no second upsert path, no remap) and
-# NEVER writes business.documenso_template_configs. Service-token gated.
+# (gc.documenso_envelopes, verbatim) and on-demand RE-GRAB one or all of them. Re-grab reuses the
+# webhook projector's exact get_envelope → upsert_envelope pull (no second upsert path, no remap).
+# Service-token gated.
 app.include_router(documenso_envelopes_router)
-
-# documenso-template-prefill: the "Manage Documenso Templates" prefill-config editor. GET surfaces a
-# template's value fields (TEXT/NUMBER with a fieldMeta.label, read off the verbatim mirror
-# business.documenso_envelopes) + the saved per-label settings; PUT upserts the OPERATOR-OWNED
-# business.documenso_template_document_prefill_configs (field_settings keyed by label, arbitrary objects
-# stored verbatim). The default lives in OUR config, applied at originate later — nothing is baked onto
-# the Documenso template. This editor is the SOLE writer of that table. Service-token gated.
-app.include_router(documenso_prefill_configs_router)
-
-# documenso-template-defaults: the "Set Template as Default" picker over the MIRROR. GET lists the
-# mirrored TEMPLATE envelopes (business.documenso_envelopes, type='template', non-deleted) each flagged
-# is_default; POST marks one as the operator's Confirm & Originate default. The default lives in the
-# operator-owned business.documenso_template_defaults (keyed by documenso_id) — the projector/re-grab
-# NEVER touch it, and this picker is its SOLE writer. Replaces the legacy documenso-templates registry
-# picker for mirror-path templates (e.g. 14503, which the legacy registry doesn't contain). Service-token gated.
-app.include_router(documenso_template_defaults_router)
 
 # engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
 # engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident

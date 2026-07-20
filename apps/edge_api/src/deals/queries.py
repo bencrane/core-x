@@ -49,8 +49,8 @@ async def list_recent(conn, limit: int = 100) -> list[Deal]:
 async def get_deal_with_details(conn, handle: str) -> dict | None:
     """The deal + its ACTIVE document config (business.deal_document_configs), by public ``deal_handle``.
     LEFT JOIN so a deal with no config row yet still returns (empty field_values, no template).
-    ``template_origin`` is DERIVED: 'default' when no template is attached OR the attached template is the
-    operator's MIRROR default (business.documenso_template_defaults), else 'operator'. None if no such deal."""
+    ``template_origin`` is DERIVED: 'default' when no template is attached, else 'operator'
+    (the mirror-default concept is retired with business.documenso_template_defaults). None if no such deal."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -63,15 +63,12 @@ async def get_deal_with_details(conn, handle: str) -> dict | None:
                    COALESCE(cfg.field_values, '{}'::jsonb) AS field_values,
                    cfg.template_documenso_id,
                    CASE
-                       WHEN cfg.template_documenso_id IS NULL            THEN 'default'
-                       WHEN cfg.template_documenso_id = def.documenso_id THEN 'default'
+                       WHEN cfg.template_documenso_id IS NULL THEN 'default'
                        ELSE 'operator'
                    END AS template_origin
               FROM business.deals d
          LEFT JOIN business.deal_document_configs cfg
                 ON cfg.deal_id = d.id AND cfg.status = 'active'
-         LEFT JOIN business.documenso_template_defaults def
-                ON def.is_default
              WHERE d.deal_handle = %s
              LIMIT 1
             """,
@@ -122,19 +119,17 @@ async def get_available_contacts(conn, account_id: str | None, deal_id: str) -> 
 
 async def list_org_templates(conn, organization_id: str | None) -> list[dict]:
     """The selectable Documenso templates for the deal editor's dropdown — read off the MIRROR
-    (business.documenso_envelopes, type='template', non-deleted), each flagged with the operator's
-    mirror default (business.documenso_template_defaults). ``organization_id`` is accepted for call
+    (gc.documenso_envelopes, type='template', non-deleted). ``is_default`` is retired (always
+    false) with business.documenso_template_defaults. ``organization_id`` is accepted for call
     compatibility but the mirror is NOT org-scoped. Each row carries documenso_id (the attach key,
     matching deal_document_configs.template_documenso_id) + name (the envelope title) + is_default."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             SELECT e.documenso_id,
-                   e.title                       AS name,
-                   COALESCE(d.is_default, false)  AS is_default
-              FROM business.documenso_envelopes e
-              LEFT JOIN business.documenso_template_defaults d
-                     ON d.documenso_id = e.documenso_id AND d.is_default
+                   e.title AS name,
+                   false   AS is_default
+              FROM gc.documenso_envelopes e
              WHERE e.type = 'template' AND e.deleted_at IS NULL
              ORDER BY e.synced_at DESC
             """
@@ -219,8 +214,8 @@ async def upsert_document_config(conn, *, deal_id: str, contacts, field_values,
 async def get_deal_originate_inputs(conn, handle: str) -> dict | None:
     """Resolve, by public ``deal_handle``: the externalId (``deal_handle``); the attached template's
     numeric id (the deal's ACTIVE ``deal_document_configs.template_documenso_id``); the deal's per-field
-    OVERRIDES (``deal_document_configs.field_values``); the operator PREFILL CONFIG for that template
-    (``documenso_template_document_prefill_configs.field_settings`` — per-label default + read_only); the
+    OVERRIDES (``deal_document_configs.field_values``); the operator FIELD RULES for that template
+    (``gc.documenso_template_field_rules`` projected per label as default + read_only + required); the
     template's verbatim envelope (``documenso_envelopes.documenso_response`` — its fields[]/recipients[],
     for the prospect-recipient derivation); and the SIGNATORY contact's email + name. ``None`` when the
     handle is unknown; per-field nulls (no attached template / no signatory / no email) are the caller's
@@ -233,14 +228,18 @@ async def get_deal_originate_inputs(conn, handle: str) -> dict | None:
                    c.email                                                     AS recipient_email,
                    NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '') AS recipient_name,
                    COALESCE(cfg.field_values, '{}'::jsonb)                     AS field_values,
-                   COALESCE(pc.field_settings, '{}'::jsonb)                    AS field_settings,
+                   COALESCE((SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
+                                      'default_document_field_value', r.default_value,
+                                      'read_only', r.post_mint_read_only,
+                                      'required', r.post_mint_required))
+                               FROM gc.documenso_template_field_rules r
+                              WHERE r.template_documenso_id = cfg.template_documenso_id),
+                            '{}'::jsonb)                                       AS field_settings,
                    env.documenso_response                                      AS template_response
               FROM business.deals d
          LEFT JOIN business.deal_document_configs cfg
                 ON cfg.deal_id = d.id AND cfg.status = 'active'
-         LEFT JOIN business.documenso_template_document_prefill_configs pc
-                ON pc.template_documenso_id = cfg.template_documenso_id
-         LEFT JOIN business.documenso_envelopes env
+         LEFT JOIN gc.documenso_envelopes env
                 ON env.documenso_id = cfg.template_documenso_id
                AND env.type = 'template' AND env.deleted_at IS NULL
          LEFT JOIN LATERAL (

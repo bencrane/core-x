@@ -1,4 +1,4 @@
-"""business.documenso_webhook_events — RAW Documenso webhook capture (append-only, psycopg async).
+"""gc.documenso_webhook_events — RAW Documenso webhook capture (append-only, psycopg async).
 
 The full webhook body is stored verbatim in ``payload`` (the system of record). The scalar columns
 are best-effort lookup extracts only — never re-derive truth from them, re-read ``payload``.
@@ -21,7 +21,7 @@ async def insert_event(
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO business.documenso_webhook_events (event, envelope_id, external_id, payload)
+            INSERT INTO gc.documenso_webhook_events (event, envelope_id, external_id, payload)
             VALUES (%s, %s, %s, %s::jsonb)
             RETURNING id::text
             """,
@@ -34,7 +34,7 @@ async def insert_event(
 
 # Documenso webhook event names that mean "the document is fully executed" — the terminal,
 # all-signers-done state. For the single-signer engagement flow, DOCUMENT_COMPLETED IS the done
-# signal. Verified against REAL landed events (business.documenso_webhook_events, 2026-06-17):
+# signal. Verified against REAL landed events (gc.documenso_webhook_events, 2026-06-17):
 # the webhook stores the event verbatim as UPPERCASE_UNDERSCORE (DOCUMENT_SENT / DOCUMENT_OPENED /
 # DOCUMENT_SIGNED / DOCUMENT_COMPLETED) — NOT the lowercase-dotted form. Truth derives from the
 # presence of a terminal-event ROW, never from a projection.
@@ -159,7 +159,7 @@ async def read_sign_state(
               (array_agg(event ORDER BY received_at DESC))[1]            AS latest_event,
               (array_agg(payload->'payload'->>'status' ORDER BY received_at DESC))[1] AS status,
               max(received_at)                                           AS received_at
-            FROM business.documenso_webhook_events
+            FROM gc.documenso_webhook_events
             WHERE external_id = %(opportunity_id)s
               AND envelope_id = %(document_id)s
             """,

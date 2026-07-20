@@ -70,7 +70,7 @@ class DealSummary(BaseModel):
 
 class TemplateOption(BaseModel):
     """A selectable Documenso template for the deal-document-config editor dropdown, read off
-    business.documenso_envelopes. ``documenso_id`` is the envelope's numeric id — the attach key the
+    gc.documenso_envelopes. ``documenso_id`` is the envelope's numeric id — the attach key the
     editor matches and PUTs back (into deal_document_configs.template_documenso_id). ``name`` is the
     envelope title."""
 

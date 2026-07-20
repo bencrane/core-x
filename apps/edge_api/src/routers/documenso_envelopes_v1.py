@@ -4,7 +4,7 @@
   POST /api/v1/documenso-envelopes/{documenso_id}/resync   re-grab ONE template/envelope, re-mirror it
   POST /api/v1/documenso-envelopes/resync-all         re-grab EVERY mirrored template, sequentially
 
-The LIST reads STRAIGHT off business.documenso_envelopes (the verbatim mirror). The RE-GRAB reuses the
+The LIST reads STRAIGHT off gc.documenso_envelopes (the verbatim mirror). The RE-GRAB reuses the
 webhook projector's EXACT pull+upsert (``documenso_client.get_envelope`` → ``queries.upsert_envelope``)
 — same verbatim contract, no second upsert path. Re-grab NEVER writes
 business.documenso_template_configs. Resilient: a per-template Documenso error surfaces as
@@ -114,7 +114,7 @@ async def envelope_fields(documenso_id: int) -> list[EnvelopeFieldDetail]:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT documenso_response FROM business.documenso_envelopes "
+                "SELECT documenso_response FROM gc.documenso_envelopes "
                 "WHERE documenso_id = %s AND deleted_at IS NULL LIMIT 1",
                 (documenso_id,),
             )

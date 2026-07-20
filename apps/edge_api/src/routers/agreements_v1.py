@@ -254,11 +254,10 @@ async def patch_agreement(agreement_id: str, body: AgreementPatch) -> dict:
 
 async def _generate_inputs(cur, agreement_id: str) -> dict | None:
     """Everything generate needs, one read: the agreement, its deal handles, the template's
-    prefill config + verbatim envelope, and the signatory's email/name."""
+    gc field rules + verbatim envelope, and the signatory's email/name."""
     await cur.execute(
         f"""
         SELECT {_ROW_COLS}, d.deal_handle, d.company_name,
-               COALESCE(pc.field_settings, '{{}}'::jsonb) AS field_settings,
                (SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
                           'default_document_field_value', r.default_value,
                           'read_only', r.post_mint_read_only,
@@ -271,9 +270,7 @@ async def _generate_inputs(cur, agreement_id: str) -> dict | None:
                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '') AS recipient_name
           FROM business.agreements a
           JOIN business.deals d ON d.id = a.deal_id
-     LEFT JOIN business.documenso_template_document_prefill_configs pc
-            ON pc.template_documenso_id::text = a.template_documenso_id
-     LEFT JOIN business.documenso_envelopes env
+     LEFT JOIN gc.documenso_envelopes env
             ON env.documenso_id::text = a.template_documenso_id
            AND env.type = 'template' AND env.deleted_at IS NULL
      LEFT JOIN business.contacts c ON c.id = a.signatory_contact_id
@@ -315,9 +312,9 @@ async def generate_agreement(agreement_id: str, body: GenerateBody | None = None
 
             # Pure resolution BEFORE the claim — a 422 here leaves the draft untouched.
             # Resolution order: caller-supplied plan > gc.documenso_template_field_rules (the
-            # operative truth, read directly — same database) > legacy HQX prefill config.
+            # operative truth, read directly — same database). The legacy prefill config is retired.
             field_settings = (body.field_settings if body and body.field_settings is not None
-                              else inp["gc_field_settings"] or inp["field_settings"]) or {}
+                              else inp["gc_field_settings"]) or {}
             values = originate.resolve_field_values(field_settings, inp["field_values"] or {})
             locked = originate.locked_labels(field_settings)
             missing_locked = locked - set(values)
@@ -402,8 +399,8 @@ async def list_templates() -> list[TemplateOption]:
 @router.get("/templates/{template_id}/fields", dependencies=[Depends(require_service_token)])
 async def template_fields(template_id: int) -> dict:
     """The template's field vocabulary for the origination-details editor: per label, the
-    prefill-config default + read_only flag (business.documenso_template_document_prefill_configs
-    — the same field_settings generate resolves against). Falls back to the mirrored envelope's
+    gc field-rule default + read_only flag (gc.documenso_template_field_rules
+    — the same rows generate resolves against). Falls back to the mirrored envelope's
     labelled value fields when no config exists (labels only, empty defaults). 404 on a template
     the mirror doesn't carry."""
     async with get_db_connection() as conn:
@@ -411,11 +408,13 @@ async def template_fields(template_id: int) -> dict:
             await cur.execute(
                 """
                 SELECT env.documenso_id, env.title,
-                       pc.field_settings,
+                       (SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
+                                  'default_document_field_value', r.default_value,
+                                  'read_only', r.post_mint_read_only))
+                          FROM gc.documenso_template_field_rules r
+                         WHERE r.template_documenso_id = env.documenso_id) AS field_settings,
                        env.documenso_response
-                  FROM business.documenso_envelopes env
-             LEFT JOIN business.documenso_template_document_prefill_configs pc
-                    ON pc.template_documenso_id = env.documenso_id
+                  FROM gc.documenso_envelopes env
                  WHERE env.documenso_id = %s AND env.type = 'template' AND env.deleted_at IS NULL
                  LIMIT 1
                 """,
@@ -450,44 +449,4 @@ async def template_fields(template_id: int) -> dict:
     return {"documenso_id": row["documenso_id"], "title": row["title"], "fields": fields}
 
 
-class TemplateDefaultsPut(BaseModel):
-    """Per-label default values for the template's prefill config (Settings editor).
-    Only defaults move here; read_only flags are preserved (new labels enter unlocked)."""
 
-    defaults: dict[str, str]
-
-
-@router.put("/templates/{template_id}/fields", dependencies=[Depends(require_service_token)])
-async def put_template_defaults(template_id: int, body: TemplateDefaultsPut) -> dict:
-    """Upsert the template's prefill-config DEFAULTS (business.documenso_template_document_
-    prefill_configs.field_settings.default_document_field_value per label). These are the
-    baseline every deal's origination details starts from and what generate resolves when a
-    deal doesn't override. Labels absent from the existing config are added (read_only=false);
-    existing read_only flags never change here."""
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT field_settings FROM business.documenso_template_document_prefill_configs "
-                "WHERE template_documenso_id = %s LIMIT 1",
-                (template_id,),
-            )
-            existing = await cur.fetchone()
-            settings: dict = dict((existing or {}).get("field_settings") or {})
-            for label, value in body.defaults.items():
-                entry = dict(settings.get(label) or {"read_only": False})
-                entry["default_document_field_value"] = str(value)
-                settings[label] = entry
-            if existing:
-                await cur.execute(
-                    "UPDATE business.documenso_template_document_prefill_configs "
-                    "SET field_settings = %s, updated_at = now() WHERE template_documenso_id = %s",
-                    (Jsonb(settings), template_id),
-                )
-            else:
-                await cur.execute(
-                    "INSERT INTO business.documenso_template_document_prefill_configs "
-                    "(template_documenso_id, field_settings) VALUES (%s, %s)",
-                    (template_id, Jsonb(settings)),
-                )
-        await conn.commit()
-    return await template_fields(template_id)

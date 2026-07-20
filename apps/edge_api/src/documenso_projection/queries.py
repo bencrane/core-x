@@ -1,8 +1,8 @@
-"""business.documenso_envelopes writes — the envelope-mirror upsert + soft-delete (psycopg async).
+"""gc.documenso_envelopes writes — the envelope-mirror upsert + soft-delete (psycopg async).
 
 VERBATIM CONTRACT: ``documenso_response`` is the FULL get_envelope response stored EXACTLY as Documenso
 returns it (Jsonb, no rewrite). ``type``/``status`` are lowercased-only projections of Documenso's own
-terms — NEVER remapped. This module writes ONLY business.documenso_envelopes; it MUST NEVER touch
+terms — NEVER remapped. This module writes ONLY gc.documenso_envelopes; it MUST NEVER touch
 business.documenso_template_configs (operator/app-owned).
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ async def upsert_envelope(
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO business.documenso_envelopes
+            INSERT INTO gc.documenso_envelopes
                 (documenso_id, envelope_id, secondary_id, type, template_documenso_id,
                  external_id, title, status, documenso_response,
                  deleted_at, synced_at, created_at, updated_at)
@@ -82,7 +82,7 @@ async def soft_delete_envelope(
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            UPDATE business.documenso_envelopes
+            UPDATE gc.documenso_envelopes
                SET deleted_at = now(),
                    status     = COALESCE(%(status)s, status),
                    updated_at = now()
@@ -100,7 +100,7 @@ async def list_template_mirror(conn) -> list[dict[str, Any]]:
 
     Reads STRAIGHT off the verbatim mirror: ``documenso_id``/``title``/``status`` as stored, plus
     field/recipient counts derived from ``documenso_response`` (the full envelope), and ``synced_at``.
-    Read-only; touches ONLY business.documenso_envelopes.
+    Read-only; touches ONLY gc.documenso_envelopes.
     """
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -112,7 +112,7 @@ async def list_template_mirror(conn) -> list[dict[str, Any]]:
                 jsonb_array_length(COALESCE(documenso_response->'fields', '[]'::jsonb))     AS field_count,
                 jsonb_array_length(COALESCE(documenso_response->'recipients', '[]'::jsonb)) AS recipient_count,
                 synced_at
-            FROM business.documenso_envelopes
+            FROM gc.documenso_envelopes
             WHERE type = 'template' AND deleted_at IS NULL
             ORDER BY synced_at DESC
             """
@@ -126,7 +126,7 @@ async def list_template_documenso_ids(conn) -> list[int]:
         await cur.execute(
             """
             SELECT documenso_id
-            FROM business.documenso_envelopes
+            FROM gc.documenso_envelopes
             WHERE type = 'template' AND deleted_at IS NULL
             ORDER BY documenso_id
             """
