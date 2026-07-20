@@ -192,7 +192,7 @@ async def _resolve_template_envelope_id(client: httpx.AsyncClient, documenso_tem
     """Resolve a numeric Documenso template id (e.g. ``13986``) to its prefixed envelope id
     (e.g. ``envelope_wunounvkihrueorc``).
 
-    ``business.documenso_templates`` stores only the numeric template id, and ``/envelope/use``
+    Callers hold only the numeric template id, and ``/envelope/use``
     requires the prefixed ``envelopeId`` (the numeric id 400s on the envelope endpoints) — so the
     envelope id must be fetched live: ``GET /api/v2/template/{id}`` → ``.envelopeId``.
     """
@@ -527,8 +527,8 @@ class DirectLinkResult:
 
 
 def _template_id_number(documenso_template_id: str | int) -> int:
-    """The NUMERIC template id /template/direct/* requires. ``business.documenso_templates`` stores the
-    numeric id as text; tolerate a prefixed handle by extracting its trailing digits."""
+    """The NUMERIC template id /template/direct/* requires; tolerate a prefixed handle by
+    extracting its trailing digits."""
     s = str(documenso_template_id)
     if s.isdigit():
         return int(s)

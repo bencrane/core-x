@@ -315,7 +315,7 @@ app.include_router(awards_subk_pricing_router)
 app.include_router(pipeline_router, prefix="/internal")
 
 # documenso webhooks: RAW landing for Documenso events (X-Documenso-Secret). Documenso is repointed
-# here from /proposals/webhook; stores every delivery verbatim in business.documenso_webhook_events.
+# here from /proposals/webhook; stores every delivery verbatim in gc.documenso_webhook_events.
 # No normalization/projection — that's a separate step decided against the captured payloads.
 app.include_router(documenso_webhooks_router)
 

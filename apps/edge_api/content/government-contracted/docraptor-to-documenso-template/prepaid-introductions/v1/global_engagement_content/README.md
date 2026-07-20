@@ -18,8 +18,7 @@ org (`active-operators` and `rare-structure` are 1:1 brand↔org). Consequences:
 
 - **Provider** executes as **Rare Structure LLC** (Benjamin J. Crane, Managing Director).
 - **`branded.css`** is the Rare Structure dark identity (shared with the `rare-structure` brand).
-- At DB-registration time, `business.documenso_templates.organization_id` and
-  `business.engagement_documenso_template_mappings.organization_id` point at the **Rare Structure** org.
+- Org attribution is the **Rare Structure** org (Provider).
 
 ## Archetype — `prepaid_introductions`
 
@@ -97,7 +96,7 @@ render-dependent — measure with a local DocRaptor preview, do not eyeball.
   (`path='docraptor-to-documenso-template/prepaid-introductions/v1'`, `brand='government-contracted'`,
   `source_kind='repo-html'`) IF render-push should resolve via `registryPath` (explicit-params push needs
   no row). `global_input_content.brand` has **no** CHECK constraint, so no DDL widening is required.
-- **`business.documenso_templates`** + **`business.engagement_documenso_template_mappings`** — after the
-  template is pushed and fields are placed, register the template row (`organization_id` → Rare Structure)
-  and the operator-dropdown mapping. Runbook:
-  `docs/reference/DOCUMENSO_ARCHITECTURE/10-TEMPLATE-ITERATION-RUNBOOK.md`.
+- **Template registration / operator-dropdown** — the legacy `business.documenso_templates` registry and
+  `business.engagement_documenso_template_mappings` were **dropped** in the gc migration; a pushed template
+  now surfaces to the operator via the `gc.documenso_envelopes` mirror (`type='template'`) — no
+  registry-row or mapping step. See `docs/reference/DOCUMENSO_STALE_REFERENCES.md`.

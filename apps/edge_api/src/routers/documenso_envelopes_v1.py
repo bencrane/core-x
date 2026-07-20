@@ -6,8 +6,8 @@
 
 The LIST reads STRAIGHT off gc.documenso_envelopes (the verbatim mirror). The RE-GRAB reuses the
 webhook projector's EXACT pull+upsert (``documenso_client.get_envelope`` → ``queries.upsert_envelope``)
-— same verbatim contract, no second upsert path. Re-grab NEVER writes
-business.documenso_template_configs. Resilient: a per-template Documenso error surfaces as
+— same verbatim contract, no second upsert path. Re-grab writes ONLY
+gc.documenso_envelopes (verbatim). Resilient: a per-template Documenso error surfaces as
 ``{synced: false, error}`` with 200, never a 5xx — a bad template can't poison the batch. Service-token
 gated (the platform-api BFF brokers it).
 """
