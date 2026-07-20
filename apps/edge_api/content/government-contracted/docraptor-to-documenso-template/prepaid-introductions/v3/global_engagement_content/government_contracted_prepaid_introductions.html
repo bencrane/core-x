@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<!--
+  RARE STRUCTURE — Government-Contracted brand — Strategic Origination Agreement (PREPAID INTRODUCTIONS).
+  VERSION v3 — FIELD-PREFILL MODEL, REVISED NOMENCLATURE. ORG AFFILIATION: Rare Structure — Operator
+  executes as Rare Structure LLC with NO d/b/a. Archetype: prepaid_introductions.
+
+  DIFFERENCE FROM v2: nomenclature reset to Operator / Principal / Network Counterparty; new defined
+  terms Payment Date and Commencement Date introduced in §5.2; restructured Sections 1–7 (Routing Seat,
+  Exclusion Roster, Ledger Settlement, Facility Rollover). Same underscore-blank doctrine as v2 — NO
+  handlebar tokens, NO declared inputs. Every dynamic value is a plain underscore blank (________),
+  DEFINED ONCE under a capitalized term and referenced by that term everywhere downstream, so no value
+  recurs. The operator drops a Documenso TEXT field onto each underscore in the template editor (once),
+  then prefills those fields per-instantiation.
+
+  DYNAMIC VALUE SLOTS — all four live in Section 5, each a single underscore run at its definition:
+    - Prepaid Fee             §5.1   the non-refundable upfront amount
+    - Introduction Allocation §5.1   the count of Routed Connections secured
+    - Per-Introduction Rate   §5.1   the unit cost (= Prepaid Fee / Introduction Allocation); operator
+                                     supplies the derived figure at prefill — Documenso does no arithmetic
+    - Primary Term            §5.2   the fulfillment window, in days
+
+  SIGNER BLANKS — effective date, Principal entity / d/b/a, and the signature / date lines — are likewise
+  plain underscore runs; the operator drops Documenso fields on them in the editor. Operator side is
+  pre-set inline (Benjamin J. Crane / Managing Director). No baked values, no handlebar tokens.
+
+  The <head> stylesheet slot (plain | branded per manifest.json) is injected at render time.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Strategic Origination Agreement</title>
+<style>__STYLESHEET__</style>
+</head>
+<body>
+  <h1>Strategic Origination Agreement</h1>
+  <hr class="rule" />
+
+  <p class="lead">This Strategic Origination Agreement (the &ldquo;Agreement&rdquo;) is entered into and
+  made effective as of ____________________ (the &ldquo;Effective Date&rdquo;), by and between
+  Rare Structure LLC (&ldquo;Operator&rdquo;), and ______________________________
+  (d/b/a ____________________________) (&ldquo;Principal&rdquo;).</p>
+
+  <h2>1. Core Infrastructure &amp; Deliverables</h2>
+  <p><strong>1.1 The Routing Seat.</strong> Operator maintains and operates a proprietary, out-of-core
+  data infrastructure and private routing network. Subject to the full execution of this Agreement and
+  the irrevocable clearance of the Prepaid Fee, Operator grants Principal a reserved routing seat within
+  the active network to receive a dedicated allocation of introductions.</p>
+  <p><strong>1.2 Continuous Calibration.</strong> The reservation of this seat strictly entitles Principal
+  to the continuous algorithmic calibration of their submitted parameters against external market signals.
+  Principal acknowledges that Operator is actively running synthesis between Principal&rsquo;s operational
+  profile and broader market data.</p>
+
+  <h2>2. Data Ingestion &amp; Engine Parameters</h2>
+  <p><strong>2.1 Parameter Ingestion.</strong> Upon the clearance of the Prepaid Fee, Principal shall be
+  granted the facility to submit their operational parameters, underwriting criteria, and market
+  preferences (the &ldquo;Capacity Profile&rdquo;). Operator shall synthesize these passive inputs to
+  continuously calibrate the routing allocation engine.</p>
+  <p><strong>2.2 Calibration Entities.</strong> Principal&rsquo;s submission may include the identities of
+  specific market entities. Principal explicitly acknowledges and agrees that any specific entities
+  provided are submitted strictly as illustrative data points for comparative clustering and vector
+  alignment. Operator assumes absolutely no obligation to monitor, target, solicit, or route connections
+  regarding any specific entity submitted within this calibration data.</p>
+  <p><strong>2.3 Exclusion Roster &amp; Suppression Deadline.</strong> Principal may provide Operator with
+  an &ldquo;Exclusion Roster&rdquo; consisting of Principal&rsquo;s existing, active accounts or
+  relationships. To be eligible for suppression from Operator&rsquo;s routing pipeline, this roster must
+  be submitted in full no later than <strong>3:00 PM Eastern Time on the first Sunday immediately
+  following the Payment Date</strong>. If Principal fails to provide the Exclusion Roster prior to this
+  strict deadline, Operator shall commence pipeline execution under the assumption of zero protected
+  entities. Any connections facilitated to entities not explicitly listed prior to the deadline shall be
+  fully credited against the Introduction Allocation.</p>
+
+  <h2>3. Algorithmic Routing &amp; Alignment</h2>
+  <p><strong>3.1 Definition of Network Counterparty.</strong> For the purposes of this Agreement, a
+  &ldquo;Network Counterparty&rdquo; is defined exclusively as a third-party commercial organization,
+  operational node, or corporate entity identified, resolved, and selected solely by Operator&rsquo;s
+  proprietary infrastructure. Principal explicitly acknowledges that Network Counterparties are sourced
+  from Operator&rsquo;s enclosed ecosystem and are not compiled, researched, or targeted at the specific
+  direction of the Principal.</p>
+  <p><strong>3.2 Routed Connections.</strong> A &ldquo;Routed Connection&rdquo; (or &ldquo;Introduction&rdquo;)
+  is strictly defined as a digital facilitation connecting Principal with a representative of a Network
+  Counterparty.</p>
+  <p><strong>3.3 Algorithmic Alignment.</strong> Operator retains absolute engineering control over the
+  data pipeline inputs, matching models, and threshold criteria. A connection is routed when, in
+  Operator&rsquo;s sole and strategic discretion, a Network Counterparty&rsquo;s expressed or inferred
+  operational requirements, preferences, or systemic market positioning align with the Principal&rsquo;s
+  submitted Capacity Profile.</p>
+
+  <h2>4. Intellectual Property &amp; Architectural Opacity</h2>
+  <p><strong>4.1 Zero Reporting Obligation.</strong> Operator shall have no obligation to disclose,
+  explain, justify, or provide reporting on the internal algorithmic logic, scoring mechanisms, or
+  specific data inputs utilized to determine any alignment or routing decision.</p>
+  <p><strong>4.2 Proprietary Architecture.</strong> The underlying routing engine relies on highly opaque,
+  out-of-core computational processing, multi-dimensional vector embeddings, and non-linear data synthesis
+  that cannot be linearly audited or extracted. Principal acknowledges that these computational mechanics
+  constitute strictly confidential, proprietary intellectual property intrinsic to the foundational
+  valuation of Operator&rsquo;s enterprise. Any audit, disclosure, or reverse-engineering of this
+  architecture, whether intentional or inadvertent, would trigger severe, compounding material
+  degradation to Operator&rsquo;s market position and structural leverage.</p>
+
+  <h2>5. Financial Architecture &amp; Commercial Terms</h2>
+  <p><strong>5.1 Prepaid Origination Allocation.</strong> Principal shall pay a non-refundable upfront fee
+  of ____________________ (the &ldquo;Prepaid Fee&rdquo;), due in full upon execution of this Agreement.
+  The Prepaid Fee secures a dedicated allocation of ____________ Routed Connections (the
+  &ldquo;Introduction Allocation&rdquo;), establishing a fixed unit cost of ____________________ per
+  Routed Connection (the &ldquo;Per-Introduction Rate&rdquo;).</p>
+  <p><strong>5.2 Primary Term &amp; Commencement.</strong> The operational window for fulfilling the
+  Introduction Allocation (the &ldquo;Primary Term&rdquo;) shall strictly span ____________ days. The
+  &ldquo;Payment Date&rdquo; shall be strictly defined as the date the Prepaid Fee successfully processes
+  and irrevocably clears into Operator&rsquo;s designated account. The &ldquo;Commencement Date&rdquo; of
+  the Primary Term shall default to the first Monday immediately following the later of: (a) the Effective
+  Date, or (b) the Payment Date. Notwithstanding the foregoing default, Operator retains the unilateral
+  and discretionary right to accelerate the Commencement Date to the first Monday following the date the
+  payment was initiated or authorized by Principal. The interim period between the Effective Date and the
+  Commencement Date is explicitly reserved for Operator&rsquo;s proprietary data ingestion, pipeline
+  calibration, and suppression architecture.</p>
+  <p><strong>5.3 Term Expiration &amp; Ledger Settlement.</strong> In the event that Operator does not
+  facilitate the full Introduction Allocation prior to the expiration of the Primary Term, this Agreement
+  dictates an automatic ledger settlement. Operator shall remit the prorated balance of the unfulfilled
+  allocation, calculated strictly as the number of unfulfilled Routed Connections multiplied by the
+  Per-Introduction Rate, back to Principal. Upon this ledger settlement, Principal&rsquo;s routing seat is
+  immediately revoked and this Agreement terminates, unless Operator explicitly elects to offer a Facility
+  Rollover under Section 5.4.</p>
+  <p><strong>5.4 Facility Rollover &amp; Top-Up Privilege.</strong> The decision to extend a routing seat
+  beyond the Primary Term remains at the sole and absolute discretion of Operator, based upon
+  Operator&rsquo;s evaluation of Principal&rsquo;s operational follow-through, counterparty credibility,
+  and network alignment. If Operator elects to offer a rollover, Principal may accept by waiving the
+  Ledger Settlement and applying the unfulfilled balance to secure a subsequent origination term. To
+  validate this rollover and retain the routing seat, Operator will issue a Top-Up Notice, and Principal
+  must remit the required capital to bring the origination facility back to the baseline Prepaid Fee
+  threshold prior to the commencement of the subsequent term.</p>
+
+  <h2>6. Market Reality &amp; Counterparty Friction</h2>
+  <p><strong>6.1 Market Volatility &amp; Autonomy.</strong> Principal explicitly acknowledges that
+  Operator&rsquo;s infrastructure functions within a dynamic, highly unpredictable market environment.
+  Operator makes no representations or warranties regarding macroeconomic conditions, transaction volume,
+  or the velocity of market signals.</p>
+  <p><strong>6.2 Counterparty Friction.</strong> Operator strictly facilitates digital introductions;
+  Operator exercises no control over the autonomy, responsiveness, or ultimate intent of any Network
+  Counterparty. Should algorithmic alignment occur, but the Network Counterparty declines engagement,
+  ceases communication, or refuses facilitation, such events constitute standard market friction. Operator
+  is completely absolved of any liability or obligation regarding the ultimate responsiveness,
+  communication, or conversion of any Routed Connection.</p>
+
+  <h2>7. Miscellaneous &amp; Protections</h2>
+  <p><strong>7.1 Confidentiality.</strong> Both parties agree to maintain the strict confidentiality of
+  all proprietary information received from the other party. Both parties explicitly covenant that all
+  strategic initiatives, network identities, proprietary operational capabilities, and structural
+  discussions remain strictly confidential and protected from public disclosure.</p>
+  <p><strong>7.2 Governing Law &amp; Arbitration.</strong> This Agreement shall be governed by the laws of
+  the State of New York. Any disputes shall be resolved through binding arbitration in accordance with the
+  rules of the American Arbitration Association in New York, NY.</p>
+
+  <!-- Execution block — HELD INLINE; mirrors the Rare Structure house convention. Operator pre-set
+       (Benjamin J. Crane / Managing Director). Signature / date are plain underscore blanks; the
+       operator drops Documenso fields on them in the Documenso editor. -->
+  <div class="sig-wrap">
+    <table class="sig-grid"><tr>
+      <td>
+        <div class="sig-party">Operator</div>
+        <div class="sig-entity">Rare Structure LLC</div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> <span class="val">Benjamin J. Crane</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+      <td>
+        <div class="sig-party">Principal</div>
+        <div class="sig-entity">______________________________</div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Title:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+    </tr></table>
+  </div>
+</body>
+</html>

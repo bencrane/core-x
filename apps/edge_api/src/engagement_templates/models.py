@@ -53,6 +53,7 @@ class RenderPushRequest(BaseModel):
     style: str | None = None  # "plain" | "branded"; defaults to the manifest's style flag
     values: InputValues | None = None  # baked values for a tokenized template (None = no tokens)
     name: str | None = None  # operator-entered Documenso TEMPLATE TITLE; empty/None -> manifest name
+    external_id: str | None = None  # stamped as Documenso externalId (provenance, e.g. the content path)
 
 
 class RenderPushResult(BaseModel):

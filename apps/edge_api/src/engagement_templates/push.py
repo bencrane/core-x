@@ -72,6 +72,7 @@ async def render_and_push(
     tokens: dict[str, str] | None = None,
     recipients: list[dict[str, str]] | None = None,
     store_copy: bool = True,
+    external_id: str | None = None,  # stamped as Documenso externalId (provenance, e.g. the content path)
 ) -> PushOutcome:
     """Resolve the content source, render it to PDF (substituting any baked-value ``tokens``), and
     create a Documenso TEMPLATE from the bytes.
@@ -117,7 +118,7 @@ async def render_and_push(
             pdf_r2_key = None
 
     result = await documenso_client.create_template_from_pdf(
-        title=title, pdf=pdf, recipients=recipients, filename=name
+        title=title, pdf=pdf, recipients=recipients, filename=name, external_id=external_id
     )
 
     return PushOutcome(
