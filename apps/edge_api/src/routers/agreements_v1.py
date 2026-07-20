@@ -398,7 +398,12 @@ async def template_fields(template_id: int) -> dict:
     else:
         seen: set[str] = set()
         for f in (row["documenso_response"] or {}).get("fields", []):
-            label = f.get("label") if isinstance(f, dict) else None
+            if not isinstance(f, dict):
+                continue
+            # Documenso stores TEXT/NUMBER labels under fieldMeta.label; top-level "label" is a
+            # legacy shape kept as a fallback.
+            meta = f.get("fieldMeta")
+            label = (meta.get("label") if isinstance(meta, dict) else None) or f.get("label")
             if isinstance(label, str) and label.strip() and label not in seen:
                 seen.add(label)
                 fields.append({"label": label, "default": "", "read_only": False})
