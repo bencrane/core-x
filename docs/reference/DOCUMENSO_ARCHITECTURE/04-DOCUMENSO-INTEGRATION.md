@@ -199,7 +199,7 @@ field_values_by_label=None, external_id=None, title=None) -> EnvelopeResult`
    -> token = _extract_client_token(body, recipient_email)   (NOT first-SIGNER)
 4. GET  /api/v2/envelope/{envelope_id}
    POST /api/v2/envelope/field/update-many  readOnly:true on derived prefilled TEXT/NUMBER fields
-     (identified by non-empty value — derived fields have NEW ids and NO labels)
+     (identified by non-empty value; editable-vs-locked decided by label — derived fields keep `fieldMeta.label`)
 5. POST /api/v2/envelope/distribute   meta.distributionMethod:NONE
 -> EnvelopeResult(envelope_id, document_id=numeric body.id, client_token)
 ```

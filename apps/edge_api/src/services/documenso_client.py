@@ -253,8 +253,9 @@ async def create_document_from_template(
     readOnly can't be set at instantiation (neither ``/template/use``'s ``override`` nor ``prefillFields``
     expose it) and a TEMPLATE field can't be readOnly without static text — so the lock is applied on the
     DERIVED document, where the prefilled value satisfies Documenso's "read-only must have text" rule. The
-    derived fields carry NEW ids and NO labels, so prefilled fields are identified by a non-empty value
-    (``fieldMeta.text``/``value``); SIGNATURE/DATE carry no value and stay open for the signer.
+    derived fields carry NEW ids but PRESERVE ``fieldMeta.label``: prefilled fields are identified by a
+    non-empty value (``fieldMeta.text``/``value``) and editable-vs-locked is decided BY LABEL;
+    SIGNATURE/DATE carry no value and stay open for the signer.
     """
     async with _client() as client:
         # 1) resolve the template's fields + recipient id LIVE (the operator may be editing it; never
@@ -309,18 +310,10 @@ async def create_document_from_template(
 
         # label -> [(field id, lowercased type), …] — a label can appear on MULTIPLE fields, so this
         # is a fan-out, not a 1:1 map. SIGNATURE/DATE carry no label and are excluded here implicitly.
-        # Position key (page + rounded x/y) to re-identify a template field on the DERIVED document,
-        # which keeps the same geometry but gets NEW ids and NO labels. Used at step 4 to leave the
-        # operator-designated ``editable_labels`` fields UNLOCKED.
-        def _pos_key(f: dict[str, Any]) -> tuple[int, float, float]:
-            return (
-                int(f.get("page") or 0),
-                round(float(f.get("positionX") or 0), 2),
-                round(float(f.get("positionY") or 0), 2),
-            )
-
+        # Derived documents PRESERVE ``fieldMeta.label`` through /template/use, so the lock step (4)
+        # re-identifies fields on the derived document BY LABEL — the same keys the prefill config
+        # and ``editable_labels`` speak.
         _editable = editable_labels or set()
-        editable_positions: set[tuple[int, float, float]] = set()
         by_label: dict[str, list[tuple[Any, str]]] = {}
         for fld in tmpl.get("fields") or []:
             if not isinstance(fld, dict):
@@ -328,8 +321,6 @@ async def create_document_from_template(
             lab = (fld.get("fieldMeta") or {}).get("label")
             if not lab:
                 continue
-            if lab in _editable:
-                editable_positions.add(_pos_key(fld))
             by_label.setdefault(lab, []).append(
                 (fld.get("id"), str(fld.get("type") or "").lower())
             )
@@ -387,8 +378,9 @@ async def create_document_from_template(
         #    terms (fee, term, company, name, title) are NOT signer-editable. readOnly can't be set at
         #    instantiation, and a template field can't be readOnly without static text, so it MUST be
         #    applied here on the derived document, where the prefilled value satisfies the "read-only
-        #    must have text" rule. Derived fields have NEW ids and NO labels → identify the prefilled
-        #    ones by a non-empty value; carry the full fieldMeta + geometry back so nothing is clobbered.
+        #    must have text" rule. Derived fields carry NEW ids but KEEP ``fieldMeta.label`` — identify
+        #    the prefilled ones by a non-empty value and decide editable-vs-locked BY LABEL; carry the
+        #    full fieldMeta back so nothing is clobbered.
         new_fields = (await client.get(f"/api/v2/envelope/{envelope_id}")).json().get("fields") or []
         locks: list[dict[str, Any]] = []
         for fld in new_fields:
@@ -400,8 +392,8 @@ async def create_document_from_template(
             if ftype not in ("TEXT", "NUMBER") or not str(value or "").strip():
                 continue
             # Leave operator-designated editable fields UNLOCKED so the signer can correct them (e.g.
-            # their own Full Name / Title). Re-identified by geometry — derived fields drop their labels.
-            if editable_positions and _pos_key(fld) in editable_positions:
+            # their own Full Name / Title). Matched by label — the prefill config's own keys.
+            if meta.get("label") in _editable:
                 continue
             locked_meta = {k: v for k, v in meta.items() if v is not None}
             locked_meta["readOnly"] = True
