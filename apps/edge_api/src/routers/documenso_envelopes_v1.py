@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db import get_db_connection
@@ -93,3 +93,62 @@ async def resync_all_templates() -> ResyncAllResult:
         synced=sum(1 for r in results if r.synced),
         results=results,
     )
+
+
+class EnvelopeFieldDetail(BaseModel):
+    """One field projected off the mirrored envelope, with its recipient (assignee) resolved."""
+
+    field_type: str
+    label: str | None = None
+    required: bool | None = None
+    template_read_only: bool | None = None  # the TEMPLATE's readOnly flag (lock at mint is config-driven)
+    recipient_id: int | None = None
+    recipient_email: str | None = None
+    recipient_role: str | None = None
+
+
+@router.get("/{documenso_id}/fields")
+async def envelope_fields(documenso_id: int) -> list[EnvelopeFieldDetail]:
+    """Per-field detail off the VERBATIM mirror: type, label, required, template readOnly, and the
+    recipient the field is assigned to (id/email/role). 404 when the mirror doesn't carry the id."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT documenso_response FROM business.documenso_envelopes "
+                "WHERE documenso_id = %s AND deleted_at IS NULL LIMIT 1",
+                (documenso_id,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="envelope not mirrored")
+    body = row[0] or {}
+    recips: dict[int, dict] = {}
+    for r in body.get("recipients") or []:
+        if isinstance(r, dict) and r.get("id") is not None:
+            try:
+                recips[int(r["id"])] = r
+            except (TypeError, ValueError):
+                continue
+    out: list[EnvelopeFieldDetail] = []
+    for f in body.get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        meta = f.get("fieldMeta") or {}
+        rid = f.get("recipientId")
+        try:
+            rid = int(rid) if rid is not None else None
+        except (TypeError, ValueError):
+            rid = None
+        rec = recips.get(rid) if rid is not None else None
+        out.append(EnvelopeFieldDetail(
+            field_type=str(f.get("type") or ""),
+            label=meta.get("label") if isinstance(meta.get("label"), str) else None,
+            required=meta.get("required") if isinstance(meta.get("required"), bool) else None,
+            template_read_only=meta.get("readOnly") if isinstance(meta.get("readOnly"), bool) else None,
+            recipient_id=rid,
+            recipient_email=(rec or {}).get("email"),
+            recipient_role=(rec or {}).get("role"),
+        ))
+    # Stable order: assignee, then labelled TEXT/NUMBER alphabetically, then signature/date.
+    out.sort(key=lambda x: (x.recipient_id or 0, x.label is None, (x.label or "").lower(), x.field_type))
+    return out
