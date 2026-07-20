@@ -11,7 +11,7 @@ from apps.edge_api.src.routers.industries_served_v1 import _to_row
 _COL = {  # name → tuple index, mirrors _COLS in the router
     "record_id": 0, "company_domain": 1, "domain_norm": 2, "confidence": 3, "reasoning": 4,
     "sources": 5, "steps_taken": 6, "industries_served": 7, "industries_served_count": 8,
-    "source": 9, "raw_payload": 10,
+    "source": 9, "clay_table_url": 10, "raw_payload": 11,
 }
 
 SHAPE_A = {
@@ -43,7 +43,8 @@ def test_shape_a_projects_as_before() -> None:
 
 
 def test_shape_b_claygent_capital_projects() -> None:
-    row = _to_row("v2mc.com", SHAPE_B, source="capital_providers")
+    row = _to_row("v2mc.com", SHAPE_B, source="capital_providers",
+                  clay_table_url="https://app.clay.com/workspaces/x/tables/t1")
     assert row is not None
     assert row[_COL["industries_served"]].obj == ["health care", "housing", "education"]
     assert row[_COL["industries_served_count"]] == 3
@@ -54,6 +55,7 @@ def test_shape_b_claygent_capital_projects() -> None:
     ]
     assert row[_COL["steps_taken"]].obj == SHAPE_B["stepsTaken"]
     assert row[_COL["source"]] == "capital_providers"
+    assert row[_COL["clay_table_url"]] == "https://app.clay.com/workspaces/x/tables/t1"
     # raw payload is verbatim — companyName and the unsplit source string survive in full
     assert row[_COL["raw_payload"]].obj["companyName"] == "V2 Municipal Capital"
     assert row[_COL["raw_payload"]].obj["source"] == SHAPE_B["source"]

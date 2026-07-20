@@ -35,3 +35,7 @@ CREATE INDEX IF NOT EXISTS industries_served_domain_norm_idx    ON gtm.industrie
 CREATE INDEX IF NOT EXISTS industries_served_company_domain_idx ON gtm.industries_served (company_domain);
 CREATE INDEX IF NOT EXISTS industries_served_confidence_idx     ON gtm.industries_served (confidence);
 CREATE INDEX IF NOT EXISTS industries_served_landed_at_idx      ON gtm.industries_served (landed_at DESC);
+
+-- clay_table_url — optional provenance: which Clay workbook table produced the payload
+-- (one workbook, many tables, ~10 enrichment payload columns per table).
+ALTER TABLE gtm.industries_served ADD COLUMN IF NOT EXISTS clay_table_url text;

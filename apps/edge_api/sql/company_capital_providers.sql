@@ -47,3 +47,6 @@ CREATE INDEX IF NOT EXISTS company_capital_providers_domain_norm_idx ON gtm.comp
 CREATE INDEX IF NOT EXISTS company_capital_providers_category_idx    ON gtm.company_capital_providers (capital_provider_type_category);
 CREATE INDEX IF NOT EXISTS company_capital_providers_provides_idx    ON gtm.company_capital_providers (provides_capital);
 CREATE INDEX IF NOT EXISTS company_capital_providers_landed_at_idx   ON gtm.company_capital_providers (landed_at DESC);
+
+-- clay_table_url — optional provenance: which Clay workbook table produced the payload.
+ALTER TABLE gtm.company_capital_providers ADD COLUMN IF NOT EXISTS clay_table_url text;
