@@ -193,12 +193,19 @@ async def read_sign_token(
     token = doc.signing_token
     pairs = list(doc.recipient_tokens)
     if len(pairs) > 1:
+        # The handle in the link is the agreement_handle on the /sign/{agreement_handle} flow and the
+        # deal handle on older links — resolve the signatory through whichever world knows it.
         async with get_db_connection() as conn:
-            contact = await queries.get_deal_signatory_email(conn, opportunity_id)
+            contact = await queries.get_agreement_signatory_email(conn, opportunity_id)
+            if not contact:
+                contact = await queries.get_deal_signatory_email(conn, opportunity_id)
         contact_l = (contact or "").strip().lower()
-        # CLIENT = the recipient bound to the opportunity contact; ORIGINATOR = any other recipient.
+        # CLIENT = the recipient bound to the signatory contact; ORIGINATOR = any other recipient.
+        # BOTH selections require a resolved contact — with it unknown, picking "any other recipient"
+        # for the originator would hand back an arbitrary slot (possibly the prospect's); fall back to
+        # the document's own signing_token instead of guessing.
         client_tok = next((t for (e, t) in pairs if contact_l and e == contact_l), None)
-        originator_tok = next((t for (e, t) in pairs if e != contact_l), None)
+        originator_tok = next((t for (e, t) in pairs if contact_l and e != contact_l), None)
         token = (originator_tok if signer == "originator" else client_tok) or token
 
     return {

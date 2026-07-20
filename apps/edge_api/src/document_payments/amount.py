@@ -15,10 +15,18 @@ from decimal import Decimal, InvalidOperation
 
 FEE_KEY = "fee_amount"
 
+# Payable-fee candidate keys, in precedence order. ``fee_amount`` is the opportunity-flow key
+# (opportunity_specific_content.field_values); ``PrepaidFee`` is the agreement-flow template LABEL
+# (the merged agreement field_values — the upfront engagement fee locked read-only into the signed
+# document). Per-unit labels (e.g. ``PricePerIntro``) are NOT payable-at-signing amounts and must
+# never appear here.
+FEE_KEYS = (FEE_KEY, "PrepaidFee")
+
 
 def resolve_fee_cents(field_values: dict | None) -> int:
-    """Parse ``field_values['fee_amount']`` → integer cents. Returns 0 when absent/unparseable/≤0."""
-    raw = (field_values or {}).get(FEE_KEY)
+    """Parse the first present ``FEE_KEYS`` entry → integer cents. Returns 0 when absent/unparseable/≤0."""
+    vals = field_values or {}
+    raw = next((vals[k] for k in FEE_KEYS if vals.get(k) is not None), None)
     if raw is None:
         return 0
     # Keep digits and the decimal point only — strips ``$``, thousands commas, whitespace, ``/month`` etc.
