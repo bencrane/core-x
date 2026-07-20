@@ -104,13 +104,13 @@ def _compile_body_predicates(body: dict[str, Any]) -> tuple[str | None, list[dic
     return compile_predicates({"predicates": preds})
 
 
-def build_pack_sql(pairs: list[tuple[str, str]], predicate_expr: str | None) -> dict[str, str]:
-    """Pure SQL assembly — every section shares the scoped-rows CTE."""
+def build_cohort_cte(pairs: list[tuple[str, str]], predicate_expr: str | None) -> str:
+    """The scoped-rows CTE shared by every pack section and the count SQL."""
     values = ",".join(f"('{n}','{p}')" for n, p in pairs)
     pred_leg = (
         f"\n    AND s.subawardee_uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
     )
-    cohort = f"""
+    return f"""
 WITH pairs(naics_code, psc_code) AS (VALUES {values}),
 t AS (
   SELECT s.subawardee_uei AS uei, s.prime_awardee_uei AS prime_uei,
@@ -124,6 +124,11 @@ t AS (
                AND s.prime_award_product_or_service_code = pr.psc_code
   WHERE {_WINDOW} AND s.subaward_amount_num > 0{pred_leg}
 )"""
+
+
+def build_pack_sql(pairs: list[tuple[str, str]], predicate_expr: str | None) -> dict[str, str]:
+    """Pure SQL assembly — every section shares the scoped-rows CTE."""
+    cohort = build_cohort_cte(pairs, predicate_expr)
     return {
         "tiles": cohort + """
 SELECT round(coalesce(sum(amt), 0), 0)                                   AS sub_usd,
@@ -161,8 +166,7 @@ GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10""",
 
 
 def build_count_sql(pairs: list[tuple[str, str]], predicate_expr: str | None) -> str:
-    prefix = build_pack_sql(pairs, predicate_expr)["tiles"].split("SELECT round")[0]
-    return prefix + "SELECT count(DISTINCT uei) AS subs FROM t"
+    return build_cohort_cte(pairs, predicate_expr) + "\nSELECT count(DISTINCT uei) AS subs FROM t"
 
 
 async def _run_sidecar(client: httpx.AsyncClient, sql: str, limit: int = 100) -> dict[str, Any]:

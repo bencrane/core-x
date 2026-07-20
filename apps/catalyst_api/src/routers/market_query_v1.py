@@ -56,6 +56,7 @@ the mart carries it). Nothing is frozen to FY23–25 (entry 1/3 ruling).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from typing import Any, Callable
@@ -202,7 +203,8 @@ def _req_num(spec: dict, key: str, term: str, *, allow_zero: bool = True) -> flo
     v = spec.get(key)
     if v is None:
         return None
-    if not isinstance(v, (int, float)) or isinstance(v, bool) or v < 0 or (v == 0 and not allow_zero):
+    if (not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v)
+            or v < 0 or (v == 0 and not allow_zero)):
         raise _refuse(f"{term}.{key} must be a non-negative number")
     return float(v)
 
