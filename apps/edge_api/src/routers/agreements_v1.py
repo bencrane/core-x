@@ -259,6 +259,12 @@ async def _generate_inputs(cur, agreement_id: str) -> dict | None:
         f"""
         SELECT {_ROW_COLS}, d.deal_handle, d.company_name,
                COALESCE(pc.field_settings, '{{}}'::jsonb) AS field_settings,
+               (SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
+                          'default_document_field_value', r.default_value,
+                          'read_only', r.post_mint_read_only,
+                          'required', r.post_mint_required))
+                  FROM gc.documenso_template_field_rules r
+                 WHERE r.template_documenso_id::text = a.template_documenso_id) AS gc_field_settings,
                env.documenso_response                     AS template_response,
                env.title                                  AS template_title,
                c.email                                                     AS recipient_email,
@@ -308,9 +314,10 @@ async def generate_agreement(agreement_id: str, body: GenerateBody | None = None
                 raise HTTPException(status_code=422, detail="no signatory contact with an email")
 
             # Pure resolution BEFORE the claim — a 422 here leaves the draft untouched.
-            # Caller-supplied plan (gc) wins; the HQX prefill config is the no-body fallback.
+            # Resolution order: caller-supplied plan > gc.documenso_template_field_rules (the
+            # operative truth, read directly — same database) > legacy HQX prefill config.
             field_settings = (body.field_settings if body and body.field_settings is not None
-                              else inp["field_settings"]) or {}
+                              else inp["gc_field_settings"] or inp["field_settings"]) or {}
             values = originate.resolve_field_values(field_settings, inp["field_values"] or {})
             locked = originate.locked_labels(field_settings)
             missing_locked = locked - set(values)
