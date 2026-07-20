@@ -38,6 +38,11 @@ Endpoints (service-token gated):
         → the full aggregate pack (sections below)
   POST /api/v1/market-slice/count  {"slug", "predicates"?: [...], "band"?}
         → {"count"} only (the question branch: "how many…" answers)
+  POST /api/v1/market-slice/entities {"slug"?, "predicates"?: [...], "band"?,
+        "limit"? ≤2000} → the cohort as per-firm rows with HQ geo (the Explore
+        map/table read). slug → card cohort, money = unfinanced-in-scope;
+        slug-less → pure grammar cohort (predicates required), money = active
+        obligations. `count` always the full cohort (parity with /count).
 
 Sections run concurrently against the sidecar (measured: whole pack < 1s warm,
 largest card + predicate ≈ 2s serial worst-case → ~450ms gathered).
@@ -234,7 +239,89 @@ GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10""",
 SELECT coalesce(e.employee_size_band, 'unknown') AS band, count(*) AS firms
 FROM m LEFT JOIN gtm_audience_entities e USING (uei)
 GROUP BY 1 ORDER BY 2 DESC""",
+        "series": cohort(in_band) + """
+SELECT w.fy AS fy,
+       round(coalesce(sum(w.won_obl), 0), 0) AS won_usd,
+       count(DISTINCT w.uei) AS firms
+FROM m JOIN gtm_entity_fy_won w USING (uei)
+WHERE w.fy >= 2019
+GROUP BY 1 ORDER BY 1""",
     }
+
+
+def build_entities_sql(
+    pairs: list[tuple[str, str]],
+    band: dict[str, float],
+    predicate_expr: str | None,
+    limit: int,
+) -> str:
+    """The slice cohort as per-firm rows with geo — the Explore map/table read.
+
+    Same cohort CTE as the pack (band + unfinanced-active-in-pair-scope ∪
+    predicates); one row per firm, HQ coordinates LEFT-JOINed from
+    gtm_entity_geo (a firm without a geocode still returns — the map discloses
+    plotted-vs-total, the table carries everyone).
+    """
+    sections = build_pack_sql(pairs, band, predicate_expr)
+    prefix = sections["tiles"].split("SELECT (SELECT count(*) FROM m)")[0]
+    return prefix + f"""
+SELECT m.uei,
+       any_value(e.legal_business_name) AS legal_business_name,
+       any_value(e.physical_city) AS physical_city,
+       any_value(e.physical_state) AS physical_state,
+       any_value(g.latitude) AS latitude,
+       any_value(g.longitude) AS longitude,
+       round(coalesce(sum(s.obl) FILTER (WHERE s.unfin), 0), 0) AS unfin_usd,
+       count(*) FILTER (WHERE s.unfin) AS awards_unfin
+FROM m
+JOIN scoped s USING (uei)
+LEFT JOIN gtm_sam_entities e ON e.uei = m.uei
+LEFT JOIN gtm_entity_geo g ON g.uei = m.uei
+GROUP BY m.uei
+ORDER BY unfin_usd DESC, m.uei
+LIMIT {limit}"""
+
+
+def build_grammar_entities_sql(
+    predicate_expr: str,
+    band: dict[str, float] | None,
+    limit: int,
+) -> tuple[str, str]:
+    """Slug-less cohort (pure predicate grammar) as per-firm rows with geo.
+
+    Money column is the firm's ACTIVE OBLIGATIONS (gtm_entity_pricing_mix.active_obl
+    — the band column), not unfinanced-in-scope: without a card there is no pair
+    scope to restrict to. Returns (entities_sql, count_sql) over the same cohort.
+    """
+    band_where = (
+        f"\nWHERE coalesce(p.active_obl, 0) >= {band['min']}"
+        f" AND coalesce(p.active_obl, 0) <= {band['max']}"
+        if band is not None
+        else ""
+    )
+    entities = f"""
+SELECT m.uei,
+       e.legal_business_name,
+       e.physical_city,
+       e.physical_state,
+       g.latitude,
+       g.longitude,
+       round(coalesce(p.active_obl, 0), 0) AS active_obl
+FROM (
+{predicate_expr}
+) m
+LEFT JOIN gtm_sam_entities e USING (uei)
+LEFT JOIN gtm_entity_geo g USING (uei)
+LEFT JOIN gtm_entity_pricing_mix p USING (uei){band_where}
+ORDER BY active_obl DESC, m.uei
+LIMIT {limit}"""
+    count = f"""
+SELECT count(*) AS firms
+FROM (
+{predicate_expr}
+) m
+LEFT JOIN gtm_entity_pricing_mix p USING (uei){band_where}"""
+    return entities, count
 
 
 def build_count_sql(pairs: list[tuple[str, str]], band: dict[str, float],
@@ -321,6 +408,7 @@ async def pack(body: dict[str, Any]) -> dict[str, Any]:
             "top_pairs": _rows(payloads["top_pairs"]),
             "size_bands": _rows(payloads["size_bands"]),
         },
+        "series": _rows(payloads["series"]),
         "count": tiles.get("firms", 0),
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
         "artifact": payloads["tiles"].get("artifact"),
@@ -349,4 +437,69 @@ async def count(body: dict[str, Any]) -> dict[str, Any]:
         "disclosures": disclosures,
         "elapsed_ms": payload.get("elapsed_ms"),
         "artifact": payload.get("artifact"),
+    }
+
+_GEO_DISCLOSURE = (
+    "coordinates are the firm's SAM registration location (gtm_entity_geo, HQ grain); "
+    "firms without a geocode are served in the rows and the count, never dropped"
+)
+
+_ENTITIES_MAX = 2000
+
+
+@router.post("/entities", dependencies=[Depends(require_service_token)])
+async def entities(body: dict[str, Any]) -> dict[str, Any]:
+    """The compiled cohort as per-firm rows with geo — the Explore map/table read.
+
+    With slug: the card cohort (band + unfinanced-active-in-pair-scope ∪
+    predicates); money = unfinanced $ in the card's pair scope. Without slug:
+    the pure predicate-grammar cohort (predicates required); money = active
+    obligations. `count` is always the FULL cohort — parity with /count for
+    the identical body; `returned` is the row page under `limit`.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    limit = body.get("limit", _ENTITIES_MAX)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= _ENTITIES_MAX):
+        raise _refuse(f"limit must be an integer in [1, {_ENTITIES_MAX}]")
+    slug = str(body.get("slug") or "")
+    expr, echoes, disclosures = _compile_body_predicates(body)
+
+    t0 = time.monotonic()
+    if slug:
+        scope = await _resolve_scope(slug)
+        band = _parse_band(body)
+        ent_sql = build_entities_sql(scope["pairs"], band, expr, limit)
+        count_sql = build_count_sql(scope["pairs"], band, expr)
+        money_basis = "unfinanced_in_scope"
+        title, lens = scope["title"], scope["lens"]
+    else:
+        if expr is None:
+            raise _refuse(
+                "slug or predicates required (an unscoped read of the whole universe is refused)"
+            )
+        band = _parse_band(body) if body.get("band") is not None else None
+        ent_sql, count_sql = build_grammar_entities_sql(expr, band, limit)
+        money_basis = "active_obligations"
+        title, lens = None, None
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        ent_payload, count_payload = await asyncio.gather(
+            _run_sidecar(client, ent_sql, limit=limit),
+            _run_sidecar(client, count_sql, limit=1),
+        )
+    rows = _rows(ent_payload)
+    return {
+        "slug": slug or None,
+        "title": title,
+        "lens": lens,
+        "band": band,
+        "predicates": echoes,
+        "disclosures": [*disclosures, _GEO_DISCLOSURE],
+        "money_basis": money_basis,
+        "entities": rows,
+        "returned": len(rows),
+        "count": _row(count_payload).get("firms", 0),
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": ent_payload.get("artifact"),
     }
