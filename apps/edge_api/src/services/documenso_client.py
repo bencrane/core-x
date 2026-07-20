@@ -463,8 +463,12 @@ async def create_template_from_pdf(
     pdf: bytes,
     recipients: list[dict[str, str]] | tuple[dict[str, str], ...] | None = None,
     filename: str | None = None,
+    external_id: str | None = None,
 ) -> TemplateCreateResult:
     """Create a Documenso TEMPLATE from rendered PDF bytes (the render+push lane terminal step).
+
+    ``external_id`` (optional) is stamped as the envelope's ``externalId`` — provenance carried
+    inside Documenso itself (e.g. the repo content path the PDF was rendered from).
 
     POST /api/v2/envelope/create (multipart: ``payload`` JSON + the PDF file) with ``type=TEMPLATE``,
     then GET /api/v2/envelope/{id} to read the placeholder recipients back. Field placement is NOT
@@ -474,7 +478,9 @@ async def create_template_from_pdf(
     """
     recips = list(recipients) if recipients is not None else list(_DEFAULT_TEMPLATE_RECIPIENTS)
     fname = filename or f"{title}.pdf"
-    payload = {"type": "TEMPLATE", "title": title, "recipients": recips}
+    payload: dict[str, Any] = {"type": "TEMPLATE", "title": title, "recipients": recips}
+    if external_id:
+        payload["externalId"] = external_id
     async with _client() as client:
         created = await client.post(
             "/api/v2/envelope/create",

@@ -136,6 +136,7 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
             style=body.style,
             title=body.name,  # operator-entered NAME -> Documenso template title (blank -> manifest name)
             tokens=tokens,
+            external_id=body.external_id,
         )
     except (push.PushError, render.StyleError, render.MissingTokenError) as e:
         # Bad selector / unknown template / unwired source / bad style — operator-fixable.
