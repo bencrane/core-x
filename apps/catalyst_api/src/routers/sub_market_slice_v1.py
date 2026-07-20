@@ -82,6 +82,19 @@ def _resolve(slug: str) -> dict[str, Any]:
     return card
 
 
+def _scope_pairs(card: dict[str, Any], body: dict[str, Any]) -> tuple[list[tuple[str, str]], str | None]:
+    """The pack scope: the whole card, or one named cohort (a pair-subset —
+    the population-framed 'firms like you' cut; v1.1 cohort segments)."""
+    cohort = body.get("cohort")
+    if cohort in (None, ""):
+        return [tuple(p) for p in card["pairs"]], None
+    co = (card.get("cohorts") or {}).get(str(cohort))
+    if co is None:
+        known = ", ".join(sorted((card.get("cohorts") or {}).keys())) or "none"
+        raise _refuse(f"unknown cohort '{cohort}' for this card (known: {known})")
+    return [tuple(p) for p in co["pairs"]], str(cohort)
+
+
 def _compile_body_predicates(body: dict[str, Any]) -> tuple[str | None, list[dict], list[str]]:
     preds = body.get("predicates")
     if preds in (None, []):
@@ -183,7 +196,13 @@ async def catalog() -> dict[str, Any]:
     return {
         "cards": [
             {"slug": slug, "title": c["title"], "members_are": c["members_are"],
-             "pair_count": len(c["pairs"]), "verified": c["verified"]}
+             "pair_count": len(c["pairs"]), "verified": c["verified"],
+             "cohorts": {
+                 k: {"family_name": co["family_name"], "one_liner": co["one_liner"],
+                     "language_phrases": co["language_phrases"],
+                     "share_of_card_pct": co["share_of_card_pct"], "stats": co["stats"]}
+                 for k, co in (c.get("cohorts") or {}).items()
+             }}
             for slug, c in sorted(scopes["cards"].items())
         ],
         "window": scopes["window"],
@@ -199,7 +218,7 @@ async def pack(body: dict[str, Any]) -> dict[str, Any]:
         raise _refuse("slug is required")
     card = _resolve(slug)
     expr, echoes, disclosures = _compile_body_predicates(body)
-    pairs = [tuple(p) for p in card["pairs"]]
+    pairs, cohort = _scope_pairs(card, body)
 
     sections = build_pack_sql(pairs, expr)
     t0 = time.monotonic()
@@ -212,6 +231,12 @@ async def pack(body: dict[str, Any]) -> dict[str, Any]:
         "slug": slug,
         "title": card["title"],
         "members_are": card["members_are"],
+        "cohort": cohort,
+        "cohort_meta": (card.get("cohorts") or {}).get(cohort) and {
+            "family_name": card["cohorts"][cohort]["family_name"],
+            "one_liner": card["cohorts"][cohort]["one_liner"],
+            "share_of_card_pct": card["cohorts"][cohort]["share_of_card_pct"],
+        } if cohort else None,
         "pair_count": len(pairs),
         "predicates": echoes,
         "disclosures": _DISCLOSURES + disclosures,
@@ -235,12 +260,14 @@ async def count(body: dict[str, Any]) -> dict[str, Any]:
         raise _refuse("slug is required")
     card = _resolve(slug)
     expr, echoes, disclosures = _compile_body_predicates(body)
-    sql = build_count_sql([tuple(p) for p in card["pairs"]], expr)
+    pairs, cohort = _scope_pairs(card, body)
+    sql = build_count_sql(pairs, expr)
     async with httpx.AsyncClient(timeout=90.0) as client:
         payload = await _run_sidecar(client, sql, limit=1)
     row = _row(payload)
     return {
         "slug": slug,
+        "cohort": cohort,
         "count": row.get("subs", 0),
         "predicates": echoes,
         "disclosures": _DISCLOSURES + disclosures,

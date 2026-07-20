@@ -1,6 +1,226 @@
 {
  "cards": {
   "airframes-aerostructures": {
+   "cohorts": {
+    "aerospace-craft-and-structural-component-15": {
+     "family_name": "AEROSPACE CRAFT AND STRUCTURAL COMPONENTS",
+     "language_phrases": [
+      "Airframe structural components",
+      "Rotary-wing aircraft",
+      "Space vehicles",
+      "Rotary-wing aircraft (helicopters)"
+     ],
+     "one_liner": "Firms delivering under aerospace craft and structural components prime programs",
+     "pairs": [
+      [
+       "332993",
+       "1560"
+      ],
+      [
+       "334111",
+       "1550"
+      ],
+      [
+       "334417",
+       "1560"
+      ],
+      [
+       "334511",
+       "1510"
+      ],
+      [
+       "336411",
+       "1510"
+      ],
+      [
+       "336411",
+       "1520"
+      ],
+      [
+       "336411",
+       "1550"
+      ],
+      [
+       "336411",
+       "1560"
+      ],
+      [
+       "336412",
+       "1510"
+      ],
+      [
+       "336412",
+       "1520"
+      ],
+      [
+       "336412",
+       "1560"
+      ],
+      [
+       "336413",
+       "1510"
+      ],
+      [
+       "336413",
+       "1520"
+      ],
+      [
+       "336413",
+       "1550"
+      ],
+      [
+       "336413",
+       "1560"
+      ],
+      [
+       "336414",
+       "1555"
+      ],
+      [
+       "336419",
+       "1560"
+      ],
+      [
+       "488190",
+       "1510"
+      ],
+      [
+       "488190",
+       "1520"
+      ],
+      [
+       "541330",
+       "1550"
+      ],
+      [
+       "541715",
+       "1550"
+      ],
+      [
+       "541715",
+       "1555"
+      ],
+      [
+       "541990",
+       "1510"
+      ]
+     ],
+     "share_of_card_pct": 65.2,
+     "stats": {
+      "cluster_usd": 23697955476.0,
+      "dominant_median_total": 486577.0,
+      "n_subs_active": 3128,
+      "n_subs_dominant": 2836
+     }
+    },
+    "aerospace-craft-components-and-accessori-16": {
+     "family_name": "AEROSPACE CRAFT COMPONENTS AND ACCESSORIES",
+     "language_phrases": [
+      "Miscellaneous aircraft accessories and components",
+      "Helicopter rotor blades and drive components",
+      "Aircraft hydraulic and de-icing system components",
+      "Helicopter rotor blades and drive mechanisms"
+     ],
+     "one_liner": "Firms delivering under aerospace craft components and accessories prime programs",
+     "pairs": [
+      [
+       "332999",
+       "1680"
+      ],
+      [
+       "333314",
+       "1680"
+      ],
+      [
+       "333997",
+       "1615"
+      ],
+      [
+       "334417",
+       "1650"
+      ],
+      [
+       "334511",
+       "1615"
+      ],
+      [
+       "334511",
+       "1680"
+      ],
+      [
+       "336411",
+       "1615"
+      ],
+      [
+       "336411",
+       "1680"
+      ],
+      [
+       "336412",
+       "1680"
+      ],
+      [
+       "336413",
+       "1615"
+      ],
+      [
+       "336413",
+       "1620"
+      ],
+      [
+       "336413",
+       "1630"
+      ],
+      [
+       "336413",
+       "1650"
+      ],
+      [
+       "336413",
+       "1660"
+      ],
+      [
+       "336413",
+       "1670"
+      ],
+      [
+       "336413",
+       "1680"
+      ],
+      [
+       "336611",
+       "1630"
+      ],
+      [
+       "488190",
+       "1680"
+      ],
+      [
+       "541712",
+       "1675"
+      ],
+      [
+       "541715",
+       "1680"
+      ],
+      [
+       "541990",
+       "1680"
+      ],
+      [
+       "927110",
+       "1677"
+      ]
+     ],
+     "share_of_card_pct": 34.8,
+     "stats": {
+      "cluster_usd": 12648497157.0,
+      "dominant_median_total": 225279.0,
+      "n_subs_active": 1962,
+      "n_subs_dominant": 1104
+     }
+    }
+   },
    "family_rule": [
     "15%",
     "16%"
@@ -198,6 +418,433 @@
    }
   },
   "defense-rd-programs": {
+   "cohorts": {
+    "national-defense-r-d-services-defense-re-ac32": {
+     "family_name": "NATIONAL DEFENSE R&D SERVICES; DEFENSE-RELATED ACTIVITIES; APPLIED RESEARCH",
+     "language_phrases": [
+      "Applied defense biotechnology research and development",
+      "National defense R&D administrative support",
+      "Applied defense-related research and development",
+      "Defense research and development services"
+     ],
+     "one_liner": "Firms delivering under national defense r&d services; defense-related activities; applied research prime programs",
+     "pairs": [
+      [
+       "332993",
+       "AC23"
+      ],
+      [
+       "334220",
+       "AC23"
+      ],
+      [
+       "334220",
+       "AC25"
+      ],
+      [
+       "334290",
+       "AC32"
+      ],
+      [
+       "334511",
+       "AC14"
+      ],
+      [
+       "334511",
+       "AC15"
+      ],
+      [
+       "334511",
+       "AC25"
+      ],
+      [
+       "334511",
+       "AC35"
+      ],
+      [
+       "334511",
+       "AC54"
+      ],
+      [
+       "334519",
+       "AC12"
+      ],
+      [
+       "336411",
+       "AC14"
+      ],
+      [
+       "336411",
+       "AC15"
+      ],
+      [
+       "336412",
+       "AC14"
+      ],
+      [
+       "336413",
+       "AC15"
+      ],
+      [
+       "336414",
+       "AC12"
+      ],
+      [
+       "336414",
+       "AC24"
+      ],
+      [
+       "336414",
+       "AC25"
+      ],
+      [
+       "336419",
+       "AC12"
+      ],
+      [
+       "336419",
+       "AC53"
+      ],
+      [
+       "336992",
+       "AC44"
+      ],
+      [
+       "336999",
+       "AC11"
+      ],
+      [
+       "541330",
+       "AC11"
+      ],
+      [
+       "541330",
+       "AC12"
+      ],
+      [
+       "541330",
+       "AC14"
+      ],
+      [
+       "541330",
+       "AC15"
+      ],
+      [
+       "541330",
+       "AC23"
+      ],
+      [
+       "541330",
+       "AC24"
+      ],
+      [
+       "541330",
+       "AC31"
+      ],
+      [
+       "541330",
+       "AC32"
+      ],
+      [
+       "541330",
+       "AC34"
+      ],
+      [
+       "541330",
+       "AC35"
+      ],
+      [
+       "541330",
+       "AC53"
+      ],
+      [
+       "541330",
+       "AC63"
+      ],
+      [
+       "541330",
+       "AC65"
+      ],
+      [
+       "541380",
+       "AC32"
+      ],
+      [
+       "541511",
+       "AC15"
+      ],
+      [
+       "541511",
+       "AC23"
+      ],
+      [
+       "541519",
+       "AC12"
+      ],
+      [
+       "541712",
+       "AC11"
+      ],
+      [
+       "541712",
+       "AC12"
+      ],
+      [
+       "541712",
+       "AC14"
+      ],
+      [
+       "541712",
+       "AC21"
+      ],
+      [
+       "541712",
+       "AC22"
+      ],
+      [
+       "541712",
+       "AC23"
+      ],
+      [
+       "541712",
+       "AC24"
+      ],
+      [
+       "541712",
+       "AC25"
+      ],
+      [
+       "541712",
+       "AC26"
+      ],
+      [
+       "541712",
+       "AC32"
+      ],
+      [
+       "541712",
+       "AC61"
+      ],
+      [
+       "541714",
+       "AC12"
+      ],
+      [
+       "541714",
+       "AC14"
+      ],
+      [
+       "541714",
+       "AC32"
+      ],
+      [
+       "541715",
+       "AC11"
+      ],
+      [
+       "541715",
+       "AC12"
+      ],
+      [
+       "541715",
+       "AC14"
+      ],
+      [
+       "541715",
+       "AC15"
+      ],
+      [
+       "541715",
+       "AC21"
+      ],
+      [
+       "541715",
+       "AC22"
+      ],
+      [
+       "541715",
+       "AC23"
+      ],
+      [
+       "541715",
+       "AC24"
+      ],
+      [
+       "541715",
+       "AC31"
+      ],
+      [
+       "541715",
+       "AC32"
+      ],
+      [
+       "541715",
+       "AC52"
+      ],
+      [
+       "541715",
+       "AC61"
+      ],
+      [
+       "541715",
+       "AC62"
+      ],
+      [
+       "541715",
+       "AC63"
+      ],
+      [
+       "541715",
+       "AC91"
+      ],
+      [
+       "541715",
+       "AC93"
+      ],
+      [
+       "541720",
+       "AC24"
+      ],
+      [
+       "541990",
+       "AC12"
+      ],
+      [
+       "561210",
+       "AC34"
+      ],
+      [
+       "611310",
+       "AC32"
+      ]
+     ],
+     "share_of_card_pct": 63.4,
+     "stats": {
+      "cluster_usd": 9875620337.0,
+      "dominant_median_total": 234514.0,
+      "n_subs_active": 5886,
+      "n_subs_dominant": 5402
+     }
+    },
+    "national-defense-r-d-services-defense-re-ac33": {
+     "family_name": "NATIONAL DEFENSE R&D SERVICES; DEFENSE-RELATED ACTIVITIES; EXPERIMENTAL DEVELOPMENT",
+     "language_phrases": [
+      "Defense-related experimental development",
+      "Defense aircraft experimental development",
+      "Defense experimental development R&D",
+      "Defense-related experimental development services"
+     ],
+     "one_liner": "Firms delivering under national defense r&d services; defense-related activities; experimental development prime programs",
+     "pairs": [
+      [
+       "334511",
+       "AC33"
+      ],
+      [
+       "336411",
+       "AC33"
+      ],
+      [
+       "336419",
+       "AC33"
+      ],
+      [
+       "541330",
+       "AC33"
+      ],
+      [
+       "541512",
+       "AC33"
+      ],
+      [
+       "541712",
+       "AC33"
+      ],
+      [
+       "541715",
+       "AC33"
+      ],
+      [
+       "541990",
+       "AC33"
+      ]
+     ],
+     "share_of_card_pct": 13.4,
+     "stats": {
+      "cluster_usd": 2079063797.0,
+      "dominant_median_total": 352121.0,
+      "n_subs_active": 748,
+      "n_subs_dominant": 471
+     }
+    },
+    "national-defense-r-d-services-department-ac13": {
+     "family_name": "NATIONAL DEFENSE R&D SERVICES; DEPARTMENT OF DEFENSE - MILITARY; EXPERIMENTAL DEVELOPMENT",
+     "language_phrases": [
+      "Experimental development R&D",
+      "Experimental defense development",
+      "Military aircraft experimental development",
+      "Defense experimental development"
+     ],
+     "one_liner": "Firms delivering under national defense r&d services; department of defense - military; experimental development prime programs",
+     "pairs": [
+      [
+       "332994",
+       "AC13"
+      ],
+      [
+       "334511",
+       "AC13"
+      ],
+      [
+       "336411",
+       "AC13"
+      ],
+      [
+       "336412",
+       "AC13"
+      ],
+      [
+       "336414",
+       "AC13"
+      ],
+      [
+       "336419",
+       "AC13"
+      ],
+      [
+       "541330",
+       "AC13"
+      ],
+      [
+       "541519",
+       "AC13"
+      ],
+      [
+       "541712",
+       "AC13"
+      ],
+      [
+       "541714",
+       "AC13"
+      ],
+      [
+       "541715",
+       "AC13"
+      ],
+      [
+       "541990",
+       "AC13"
+      ]
+     ],
+     "share_of_card_pct": 23.2,
+     "stats": {
+      "cluster_usd": 3610750421.0,
+      "dominant_median_total": 239489.0,
+      "n_subs_active": 1946,
+      "n_subs_dominant": 1321
+     }
+    }
+   },
    "family_rule": [
     "AC%"
    ],
@@ -582,6 +1229,275 @@
    }
   },
   "equipment-maintenance-overhaul": {
+   "cohorts": {
+    "maint-repair-rebuild-of-equipment-aircra-j015": {
+     "family_name": "MAINT/REPAIR/REBUILD OF EQUIPMENT- AIRCRAFT AND AIRFRAME STRUCTURAL COMPONENTS",
+     "language_phrases": [
+      "Refrigeration and air-conditioning equipment maintenance and repair",
+      "Electronic equipment repair and rebuild services",
+      "Guided missile maintenance and overhaul",
+      "Aircraft structural component repair"
+     ],
+     "one_liner": "Firms delivering under maint/repair/rebuild of equipment- aircraft and airframe structural components prime programs",
+     "pairs": [
+      [
+       "238210",
+       "J059"
+      ],
+      [
+       "238220",
+       "J041"
+      ],
+      [
+       "333924",
+       "J039"
+      ],
+      [
+       "334118",
+       "J059"
+      ],
+      [
+       "334511",
+       "J012"
+      ],
+      [
+       "334511",
+       "J014"
+      ],
+      [
+       "334511",
+       "J015"
+      ],
+      [
+       "334511",
+       "J016"
+      ],
+      [
+       "334511",
+       "J059"
+      ],
+      [
+       "336411",
+       "J010"
+      ],
+      [
+       "336411",
+       "J015"
+      ],
+      [
+       "336411",
+       "J016"
+      ],
+      [
+       "336411",
+       "J017"
+      ],
+      [
+       "336412",
+       "J010"
+      ],
+      [
+       "336412",
+       "J015"
+      ],
+      [
+       "336412",
+       "J016"
+      ],
+      [
+       "336412",
+       "J028"
+      ],
+      [
+       "336413",
+       "J015"
+      ],
+      [
+       "336413",
+       "J016"
+      ],
+      [
+       "336413",
+       "J069"
+      ],
+      [
+       "336414",
+       "J014"
+      ],
+      [
+       "336419",
+       "J014"
+      ],
+      [
+       "336611",
+       "J019"
+      ],
+      [
+       "336611",
+       "J020"
+      ],
+      [
+       "336611",
+       "J036"
+      ],
+      [
+       "336992",
+       "J023"
+      ],
+      [
+       "488190",
+       "J015"
+      ],
+      [
+       "488190",
+       "J016"
+      ],
+      [
+       "488190",
+       "J028"
+      ],
+      [
+       "541330",
+       "J010"
+      ],
+      [
+       "541330",
+       "J013"
+      ],
+      [
+       "541330",
+       "J014"
+      ],
+      [
+       "541330",
+       "J015"
+      ],
+      [
+       "541330",
+       "J016"
+      ],
+      [
+       "541330",
+       "J020"
+      ],
+      [
+       "541330",
+       "J036"
+      ],
+      [
+       "541330",
+       "J048"
+      ],
+      [
+       "541330",
+       "J058"
+      ],
+      [
+       "541330",
+       "J059"
+      ],
+      [
+       "541330",
+       "J063"
+      ],
+      [
+       "541330",
+       "J069"
+      ],
+      [
+       "541330",
+       "J091"
+      ],
+      [
+       "541512",
+       "J069"
+      ],
+      [
+       "541614",
+       "J010"
+      ],
+      [
+       "541614",
+       "J014"
+      ],
+      [
+       "541715",
+       "J014"
+      ],
+      [
+       "541990",
+       "J014"
+      ],
+      [
+       "541990",
+       "J015"
+      ],
+      [
+       "561210",
+       "J025"
+      ],
+      [
+       "561210",
+       "J036"
+      ],
+      [
+       "561621",
+       "J059"
+      ],
+      [
+       "561621",
+       "J063"
+      ],
+      [
+       "561990",
+       "J017"
+      ],
+      [
+       "561990",
+       "J069"
+      ],
+      [
+       "811210",
+       "J016"
+      ],
+      [
+       "811210",
+       "J059"
+      ],
+      [
+       "811210",
+       "J063"
+      ],
+      [
+       "811213",
+       "J059"
+      ],
+      [
+       "811219",
+       "J015"
+      ],
+      [
+       "811219",
+       "J016"
+      ],
+      [
+       "811219",
+       "J058"
+      ],
+      [
+       "811219",
+       "J059"
+      ]
+     ],
+     "share_of_card_pct": 100.0,
+     "stats": {
+      "cluster_usd": 14522738325.0,
+      "dominant_median_total": 209722.0,
+      "n_subs_active": 2971,
+      "n_subs_dominant": 2971
+     }
+    }
+   },
    "family_rule": [
     "J0%"
    ],
@@ -846,6 +1762,298 @@
    }
   },
   "federal-it-applications": {
+   "cohorts": {
+    "adp-and-telecommunications-d3": {
+     "family_name": "ADP AND TELECOMMUNICATIONS",
+     "language_phrases": [
+      "Telecommunications network management services",
+      "IT and telecommunications support services",
+      "Integrated IT solutions and engineering services",
+      "Annual software maintenance service plans"
+     ],
+     "one_liner": "Firms delivering under adp and telecommunications prime programs",
+     "pairs": [
+      [
+       "517110",
+       "D304"
+      ],
+      [
+       "517110",
+       "D316"
+      ],
+      [
+       "517110",
+       "D318"
+      ],
+      [
+       "517110",
+       "D399"
+      ],
+      [
+       "517919",
+       "D318"
+      ],
+      [
+       "517919",
+       "D399"
+      ],
+      [
+       "518210",
+       "D302"
+      ],
+      [
+       "518210",
+       "D316"
+      ],
+      [
+       "518210",
+       "D399"
+      ],
+      [
+       "541330",
+       "D307"
+      ],
+      [
+       "541330",
+       "D316"
+      ],
+      [
+       "541330",
+       "D318"
+      ],
+      [
+       "541330",
+       "D319"
+      ],
+      [
+       "541511",
+       "D302"
+      ],
+      [
+       "541511",
+       "D305"
+      ],
+      [
+       "541511",
+       "D308"
+      ],
+      [
+       "541511",
+       "D310"
+      ],
+      [
+       "541511",
+       "D318"
+      ],
+      [
+       "541511",
+       "D399"
+      ],
+      [
+       "541512",
+       "D301"
+      ],
+      [
+       "541512",
+       "D302"
+      ],
+      [
+       "541512",
+       "D304"
+      ],
+      [
+       "541512",
+       "D306"
+      ],
+      [
+       "541512",
+       "D307"
+      ],
+      [
+       "541512",
+       "D308"
+      ],
+      [
+       "541512",
+       "D310"
+      ],
+      [
+       "541512",
+       "D311"
+      ],
+      [
+       "541512",
+       "D313"
+      ],
+      [
+       "541512",
+       "D314"
+      ],
+      [
+       "541512",
+       "D316"
+      ],
+      [
+       "541512",
+       "D318"
+      ],
+      [
+       "541512",
+       "D325"
+      ],
+      [
+       "541512",
+       "D399"
+      ],
+      [
+       "541513",
+       "D301"
+      ],
+      [
+       "541513",
+       "D316"
+      ],
+      [
+       "541519",
+       "D301"
+      ],
+      [
+       "541519",
+       "D305"
+      ],
+      [
+       "541519",
+       "D307"
+      ],
+      [
+       "541519",
+       "D308"
+      ],
+      [
+       "541519",
+       "D310"
+      ],
+      [
+       "541519",
+       "D318"
+      ],
+      [
+       "541519",
+       "D399"
+      ]
+     ],
+     "share_of_card_pct": 30.9,
+     "stats": {
+      "cluster_usd": 4370475871.0,
+      "dominant_median_total": 369286.0,
+      "n_subs_active": 1519,
+      "n_subs_dominant": 1145
+     }
+    },
+    "it-and-telecom-apllications-da": {
+     "family_name": "IT AND TELECOM - APLLICATIONS",
+     "language_phrases": [
+      "Business application development support services",
+      "Business application development support",
+      "Application development software as a service",
+      "Custom application development and DevSecOps services"
+     ],
+     "one_liner": "Firms delivering under it and telecom - apllications prime programs",
+     "pairs": [
+      [
+       "334290",
+       "DA01"
+      ],
+      [
+       "511210",
+       "DA01"
+      ],
+      [
+       "517410",
+       "DA01"
+      ],
+      [
+       "518210",
+       "DA01"
+      ],
+      [
+       "518210",
+       "DA10"
+      ],
+      [
+       "541330",
+       "DA01"
+      ],
+      [
+       "541330",
+       "DA10"
+      ],
+      [
+       "541511",
+       "DA01"
+      ],
+      [
+       "541511",
+       "DA10"
+      ],
+      [
+       "541512",
+       "DA01"
+      ],
+      [
+       "541512",
+       "DA10"
+      ],
+      [
+       "541513",
+       "DA01"
+      ],
+      [
+       "541519",
+       "DA01"
+      ],
+      [
+       "541519",
+       "DA10"
+      ],
+      [
+       "541611",
+       "DA01"
+      ],
+      [
+       "541611",
+       "DA10"
+      ],
+      [
+       "541618",
+       "DA01"
+      ],
+      [
+       "541712",
+       "DA01"
+      ],
+      [
+       "541715",
+       "DA01"
+      ],
+      [
+       "561422",
+       "DA01"
+      ],
+      [
+       "811212",
+       "DA10"
+      ]
+     ],
+     "share_of_card_pct": 69.1,
+     "stats": {
+      "cluster_usd": 9784912021.0,
+      "dominant_median_total": 919874.0,
+      "n_subs_active": 2120,
+      "n_subs_dominant": 1888
+     }
+    }
+   },
    "family_rule": [
     "DA%",
     "D3%"
@@ -1115,6 +2323,750 @@
    }
   },
   "professional-engineering-services": {
+   "cohorts": {
+    "management-support-services-r7": {
+     "family_name": "MANAGEMENT SUPPORT SERVICES",
+     "language_phrases": [
+      "Logistics support services",
+      "Management support services",
+      "Financial management support services",
+      "Financial audit services"
+     ],
+     "one_liner": "Firms delivering under management support services prime programs",
+     "pairs": [
+      [
+       "336411",
+       "R706"
+      ],
+      [
+       "336412",
+       "R706"
+      ],
+      [
+       "336413",
+       "R706"
+      ],
+      [
+       "336413",
+       "R799"
+      ],
+      [
+       "488190",
+       "R706"
+      ],
+      [
+       "488999",
+       "R706"
+      ],
+      [
+       "522390",
+       "R710"
+      ],
+      [
+       "541199",
+       "R799"
+      ],
+      [
+       "541211",
+       "R703"
+      ],
+      [
+       "541211",
+       "R704"
+      ],
+      [
+       "541211",
+       "R710"
+      ],
+      [
+       "541219",
+       "R703"
+      ],
+      [
+       "541219",
+       "R704"
+      ],
+      [
+       "541219",
+       "R799"
+      ],
+      [
+       "541330",
+       "R701"
+      ],
+      [
+       "541330",
+       "R703"
+      ],
+      [
+       "541330",
+       "R706"
+      ],
+      [
+       "541330",
+       "R707"
+      ],
+      [
+       "541330",
+       "R710"
+      ],
+      [
+       "541330",
+       "R799"
+      ],
+      [
+       "541511",
+       "R702"
+      ],
+      [
+       "541511",
+       "R799"
+      ],
+      [
+       "541512",
+       "R799"
+      ],
+      [
+       "541513",
+       "R799"
+      ],
+      [
+       "541519",
+       "R703"
+      ],
+      [
+       "541519",
+       "R799"
+      ],
+      [
+       "541611",
+       "R702"
+      ],
+      [
+       "541611",
+       "R703"
+      ],
+      [
+       "541611",
+       "R706"
+      ],
+      [
+       "541611",
+       "R707"
+      ],
+      [
+       "541611",
+       "R708"
+      ],
+      [
+       "541611",
+       "R799"
+      ],
+      [
+       "541613",
+       "R701"
+      ],
+      [
+       "541614",
+       "R706"
+      ],
+      [
+       "541618",
+       "R706"
+      ],
+      [
+       "541690",
+       "R706"
+      ],
+      [
+       "541712",
+       "R707"
+      ],
+      [
+       "541810",
+       "R701"
+      ],
+      [
+       "541990",
+       "R702"
+      ],
+      [
+       "541990",
+       "R706"
+      ],
+      [
+       "541990",
+       "R799"
+      ],
+      [
+       "561210",
+       "R706"
+      ],
+      [
+       "561210",
+       "R799"
+      ],
+      [
+       "561422",
+       "R702"
+      ],
+      [
+       "561990",
+       "R706"
+      ],
+      [
+       "811310",
+       "R706"
+      ]
+     ],
+     "share_of_card_pct": 17.5,
+     "stats": {
+      "cluster_usd": 7424484086.0,
+      "dominant_median_total": 257998.0,
+      "n_subs_active": 2791,
+      "n_subs_dominant": 2193
+     }
+    },
+    "professional-services-r4": {
+     "family_name": "PROFESSIONAL SERVICES",
+     "language_phrases": [
+      "Personal services contract personnel",
+      "Professional simulation support services",
+      "Communications engineering and technical support",
+      "Program management and support services"
+     ],
+     "one_liner": "Firms delivering under professional services prime programs",
+     "pairs": [
+      [
+       "111998",
+       "R497"
+      ],
+      [
+       "332999",
+       "R425"
+      ],
+      [
+       "333318",
+       "R412"
+      ],
+      [
+       "333318",
+       "R425"
+      ],
+      [
+       "334220",
+       "R425"
+      ],
+      [
+       "334290",
+       "R425"
+      ],
+      [
+       "334419",
+       "R425"
+      ],
+      [
+       "334511",
+       "R408"
+      ],
+      [
+       "334511",
+       "R425"
+      ],
+      [
+       "334511",
+       "R499"
+      ],
+      [
+       "336411",
+       "R425"
+      ],
+      [
+       "336411",
+       "R499"
+      ],
+      [
+       "336412",
+       "R425"
+      ],
+      [
+       "336413",
+       "R412"
+      ],
+      [
+       "336413",
+       "R425"
+      ],
+      [
+       "336414",
+       "R425"
+      ],
+      [
+       "336611",
+       "R425"
+      ],
+      [
+       "336992",
+       "R425"
+      ],
+      [
+       "336992",
+       "R499"
+      ],
+      [
+       "443120",
+       "R499"
+      ],
+      [
+       "488190",
+       "R408"
+      ],
+      [
+       "488190",
+       "R425"
+      ],
+      [
+       "511210",
+       "R425"
+      ],
+      [
+       "517311",
+       "R426"
+      ],
+      [
+       "517410",
+       "R425"
+      ],
+      [
+       "517919",
+       "R425"
+      ],
+      [
+       "517919",
+       "R499"
+      ],
+      [
+       "518210",
+       "R408"
+      ],
+      [
+       "518210",
+       "R422"
+      ],
+      [
+       "518210",
+       "R499"
+      ],
+      [
+       "523110",
+       "R408"
+      ],
+      [
+       "541110",
+       "R418"
+      ],
+      [
+       "541199",
+       "R408"
+      ],
+      [
+       "541199",
+       "R418"
+      ],
+      [
+       "541199",
+       "R499"
+      ],
+      [
+       "541211",
+       "R408"
+      ],
+      [
+       "541211",
+       "R499"
+      ],
+      [
+       "541219",
+       "R499"
+      ],
+      [
+       "541330",
+       "R405"
+      ],
+      [
+       "541330",
+       "R408"
+      ],
+      [
+       "541330",
+       "R410"
+      ],
+      [
+       "541330",
+       "R423"
+      ],
+      [
+       "541330",
+       "R424"
+      ],
+      [
+       "541330",
+       "R425"
+      ],
+      [
+       "541330",
+       "R426"
+      ],
+      [
+       "541330",
+       "R499"
+      ],
+      [
+       "541370",
+       "R425"
+      ],
+      [
+       "541380",
+       "R425"
+      ],
+      [
+       "541380",
+       "R499"
+      ],
+      [
+       "541511",
+       "R405"
+      ],
+      [
+       "541511",
+       "R408"
+      ],
+      [
+       "541511",
+       "R412"
+      ],
+      [
+       "541511",
+       "R425"
+      ],
+      [
+       "541511",
+       "R426"
+      ],
+      [
+       "541511",
+       "R499"
+      ],
+      [
+       "541512",
+       "R406"
+      ],
+      [
+       "541512",
+       "R408"
+      ],
+      [
+       "541512",
+       "R410"
+      ],
+      [
+       "541512",
+       "R415"
+      ],
+      [
+       "541512",
+       "R425"
+      ],
+      [
+       "541512",
+       "R499"
+      ],
+      [
+       "541513",
+       "R408"
+      ],
+      [
+       "541513",
+       "R423"
+      ],
+      [
+       "541513",
+       "R425"
+      ],
+      [
+       "541513",
+       "R499"
+      ],
+      [
+       "541519",
+       "R408"
+      ],
+      [
+       "541519",
+       "R425"
+      ],
+      [
+       "541519",
+       "R499"
+      ],
+      [
+       "541611",
+       "R405"
+      ],
+      [
+       "541611",
+       "R406"
+      ],
+      [
+       "541611",
+       "R408"
+      ],
+      [
+       "541611",
+       "R410"
+      ],
+      [
+       "541611",
+       "R418"
+      ],
+      [
+       "541611",
+       "R423"
+      ],
+      [
+       "541611",
+       "R425"
+      ],
+      [
+       "541611",
+       "R429"
+      ],
+      [
+       "541611",
+       "R431"
+      ],
+      [
+       "541611",
+       "R499"
+      ],
+      [
+       "541612",
+       "R408"
+      ],
+      [
+       "541612",
+       "R431"
+      ],
+      [
+       "541612",
+       "R499"
+      ],
+      [
+       "541613",
+       "R408"
+      ],
+      [
+       "541613",
+       "R426"
+      ],
+      [
+       "541613",
+       "R499"
+      ],
+      [
+       "541614",
+       "R408"
+      ],
+      [
+       "541614",
+       "R499"
+      ],
+      [
+       "541618",
+       "R408"
+      ],
+      [
+       "541618",
+       "R499"
+      ],
+      [
+       "541620",
+       "R410"
+      ],
+      [
+       "541620",
+       "R425"
+      ],
+      [
+       "541620",
+       "R429"
+      ],
+      [
+       "541620",
+       "R499"
+      ],
+      [
+       "541690",
+       "R406"
+      ],
+      [
+       "541690",
+       "R408"
+      ],
+      [
+       "541690",
+       "R425"
+      ],
+      [
+       "541690",
+       "R499"
+      ],
+      [
+       "541712",
+       "R408"
+      ],
+      [
+       "541712",
+       "R425"
+      ],
+      [
+       "541712",
+       "R499"
+      ],
+      [
+       "541715",
+       "R405"
+      ],
+      [
+       "541715",
+       "R408"
+      ],
+      [
+       "541715",
+       "R423"
+      ],
+      [
+       "541715",
+       "R425"
+      ],
+      [
+       "541715",
+       "R499"
+      ],
+      [
+       "541720",
+       "R499"
+      ],
+      [
+       "541910",
+       "R422"
+      ],
+      [
+       "541990",
+       "R405"
+      ],
+      [
+       "541990",
+       "R408"
+      ],
+      [
+       "541990",
+       "R410"
+      ],
+      [
+       "541990",
+       "R423"
+      ],
+      [
+       "541990",
+       "R425"
+      ],
+      [
+       "541990",
+       "R497"
+      ],
+      [
+       "541990",
+       "R499"
+      ],
+      [
+       "561110",
+       "R499"
+      ],
+      [
+       "561210",
+       "R408"
+      ],
+      [
+       "561210",
+       "R429"
+      ],
+      [
+       "561422",
+       "R499"
+      ],
+      [
+       "561621",
+       "R499"
+      ],
+      [
+       "561990",
+       "R425"
+      ],
+      [
+       "562910",
+       "R425"
+      ],
+      [
+       "562910",
+       "R499"
+      ],
+      [
+       "611430",
+       "R431"
+      ],
+      [
+       "611430",
+       "R499"
+      ],
+      [
+       "611512",
+       "R499"
+      ],
+      [
+       "611699",
+       "R408"
+      ],
+      [
+       "611710",
+       "R408"
+      ],
+      [
+       "611710",
+       "R499"
+      ],
+      [
+       "621498",
+       "R408"
+      ],
+      [
+       "624110",
+       "R408"
+      ],
+      [
+       "811219",
+       "R425"
+      ]
+     ],
+     "share_of_card_pct": 82.5,
+     "stats": {
+      "cluster_usd": 34933475720.0,
+      "dominant_median_total": 293339.0,
+      "n_subs_active": 11822,
+      "n_subs_dominant": 11480
+     }
+    }
+   },
    "family_rule": [
     "R4%",
     "R7%"
@@ -1836,6 +3788,84 @@
    }
   },
   "propulsion-engines": {
+   "cohorts": {
+    "gas-turbines-and-jet-engines-aircraft-pr-2840": {
+     "family_name": "GAS TURBINES AND JET ENGINES, AIRCRAFT, PRIME MOVING; AND COMPONENTS",
+     "language_phrases": [
+      "Aircraft gas turbine and jet engine components",
+      "Aircraft gas turbine and jet engines"
+     ],
+     "one_liner": "Firms delivering under gas turbines and jet engines, aircraft, prime moving; and components prime programs",
+     "pairs": [
+      [
+       "336411",
+       "2840"
+      ],
+      [
+       "336412",
+       "2840"
+      ],
+      [
+       "336413",
+       "2840"
+      ]
+     ],
+     "share_of_card_pct": 29.5,
+     "stats": {
+      "cluster_usd": 4604325623.0,
+      "dominant_median_total": 439117.0,
+      "n_subs_active": 273,
+      "n_subs_dominant": 248
+     }
+    },
+    "gas-turbines-and-jet-engines-non-aircraf-2835": {
+     "family_name": "GAS TURBINES AND JET ENGINES; NON-AIRCRAFT PRIME MOVER, AIRCRAFT NON-PRIME MOVER, AND COMPONENTS",
+     "language_phrases": [
+      "Non-aircraft gas turbines and components",
+      "Diesel engines and components",
+      "Miscellaneous engines and components",
+      "Rocket engines and components"
+     ],
+     "one_liner": "Firms delivering under gas turbines and jet engines; non-aircraft prime mover, aircraft non-prime mover, and components prime programs",
+     "pairs": [
+      [
+       "333611",
+       "2835"
+      ],
+      [
+       "333618",
+       "2815"
+      ],
+      [
+       "334511",
+       "2895"
+      ],
+      [
+       "336412",
+       "2810"
+      ],
+      [
+       "336415",
+       "2845"
+      ],
+      [
+       "336611",
+       "2835"
+      ],
+      [
+       "336992",
+       "2835"
+      ]
+     ],
+     "share_of_card_pct": 70.5,
+     "stats": {
+      "cluster_usd": 10990830057.0,
+      "dominant_median_total": 333822.0,
+      "n_subs_active": 244,
+      "n_subs_dominant": 207
+     }
+    }
+   },
    "family_rule": [
     "28%"
    ],
