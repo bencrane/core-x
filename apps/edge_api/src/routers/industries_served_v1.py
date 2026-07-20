@@ -7,9 +7,14 @@ Endpoints (mounted at ``/api/v1/industries-served``, service-token gated):
 WIRE CONTRACT::
 
     {
-      "company_domain": "togglerentals.com",
+      "company_domain": "togglerentals.com",   # or "domain"; falls back to raw_payload.domain
+      "source":         "capital_providers",   # optional lane tag; default "industries_served"
       "raw_payload":    { ... the entire research object, EXACTLY as your tool emitted it ... }
     }
+
+Two payload key shapes project losslessly (the raw jsonb is verbatim either way):
+the original ``{industriesServed[], sources[]}`` and the Claygent capital-provider run
+``{industries[], source: "url; url", companyName, domain}`` (2026-07-19 shape).
 
 STORAGE. Dual: jsonb raw_payload (immutable SoT) + flat projection of {confidence, reasoning,
 sources, steps_taken, industries_served, industries_served_count}. company_domain stored verbatim;
@@ -98,9 +103,10 @@ _STATS_SQL = """
 """
 
 _SOURCE = "industries_served"
+_SOURCE_TAG_RE = re.compile(r"^[a-z0-9_\-]{1,64}$")
 
 
-def _to_row(company_domain_raw: str, rec: dict[str, Any]) -> tuple | None:
+def _to_row(company_domain_raw: str, rec: dict[str, Any], source: str = _SOURCE) -> tuple | None:
     company_domain = _s(company_domain_raw)
     if not company_domain:
         return None
@@ -108,9 +114,16 @@ def _to_row(company_domain_raw: str, rec: dict[str, Any]) -> tuple | None:
     if not domain_norm:
         return None
 
+    # sources: original shape sends sources[] (list); the Claygent capital shape sends
+    # source (one "; "-joined string of URLs) — split for the projection, raw keeps verbatim.
     sources = _list_of_str(rec.get("sources"))
+    if sources is None and isinstance(rec.get("source"), str):
+        sources = _list_of_str([p for p in rec["source"].split(";")])
     steps_taken = _list_of_str(rec.get("stepsTaken"))
+    # industries: original shape industriesServed[]; Claygent capital shape industries[].
     industries_served = _list_of_str(rec.get("industriesServed"))
+    if industries_served is None:
+        industries_served = _list_of_str(rec.get("industries"))
     industries_served_count = len(industries_served) if industries_served else None
 
     record_id = _sha(domain_norm + "|" + _sha(_canonical_json(rec)))
@@ -123,21 +136,27 @@ def _to_row(company_domain_raw: str, rec: dict[str, Any]) -> tuple | None:
         _s(rec.get("confidence")), _s(rec.get("reasoning")),
         _j(sources), _j(steps_taken),
         _j(industries_served), industries_served_count,
-        _SOURCE, Jsonb(rec),
+        source, Jsonb(rec),
     )
 
 
 @router.post("/land", dependencies=[Depends(require_service_token)])
 async def land(body: dict[str, Any]) -> dict[str, Any]:
-    """Land ONE industries-served record. Body is ``{"company_domain": "...", "raw_payload": {...}}``."""
-    company_domain = body.get("company_domain")
+    """Land ONE industries-served record. Body is ``{"company_domain"|"domain": "...",
+    "raw_payload": {...}}`` (+ optional ``"source"`` lane tag); domain falls back to
+    ``raw_payload.domain``."""
     rec = body.get("raw_payload")
     if not isinstance(rec, dict):
         raise HTTPException(status_code=422, detail="raw_payload must be a JSON object")
+    company_domain = body.get("company_domain") or body.get("domain") or rec.get("domain")
     if not isinstance(company_domain, str) or not company_domain.strip():
-        raise HTTPException(status_code=422, detail="company_domain is required (non-empty string)")
+        raise HTTPException(status_code=422, detail="company_domain (or domain) is required (non-empty string)")
 
-    row = _to_row(company_domain, rec)
+    source = body.get("source", _SOURCE)
+    if not isinstance(source, str) or not _SOURCE_TAG_RE.match(source):
+        raise HTTPException(status_code=422, detail="source must match ^[a-z0-9_-]{1,64}$")
+
+    row = _to_row(company_domain, rec, source=source)
     if row is None:
         logger.warning(
             "industries_served land rejected: unresolvable company_domain (had_input=%s)",
