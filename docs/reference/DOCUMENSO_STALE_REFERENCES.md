@@ -5,7 +5,18 @@
 | **Audit date** | 2026-07-20 |
 | **Main SHA audited** | `5a0db63` (`feat(edge): documenso plane moves to gc schema; rsh-era config tables excised (#1255)`) |
 | **Scope** | `apps/edge_api/**/*.py`, `docs/reference/DOCUMENSO_ARCHITECTURE/` (12 files), `docs/reference/PROPOSAL_EXPERIENCE_REACT_DOCUMENSO_SPEC.md`, `apps/edge_api/main.py`, `apps/edge_api/src/migrate.py`, `scripts/{documenso_push_templates,render_ao_preview,rs_capital_origination_generate}.py` |
-| **Mode** | READ-ONLY. No source edited; this file is the sole artifact. |
+| **Mode** | Original audit was READ-ONLY. Remediation status below. |
+
+## Remediation status (updated 2026-07-20)
+
+The audit body below is the point-in-time record at `5a0db63`. Findings have since been remediated:
+
+- **S1 — cleared by [#1257](https://github.com/bencrane/core-x/pull/1257) (`b28d482`).** The boot-breaking `sql/*.sql` DDL for dropped tables was purged, the three ALTER-carriers (`engagement_archetypes.sql`, `global_input_content_variants.sql`, `deal_details.sql`) were gutted of dropped-table references, a canonical `apps/edge_api/sql/gc_schema.sql` was added, and `scripts/rs_capital_origination_generate.py` was deleted. `migrate.py` no longer errors on boot.
+- **S2 `.py` — cleared in this change.** The 9 misleading docstring/comment sites (`main.py`, `migrate.py`, `documenso_envelopes_v1.py`, the four `documenso_projection/` modules, and two `documenso_client.py` sites) were corrected to `gc.*` reality. The two `deals/queries.py` mentions (`:53`, `:123`) are accurate "is retired" history and were left. The content README (`…/prepaid-introductions/v1/global_engagement_content/README.md`) had its dropped-table + registration lines corrected.
+- **S2 docs (`DOCUMENSO_ARCHITECTURE/`) — retired in this change.** All 13 pre-gc-migration docs were archived to `~/Desktop/hq/archive/documenso-architecture-pre-gc-migration/` and removed from the repo (they described a superseded architecture and cross-referenced each other). The S2.b file:line anchors below now resolve only in that archive.
+- **S3 — no action (accurate history).**
+
+Current Documenso truth: the live `apps/edge_api` code + `apps/edge_api/sql/gc_schema.sql`. This file remains the migration record.
 
 ## Dropped objects (any mention is stale by definition)
 

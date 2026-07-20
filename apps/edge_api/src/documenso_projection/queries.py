@@ -2,8 +2,7 @@
 
 VERBATIM CONTRACT: ``documenso_response`` is the FULL get_envelope response stored EXACTLY as Documenso
 returns it (Jsonb, no rewrite). ``type``/``status`` are lowercased-only projections of Documenso's own
-terms — NEVER remapped. This module writes ONLY gc.documenso_envelopes; it MUST NEVER touch
-business.documenso_template_configs (operator/app-owned).
+terms — NEVER remapped. This module writes ONLY gc.documenso_envelopes — no other table.
 """
 from __future__ import annotations
 

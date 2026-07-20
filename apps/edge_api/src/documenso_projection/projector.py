@@ -9,7 +9,7 @@ HARD CONTRACT:
   * type/status are lowercased ONLY — Documenso's own terms, NEVER remapped ('CANCELLED' -> 'cancelled',
     never 'voided'). No derived/normalized states.
   * DELETE events soft-delete with NO API pull.
-  * NEVER write business.documenso_template_configs.
+  * Writes ONLY gc.documenso_envelopes — no other table.
 """
 from __future__ import annotations
 

@@ -8,7 +8,7 @@ contract (``documenso_response`` stored exactly as returned; ``type``/``status``
 NEVER remapped). There is NO second upsert path.
 
 Resilient: a ``DocumensoError`` returns ``{synced: False, error}`` rather than raising — a re-grab of a
-deleted/unreachable template degrades cleanly. NEVER writes business.documenso_template_configs.
+deleted/unreachable template degrades cleanly. Writes ONLY gc.documenso_envelopes.
 """
 from __future__ import annotations
 

@@ -23,7 +23,7 @@ with NO params. That is what lets a multi-statement file (including dollar-quote
 parse on the server intact; a naive split on ``;`` would shred those blocks. Each file runs in its own
 transaction (applies whole or not at all). Files apply in filename order; the suite targets an
 ALREADY-PROVISIONED control plane — cross-file FKs reference upstream-owned tables (``business.organizations``,
-``business.documenso_templates``) that already exist in prod — not a bare database.
+``business.deals``) that already exist in prod — not a bare database.
 
 CONCURRENT REPLICAS: a rolling deploy boots replicas at once, so two could run ``CREATE``/``ALTER``
 against the same object simultaneously — and ``IF NOT EXISTS`` is NOT fully concurrency-safe (Postgres
