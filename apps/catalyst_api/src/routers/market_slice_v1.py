@@ -166,6 +166,10 @@ band AS (SELECT uei FROM gtm_entity_pricing_mix WHERE {band_where}),
 m AS (
   SELECT DISTINCT s.uei FROM scoped s JOIN band USING (uei)
   WHERE s.unfin{pred_leg}
+),
+m_any AS (
+  SELECT DISTINCT s.uei FROM scoped s JOIN band USING (uei)
+  WHERE TRUE{pred_leg}
 )"""
 
     in_band = f"active_obl >= {band['min']} AND active_obl <= {band['max']}"
@@ -181,7 +185,7 @@ SELECT (SELECT count(*) FROM m) AS firms,
        round(coalesce(sum(s.obl) FILTER (WHERE s.pclass='tm'), 0), 0) AS tm_usd,
        round(coalesce(sum(s.obl) FILTER (WHERE s.pclass='other'), 0), 0) AS other_usd,
        (SELECT round(coalesce(sum(s2.obl), 0), 0)
-          FROM scoped s2 JOIN band USING (uei)) AS tot_usd
+          FROM scoped s2 JOIN m_any USING (uei)) AS tot_usd
 FROM scoped s JOIN m USING (uei) WHERE s.unfin""",
         "over_band": cohort(over_band) + """
 SELECT (SELECT count(*) FROM m) AS firms,

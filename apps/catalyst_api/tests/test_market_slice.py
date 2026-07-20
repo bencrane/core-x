@@ -108,3 +108,14 @@ def test_count_sql_is_cohort_count_only() -> None:
     sql = build_count_sql(PAIRS, dict(_DEFAULT_BAND), None)
     assert sql.strip().endswith("SELECT count(*) AS firms FROM m")
     assert "top_pairs" not in sql and "median" not in sql
+
+
+def test_tot_denominator_respects_predicates() -> None:
+    expr, _, _ = compile_predicates(
+        {"predicates": [{"term": "registered_in_state", "states": ["TX"]}]}
+    )
+    tiles = build_pack_sql(PAIRS, dict(_DEFAULT_BAND), expr)["tiles"]
+    # the any-financing total joins the predicated m_any cohort, never raw band
+    assert "JOIN m_any USING (uei)" in tiles
+    m_any = tiles.split("m_any AS (")[1].split("\n)")[0]
+    assert "physical_state IN ('TX')" in m_any
