@@ -99,18 +99,38 @@ def _download_latest() -> tuple[str, dict]:
     latest = json.loads(s3.get_object(Bucket=R2_BUCKET, Key=LATEST_KEY)["Body"].read())
     os.makedirs(DATA_DIR, exist_ok=True)
     local = os.path.join(DATA_DIR, os.path.basename(latest["key"]))
-    # Pre-clean stale artifacts BEFORE downloading: anything that is neither the
-    # target nor the file currently being served. Without this, artifact growth
-    # across a deploy ENOSPCs the disk (observed live: 23.8 GiB stale + 31.3 GiB
-    # incoming > 50 GB → [Errno 28] retry-loop, service stuck unready).
+    # Pre-clean BEFORE downloading. Three junk classes have each ENOSPC'd a swap
+    # live: stale artifacts (neither target nor currently-served); orphaned
+    # boto3 transfer partials (`<name>.duckdb.XXXXXXXX` — the old *.duckdb glob
+    # never matched them, so failed downloads accumulated); and dead-query
+    # DuckDB spill under spill/ (memory_limit forces heavy spilling; a killed
+    # query's temp files persist forever — observed 2026-07-20: ~95 GiB of
+    # junk on a 200 GB disk wedged the 20260720T025249Z swap in an ENOSPC
+    # retry-loop while both artifacts together needed only ~104 GiB).
+    keep = {os.path.basename(local)}
+    if S.path:
+        keep.add(os.path.basename(S.path))
     for fn in os.listdir(DATA_DIR):
         p = os.path.join(DATA_DIR, fn)
-        if fn.endswith(".duckdb") and p not in (local, S.path):
+        if fn in keep:
+            continue
+        if os.path.isfile(p):
             try:
                 os.remove(p)
-                print(f"[hydrate] pre-cleaned stale artifact {fn}")
+                print(f"[hydrate] pre-cleaned {fn}")
             except OSError as exc:
                 print(f"[hydrate] could not remove {fn}: {exc}")
+        elif fn == "spill" and os.path.isdir(p):
+            # spill files younger than 1h may belong to in-flight queries
+            cutoff = time.time() - 3600
+            for sf in os.listdir(p):
+                sp = os.path.join(p, sf)
+                try:
+                    if os.path.isfile(sp) and os.path.getmtime(sp) < cutoff:
+                        os.remove(sp)
+                        print(f"[hydrate] pre-cleaned stale spill {sf}")
+                except OSError as exc:
+                    print(f"[hydrate] could not remove spill {sf}: {exc}")
     if not (os.path.exists(local) and os.path.getsize(local) == latest.get("file_bytes")):
         t0 = time.monotonic()
         s3.download_file(R2_BUCKET, latest["key"], local)
