@@ -111,6 +111,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `gtm_txn_recipient_month_rollup` | uei × action_type × plan_class × month · 34M | uei |
 | `txn_recipient_month_by_type` | same fact re-sorted · 34M | action_type_code, month — cross-entity "actions of type X in window Y" prunes here (9.6ms vs 2.0s on the uei-sorted copy) |
 | `txn_recipient_month_pop` | uei × action_type × pop_state × pop_county_fips × **naics × psc** × month · 37M | action_type_code, pop_state, pop_county_fips, month — **the entity-event-GEO rollup**. Since 2026-07-16 the grain carries naics/psc, so event verb × state × job/need combo composes in one statement (SUM to the coarser grain stays correct). "Entities that had action X in state S in window W" prunes on (type, state) |
+| `gtm_construction_lane_months` | construction work-lane × uei × month · ~1M | lane, uei, month — **the growth-lane mart** (2026-07-19 cycle): the 5 surety work-typed pair-sets (544 pairs, vertical-building / building-repair-alteration / building-maintenance / civil-infrastructure / industrial-defense-facilities) pre-joined to month grain. Columns: obligation_sum, n_actions, n_awards, n_new_awards + new_award_obligation_sum (base-award rows — "new work vs mods"), n_agencies. Growth windows are QUERY-TIME dials over month ranges (never baked); anchor to `max(month)` (FPDS publication lag: the freshest ~1 month is empty, months 2–3 half-reported — DoD ~90-day embargo) |
 | `gtm_award_recipient_rollup` | uei × naics × psc × agency × topology · 6.3M | uei |
 | `gtm_award_expiry_months` | uei × end_month · 221k | uei, end_month |
 | `gtm_prime_pop_lanes` | 1/(uei, pop_state, county) · 547k | uei |
@@ -457,6 +458,39 @@ ORDER BY d.recipients DESC NULLS LAST;
 -- cross to local medical-labor supply: join gtm_sam_entities on physical_state
 -- (2-letter) via substr(v.fips,1,2) → sam_county_fips_crosswalk.state_code, or
 -- to award geography directly on txn_events_combo_by_geo.pop_county_fips = v.fips.
+```
+
+### Growth-lane windows (2026-07-19 cycle)
+
+Firm growth per construction work-lane: recent-vs-baseline month windows are dials at
+query time; ALWAYS anchor to the mart's `max(month)` watermark, never `current_date`
+(FPDS publication lag — the freshest month is empty, months 2–3 ~half-reported under
+DoD's ~90-day embargo; short windows systematically understate and must be labeled).
+Per-lane qualification only — never blend a firm's lanes (operator ruling 2026-07-19).
+
+```sql
+-- "vertical-building firms whose last 12 months run >= 4x their prior-24 pace,
+--  recent window $1M-$1B" (annualize: recent/12 vs baseline/24 -> factor 0.5)
+WITH edge AS (SELECT max(month) AS mx FROM gtm_construction_lane_months),
+w AS (
+  SELECT uei,
+         sum(obligation_sum) FILTER (WHERE month >  (SELECT mx FROM edge) - INTERVAL '12 months') AS recent,
+         sum(obligation_sum) FILTER (WHERE month <= (SELECT mx FROM edge) - INTERVAL '12 months'
+                                 AND month >  (SELECT mx FROM edge) - INTERVAL '36 months') AS baseline,
+         sum(new_award_obligation_sum) FILTER (WHERE month > (SELECT mx FROM edge) - INTERVAL '12 months') AS recent_new_work
+  FROM gtm_construction_lane_months
+  WHERE lane = 'construction-vertical-building'
+    AND month > (SELECT mx FROM edge) - INTERVAL '36 months'
+  GROUP BY 1
+)
+SELECT count(*) FROM w
+WHERE recent >= 1e6 AND recent <= 1e9 AND baseline > 0 AND recent >= 4 * baseline * 0.5
+-- lane prunes (sort key); per-firm monthly series = the mart rows themselves
+-- (sparklines); new entrants = recent > 0 AND baseline IS NULL;
+-- "new work or mods" = new_award_obligation_sum / obligation_sum;
+-- "one buyer or many" = n_agencies. Whole-universe (no lane) growth: use
+-- txn_recipient_month_by_type (ms-class short windows) — this mart is
+-- lane-scoped only.
 ```
 
 ### Market-composition legs (2026-07-17 cycle)

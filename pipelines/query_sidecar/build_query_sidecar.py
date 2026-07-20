@@ -165,6 +165,21 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_txn_recipient_month_rollup", "tier": "B",
      "dest": "txn_recipient_month_by_type", "sort": ["action_type_code", "month"],
      "from_table": "gtm_txn_recipient_month_rollup"},
+    # growth-lane cycle (2026-07-19, operator-directed): firm × construction
+    # work-lane × month — the surety Growth card's substrate. The month rollups
+    # above carry no naics/psc, so lane-scoped growth windows were scanning the
+    # 108M txn mart at 1.5–7s per cut (gap report 2026-07-19). Lane membership
+    # = the 5 work-typed pair-sets (544 pairs; authority
+    # hq/data-cache/surety/construction_pairsets_v1.json, inlined as
+    # _CONSTRUCTION_LANE_PAIRS). Adjacency riders on the same GROUP BY:
+    # action/award counts, new-award split (base-award rows, action_type NULL —
+    # "is the growth new work or mods", the bonding-event signal), distinct
+    # agencies ("one buyer or many"). Windows stay query-time dials — this
+    # bakes GRAIN, never windows. Must follow gtm_txn_events_slim (local).
+    {"ds": "gtm_txn_events_slim", "tier": "B", "dest": "gtm_construction_lane_months",
+     "sort": ["lane", "uei", "month"],
+     "from_table": "gtm_txn_events_slim", "construction_lane_months": True,
+     "aggregate": True},
     {"ds": "gtm_award_recipient_rollup", "tier": "B", "sort": ["uei"]},
     {"ds": "gtm_award_expiry_months", "tier": "B", "sort": ["uei", "end_month"]},
     {"ds": "gtm_prime_pop_lanes", "tier": "B", "sort": ["uei"]},
@@ -1041,6 +1056,165 @@ ORDER BY uei
 # code inventory ('NONE'/'None' = none; 8A/8AN, SDVOSB*, *WOSB*, HZ* are the
 # program families worth their own columns — everything else aggregates into
 # won_obl_set_aside). Pure GROUP BY over a local table — no join.
+# construction work-lane pair-sets v1 (hq/data-cache/surety/construction_pairsets_v1.json,
+# composed 2026-07-19 from the 36mo prime pair sweep; 544 pairs, five work-typed lanes;
+# the durable authority is the hq JSON — regenerate this constant from it, never edit inline).
+_CONSTRUCTION_LANE_PAIRS: dict[str, list[tuple[str, str]]] = {
+    "construction-vertical-building": [
+        ("236115","Y1FA"), ("236115","Y1JZ"), ("236116","Y1DA"), ("236116","Y1FA"), ("236116","Y1FC"),
+        ("236118","Y1FA"), ("236210","Y1AA"), ("236210","Y1AZ"), ("236210","Y1CZ"), ("236210","Y1DB"),
+        ("236210","Y1FB"), ("236210","Y1JZ"), ("236220","Y142"), ("236220","Y1AA"), ("236220","Y1AZ"),
+        ("236220","Y1BE"), ("236220","Y1CA"), ("236220","Y1CZ"), ("236220","Y1DA"), ("236220","Y1DB"),
+        ("236220","Y1DZ"), ("236220","Y1FA"), ("236220","Y1FB"), ("236220","Y1FC"), ("236220","Y1FD"),
+        ("236220","Y1FE"), ("236220","Y1FF"), ("236220","Y1GC"), ("236220","Y1GZ"), ("236220","Y1HZ"),
+        ("236220","Y1JA"), ("236220","Y1JZ"), ("236220","Y1PA"), ("237110","Y1AZ"), ("237110","Y1DA"),
+        ("237110","Y1JZ"), ("237110","Y1PA"), ("237120","Y1DZ"), ("237120","Y1GC"), ("237130","Y1AZ"),
+        ("237130","Y1JZ"), ("237310","Y1PA"), ("237990","Y1AZ"), ("237990","Y1DZ"), ("237990","Y1FE"),
+        ("237990","Y1JZ"), ("237990","Y1PA"), ("238160","Y1AA"), ("238160","Y1AZ"), ("238160","Y1DA"),
+        ("238160","Y1DZ"), ("238160","Y1JZ"), ("238210","Y1AZ"), ("238210","Y1DA"), ("238210","Y1JZ"),
+        ("238220","Y1AA"), ("238220","Y1AZ"), ("238220","Y1DA"), ("238220","Y1DZ"), ("238220","Y1JZ"),
+        ("238290","Y1AA"), ("238290","Y1DA"), ("238290","Y1JZ"), ("238390","Y1DZ"), ("238910","Y1AZ"),
+        ("238910","Y1JZ"), ("238990","Y141"), ("238990","Y1AA"), ("238990","Y1AZ"), ("238990","Y1CA"),
+        ("238990","Y1DA"), ("238990","Y1DZ"), ("238990","Y1FA"), ("238990","Y1FB"), ("238990","Y1GB"),
+        ("238990","Y1GZ"), ("238990","Y1JA"), ("238990","Y1JZ"), ("238990","Y1PA"),
+    ],
+    "construction-building-repair-alteration": [
+        ("236116","Z2FA"), ("236118","Z2FA"), ("236210","Z2AA"), ("236210","Z2AZ"), ("236210","Z2GZ"),
+        ("236210","Z2JZ"), ("236220","Z2AA"), ("236220","Z2AZ"), ("236220","Z2BE"), ("236220","Z2CA"),
+        ("236220","Z2CZ"), ("236220","Z2DA"), ("236220","Z2DB"), ("236220","Z2DZ"), ("236220","Z2FA"),
+        ("236220","Z2FB"), ("236220","Z2FC"), ("236220","Z2FD"), ("236220","Z2FE"), ("236220","Z2FF"),
+        ("236220","Z2GC"), ("236220","Z2GZ"), ("236220","Z2JA"), ("236220","Z2JZ"), ("236220","Z2PA"),
+        ("236220","Z2PB"), ("237110","Z2AZ"), ("237110","Z2FF"), ("237110","Z2JZ"), ("237120","Z2GC"),
+        ("237130","Z2AA"), ("237130","Z2AZ"), ("237130","Z2DZ"), ("237130","Z2GZ"), ("237130","Z2JZ"),
+        ("237310","Z2AA"), ("237310","Z2JZ"), ("237990","Z2AA"), ("237990","Z2AZ"), ("237990","Z2FC"),
+        ("237990","Z2JZ"), ("237990","Z2PA"), ("238110","Z2JZ"), ("238140","Z2AA"), ("238140","Z2FC"),
+        ("238150","Z2AA"), ("238160","Z2AA"), ("238160","Z2AZ"), ("238160","Z2CZ"), ("238160","Z2DA"),
+        ("238160","Z2FA"), ("238160","Z2FF"), ("238160","Z2GZ"), ("238160","Z2JZ"), ("238190","Z2DB"),
+        ("238190","Z2FF"), ("238190","Z2JZ"), ("238210","Z2AA"), ("238210","Z2AZ"), ("238210","Z2DA"),
+        ("238210","Z2FC"), ("238210","Z2FF"), ("238210","Z2GZ"), ("238210","Z2JZ"), ("238220","Z2AA"),
+        ("238220","Z2AZ"), ("238220","Z2CA"), ("238220","Z2CZ"), ("238220","Z2DA"), ("238220","Z2DB"),
+        ("238220","Z2FA"), ("238220","Z2FB"), ("238220","Z2FC"), ("238220","Z2FD"), ("238220","Z2FF"),
+        ("238220","Z2JZ"), ("238290","Z2AA"), ("238290","Z2AZ"), ("238290","Z2DZ"), ("238290","Z2FF"),
+        ("238290","Z2JZ"), ("238320","Z2AA"), ("238320","Z2AZ"), ("238320","Z2JZ"), ("238330","Z2AA"),
+        ("238390","Z2AA"), ("238390","Z2JZ"), ("238910","Z2AZ"), ("238910","Z2FC"), ("238910","Z2JZ"),
+        ("238990","Z2AA"), ("238990","Z2AZ"), ("238990","Z2FA"), ("238990","Z2FC"), ("238990","Z2FD"),
+        ("238990","Z2FF"), ("238990","Z2JZ"), ("238990","Z2PA"),
+    ],
+    "construction-building-maintenance": [
+        ("236118","Z1AA"), ("236118","Z1FA"), ("236118","Z1FC"), ("236210","Z1AA"), ("236210","Z1AZ"),
+        ("236210","Z1JZ"), ("236220","Z1AA"), ("236220","Z1AZ"), ("236220","Z1CA"), ("236220","Z1CZ"),
+        ("236220","Z1DA"), ("236220","Z1DB"), ("236220","Z1DZ"), ("236220","Z1FA"), ("236220","Z1FB"),
+        ("236220","Z1FC"), ("236220","Z1GC"), ("236220","Z1GZ"), ("236220","Z1JA"), ("236220","Z1JZ"),
+        ("237110","Z1DA"), ("237110","Z1JZ"), ("237130","Z1AA"), ("237130","Z1DA"), ("237310","Z1AZ"),
+        ("237990","Z1JZ"), ("237990","Z1PA"), ("238140","Z1AZ"), ("238140","Z1DZ"), ("238140","Z1JZ"),
+        ("238160","Z1AA"), ("238160","Z1AZ"), ("238160","Z1DA"), ("238160","Z1FC"), ("238160","Z1JZ"),
+        ("238190","Z1DA"), ("238210","Z1AA"), ("238210","Z1AZ"), ("238210","Z1DA"), ("238210","Z1JZ"),
+        ("238220","Z1AA"), ("238220","Z1AZ"), ("238220","Z1DA"), ("238220","Z1DB"), ("238220","Z1DZ"),
+        ("238220","Z1JZ"), ("238290","Z1AA"), ("238290","Z1AZ"), ("238290","Z1DA"), ("238290","Z1DZ"),
+        ("238290","Z1JZ"), ("238320","Z1AA"), ("238320","Z1AZ"), ("238320","Z1FA"), ("238320","Z1JZ"),
+        ("238330","Z1AA"), ("238990","Z1AA"), ("238990","Z1AZ"), ("238990","Z1CA"), ("238990","Z1DA"),
+        ("238990","Z1FA"), ("238990","Z1FB"), ("238990","Z1JZ"), ("238990","Z1PA"),
+    ],
+    "construction-civil-infrastructure": [
+        ("236210","Y1BZ"), ("236210","Y1NZ"), ("236210","Y1QA"), ("236210","Z1BG"), ("236210","Z2BG"),
+        ("236210","Z2KA"), ("236210","Z2NA"), ("236210","Z2NZ"), ("236220","Y1BA"), ("236220","Y1BC"),
+        ("236220","Y1BD"), ("236220","Y1BF"), ("236220","Y1BG"), ("236220","Y1BZ"), ("236220","Y1KZ"),
+        ("236220","Y1LB"), ("236220","Y1LC"), ("236220","Y1LZ"), ("236220","Y1NA"), ("236220","Y1NC"),
+        ("236220","Y1ND"), ("236220","Y1NE"), ("236220","Y1NZ"), ("236220","Y1PD"), ("236220","Y1PZ"),
+        ("236220","Y1QA"), ("236220","Z1BA"), ("236220","Z1BC"), ("236220","Z1BD"), ("236220","Z1BG"),
+        ("236220","Z1BZ"), ("236220","Z1KB"), ("236220","Z1LB"), ("236220","Z1LZ"), ("236220","Z1NA"),
+        ("236220","Z1ND"), ("236220","Z1NE"), ("236220","Z1NZ"), ("236220","Z1PD"), ("236220","Z1PZ"),
+        ("236220","Z1QA"), ("236220","Z2BA"), ("236220","Z2BC"), ("236220","Z2BD"), ("236220","Z2BF"),
+        ("236220","Z2BG"), ("236220","Z2BZ"), ("236220","Z2KA"), ("236220","Z2KF"), ("236220","Z2LB"),
+        ("236220","Z2LC"), ("236220","Z2LZ"), ("236220","Z2NA"), ("236220","Z2ND"), ("236220","Z2NE"),
+        ("236220","Z2NZ"), ("236220","Z2PD"), ("236220","Z2PZ"), ("236220","Z2QA"), ("237110","Y1BC"),
+        ("237110","Y1KA"), ("237110","Y1KB"), ("237110","Y1KZ"), ("237110","Y1NC"), ("237110","Y1ND"),
+        ("237110","Y1NE"), ("237110","Y1NZ"), ("237110","Y1PD"), ("237110","Y1PZ"), ("237110","Z1ND"),
+        ("237110","Z1NE"), ("237110","Z2BC"), ("237110","Z2BZ"), ("237110","Z2ND"), ("237110","Z2NE"),
+        ("237110","Z2NZ"), ("237110","Z2PD"), ("237110","Z2PZ"), ("237110","Z2QA"), ("237120","Y1NA"),
+        ("237120","Y1QA"), ("237120","Z1NA"), ("237120","Z2NA"), ("237120","Z2NZ"), ("237130","Y1BC"),
+        ("237130","Y1BF"), ("237130","Y1BG"), ("237130","Y1BZ"), ("237130","Y1KA"), ("237130","Y1NZ"),
+        ("237130","Y1PZ"), ("237130","Z1BG"), ("237130","Z1KA"), ("237130","Z2BA"), ("237130","Z2BC"),
+        ("237130","Z2BG"), ("237130","Z2BZ"), ("237130","Z2KA"), ("237130","Z2NZ"), ("237130","Z2PZ"),
+        ("237130","Z2QA"), ("237310","Y1BC"), ("237310","Y1BD"), ("237310","Y1BZ"), ("237310","Y1KA"),
+        ("237310","Y1LA"), ("237310","Y1LB"), ("237310","Y1LZ"), ("237310","Y1QA"), ("237310","Z1BC"),
+        ("237310","Z1BD"), ("237310","Z1KA"), ("237310","Z1LB"), ("237310","Z1LZ"), ("237310","Z1PZ"),
+        ("237310","Z2BD"), ("237310","Z2BZ"), ("237310","Z2KA"), ("237310","Z2LB"), ("237310","Z2LZ"),
+        ("237310","Z2NE"), ("237310","Z2PZ"), ("237310","Z2QA"), ("237990","Y1BC"), ("237990","Y1BD"),
+        ("237990","Y1BF"), ("237990","Y1BZ"), ("237990","Y1KA"), ("237990","Y1KB"), ("237990","Y1KF"),
+        ("237990","Y1KZ"), ("237990","Y1LA"), ("237990","Y1LB"), ("237990","Y1LC"), ("237990","Y1LZ"),
+        ("237990","Y1NA"), ("237990","Y1ND"), ("237990","Y1NE"), ("237990","Y1NZ"), ("237990","Y1PD"),
+        ("237990","Y1PZ"), ("237990","Y1QA"), ("237990","Z1KA"), ("237990","Z1KB"), ("237990","Z1KE"),
+        ("237990","Z1KF"), ("237990","Z1KZ"), ("237990","Z1LB"), ("237990","Z1LC"), ("237990","Z1PZ"),
+        ("237990","Z1QA"), ("237990","Z2BC"), ("237990","Z2BZ"), ("237990","Z2KA"), ("237990","Z2KB"),
+        ("237990","Z2KF"), ("237990","Z2KZ"), ("237990","Z2LB"), ("237990","Z2NA"), ("237990","Z2NE"),
+        ("237990","Z2NZ"), ("237990","Z2PZ"), ("237990","Z2QA"), ("238110","Y1PZ"), ("238110","Z1KA"),
+        ("238120","Y1BZ"), ("238120","Y1QA"), ("238160","Y1BZ"), ("238160","Y1QA"), ("238160","Z2BZ"),
+        ("238160","Z2QA"), ("238210","Y1NZ"), ("238210","Y1PZ"), ("238210","Z1BG"), ("238210","Z1KA"),
+        ("238210","Z1NZ"), ("238210","Z2BD"), ("238210","Z2BF"), ("238210","Z2BG"), ("238210","Z2BZ"),
+        ("238210","Z2KA"), ("238210","Z2NZ"), ("238210","Z2PZ"), ("238210","Z2QA"), ("238220","Y1BA"),
+        ("238220","Y1BC"), ("238220","Y1BZ"), ("238220","Y1LC"), ("238220","Y1NZ"), ("238220","Y1QA"),
+        ("238220","Z1BA"), ("238220","Z1BZ"), ("238220","Z1LZ"), ("238220","Z2NZ"), ("238220","Z2PZ"),
+        ("238220","Z2QA"), ("238290","Y1PZ"), ("238290","Z1BA"), ("238290","Z1KA"), ("238290","Z1PZ"),
+        ("238290","Z2KA"), ("238290","Z2PZ"), ("238290","Z2QA"), ("238320","Y1QA"), ("238320","Z1PZ"),
+        ("238320","Z2KA"), ("238390","Z2NZ"), ("238910","Y1LZ"), ("238910","Y1PZ"), ("238910","Z1PZ"),
+        ("238910","Z2BF"), ("238910","Z2PZ"), ("238990","Y1BZ"), ("238990","Y1LB"), ("238990","Y1LZ"),
+        ("238990","Y1QA"), ("238990","Z1BA"), ("238990","Z1LB"), ("238990","Z1NA"), ("238990","Z1PZ"),
+        ("238990","Z1QA"), ("238990","Z2BG"), ("238990","Z2BZ"), ("238990","Z2LB"), ("238990","Z2LZ"),
+        ("238990","Z2NA"), ("238990","Z2ND"), ("238990","Z2NZ"), ("238990","Z2PZ"), ("238990","Z2QA"),
+    ],
+    "construction-industrial-defense-facilities": [
+        ("234930","Y181"), ("236210","Y1EA"), ("236210","Y1EB"), ("236210","Y1EZ"), ("236210","Z2EB"),
+        ("236210","Z2EC"), ("236210","Z2ED"), ("236210","Z2EZ"), ("236210","Z2NB"), ("236220","Y1EA"),
+        ("236220","Y1EB"), ("236220","Y1EC"), ("236220","Y1ED"), ("236220","Y1EZ"), ("236220","Y1GA"),
+        ("236220","Y1NB"), ("236220","Z1EB"), ("236220","Z1EC"), ("236220","Z1ED"), ("236220","Z1EZ"),
+        ("236220","Z1GA"), ("236220","Z1NB"), ("236220","Z2EA"), ("236220","Z2EB"), ("236220","Z2EC"),
+        ("236220","Z2ED"), ("236220","Z2EZ"), ("236220","Z2GA"), ("236220","Z2MF"), ("236220","Z2NB"),
+        ("237110","Z1ED"), ("237110","Z1MD"), ("237110","Z2NB"), ("237120","Y1MB"), ("237130","Y1EZ"),
+        ("237130","Y1MF"), ("237130","Y1MG"), ("237130","Y1MZ"), ("237130","Y1NB"), ("237130","Z2EZ"),
+        ("237130","Z2MD"), ("237130","Z2MZ"), ("237990","Y1EA"), ("237990","Y1EB"), ("237990","Y1EC"),
+        ("237990","Y1ED"), ("237990","Y1GA"), ("237990","Z1MD"), ("237990","Z2EA"), ("237990","Z2EB"),
+        ("237990","Z2ED"), ("237990","Z2GA"), ("237990","Z2MD"), ("238110","Z2EC"), ("238160","Z2EB"),
+        ("238160","Z2EC"), ("238160","Z2EZ"), ("238210","Y1MG"), ("238210","Z2EC"), ("238210","Z2EZ"),
+        ("238220","Y1EZ"), ("238220","Y1NB"), ("238220","Z1NB"), ("238220","Z2EB"), ("238220","Z2EC"),
+        ("238220","Z2EZ"), ("238220","Z2NB"), ("238290","Z2EB"), ("238320","Y1MD"), ("238990","Z1EB"),
+        ("238990","Z2EA"), ("238990","Z2EB"), ("238990","Z2EZ"),
+    ],
+}
+
+# growth-lane cycle (2026-07-19): firm × lane × month over the local slim txn
+# fact. Pure-equality VALUES join (naics, psc) — hash-joinable; EXPLAIN-gated
+# at fixture time. Reducing GROUP BY → aggregate parity. new-award split keys
+# on FPDS's NULL action type (the base award row — market_query_v1 precedent).
+_CONSTRUCTION_LANE_MONTHS_SQL = (
+    "CREATE TABLE gtm_construction_lane_months AS\n"
+    "WITH pairs(lane, naics_code, psc_code) AS (VALUES "
+    + ",".join(
+        f"('{lane}','{n}','{p}')"
+        for lane, prs in _CONSTRUCTION_LANE_PAIRS.items()
+        for n, p in prs
+    )
+    + ")\n"
+    """
+SELECT pr.lane,
+       t.uei,
+       date_trunc('month', t.action_date)::DATE                          AS month,
+       sum(t.obligation)                                                 AS obligation_sum,
+       count(*)                                                          AS n_actions,
+       count(DISTINCT t.award_key)                                       AS n_awards,
+       count(*) FILTER (WHERE t.action_type_code IS NULL)                AS n_new_awards,
+       coalesce(sum(t.obligation) FILTER (WHERE t.action_type_code IS NULL), 0)
+                                                                         AS new_award_obligation_sum,
+       count(DISTINCT t.awarding_agency_code)                            AS n_agencies
+FROM gtm_txn_events_slim t
+JOIN pairs pr
+  ON t.naics_code = pr.naics_code AND t.psc_code = pr.psc_code
+WHERE t.uei IS NOT NULL AND t.uei <> '' AND t.action_date IS NOT NULL
+GROUP BY 1, 2, 3
+ORDER BY lane, uei, month
+"""
+)
+
 _ENTITY_FY_WON_SQL = """
 CREATE TABLE gtm_entity_fy_won AS
 SELECT uei,
@@ -1644,6 +1818,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_ENTITY_PRICING_MIX_SQL)
         elif spec.get("entity_fy_won"):
             con.execute(_ENTITY_FY_WON_SQL)
+        elif spec.get("construction_lane_months"):
+            con.execute(_CONSTRUCTION_LANE_MONTHS_SQL)
         elif spec.get("entity_award_book"):
             con.execute(_ENTITY_AWARD_BOOK_SQL)
         elif spec.get("entity_firmographics"):
