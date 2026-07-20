@@ -115,8 +115,8 @@ The signature itself is never prefillable — only the signer produces it, on Do
    returned envelope in Documenso, and confirm: operator terms (e.g. `amt%`) are **prefilled and
    locked** (read-only); the `editable_field_labels` (e.g. Full Name / Title / Legal Entity Name)
    are **prefilled but still editable**; and SIGNATURE/DATE are open for the signer. A locked field
-   that should be editable means its label is missing from `editable_field_labels` or its geometry
-   shifted between template and derived doc.
+   that should be editable means its label is missing from `editable_field_labels` (lock/editable
+   is matched by field LABEL on the derived document).
 
 ---
 
@@ -126,7 +126,7 @@ The signature itself is never prefillable — only the signer produces it, on Do
 - **Originate prefills from `opportunity_specific_content.field_values` ONLY.** The mandate-draft `prefill_values` column (the prep-page staging store) does **NOT** feed `originate-prefilled` — editing the prep page changes nothing at originate unless `opportunity_specific_content` is also written. Two different tables; nothing syncs them.
 - **Prefilled fields must be on the participant recipient** (`prospect_recipient_id`). `/template/use` overrides only that recipient and OMITS the provider; Documenso DROPS prefill for omitted recipients, so a value on a *provider* field silently vanishes.
 - **Read Only on the template ≠ editability.** Lock is applied on the derived doc at originate; control it via `editable_field_labels`, not the editor checkbox. (A template field also can't be Read Only without static text.)
-- **Derived docs drop field labels** → the lock step re-identifies the editable fields by **GEOMETRY** (page + rounded x/y). Keep field positions stable between template and derived.
+- **Lock/editable is matched by field LABEL on the derived document** (derived docs preserve `fieldMeta.label` through `/template/use`). Field positions do not affect lock behavior.
 - **Layout:** `p { text-align: justify }` stretches short lines (e.g. the preamble's `entity, ___ d/b/a` line) edge-to-edge — `.lead { text-align: left }` fixes it. Underscore-slot lengths are render-dependent; measure with a local render.
 - **Sign-state is recipient-scoped** (`/sign-state?signer=client|originator`); the operator's countersign link must poll `signer=originator` or it shows "Your signature is recorded" the moment the *prospect* signs (#725).
 - **render+push reads the edge_api FILESYSTEM** (the deployed image), NOT your local edit. Always merge + let Railway redeploy before pushing.

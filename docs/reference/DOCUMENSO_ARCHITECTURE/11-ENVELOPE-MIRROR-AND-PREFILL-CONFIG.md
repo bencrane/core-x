@@ -332,9 +332,9 @@ Stated in the SQL header (`sql/documenso_envelopes.sql:65-70`), the prefill rout
   `POST /api/v2/envelope/field/update-many` — because `readOnly` can't be set at instantiation and a
   TEMPLATE field can't be `readOnly` without static text. A read-only field **must have a value**
   ("read-only must have text"); the prefilled value satisfies that rule. Derived fields carry NEW ids
-  and NO labels, so the lock step re-identifies prefilled fields by a non-empty value and by geometry
-  (page + rounded x/y) to leave operator-designated editable fields unlocked
-  (`documenso_client.py:253-257, 386-420`).
+  but PRESERVE `fieldMeta.label`, so the lock step identifies prefilled fields by a non-empty value
+  and decides editable-vs-locked BY LABEL — the prefill config's own keys
+  (`documenso_client.py:create_document_from_template`).
 - **Reference implementation:** `documenso_client.create_document_from_template`
   (`apps/edge_api/src/services/documenso_client.py:228`) — the canonical
   resolve-template → prefill → lock → distribute(NONE)→PENDING path. The Phase-2 resolver should reuse
