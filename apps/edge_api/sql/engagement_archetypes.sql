@@ -43,36 +43,5 @@ VALUES
      'greater_of')
 ON CONFLICT (key) DO NOTHING;
 
--- documenso_templates.archetype_id — additive + idempotent (the table predates this file and is not
--- defined here). FK added guardedly (Postgres has no ADD CONSTRAINT IF NOT EXISTS); ON DELETE RESTRICT
--- so an archetype cannot be dropped out from under the templates that belong to it.
-ALTER TABLE business.documenso_templates ADD COLUMN IF NOT EXISTS archetype_id uuid;
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE constraint_schema = 'business'
-          AND table_name = 'documenso_templates'
-          AND constraint_name = 'documenso_templates_archetype_id_fkey'
-    ) THEN
-        ALTER TABLE business.documenso_templates
-            ADD CONSTRAINT documenso_templates_archetype_id_fkey
-            FOREIGN KEY (archetype_id) REFERENCES business.engagement_archetypes (id) ON DELETE RESTRICT;
-    END IF;
-END $$;
-CREATE INDEX IF NOT EXISTS documenso_templates_archetype_idx
-    ON business.documenso_templates (archetype_id);
-
--- Backfill existing templates from their declared merge fields: a template whose documenso_response.text_fields
--- carry the performance-fee tokens is term_plus_greater_of, else term_only. Idempotent (fills NULLs
--- only), data-driven (no hardcoded template ids).
-UPDATE business.documenso_templates dt
-   SET archetype_id = (
-       SELECT id FROM business.engagement_archetypes
-        WHERE key = CASE
-            WHEN (dt.documenso_response->'text_fields') ?| array['percentage_deal_fee','flat_deal_fee_amount','term_fee']
-                THEN 'term_plus_greater_of'
-            ELSE 'term_only'
-        END
-   )
- WHERE dt.archetype_id IS NULL;
+-- (documenso_templates.archetype_id wiring removed — business.documenso_templates is DROPPED;
+--  the gc plane's archetype linkage lives in gc.global_agreement_archetype_versions.)

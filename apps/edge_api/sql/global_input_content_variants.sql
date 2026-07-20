@@ -33,22 +33,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS global_input_content_variants_default_uidx
 CREATE INDEX IF NOT EXISTS global_input_content_variants_content_idx
   ON business.global_input_content_variants (global_input_content_id);
 
--- documenso_templates is UPSTREAM-owned — ALTER-only here. Link each minted template back to the
--- variant it was generated from, so payment can walk document → template → variant.params.
-ALTER TABLE business.documenso_templates
-  ADD COLUMN IF NOT EXISTS global_input_content_variant_id uuid;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'documenso_templates_variant_id_fkey'
-  ) THEN
-    ALTER TABLE business.documenso_templates
-      ADD CONSTRAINT documenso_templates_variant_id_fkey
-      FOREIGN KEY (global_input_content_variant_id)
-      REFERENCES business.global_input_content_variants (id) ON DELETE SET NULL;
-  END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS documenso_templates_variant_id_idx
-  ON business.documenso_templates (global_input_content_variant_id);
+-- (documenso_templates linkage removed — business.documenso_templates is DROPPED.)

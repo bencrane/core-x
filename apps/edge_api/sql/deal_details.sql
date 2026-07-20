@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS business.deal_details (
     deal_id               uuid PRIMARY KEY
                               REFERENCES business.deals (id) ON DELETE CASCADE,
     content               jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    default_template_uuid uuid        REFERENCES business.documenso_templates (id),
+    default_template_uuid uuid,  -- legacy registry key; the FK died with business.documenso_templates (DROP CASCADE)
     template_origin       text        NOT NULL DEFAULT 'default',
     created_at            timestamptz NOT NULL DEFAULT now(),
     updated_at            timestamptz NOT NULL DEFAULT now()
