@@ -177,6 +177,21 @@ async def list_agreements(handle: str) -> list[dict]:
     return [_iso(r) for r in rows]
 
 
+@router.get("/agreements/{agreement_id}", dependencies=[Depends(require_service_token)])
+async def get_agreement(agreement_id: str) -> dict:
+    """One agreement by id (the BFF reads template_documenso_id to resolve its gc field plan)."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_ROW_COLS} FROM business.agreements a WHERE a.id = %s::uuid LIMIT 1",
+                (agreement_id,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="agreement not found")
+    return _iso(row)
+
+
 @router.get("/agreements/by-handle/{ahandle}", dependencies=[Depends(require_service_token)])
 async def agreement_by_handle(ahandle: str) -> dict:
     """Resolve the PUBLIC 8-char agreement_handle → the full row + deal identity. The gc BFF's
@@ -264,8 +279,17 @@ async def _generate_inputs(cur, agreement_id: str) -> dict | None:
     return await cur.fetchone()
 
 
+class GenerateBody(BaseModel):
+    """Optional caller-supplied FIELD PLAN. When present it REPLACES the HQX prefill config —
+    the caller (e.g. the gc BFF, resolving gc.documenso_template_field_rules) is the truth.
+    Shape per label: {default_document_field_value, read_only, required?}. ``required`` (when
+    given) is applied to the derived document's field in the same update-many pass as the lock."""
+
+    field_settings: dict[str, dict] | None = None
+
+
 @router.post("/agreements/{agreement_id}/generate", dependencies=[Depends(require_service_token)])
-async def generate_agreement(agreement_id: str) -> dict:
+async def generate_agreement(agreement_id: str, body: GenerateBody | None = None) -> dict:
     """Mint the prefilled, PENDING Documenso document for a draft agreement.
 
     externalId = agreement_handle (the public capability) — this is what pair-gates the
@@ -284,7 +308,9 @@ async def generate_agreement(agreement_id: str) -> dict:
                 raise HTTPException(status_code=422, detail="no signatory contact with an email")
 
             # Pure resolution BEFORE the claim — a 422 here leaves the draft untouched.
-            field_settings = inp["field_settings"] or {}
+            # Caller-supplied plan (gc) wins; the HQX prefill config is the no-body fallback.
+            field_settings = (body.field_settings if body and body.field_settings is not None
+                              else inp["field_settings"]) or {}
             values = originate.resolve_field_values(field_settings, inp["field_values"] or {})
             locked = originate.locked_labels(field_settings)
             missing_locked = locked - set(values)
@@ -296,6 +322,11 @@ async def generate_agreement(agreement_id: str) -> dict:
                             "config or a value on the agreement before generating"),
                 )
             editable_labels = set(values) - locked
+            required_by_label = {
+                label: fs["required"]
+                for label, fs in field_settings.items()
+                if isinstance(fs, dict) and isinstance(fs.get("required"), bool)
+            }
             prospect_rid = originate.derive_prospect_recipient_id(inp["template_response"])
 
             # ATOMIC CLAIM (review B-3): flip draft→generated and COMMIT before the mint —
@@ -319,6 +350,7 @@ async def generate_agreement(agreement_id: str) -> dict:
             title=inp["template_title"] or "Agreement",
             prospect_recipient_id=prospect_rid,
             editable_labels=editable_labels,
+            required_by_label=required_by_label,
         )
         if result.document_id is None:
             raise documenso_client.DocumensoError("documenso returned no numeric document id")

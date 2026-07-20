@@ -235,6 +235,7 @@ async def create_document_from_template(
     title: str | None = None,
     prospect_recipient_id: int | None = None,
     editable_labels: set[str] | None = None,
+    required_by_label: dict[str, bool] | None = None,
 ) -> EnvelopeResult:
     """Instantiate a signable document FROM A DOCUMENSO TEMPLATE via ``/template/use`` with the fields
     PREFILLED and LOCKED (readOnly), then distribute WITHOUT email so it lands ``PENDING`` (ready to
@@ -382,22 +383,32 @@ async def create_document_from_template(
         #    the prefilled ones by a non-empty value and decide editable-vs-locked BY LABEL; carry the
         #    full fieldMeta back so nothing is clobbered.
         new_fields = (await client.get(f"/api/v2/envelope/{envelope_id}")).json().get("fields") or []
+        _required = required_by_label or {}
         locks: list[dict[str, Any]] = []
         for fld in new_fields:
             if not isinstance(fld, dict):
                 continue
             ftype = fld.get("type")
             meta = fld.get("fieldMeta") or {}
-            value = meta.get("text") if ftype == "TEXT" else meta.get("value") if ftype == "NUMBER" else None
-            if ftype not in ("TEXT", "NUMBER") or not str(value or "").strip():
+            label = meta.get("label")
+            if ftype not in ("TEXT", "NUMBER"):
                 continue
-            # Leave operator-designated editable fields UNLOCKED so the signer can correct them (e.g.
-            # their own Full Name / Title). Matched by label — the prefill config's own keys.
-            if meta.get("label") in _editable:
+            value = meta.get("text") if ftype == "TEXT" else meta.get("value")
+            has_value = bool(str(value or "").strip())
+            # Lock = has a prefilled value AND not operator-designated editable ("read-only must
+            # have text" — a valueless field can never lock). Matched by label.
+            lock = has_value and label not in _editable
+            # Required = the caller's per-label choice, when supplied and different from current.
+            want_required = _required.get(label) if isinstance(label, str) else None
+            req_change = want_required is not None and want_required != (meta.get("required") is True)
+            if not lock and not req_change:
                 continue
-            locked_meta = {k: v for k, v in meta.items() if v is not None}
-            locked_meta["readOnly"] = True
-            entry: dict[str, Any] = {"id": fld.get("id"), "type": ftype, "fieldMeta": locked_meta}
+            new_meta = {k: v for k, v in meta.items() if v is not None}
+            if lock:
+                new_meta["readOnly"] = True
+            if want_required is not None:
+                new_meta["required"] = want_required
+            entry: dict[str, Any] = {"id": fld.get("id"), "type": ftype, "fieldMeta": new_meta}
             for k in ("positionX", "positionY", "width", "height"):
                 if fld.get(k) is not None:
                     entry[k] = float(fld[k])
