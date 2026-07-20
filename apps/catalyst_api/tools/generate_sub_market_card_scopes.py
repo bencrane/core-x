@@ -38,6 +38,19 @@ def main() -> None:
                 "n_subs": c["anatomy"]["n_subs"],
                 "artifact": src["artifact"],
             },
+            # v1.1 cohort segments: named pair-subsets (work clusters) with
+            # dominance membership + deterministic vetted-mart language.
+            "cohorts": {
+                k: {
+                    "family_name": co["family_name"],
+                    "one_liner": co["one_liner"],
+                    "language_phrases": co["language_phrases"],
+                    "pairs": sorted(map(tuple, co["pairs"])),
+                    "share_of_card_pct": co["share_of_card_pct"],
+                    "stats": co["stats"],
+                }
+                for k, co in c.get("cohorts", {}).items()
+            },
         }
     OUT.write_text(json.dumps(
         {"generated_from": "hq/data-cache/submarkets/sub_market_cards_v1.json",

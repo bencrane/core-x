@@ -63,3 +63,32 @@ def test_count_is_distinct_subs_only() -> None:
     sql = build_count_sql(PAIRS, None)
     assert sql.strip().endswith("SELECT count(DISTINCT uei) AS subs FROM t")
     assert "median" not in sql
+
+
+def test_registry_carries_twelve_unique_cohorts_with_language() -> None:
+    s = _load_scopes()
+    keys = [k for c in s["cards"].values() for k in (c.get("cohorts") or {})]
+    assert len(keys) == 12 and len(set(keys)) == 12
+    for c in s["cards"].values():
+        card_pairs = {tuple(p) for p in c["pairs"]}
+        for co in (c.get("cohorts") or {}).values():
+            assert co["family_name"], "vetted-mart name always resolves"
+            assert {tuple(p) for p in co["pairs"]} <= card_pairs, "cohort ⊆ card"
+
+
+def test_cohort_scopes_pack_to_subset() -> None:
+    from apps.catalyst_api.src.routers.sub_market_slice_v1 import _scope_pairs
+    card = _load_scopes()["cards"]["airframes-aerostructures"]
+    all_pairs, none = _scope_pairs(card, {})
+    assert none is None and len(all_pairs) == len(card["pairs"])
+    key = next(iter(card["cohorts"]))
+    sub_pairs, cohort = _scope_pairs(card, {"cohort": key})
+    assert cohort == key and 0 < len(sub_pairs) < len(all_pairs)
+
+
+def test_unknown_cohort_refuses_naming_known() -> None:
+    from apps.catalyst_api.src.routers.sub_market_slice_v1 import _scope_pairs
+    card = _load_scopes()["cards"]["propulsion-engines"]
+    with pytest.raises(HTTPException) as e:
+        _scope_pairs(card, {"cohort": "vibes"})
+    assert "known:" in e.value.detail
