@@ -130,6 +130,16 @@ def test_min_or_max_required_on_value_terms() -> None:
         _compile([{"term": "total_current_value_of_active_awards"}])
 
 
+def test_non_finite_numbers_refused() -> None:
+    # Python's json parser admits NaN/Infinity literals; they must 422 here,
+    # never reach SQL (DuckDB binder error → 502).
+    for bad in (float("nan"), float("inf")):
+        for key in ("min", "max"):
+            with pytest.raises(HTTPException) as e:
+                _compile([{"term": "total_current_value_of_active_awards", key: bad}])
+            assert e.value.status_code == 422
+
+
 # ── work ─────────────────────────────────────────────────────────────────────
 
 def test_awarded_under_codes_exact_and_prefix() -> None:
