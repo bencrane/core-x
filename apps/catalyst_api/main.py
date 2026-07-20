@@ -54,6 +54,7 @@ from .src.routers.list_report_v1 import router as list_report_router
 from .src.routers.list_lookalike_v1 import router as list_lookalike_router
 from .src.routers.lender_book_v1 import router as lender_book_router
 from .src.routers.market_slice_v1 import router as market_slice_router
+from .src.routers.sub_market_slice_v1 import router as sub_market_slice_router
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.market_query_v1 import router as market_query_router
 from .src.routers.sub_dossier_v1 import router as sub_dossier_router
@@ -212,6 +213,10 @@ app.include_router(lender_book_router)
 # market-slice: the capital-card aggregate pack recomputable under market-query
 # predicates (chat-tunable card cycle 2026-07-19).
 app.include_router(market_slice_router)
+
+# sub-market-slice: the sub-under demand market cards (market-first subawardee
+# cycle 2026-07-19); per-UEI narrowing rides the existing sub-dossier build.
+app.include_router(sub_market_slice_router)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────
