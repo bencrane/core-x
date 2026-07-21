@@ -158,16 +158,19 @@ UPDATE gc.global_agreement_archetype_paragraphs p SET heading = n.heading, body 
 -- REPLACE the per-template gc.documenso_template_field_rules as generate's rule source.
 ALTER TABLE gc.global_agreement_archetype_variables
     ADD COLUMN IF NOT EXISTS post_mint_required   boolean,
-    ADD COLUMN IF NOT EXISTS post_mint_read_only  boolean;
+    ADD COLUMN IF NOT EXISTS post_mint_read_only  boolean,
+    ADD COLUMN IF NOT EXISTS default_value        text;  -- archetype-level default (baseline in every
+                                                         -- agreement's values; overridable per deal)
 
 -- Documenso fact: signature/date fields carry NO Required / Read-Only (template-stage OR mint-stage)
 -- — keep them NULL.
 UPDATE gc.global_agreement_archetype_variables
    SET template_required = NULL, template_read_only = NULL,
-       post_mint_required = NULL, post_mint_read_only = NULL
+       post_mint_required = NULL, post_mint_read_only = NULL, default_value = NULL
  WHERE field_type IN ('date', 'signature')
    AND (template_required IS NOT NULL OR template_read_only IS NOT NULL
-        OR post_mint_required IS NOT NULL OR post_mint_read_only IS NOT NULL);
+        OR post_mint_required IS NOT NULL OR post_mint_read_only IS NOT NULL
+        OR default_value IS NOT NULL);
 -- Hardcoded date + signature sides for the range archetype (ruled 2026-07-21): the
 -- effective-date Date and the Principal sig-block Date/Signature are the Principal's; the
 -- Participant sig-block Date/Signature are theirs.
