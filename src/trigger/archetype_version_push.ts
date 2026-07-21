@@ -3,13 +3,13 @@ import { logger, task } from "@trigger.dev/sdk";
 import { callHqx } from "./lib/hqx-client";
 
 /**
- * Control plane — Engagement-template render + PUSH to Documenso.
+ * Control plane — Archetype-version render + PUSH to Documenso.
  *
- * Renders a repo-resident engagement-content source to a PDF (DocRaptor) and creates a
+ * Renders a repo-resident agreement-content source to a PDF (DocRaptor) and creates a
  * Documenso TEMPLATE from it. The TS task owns ZERO state: it calls edge_api's
- * `/internal/engagement-templates/render-push` (callHqx → TRIGGER_SHARED_SECRET), which
+ * `/internal/archetype-versions/render-push` (callHqx → TRIGGER_SHARED_SECRET), which
  * resolves the content source, renders, pushes to Documenso, and records a terminal row in
- * `ops.engagement_template_push_runs`.
+ * `ops.global_agreement_archetype_version_push_runs`.
  *
  * CHOOSE-WHERE-TO-PULL: pass `registryPath` (a `business.global_input_content` row, e.g.
  * `docraptor-to-documenso-template/capital-origination/v1`) — the row carries the brand +
@@ -19,7 +19,7 @@ import { callHqx } from "./lib/hqx-client";
  * blind retry risks duplicate templates. Re-fire deliberately if a run fails.
  */
 
-interface EngagementTemplatePushPayload {
+interface ArchetypeVersionPushPayload {
   /** A business.global_input_content row path, e.g. "docraptor-to-documenso-template/capital-origination/v1". */
   registryPath?: string;
   /** Or a registry row uuid. */
@@ -49,12 +49,12 @@ interface PushResult {
   pdf_url?: string | null;
 }
 
-export const engagementTemplatePush = task({
-  id: "engagement-template-push",
+export const archetypeVersionPush = task({
+  id: "archetype-version-push",
   maxDuration: 300,
   retry: { maxAttempts: 1 },
   run: async (
-    payload: EngagementTemplatePushPayload,
+    payload: ArchetypeVersionPushPayload,
     { ctx },
   ): Promise<PushResult> => {
     const hasRegistry = Boolean(payload?.registryPath || payload?.registryId);
@@ -65,7 +65,7 @@ export const engagementTemplatePush = task({
       );
     }
 
-    logger.info("engagement-template-push starting", {
+    logger.info("archetype-version-push starting", {
       registryPath: payload.registryPath,
       registryId: payload.registryId,
       brand: payload.brand,
@@ -76,13 +76,13 @@ export const engagementTemplatePush = task({
     });
 
     const result = await callHqx<PushResult>(
-      "/internal/engagement-templates/render-push",
+      "/internal/archetype-versions/render-push",
       { ...payload, triggerRunId: ctx.run.id },
       // DocRaptor render + Documenso template create are sequential HTTP round-trips.
       { timeoutMs: 120_000 },
     );
 
-    logger.info("engagement-template-push complete", {
+    logger.info("archetype-version-push complete", {
       documenso_template_id: result.documenso_template_id,
       brand: result.brand,
       path: result.path,

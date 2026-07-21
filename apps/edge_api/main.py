@@ -375,12 +375,12 @@ app.include_router(documenso_envelopes_router)
 # archetype-versions: the operator render surface — STANDALONE from the agreement-document pathway.
 # Lists selectable (brand, path, archetype, version) from the repo-resident content tree and renders
 # one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned URL. Does NOT touch
-# Documenso (the operator affixes fields in the editor by hand). Service-token gated. (Route path
-# /api/v1/engagement-templates is unchanged — a separate cross-repo contract cycle owns that rename.)
+# Documenso (the operator affixes fields in the editor by hand). Service-token gated. Route path
+# /api/v1/archetype-versions — the gc BFF (platform-api edge.ts) is the coordinated caller.
 app.include_router(archetype_versions_router)
 
-# archetype-versions (internal): the render+PUSH lane. The engagement-template-push Trigger.dev task
-# calls /internal/engagement-templates/render-push to resolve a content source (a
+# archetype-versions (internal): the render+PUSH lane. The archetype-version-push Trigger.dev task
+# calls /internal/archetype-versions/render-push to resolve a content source (a
 # business.global_input_content registry row, or an explicit brand/path/archetype/version), render it
 # via DocRaptor, and create the Documenso TEMPLATE — recording a terminal row in
 # ops.global_agreement_archetype_version_push_runs. Trigger-secret gated, same /internal contract.
@@ -454,7 +454,7 @@ def _info() -> dict:
             "combo_job_to_be_done": True,  # /api/v1/combo-job-to-be-done/land (combo-grain 'to: …' job sentences, UPSERT)
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
-            "archetype_versions": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
+            "archetype_versions": True,  # /api/v1/archetype-versions (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "title_normalize": True,   # /api/v1/titles/normalize (raw title → forced-tool → {level, function})

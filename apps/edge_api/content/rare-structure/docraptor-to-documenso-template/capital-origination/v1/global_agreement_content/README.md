@@ -81,13 +81,13 @@ The corresponding edge_api endpoints:
 
 Verify lane availability in `apps/edge_api/sql/operator_settings.sql` (lines 85-89: CHECK constraint on `direct_to_documenso_lane`).
 
-## Render + Push Lane (engagement-template-push)
+## Render + Push Lane (archetype-version-push)
 
-The control plane (Trigger.dev task `engagement-template-push`, src/trigger/engagement_template_push.ts) renders this HTML asset to PDF and publishes it as a Documenso TEMPLATE. The lane is orchestrated by:
+The control plane (Trigger.dev task `archetype-version-push`, src/trigger/archetype_version_push.ts) renders this HTML asset to PDF and publishes it as a Documenso TEMPLATE. The lane is orchestrated by:
 
 1. **Content source registry** (`business.global_input_content`, apps/edge_api/sql/global_input_content.sql): Rows carry `brand='rare-structure'` + `path='docraptor-to-documenso-template/capital-origination/v1'` + `source_kind='repo-html'`.
 2. **Catalog discovery** (apps/edge_api/src/archetype_versions/catalog.py): Resolves (brand, path, archetype, version) tuples to `apps/edge_api/content/<brand>/<path>/<archetype>/<version>/global_agreement_content/` directories. Allows only `_ALLOWED_BRANDS={'active-operators', 'rare-structure'}`.
 3. **Render + push** (apps/edge_api/src/archetype_versions/push.py): Assembles HTML + CSS, invokes DocRaptor to PDF, creates Documenso TEMPLATE via POST `/api/v2/envelope/create` (type=TEMPLATE), records outcome in `ops.global_agreement_archetype_version_push_runs` ledger.
-4. **Edge API endpoint** (apps/edge_api/src/routers/internal_archetype_versions_v1.py): POST `/internal/engagement-templates/render-push` (trigger-secret gated) accepts `registryPath` or explicit `brand`/`path`/`archetype`/`version`; returns documenso_template_id + numeric_id.
+4. **Edge API endpoint** (apps/edge_api/src/routers/internal_archetype_versions_v1.py): POST `/internal/archetype-versions/render-push` (trigger-secret gated) accepts `registryPath` or explicit `brand`/`path`/`archetype`/`version`; returns documenso_template_id + numeric_id.
 
 The ledger table `ops.global_agreement_archetype_version_push_runs` (apps/edge_api/sql/ops_global_agreement_archetype_version_push_runs.sql) records every terminal state (success | error): brand, path, archetype, version, style, source_kind, documenso_template_id, pdf_bytes, pdf_r2_key, error reason.

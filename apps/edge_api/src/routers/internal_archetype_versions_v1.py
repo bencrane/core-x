@@ -1,8 +1,8 @@
 """Internal archetype-version render+push — Trigger.dev-facing.
 
-  POST /internal/engagement-templates/render-push   trigger-secret — content source -> DocRaptor PDF -> Documenso TEMPLATE
+  POST /internal/archetype-versions/render-push   trigger-secret — content source -> DocRaptor PDF -> Documenso TEMPLATE
 
-Called by the ``engagement-template-push`` Trigger.dev task via ``callHqx``. Gated by
+Called by the ``archetype-version-push`` Trigger.dev task via ``callHqx``. Gated by
 ``require_trigger_secret`` (TRIGGER_SHARED_SECRET) — the same ``/internal/*`` contract the
 deal-materialize / gtm pipeline tasks use.
 
@@ -25,7 +25,7 @@ from ..trigger_secret import require_trigger_secret
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/engagement-templates", tags=["internal"])
+router = APIRouter(prefix="/archetype-versions", tags=["internal"])
 
 
 class RenderPushRequest(BaseModel):

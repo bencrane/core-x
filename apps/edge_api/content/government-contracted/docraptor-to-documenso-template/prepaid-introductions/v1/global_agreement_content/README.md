@@ -72,7 +72,7 @@ into the text layer for Documenso `findText`, invisible to the eye). Documenso f
 these slots in the editor; nothing is filled into the HTML before render. Underscore-run widths are
 render-dependent — measure with a local DocRaptor preview, do not eyeball.
 
-## Render + Push lane (`engagement-template-push`)
+## Render + Push lane (`archetype-version-push`)
 
 1. **Catalog discovery** — `apps/edge_api/src/archetype_versions/catalog.py` resolves
    `(brand, path, archetype, version)` under
@@ -81,11 +81,11 @@ render-dependent — measure with a local DocRaptor preview, do not eyeball.
 2. **Render + push** — `apps/edge_api/src/archetype_versions/push.py` assembles HTML + CSS, invokes
    DocRaptor (LIVE), creates a Documenso TEMPLATE via `POST /api/v2/envelope/create` (type=TEMPLATE),
    and records the outcome in `ops.global_agreement_archetype_version_push_runs`.
-3. **Endpoint** — `POST /internal/engagement-templates/render-push` (trigger-secret), body
+3. **Endpoint** — `POST /internal/archetype-versions/render-push` (trigger-secret), body
    `{"registryPath":"docraptor-to-documenso-template/prepaid-introductions/v1"}` OR explicit
    `brand=government-contracted` / `path=docraptor-to-documenso-template` /
    `archetype=prepaid-introductions` / `version=v1`. Render-only preview (no Documenso):
-   `POST /api/v1/engagement-templates/render` with the SPLIT segments.
+   `POST /api/v1/archetype-versions/render` with the SPLIT segments.
 
 ## Deferred (DB-registration time — not in this scaffold)
 
