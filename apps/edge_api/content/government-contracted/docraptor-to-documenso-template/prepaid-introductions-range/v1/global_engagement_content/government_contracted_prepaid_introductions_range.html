@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<!--
+  RARE STRUCTURE — Government-Contracted brand — Strategic Origination Agreement (PREPAID
+  INTRODUCTIONS, RANGE). ARCHETYPE prepaid_introductions_range, VERSION v1. Operator executes as
+  Rare Structure LLC, no d/b/a.
+
+  ONE-PAGE BODY BY DESIGN: the entire agreement body lives on page 1; the execution block is page 2
+  (.sig-wrap page-break-before: always). Iteration surface, not a lane change — same underscore-blank
+  doctrine as prepaid-introductions v2/v3: NO handlebar tokens, NO declared inputs. Every dynamic
+  value is a plain underscore blank, DEFINED ONCE under a capitalized term and referenced by that
+  term downstream. The operator drops a Documenso TEXT field onto each blank in the template editor.
+
+  RANGE ECONOMICS (ruled 2026-07-21): the allocation is a MIN–MAX range. The Per-Introduction Price
+  is defined at the MIN end (= Prepaid Fee / Introduction Minimum). Settlement refund =
+  max(0, Introduction Minimum - delivered) x Per-Introduction Price. Introductions delivered beyond
+  the Minimum, up to the Maximum, carry no additional charge and generate no additional refund
+  exposure. Zero delivery therefore refunds the full Prepaid Fee.
+
+  DYNAMIC VALUE SLOTS — Documenso field labels in [brackets]; all five live in Section 2:
+    - Prepaid Fee              §2.1  [PrepaidFee]        the upfront amount (machine-read charge key)
+    - Introduction Minimum     §2.1  [IntroNumMin]       the guaranteed floor of the range
+    - Introduction Maximum     §2.1  [IntroNumMax]       the ceiling of the range
+    - Per-Introduction Price   §2.1  [PricePerIntroMin]  derived = Prepaid Fee / Introduction Minimum;
+                                                         operator supplies the derived figure at
+                                                         prefill — Documenso does no arithmetic
+    - Primary Term (days)      §2.2  [DaysToFill]        the fulfillment window, in days
+
+  SIGNER BLANKS — Effective Date, Principal entity [Legal Entity Name] / d/b/a [D/B/A Name], and the
+  Principal sig-block Name [Full Name] / Title [Title] / Date lines — plain underscore runs; fields
+  are dropped in the Documenso editor. Operator side is pre-set inline (Benjamin J. Crane /
+  Managing Director).
+
+  The <head> stylesheet slot (plain | branded per manifest.json) is injected at render time.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Strategic Origination Agreement</title>
+<style>__STYLESHEET__</style>
+</head>
+<body>
+  <h1>Strategic Origination Agreement</h1>
+  <hr class="rule" />
+
+  <p class="lead">This Strategic Origination Agreement (the &ldquo;Agreement&rdquo;) is entered into and
+  made effective as of ____________________ (the &ldquo;Effective Date&rdquo;), by and between
+  Rare Structure LLC (&ldquo;Operator&rdquo;), and ____________________________________________________
+  (d/b/a ____________________________) (&ldquo;Principal&rdquo;).</p>
+
+  <h2>1. Engagement</h2>
+  <p><strong>1.1 Strategic Origination.</strong> Principal engages Operator, on a non-exclusive basis, to
+  route proprietary introductions aligned, as assessed by Operator in its sole discretion, to
+  Principal&rsquo;s capabilities and target verticals. Operator retains absolute discretion over its
+  methods and networks, bears its own operational costs, and owes no reporting on its internal logic.
+  Operator acts solely as a data-routing and lead-generation service &mdash; not a broker, agency, or
+  advisor &mdash; and makes no representation regarding any routed entity; Principal retains sole
+  responsibility for all diligence, contracting, and commercial decisions.</p>
+
+  <p><strong>1.2 Introductions.</strong> An &ldquo;Introduction&rdquo; is a digital
+  facilitation connecting Principal with a representative of a third-party entity identified and selected
+  solely by Operator&rsquo;s proprietary infrastructure. Upon facilitation, Operator&rsquo;s obligation
+  for that Introduction is fully discharged; all subsequent engagement and outcomes rest solely between
+  Principal and the counterparty.</p>
+
+  <h2>2. Commercial Terms</h2>
+  <p><strong>2.1 Prepaid Range Allocation.</strong> Principal shall pay an upfront fee of
+  ____________________ (the &ldquo;Prepaid Fee&rdquo;), due in full upon execution of this Agreement.
+  The Prepaid Fee secures a dedicated allocation of no fewer than ________ Introductions (the
+  &ldquo;Introduction Minimum&rdquo;) and up to ________ Introductions (the &ldquo;Introduction
+  Maximum&rdquo;), establishing a unit price of ____________ per Introduction (the
+  &ldquo;Per-Introduction Price&rdquo;, equal to the Prepaid Fee divided by the Introduction Minimum).
+  Introductions beyond the Introduction Minimum, up to the Introduction Maximum, are included at no
+  additional charge.</p>
+  <p><strong>2.2 Primary Term.</strong> The window for fulfilling the allocation (the &ldquo;Primary
+  Term&rdquo;) shall span ____________ days, commencing the first Monday following the later of the
+  Effective Date and the date the Prepaid Fee irrevocably clears, before which Operator has no obligation
+  to commence origination activity.</p>
+  <p><strong>2.3 Ledger Settlement.</strong> If, at the expiration of the Primary Term, Operator has
+  facilitated fewer Introductions than the Introduction Minimum, Operator shall remit to Principal a
+  settlement equal to the shortfall below the Introduction Minimum multiplied by the Per-Introduction
+  Price. Delivery at or above the Introduction Minimum settles the allocation in full, and no settlement
+  is owed. Upon settlement or fulfillment, this Agreement terminates.</p>
+
+  <h2>3. General</h2>
+  <p><strong>3.1</strong> Each party shall keep the other&rsquo;s proprietary information strictly
+  confidential. This Agreement is governed by New York law; disputes are resolved by binding arbitration
+  in New York, NY under AAA rules, with attorneys&rsquo; fees to the prevailing party. This is the entire
+  agreement between the parties, amendable only in a writing signed by both. Each signatory below
+  represents due authority to bind the party for which they sign. Principal shall indemnify Operator
+  against claims arising from good-faith outreach executed on Principal&rsquo;s behalf hereunder.</p>
+
+  <!-- Execution block — page 2 via page-break-before: always. Operator pre-set; Principal blanks get
+       Documenso fields ([Full Name], [Title], signature/date) in the editor. -->
+  <div class="sig-wrap">
+    <table class="sig-grid"><tr>
+      <td>
+        <div class="sig-party">Operator</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> <span class="val">Benjamin J. Crane</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+      <td>
+        <div class="sig-party">Principal</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Title:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+    </tr></table>
+  </div>
+</body>
+</html>
