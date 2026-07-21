@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import config
-from ..cal import enrich, leadmagic, materialize, normalize, queries, research
+from ..cal import classify, enrich, leadmagic, materialize, normalize, queries, research
 from ..cal.signature import verify_signature
 from ..db import get_db_connection
 
@@ -98,8 +98,21 @@ async def cal_webhook(
     leadmagic_result = None
     if isinstance(normalized, dict) and normalized.get("action") == "created":
         ical_uid = normalized.get("ical_uid")
-        research_result = await _kick_research(trigger_event, envelope, ical_uid)
-        enrich_result = await _kick_enrich(trigger_event, envelope, ical_uid)
+        # LANE CLASSIFICATION (operator ruling 2026-07-20): a domain that is a real
+        # sam.gov/USAspending entity (FY23–25 prime+sub > $1M, see cal/classify.py) takes
+        # the SAM-ENTITY lane — the govcon deep-research prompt, and NO booking-enrich
+        # (that sibling is the capital-provider setup). Classified ONCE here so research
+        # and enrich cannot disagree. Any doubt/failure → default lane (today's behavior).
+        sam_entity = await classify.is_sam_entity(
+            normalize.extract(trigger_event, envelope).get("domain")
+        )
+        research_result = await _kick_research(
+            trigger_event, envelope, ical_uid, sam_entity=sam_entity
+        )
+        if sam_entity:
+            enrich_result = {"triggered": False, "reason": "sam-entity lane"}
+        else:
+            enrich_result = await _kick_enrich(trigger_event, envelope, ical_uid)
         materialize_result = await _kick_materialize(ical_uid)
         leadmagic_result = await _kick_leadmagic(trigger_event, envelope)
 
@@ -116,28 +129,32 @@ async def cal_webhook(
 
 
 async def _kick_research(
-    trigger_event: str, envelope: dict[str, Any], ical_uid: str | None
+    trigger_event: str, envelope: dict[str, Any], ical_uid: str | None,
+    *, sam_entity: bool = False,
 ) -> dict[str, Any]:
     """Fire the company deep-research task for a new booking and stamp its run id. Best-effort —
-    a missing domain or a trigger failure never affects the webhook."""
+    a missing domain or a trigger failure never affects the webhook. ``sam_entity`` selects the
+    SAM-ENTITY lane: the ``sam-entity-brief`` registry prompt + a lane-scoped idempotency key."""
     if not ical_uid:
         return {"triggered": False, "reason": "no ical_uid"}
     fields = normalize.extract(trigger_event, envelope)
     domain = fields.get("domain")
     if not domain:
         return {"triggered": False, "reason": "no domain"}
+    slug = research.SAM_RESEARCH_PROMPT_SLUG if sam_entity else research.RESEARCH_PROMPT_SLUG
     # The ACTIVE registry prompt is the source of truth; None → the built-in fallback.
     prompt_id: str | None = None
     template: str | None = None
     try:
         async with get_db_connection() as conn:
-            active = await queries.get_active_research_prompt(conn, research.RESEARCH_PROMPT_SLUG)
+            active = await queries.get_active_research_prompt(conn, slug)
         if active:
             prompt_id, template = active
     except Exception as exc:  # noqa: BLE001 — fall back to the built-in template
         logger.warning("active research prompt lookup failed (%s); using fallback", exc)
     run_id = await research.trigger_research(
-        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain, template=template
+        ical_uid=ical_uid, company_name=fields.get("company_name"), domain=domain,
+        template=template, lane="sam" if sam_entity else None,
     )
     if not run_id:
         return {"triggered": False, "reason": "trigger returned no run id"}
@@ -147,7 +164,7 @@ async def _kick_research(
             await conn.commit()
     except Exception as exc:  # noqa: BLE001 — the run is created; stamping is best-effort
         logger.warning("research refs stamp failed for %s: %s", ical_uid, exc)
-    return {"triggered": True, "run_id": run_id, "prompt_id": prompt_id}
+    return {"triggered": True, "run_id": run_id, "prompt_id": prompt_id, "lane": "sam-entity" if sam_entity else "default"}
 
 
 async def _kick_enrich(

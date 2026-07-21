@@ -306,6 +306,17 @@ def openai_api_key() -> str | None:
     return os.environ.get("OPENAI_API_KEY")
 
 
+def query_sidecar_url() -> str:
+    """Base URL of the warm read-only query-sidecar (booking-lane classification)."""
+    return os.environ.get("QUERY_SIDECAR_URL", "https://query-sidecar-api.onrender.com").rstrip("/")
+
+
+def query_sidecar_token() -> str | None:
+    """Bearer token for the query-sidecar SQL surface (already in ``core-x/prd``).
+    When unset, booking-lane classification degrades to the default lane."""
+    return os.environ.get("QUERY_SIDECAR_TOKEN")
+
+
 def map_compiler_provider() -> str:
     """Which compiler lane the map /ask TRANSLATE uses: ``openai`` or ``anthropic``.
     Both lanes ship; this switch picks one at request time. Default ``openai`` — the

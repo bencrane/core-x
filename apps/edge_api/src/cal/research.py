@@ -33,6 +33,13 @@ RESEARCH_PROCESSOR = "pro"
 # The active prompt is the `company-brief` slug in corex.research_prompts.
 RESEARCH_PROMPT_SLUG = "company-brief"
 
+# SAM-ENTITY lane (operator ruling 2026-07-20): a booking whose domain classifies as a
+# real sam.gov/USAspending entity (see cal/classify.py) uses this slug instead — the
+# govcon dossier prompt run as deep research. Same task, same processor; only the prompt
+# and the idempotency key differ (the key is lane-scoped so a company already researched
+# under the WRONG lane still gets a fresh sam-entity run).
+SAM_RESEARCH_PROMPT_SLUG = "sam-entity-brief"
+
 # Fallback ONLY — used if no active row is in corex.research_prompts. The registry is the
 # source of truth; this keeps the kickoff alive if the table/row is ever missing.
 _DEFAULT_TEMPLATE = (
@@ -50,14 +57,17 @@ def render(template: str, company_name: str | None, domain: str) -> str:
 
 
 async def trigger_research(
-    *, ical_uid: str, company_name: str | None, domain: str, template: str | None = None
+    *, ical_uid: str, company_name: str | None, domain: str, template: str | None = None,
+    lane: str | None = None,
 ) -> str | None:
     """Fire ``parallel-deep-research`` for this company; return the Trigger run id.
 
     ``template`` is the active registry prompt; None → the built-in fallback. Best-effort:
     logs + returns None on any failure (the booking is already stored). The trigger-run
     idempotency key is derived from ``domain`` so repeat bookings for the same company (and
-    cal's duplicate deliveries) resolve to ONE run."""
+    cal's duplicate deliveries) resolve to ONE run. ``lane`` (e.g. ``"sam"``) scopes the
+    key so a lane change re-researches a company the old lane already spent on."""
+    idem = f"research:{lane}:{domain}" if lane else f"research:{domain}"
     payload: dict[str, Any] = {
         "objective": render(template or _DEFAULT_TEMPLATE, company_name, domain),
         "grain": "topic",
@@ -68,13 +78,13 @@ async def trigger_research(
         # `research:topic:full` and every booking resolves on the first run's cached token. Makes
         # edge_api correct independent of the Trigger task deploy order; redundant once the task's
         # run-unique fallback ships, but harmless (same booking → same key both layers).
-        "idempotencyKey": f"research:{domain}",
+        "idempotencyKey": idem,
         # Carried for traceability in the Trigger run view (the task reads `objective`).
         "domain": domain,
         "company_name": company_name,
     }
     try:
-        run = await trigger_task(RESEARCH_TASK, payload, idempotency_key=f"research:{domain}")
+        run = await trigger_task(RESEARCH_TASK, payload, idempotency_key=idem)
     except Exception as exc:  # noqa: BLE001 — best-effort kickoff; never fail the webhook
         logger.warning("parallel-deep-research trigger failed for %s: %s", ical_uid, exc)
         return None
