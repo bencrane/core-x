@@ -156,10 +156,12 @@ UPDATE gc.global_agreement_archetype_variables
    SET template_required = NULL, template_read_only = NULL
  WHERE field_type IN ('date', 'signature')
    AND (template_required IS NOT NULL OR template_read_only IS NOT NULL);
--- Hardcoded date sides for the range archetype (ruled 2026-07-21): the effective-date Date and
--- the Principal sig-block Date are the Principal's; the Participant sig-block Date is theirs.
+-- Hardcoded date + signature sides for the range archetype (ruled 2026-07-21): the
+-- effective-date Date and the Principal sig-block Date/Signature are the Principal's; the
+-- Participant sig-block Date/Signature are theirs.
 UPDATE gc.global_agreement_archetype_variables v SET recipient = m.r
-  FROM (VALUES (1, 'principal'), (10, 'principal'), (14, 'participant')) AS m(o, r),
+  FROM (VALUES (1, 'principal'), (10, 'principal'), (14, 'participant'),
+               (9, 'principal'), (11, 'participant')) AS m(o, r),
        gc.global_agreement_archetypes a
  WHERE a.key = 'prepaid_introductions_range' AND v.archetype_id = a.id AND v.ordinal = m.o
    AND v.recipient IS DISTINCT FROM m.r;
