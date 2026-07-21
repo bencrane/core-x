@@ -224,6 +224,13 @@ CREATE TABLE IF NOT EXISTS gc.documenso_envelopes (
     created_at             timestamptz NOT NULL DEFAULT now(),
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
+-- MIRRORED BACK (operator semantics, ruled 2026-07-21): stamped ONLY by the operator-initiated
+-- resync pull — the deliberate post-field-work verification step. The webhook projector keeps the
+-- verbatim mirror warm but NEVER touches this column; background freshness must not read as (or
+-- satisfy) "mirrored back".
+ALTER TABLE gc.documenso_envelopes
+    ADD COLUMN IF NOT EXISTS operator_mirrored_at timestamptz;
+
 CREATE UNIQUE INDEX IF NOT EXISTS documenso_envelopes_documenso_id_uidx ON gc.documenso_envelopes (documenso_id);
 CREATE INDEX IF NOT EXISTS gc_documenso_envelopes_template_documenso_id_idx ON gc.documenso_envelopes (template_documenso_id);
 CREATE INDEX IF NOT EXISTS gc_documenso_envelopes_external_id_idx ON gc.documenso_envelopes (external_id);
