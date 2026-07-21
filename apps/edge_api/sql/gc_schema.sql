@@ -41,6 +41,51 @@ SELECT a.id,
  WHERE a.key = 'prepaid_introductions_range'
 ON CONFLICT (content_path) DO NOTHING;
 
+-- ARCHETYPE VARIABLES (requirements). One row per field a conforming Documenso template must
+-- carry. On the ARCHETYPE (not the version): versions are legal-language iterations; a change to
+-- the variable set is a new archetype or an explicit redefinition (operator ruling 2026-07-21).
+-- documenso_field_label_to_use is a DECLARATION of intent — the label the operator will use when
+-- manually creating the field in the Documenso editor (the template is born with ZERO fields; the
+-- mirror pull is what brings Documenso truth back, and match/mismatch is computed then). Rule
+-- columns (template-stage Required/Read-Only, side assignment, post-mint treatment) are a later,
+-- separately-ruled addition — not defined yet. 'auto' value_source = filled by the signing
+-- ceremony itself (signatures; dates stamp on execution) — never passed in.
+CREATE TABLE IF NOT EXISTS gc.global_agreement_archetype_variables (
+    id                            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    archetype_id                  uuid NOT NULL REFERENCES gc.global_agreement_archetypes(id),
+    ordinal                       int  NOT NULL,  -- document order; disambiguates repeated labels (Date x3, Signature x2)
+    documenso_field_label_to_use  text NOT NULL,
+    field_type                    text NOT NULL CHECK (field_type IN ('text', 'signature', 'date')),
+    value_source                  text NOT NULL CHECK (value_source IN ('entered', 'derived', 'auto')),
+    created_at                    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT global_agreement_archetype_variables_ordinal_uniq UNIQUE (archetype_id, ordinal),
+    CONSTRAINT global_agreement_archetype_variables_label_ordinal_uniq
+        UNIQUE (archetype_id, documenso_field_label_to_use, ordinal)
+);
+-- Seeded requirements for prepaid_introductions_range (document order; idempotent on ordinal).
+INSERT INTO gc.global_agreement_archetype_variables
+    (archetype_id, ordinal, documenso_field_label_to_use, field_type, value_source)
+SELECT a.id, v.ordinal, v.label, v.field_type, v.value_source
+  FROM gc.global_agreement_archetypes a,
+       (VALUES
+            (1,  'Date',              'date',      'auto'),     -- preamble Effective Date
+            (2,  'Legal Entity Name', 'text',      'entered'),
+            (3,  'D/B/A Name',        'text',      'entered'),
+            (4,  'PrepaidFee',        'text',      'entered'),
+            (5,  'IntroNumMin',       'text',      'entered'),
+            (6,  'IntroNumMax',       'text',      'entered'),
+            (7,  'PricePerIntroMin',  'text',      'derived'),  -- = PrepaidFee / IntroNumMin
+            (8,  'DaysToFill',        'text',      'entered'),
+            (9,  'Signature',         'signature', 'auto'),     -- operator column
+            (10, 'Date',              'date',      'auto'),     -- operator sig date
+            (11, 'Signature',         'signature', 'auto'),     -- counterparty column
+            (12, 'Full Name',         'text',      'entered'),
+            (13, 'Title',             'text',      'entered'),
+            (14, 'Date',              'date',      'auto')      -- counterparty sig date
+       ) AS v(ordinal, label, field_type, value_source)
+ WHERE a.key = 'prepaid_introductions_range'
+ON CONFLICT (archetype_id, ordinal) DO NOTHING;
+
 -- Per (Documenso template, field label): the AFTER-MINTING state in Documenso's own terms
 -- (post_mint_required / post_mint_read_only) + the template-level default value. The template's
 -- own Required/Read-Only are facts on the mirror; these rows are what generate/payments resolve.
