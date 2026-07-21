@@ -55,6 +55,7 @@ from .src.routers.list_lookalike_v1 import router as list_lookalike_router
 from .src.routers.lender_book_v1 import router as lender_book_router
 from .src.routers.market_slice_v1 import router as market_slice_router
 from .src.routers.sub_market_slice_v1 import router as sub_market_slice_router
+from .src.routers.growth_market_slice_v1 import router as growth_market_slice_router
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.market_query_v1 import router as market_query_router
 from .src.routers.sub_dossier_v1 import router as sub_dossier_router
@@ -217,6 +218,11 @@ app.include_router(market_slice_router)
 # sub-market-slice: the sub-under demand market cards (market-first subawardee
 # cycle 2026-07-19); per-UEI narrowing rides the existing sub-dossier build.
 app.include_router(sub_market_slice_router)
+
+# growth-market-slice: the Growth lane's per-work-lane cards over
+# gtm_construction_lane_months (2026-07-20 cycle) — full market at rest,
+# growth multiple/window/band as cut-rail dials, watermark-anchored.
+app.include_router(growth_market_slice_router)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────
