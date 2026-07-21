@@ -84,6 +84,16 @@ async def resync_template_by_documenso_id(documenso_id: int) -> dict[str, Any]:
                 status=_lower_str(env.get("status")) or None,
                 documenso_response=env,
             )
+            # MIRRORED BACK (operator semantics): this resync path is the operator-initiated pull —
+            # the deliberate verification step. Stamp it HERE and only here; the webhook projector
+            # (background freshness) never touches operator_mirrored_at.
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE gc.documenso_envelopes SET operator_mirrored_at = now() "
+                    "WHERE documenso_id = %s",
+                    (documenso_id,),
+                )
+            await conn.commit()
         logger.info(
             "documenso resync: re-mirrored documenso_id=%s envelope=%s type=%s status=%s",
             documenso_id, envelope_id, _lower_str(env.get("type") or env.get("source")),
