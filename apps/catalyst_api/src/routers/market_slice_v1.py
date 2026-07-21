@@ -700,7 +700,7 @@ WHERE contract_award_unique_key = '{key}'""", limit=1)
         lang_sql = f"""
 SELECT lp.naics_title, lp.psc_title, lp.work_summary,
        d.what_was_done, d.work_type, d.regime,
-       n.naics_name AS naics_name_fallback, p.psc_name AS psc_name_fallback
+       n.naics_title AS naics_name_fallback, p.psc_name AS psc_name_fallback
 FROM (SELECT 1) one
 LEFT JOIN naics_psc_labor_profile lp ON lp.naics_code = '{naics}' AND lp.psc_code = '{psc}'
 LEFT JOIN naics_psc_deliverable d ON d.naics_code = '{naics}' AND d.psc_code = '{psc}'
