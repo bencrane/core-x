@@ -95,3 +95,29 @@ CREATE TABLE IF NOT EXISTS gc.deal_origination_details (
     created_at             timestamptz NOT NULL DEFAULT now(),
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
+
+-- Application Profile: ONE row per prospect domain — the on-call "Company Profile" board
+-- (gc-hq-new /hq/application/:domain). Seeded from LeadMagic firmo (Blitz fallback) on first
+-- open, then operator-edited + per-section verified on the call. Domain-keyed (the page key);
+-- the bare normalized domain. Pure gc-owned product state — not the LLM-synthesized dossier
+-- (that is a separate artifact). Arrays + the verify map ride JSONB; load-bearing scalars typed.
+CREATE TABLE IF NOT EXISTS gc.application_profiles (
+    domain         text PRIMARY KEY,
+    company_name   text,
+    hq             text,
+    headcount      text,
+    revenue_range  text,
+    founded_year   text,
+    linkedin_url   text,
+    overview       text,
+    focus_areas    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    industries     jsonb NOT NULL DEFAULT '[]'::jsonb,
+    geographies    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    contact_name   text,
+    contact_title  text,
+    contact_email  text,
+    verified       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    seed_source    text,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now()
+);
