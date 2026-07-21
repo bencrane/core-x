@@ -696,6 +696,12 @@ WHERE contract_award_unique_key = '{key}'""", limit=1)
             raise HTTPException(status_code=404, detail=f"unknown award '{key}'")
         naics = s.get("naics_code")
         psc = s.get("product_or_service_code")
+        uei = str(s.get("recipient_uei") or "")
+        # Every per-award txn probe carries the recipient predicate: the txn
+        # tables are not award-key-sorted, and the uei predicate prunes the
+        # 108M scan to the firm's slice (measured 11.6s -> 1.1s per probe).
+        uei_leg = f"uei = '{uei}' AND " if _AWARD_KEY_RE.match(uei) else ""
+        uei_leg_rows = f"recipient_uei = '{uei}' AND " if _AWARD_KEY_RE.match(uei) else ""
 
         lang_sql = f"""
 SELECT lp.naics_title, lp.psc_title, lp.work_summary,
@@ -708,10 +714,10 @@ LEFT JOIN v_naics_names n ON n.naics_code = '{naics}'
 LEFT JOIN v_psc_names p ON p.psc_code = '{psc}'"""
         fy_sql = f"""
 SELECT fy, round(sum(obligation),0) AS obligated, count(*) AS actions
-FROM txn_events_combo WHERE award_key = '{key}' GROUP BY 1 ORDER BY 1"""
+FROM txn_events_combo WHERE {uei_leg}award_key = '{key}' GROUP BY 1 ORDER BY 1"""
         recent_sql = f"""
 SELECT action_date, action_type_description, round(federal_action_obligation,0) AS obligation
-FROM txn_rows WHERE contract_award_unique_key = '{key}'
+FROM txn_rows WHERE {uei_leg_rows}contract_award_unique_key = '{key}'
 ORDER BY action_date DESC LIMIT 8"""
         vocab_sql = "SELECT field, code, name FROM fpds_code_vocab"
         agency_sql = f"""
@@ -725,9 +731,9 @@ FROM award_subout_rollup WHERE prime_award_unique_key = '{key}'"""
         place_sql = f"""
 SELECT (SELECT zip5 FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS zip5,
        (SELECT state_code FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS state_code,
-       (SELECT pop_county_name FROM txn_events_combo WHERE award_key = '{key}'
+       (SELECT pop_county_name FROM txn_events_combo WHERE {uei_leg}award_key = '{key}'
           AND pop_county_name IS NOT NULL ORDER BY action_date DESC LIMIT 1) AS county,
-       (SELECT pop_country_code FROM txn_events_combo WHERE award_key = '{key}'
+       (SELECT pop_country_code FROM txn_events_combo WHERE {uei_leg}award_key = '{key}'
           ORDER BY action_date DESC LIMIT 1) AS country_code"""
 
         results = await asyncio.gather(
