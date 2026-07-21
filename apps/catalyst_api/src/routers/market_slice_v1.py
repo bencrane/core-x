@@ -531,6 +531,97 @@ async def mega(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── active awards as points — the award-grain map read (2026-07-21) ──────────
+#
+# The Explore "active awards" lens: the awards themselves (not the firms) as
+# place-of-performance points. Award-state ⋈ pop-centroids on the known key
+# (contract_award_unique_key = generated_unique_award_id — NOT a shared column
+# name). Optional predicate leg narrows to the grammar cohort's holders; no
+# pair scope (the lens is universe-wide by design — the "present tense" read).
+
+_AWARDS_MAX = 4000
+
+_AWARDS_GEO_DISCLOSURE = (
+    "coordinates are the award's primary place of performance "
+    "(usaspending_award_pop_centroids, zip5-resolved); awards without a "
+    "resolvable PoP are served in the count, never plotted"
+)
+
+
+def build_awards_sql(predicate_expr: str | None, limit: int) -> tuple[str, str]:
+    """(points_sql, count_sql) over the active-award universe ∪ predicates."""
+    pred_leg = (
+        f"\n  AND a.recipient_uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
+    )
+    base = f"""
+FROM usaspending_fpds_prime_award_state a
+WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}"""
+    # Rank first, hydrate geo after: the centroid join runs over the ≤limit
+    # page, never as a 30.7M hash build (measured 15.3s → sub-second).
+    points = f"""
+WITH page AS (
+  SELECT a.contract_award_unique_key AS award_key,
+         a.award_id_piid AS piid,
+         a.recipient_uei AS uei,
+         a.recipient_name,
+         greatest(coalesce(a.life_to_date_obligated, 0), 0) AS obl,
+         (coalesce(a.latest_financing_code,'Z') IN ('Z','NOT APPLICABLE')) AS unfin,
+         a.current_end_date AS end_date
+{base}
+  ORDER BY obl DESC, award_key
+  LIMIT {limit}
+)
+SELECT p.*, c.latitude, c.longitude
+FROM page p
+LEFT JOIN usaspending_award_pop_centroids c ON c.generated_unique_award_id = p.award_key
+ORDER BY p.obl DESC, p.award_key"""
+    count = f"""
+SELECT count(*) AS awards,
+       round(coalesce(sum(greatest(coalesce(a.life_to_date_obligated, 0), 0)), 0), 0) AS obl_usd,
+       count(DISTINCT a.recipient_uei) AS firms
+{base}"""
+    return points, count
+
+
+@router.post("/awards", dependencies=[Depends(require_service_token)])
+async def awards(body: dict[str, Any]) -> dict[str, Any]:
+    """Active awards as PoP points — the Explore award-lens map read.
+
+    Body: {"predicates"?: [...], "limit"? ≤ 4000}. Rows are the top-N active
+    awards by life-to-date obligations (with PoP geo LEFT-joined); `count` /
+    `obl_usd` / `firms` are always the FULL cohort. Unscoped reads are allowed
+    here by design: the universe statement ("a quarter-million active awards")
+    IS the surface's opening state.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    limit = body.get("limit", _AWARDS_MAX)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= _AWARDS_MAX):
+        raise _refuse(f"limit must be an integer in [1, {_AWARDS_MAX}]")
+    expr, echoes, disclosures = _compile_body_predicates(body)
+
+    points_sql, count_sql = build_awards_sql(expr, limit)
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        points_payload, count_payload = await asyncio.gather(
+            _run_sidecar(client, points_sql, limit=limit),
+            _run_sidecar(client, count_sql, limit=1),
+        )
+    rows = _rows(points_payload)
+    totals = _row(count_payload)
+    return {
+        "predicates": echoes,
+        "disclosures": [*disclosures, _AWARDS_GEO_DISCLOSURE],
+        "awards": rows,
+        "returned": len(rows),
+        "count": totals.get("awards", 0),
+        "obl_usd": totals.get("obl_usd", 0),
+        "firms": totals.get("firms", 0),
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": points_payload.get("artifact"),
+    }
+
+
 _GEO_DISCLOSURE = (
     "coordinates are the firm's SAM registration location (gtm_entity_geo, HQ grain); "
     "firms without a geocode are served in the rows and the count, never dropped"
