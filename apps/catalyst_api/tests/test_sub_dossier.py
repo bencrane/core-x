@@ -85,13 +85,19 @@ def test_triangle_excludes_target_and_self_pairs():  # [F7]
     assert "LIMIT 400" in sql
 
 
-def test_market_sql_selection_side_gates():  # [F2, F9]
+def test_market_sql_selection_side_gates():  # [F2, F9] + 2026-07-20 gate ruling
+    # Default (ruling): sub-out DROPPED — evidence rides along, never gates.
     sql = sd.sql_market(UEI, SEEDS, ["541712"], ["R425"], dict(sd.DEFAULT_DIALS))
-    assert "sub_out" in sql and "JOIN sub_out" in sql          # gate is a JOIN
+    assert "LEFT JOIN sub_out" in sql                           # evidence, not a gate
+    assert "INTERVAL" not in sql.split("ORDER BY")[0].split("WHERE b.prime_obl_60mo")[1]
     assert "LN(1 + f.n_with_lane)" in sql                       # IDF damping
-    assert "INTERVAL 24 MONTH" in sql
-    assert "ORDER BY c.wt DESC, so.subout_5y DESC, c.lane_hits DESC, c.uei" in sql
-    assert "LIMIT 100" in sql                                   # market_size*2 over-fetch
+    assert "so.subout_5y DESC NULLS LAST" in sql                # proven primes outrank unknowns
+    assert "LIMIT 25000" in sql          # FULL candidate fetch — totals never dial-shaped
+    # Dial ON restores the reviewed gate exactly.
+    gated = sd.sql_market(UEI, SEEDS, ["541712"], ["R425"],
+                          {**sd.DEFAULT_DIALS, "require_subout": True})
+    assert "\nJOIN sub_out" in gated and "LEFT JOIN sub_out" not in gated
+    assert "INTERVAL 24 MONTH" in gated
 
 
 def test_market_sql_no_shape_codes_degrades_safely():

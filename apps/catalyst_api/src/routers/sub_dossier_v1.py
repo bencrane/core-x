@@ -125,6 +125,12 @@ DEFAULT_DIALS: dict[str, Any] = {
     "market_size": 50,
     "recency_months": 24,
     "exclude_jv": True,
+    # 2026-07-20 operator ruling: the demonstrated-sub-out gate on market
+    # primes is DROPPED by default ("let's see") — composition match + the
+    # $10M prime floor stand alone. One-flag revert; sub-out evidence still
+    # rides every row (subout_5y / last_sub NULL when absent) and proven
+    # primes outrank unknowns at equal composition weight.
+    "require_subout": False,
     "history_limit": 500,           # [F8]
     "peer_scoring_cap": 400,        # triangle rows carried into scoring [F6]
     "ubiquity_fn": "1/sqrt(1+n)",  # [F10]; alternative: "1/ln(1+n)"
@@ -185,9 +191,9 @@ def _merge_dials(overrides: Any) -> dict[str, Any]:
     for key, value in overrides.items():
         if key not in DEFAULT_DIALS:
             raise _refuse(f"unknown dial: {key}")
-        if key == "exclude_jv":
+        if key in ("exclude_jv", "require_subout"):
             if not isinstance(value, bool):
-                raise _refuse("exclude_jv must be a boolean")
+                raise _refuse(f"{key} must be a boolean")
             dials[key] = value
             continue
         if key == "ubiquity_fn":
@@ -320,6 +326,14 @@ SELECT uei, code_type, code, share_lifetime, rank_lifetime, obl_lifetime
 FROM gtm_prime_code_signature WHERE uei IN ({_uei_list_sql(ueis)})"""
 
 
+# The candidate-fetch honesty ceiling: market SQL and the run() limit BOTH
+# use it — market.total must never be shaped by market_size (2026-07-20; the
+# first fix raised only the run() limit while the SQL kept LIMIT size*2,
+# quietly capping totals near 100 — caught when a dropped gate DECREASED a
+# total, which is impossible under a pure superset).
+_MARKET_FETCH_CEILING = 25_000
+
+
 def sql_market(uei: str, seeds: list[str], target_naics: list[str],
                target_psc: list[str], dials: dict[str, Any],
                shape_naics: list[str] | None = None) -> str:
@@ -352,7 +366,15 @@ shape_out AS (
     else:
         shape_cte = ""
         shape_join = ""
-    fetch = int(dials["market_size"]) * 2  # over-fetch for JV/family trim [F3, F4]
+    fetch = _MARKET_FETCH_CEILING  # FULL candidate set; display cap applies post-trim
+    if dials.get("require_subout"):
+        subout_join = "JOIN"
+        subout_where = (f"AND (so.last_sub >= current_date - INTERVAL "
+                        f"{int(dials['recency_months'])} MONTH OR COALESCE(fo.fo_amt, 0) > 0)")
+    else:
+        subout_join = "LEFT JOIN"
+        subout_where = ""
+        shape_join = shape_join.replace("JOIN shape_out", "LEFT JOIN shape_out")
     return f"""
 WITH seed_sig AS (
   SELECT code_type, code, COUNT(DISTINCT uei) AS seed_ct
@@ -386,13 +408,12 @@ fo AS (
 SELECT c.uei, c.lane_hits, c.wt, so.subout_5y, so.last_sub, b.prime_obl_60mo
 FROM cand c
 JOIN gtm_entity_behavior_rollup b USING(uei)
-JOIN sub_out so ON so.prime_uei = c.uei
+{subout_join} sub_out so ON so.prime_uei = c.uei
 LEFT JOIN fo ON fo.uei = c.uei
 {shape_join}
 WHERE b.prime_obl_60mo >= {float(dials["market_prime_floor"])}
-  AND (so.last_sub >= current_date - INTERVAL {int(dials["recency_months"])} MONTH
-       OR COALESCE(fo.fo_amt, 0) > 0)
-ORDER BY c.wt DESC, so.subout_5y DESC, c.lane_hits DESC, c.uei
+  {subout_where}
+ORDER BY c.wt DESC, so.subout_5y DESC NULLS LAST, c.lane_hits DESC, c.uei
 LIMIT {fetch}"""
 
 
@@ -932,7 +953,6 @@ async def _build_dossier(uei: str, dials: dict[str, Any],
         # ceiling) so the TRUE market total is exact - the display list is
         # capped by market_size, the COUNT never is (operator ruling
         # 2026-07-20: guarantees are priced against the real number).
-        _MARKET_FETCH_CEILING = 25_000
         market_rows = await run(
             "market", sql_market(uei, seeds, top_naics, top_psc, dials,
                                  shape_naics=shape_naics),
