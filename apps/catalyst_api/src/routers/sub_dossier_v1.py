@@ -925,14 +925,21 @@ async def _build_dossier(uei: str, dials: dict[str, Any],
                             artifact, archetype, prime_business)
 
         # ---- market composition [F2, F9] ---------------------------------
+        # Fetch ALL gate-passing candidates (bounded only by the honesty
+        # ceiling) so the TRUE market total is exact - the display list is
+        # capped by market_size, the COUNT never is (operator ruling
+        # 2026-07-20: guarantees are priced against the real number).
+        _MARKET_FETCH_CEILING = 25_000
         market_rows = await run(
             "market", sql_market(uei, seeds, top_naics, top_psc, dials,
                                  shape_naics=shape_naics),
-            dials["market_size"] * 2)
+            _MARKET_FETCH_CEILING)
         market_ueis_raw = [r["uei"] for r in market_rows if r.get("uei")]
 
         market: list[dict[str, Any]] = []
         market_reason: str | None = None
+        market_total = 0
+        market_total_capped = False
         if market_ueis_raw:
             hyd = {r["uei"]: r for r in await run(
                 "market_hydrate", sql_market_hydrate(market_ueis_raw),
@@ -945,6 +952,7 @@ async def _build_dossier(uei: str, dials: dict[str, Any],
 
             seen_families: set[str] = set()
             kept: list[dict[str, Any]] = []
+            market_total = 0                       # exact post-trim total
             for r in market_rows:
                 mu = r["uei"]
                 h = hyd.get(mu, {})
@@ -957,10 +965,11 @@ async def _build_dossier(uei: str, dials: dict[str, Any],
                 if fam in seen_families:
                     continue                       # [F3] one row per family
                 seen_families.add(fam)
-                kept.append({**r, **h, "family_key": fam})
-                if len(kept) >= dials["market_size"]:
-                    break
+                market_total += 1
+                if len(kept) < dials["market_size"]:
+                    kept.append({**r, **h, "family_key": fam})
 
+            market_total_capped = len(market_rows) >= _MARKET_FETCH_CEILING
             market_final_ueis = [r["uei"] for r in kept]
             if market_final_ueis:
                 fo = {r["uei"]: r for r in await run(
@@ -1185,7 +1194,9 @@ async def _build_dossier(uei: str, dials: dict[str, Any],
                         if competitors else None,
                         closing_reason, target_family, method_base,
                         _below_floor(market, competitors, dials), artifact,
-                        archetype, prime_business)
+                        archetype, prime_business,
+                        market_total=market_total,
+                        market_total_capped=market_total_capped)
 
 
 def _months_ago_iso(months: int) -> str:
@@ -1227,7 +1238,8 @@ def _payload(uei: str, ident: dict[str, Any], in_band: bool, band_prime: float,
              closing_reason: str | None, target_family: str,
              method: dict[str, Any], sections_below_floor: list[str],
              artifact: str | None, archetype: str = "sub",
-             prime_business: dict[str, Any] | None = None) -> dict[str, Any]:
+             prime_business: dict[str, Any] | None = None,
+             market_total: int = 0, market_total_capped: bool = False) -> dict[str, Any]:
     method = dict(method)
     method["sections_below_floor"] = sections_below_floor
     return {
@@ -1250,7 +1262,9 @@ def _payload(uei: str, ident: dict[str, Any], in_band: bool, band_prime: float,
         "prime_business": prime_business,
         "reality": reality,
         "seed_primes": seed_payload,
-        "market": {"reason": market_reason, "primes": market or []},
+        "market": {"reason": market_reason, "primes": market or [],
+                   "total": market_total, "shown": len(market or []),
+                   "total_capped": market_total_capped},
         "closing": {
             "reason": closing_reason,
             "competitors": (closing or {}).get("competitors", []),
