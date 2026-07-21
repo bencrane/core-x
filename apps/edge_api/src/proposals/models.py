@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 # ── Default Success Fee schedule — the fallback when a template carries none. Per-template
-# schedules (business.global_engagement_content.success_fee_schedule) override this; it is the seed only.
+# schedules (business.global_agreement_content.success_fee_schedule) override this; it is the seed only.
 SUCCESS_FEE_TIERS: list[dict[str, str]] = [
     {"tier": "First $1,000,000 of Enterprise Value", "rate": "5.0%"},
     {"tier": "Second $1,000,000 of Enterprise Value", "rate": "4.0%"},
@@ -27,7 +27,7 @@ DEFAULT_BILLING_CADENCE = "upfront_in_full"
 
 # The exec-summary blurb shown on the engagement page when the resolved template carries no
 # ``exec_summary`` of its own (NULL column, unpublished template, or registry lookup failure).
-# Per-template copy (``business.global_engagement_content.exec_summary``) overrides this; it is the
+# Per-template copy (``business.global_agreement_content.exec_summary``) overrides this; it is the
 # built-in floor so the public projection is never empty.
 DEFAULT_EXEC_SUMMARY = (
     "Rare Structure originates and structures off-market deal flow against your investment "
@@ -66,7 +66,7 @@ class ProposalCreate(BaseModel):
     """The intake-form contract a platform-app BFF POSTs to mint a proposal.
 
     Pricing is dynamic-with-defaults: every field below may be omitted, in which case it INHERITS
-    the selected template's default (``business.global_engagement_content``). The proposal stores the
+    the selected template's default (``business.global_agreement_content``). The proposal stores the
     resolved actuals; the operator can still override any of them per deal. ``total`` is never sent
     or stored — it derives from ``monthly_fee × duration``.
     """

@@ -48,8 +48,8 @@ from .src.routers.agreements_v1 import router as agreements_router
 from .src.routers.internal_deals_v1 import router as internal_deals_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
-from .src.routers.engagement_templates_v1 import router as engagement_templates_router
-from .src.routers.internal_engagement_templates_v1 import router as internal_engagement_templates_router
+from .src.routers.archetype_versions_v1 import router as archetype_versions_router
+from .src.routers.internal_archetype_versions_v1 import router as internal_archetype_versions_router
 from .src.routers.company_profiles_v1 import router as company_profiles_router
 from .src.routers.clay_find_companies_v1 import router as clay_find_companies_router
 from .src.routers.clay_enrich_companies_v1 import router as clay_enrich_companies_router
@@ -326,7 +326,7 @@ app.include_router(document_payments_router)
 
 # proposal-templates: the authoring surface (markdown → branded HTML → DocRaptor preview → publish).
 # Service-token gated; the BFF brokers it with the operator session. Markdown source lives in
-# Postgres (business.global_engagement_content); preview PDFs are stashed in R2.
+# Postgres (business.global_agreement_content); preview PDFs are stashed in R2.
 app.include_router(proposal_templates_router)
 
 # bookings: the operator Pipeline list — recent cal.com bookings from corex.bookings.
@@ -372,18 +372,19 @@ app.include_router(documenso_template_fields_router)
 # Service-token gated.
 app.include_router(documenso_envelopes_router)
 
-# engagement-templates: the Settings "Engagement Templates" render surface — STANDALONE from the
-# engagement-doc pathway. Lists selectable (brand, path, archetype, version) from the repo-resident
-# content tree and renders one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned
-# URL. Does NOT touch Documenso (the operator affixes fields in the editor by hand). Service-token gated.
-app.include_router(engagement_templates_router)
+# archetype-versions: the operator render surface — STANDALONE from the agreement-document pathway.
+# Lists selectable (brand, path, archetype, version) from the repo-resident content tree and renders
+# one to a clean PDF (plain style by default) via DocRaptor → R2 → presigned URL. Does NOT touch
+# Documenso (the operator affixes fields in the editor by hand). Service-token gated. (Route path
+# /api/v1/engagement-templates is unchanged — a separate cross-repo contract cycle owns that rename.)
+app.include_router(archetype_versions_router)
 
-# engagement-templates (internal): the render+PUSH lane. The engagement-template-push Trigger.dev task
+# archetype-versions (internal): the render+PUSH lane. The engagement-template-push Trigger.dev task
 # calls /internal/engagement-templates/render-push to resolve a content source (a
 # business.global_input_content registry row, or an explicit brand/path/archetype/version), render it
 # via DocRaptor, and create the Documenso TEMPLATE — recording a terminal row in
-# ops.engagement_template_push_runs. Trigger-secret gated, same /internal contract as the others.
-app.include_router(internal_engagement_templates_router, prefix="/internal")
+# ops.global_agreement_archetype_version_push_runs. Trigger-secret gated, same /internal contract.
+app.include_router(internal_archetype_versions_router, prefix="/internal")
 
 # company-profiles: the Dossier's "Save Profile" — append-only snapshots of the verified dossier
 # (business.company_profile_snapshots). Service-token gated; the BFF brokers it with the operator
@@ -412,7 +413,7 @@ app.include_router(title_enrichment_router)
 # Normalization into corex.bookings is a separate later step (wired against the real captured payload).
 app.include_router(webhooks_cal_router)
 
-# stripe webhook: authoritative ACH payment-state advance + append-only audit (business.engagement_events).
+# stripe webhook: authoritative ACH payment-state advance + append-only audit (business.document_payments).
 # Signature-gated (Stripe-Signature / STRIPE_WEBHOOK_SECRET). NOT under /api/v1 — Stripe posts /webhooks/stripe.
 app.include_router(webhooks_stripe_router)
 
@@ -453,14 +454,14 @@ def _info() -> dict:
             "combo_job_to_be_done": True,  # /api/v1/combo-job-to-be-done/land (combo-grain 'to: …' job sentences, UPSERT)
             "epd_lec_status": True,       # /api/v1/epd-lec-status/{land,check,stats}
             "proposal_templates": True,  # /api/v1/proposal-templates/* (authoring, preview, publish)
-            "engagement_templates": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
+            "archetype_versions": True,  # /api/v1/engagement-templates (list + render → presigned PDF)
             "bookings": True,          # /api/v1/bookings (operator Pipeline list — corex.bookings)
             "map_ask": True,           # /api/v1/map/{dataset}/ask (NL → emit_filter → catalyst EXECUTE → GeoJSON)
             "title_normalize": True,   # /api/v1/titles/normalize (raw title → forced-tool → {level, function})
             "title_enrichment": True,  # /api/v1/title-enrichment/{land,check,stats} (enriched title → gtm.title_enrichment)
             "cal_webhook": True,       # /webhooks/cal (cal.com RAW capture → public.cal_raw_events)
             "document_payments": True, # /api/v1/documenso/{payment-intent,payment}/{opp}/{doc} (Stripe ACH)
-            "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → engagement_events + paid)
+            "stripe_webhook": True,    # /webhooks/stripe (ACH payment_intent.* → document_payments + paid)
             "close_webhook": True,     # /webhooks/close (Close call events RAW capture → business.close_webhook_events)
             "close_active_call": True, # /api/v1/close/active-call (offline "now dialing" derivation, not operator-scoped)
             "operator_settings": True, # /api/v1/operator-settings/{auth_user_id} (render_mode + lane)

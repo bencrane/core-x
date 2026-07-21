@@ -1,13 +1,13 @@
 """Stripe webhook — authoritative ACH payment-state advance + append-only audit.
 
-  POST /webhooks/stripe   Stripe-Signature — payment_intent lifecycle for engagement ACH debits
+  POST /webhooks/stripe   Stripe-Signature — payment_intent lifecycle for document ACH debits
 
 Mirrors the cal.com webhook discipline:
   1. Verify the signature (400 on bad/missing; 503 if STRIPE_WEBHOOK_SECRET is unset — never accept
      an unverified event).
-  2. Append the verbatim event to ``business.engagement_events`` (idempotent on the Stripe event id) —
-     the audit trail, and the redelivery guard.
-  3. Advance ``payment_status`` on the engagement row (monotonic; 'succeeded' is terminal).
+  2. Append the verbatim event to the ``business.document_payments`` event ledger (idempotent on the
+     Stripe event id) — the audit trail, and the redelivery guard.
+  3. Advance ``payment_status`` on the document_payments row (monotonic; 'succeeded' is terminal).
 
 ACH settles asynchronously, so this — NOT the browser confirm result — is the only thing that sets
 'paid'. A normalization failure never loses the event: the ledger row is committed first.

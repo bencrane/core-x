@@ -1,9 +1,9 @@
--- Document payments — the direct-to-documenso engagement-fee collection (Stripe ACH).
+-- Document payments — the direct-to-documenso agreement-fee collection (Stripe ACH).
 --
 -- Keyed by the Documenso numeric ``document_id`` (the unique pin per signed document). The 8-char
 -- ``opportunity_id`` handle is carried alongside so the (opportunity, document) PAIR — the same pair
 -- the prospect signing link uses — gates every read/write. This is a STANDALONE payment record: it
--- has no relationship to the legacy proposal-``ref`` payment path (engagement_payments) — the
+-- has no relationship to the legacy proposal-``ref`` payment path (removed: was engagement_payments) — the
 -- direct-to-documenso flow has no proposal row.
 --
 -- The charge amount is resolved server-side from ``opportunity_specific_content.field_values

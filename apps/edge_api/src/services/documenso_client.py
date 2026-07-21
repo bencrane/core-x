@@ -118,7 +118,7 @@ def _extract_signer_token(body: Any) -> str | None:
     Unlike ``_extract_client_token``, there is no caller-supplied email to match on: a document
     instantiated from a template via ``/envelope/use`` (recipients omitted) carries the template's
     own recipients, whose email may be blank. Select by role (``SIGNER``), falling back to the first
-    recipient — correct for the single-signer engagement template.
+    recipient — correct for the single-signer archetype version.
     """
     env = _dig(body, "envelope", "document", "data") or body
     recips = _dig(env, "recipients", "Recipient") or []
@@ -475,7 +475,7 @@ async def create_template_from_pdf(
 
     POST /api/v2/envelope/create (multipart: ``payload`` JSON + the PDF file) with ``type=TEMPLATE``,
     then GET /api/v2/envelope/{id} to read the placeholder recipients back. Field placement is NOT
-    done here — the engagement-template HTML is a static, blank body, so signature/value fields are
+    done here — the archetype-version HTML is a static, blank body, so signature/value fields are
     affixed in the Documenso editor afterward (or, for an anchor-bearing body, via a follow-up
     field/create-many). Raises ``DocumensoError`` on a non-2xx response or an unconfigured client.
     """
