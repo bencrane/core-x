@@ -279,6 +279,18 @@ MANIFEST: list[dict] = [
     {"ds": "txn_events_combo", "tier": "C", "dest": "gtm_entity_fy_won",
      "sort": ["uei", "fy"],
      "from_table": "txn_events_combo", "entity_fy_won": True, "aggregate": True},
+    # capitalization-triggers cycle (2026-07-21, sidecar-gaps Mode 2 —
+    # SIDECAR_GAP_REPORT_2026-07-21-capitalization-triggers.md entries 2+3):
+    # entity-grain trailing-window FLOW — the velocity/transition complement to
+    # gtm_entity_pricing_mix's active STOCK. recent-24mo vs prior-24mo obligation
+    # split by pricing class (the FFP->cost/T&M transition, a 2.8s combo scan
+    # made ms-class) + SCA/DBA labor-covered exposure (entry 3, was 0.8-3.1s) +
+    # financing / new-award / buyer-geo-breadth adjacency riders on the SAME
+    # scan. Windows anchored to max(action_date) (FPDS-lag watermark). Local off
+    # txn_events_combo (pure GROUP BY, no join). Aggregate parity.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "gtm_entity_pricing_flow",
+     "sort": ["uei"],
+     "from_table": "txn_events_combo", "pricing_flow": True, "aggregate": True},
     # award-grain sub-out rollup: joins the fact/award_state on award key —
     # "is this combo/geo/agency getting subbed out more or less".
     {"ds": "usaspending_subaward_canonical", "tier": "C", "dest": "award_subout_rollup",
@@ -1245,6 +1257,93 @@ GROUP BY 1, 2
 ORDER BY uei, fy
 """
 
+
+def _entity_pricing_flow_sql(e12: str, e24: str, e48: str) -> str:
+    """capitalization-triggers cycle (2026-07-21, sidecar-gaps Mode 2 —
+    SIDECAR_GAP_REPORT_2026-07-21-capitalization-triggers.md entries 2+3): the
+    entity-grain trailing-window FLOW — recent-24mo vs prior-24mo obligations
+    split by pricing class — the velocity/transition complement to
+    gtm_entity_pricing_mix's active STOCK. Detects the FFP -> cost/T&M contract-
+    type shift (entry 2, a 2.8s combo scan made ms-class) and carries SCA/DBA
+    labor-covered exposure (entry 3, was 0.8-3.1s) + financing / new-award /
+    buyer-geo-breadth riders on the SAME scan (adjacency sweep). Class map
+    identical to _ENTITY_PRICING_MIX_SQL (fixed A,B,J,K,L,M; cost R,S,T,U,V;
+    tm_lh Y,Z; else other); unfinanced = financing NULL/Z/NOT APPLICABLE;
+    labor-covered = labor_standards_code='Y'; new-award = action_type_code IS
+    NULL (FPDS base row). Windows anchored to max(action_date) — the FPDS-lag
+    watermark, NOT current_date — computed by the dispatch branch and inlined as
+    DATE literals so the plan is a single pure GROUP BY (no join / cross-product,
+    EXPLAIN-clean by construction). Share numerators coalesce to 0 (0.0 = window
+    had activity, none of that class; NULL = no activity in the window). Reducing
+    GROUP BY -> aggregate parity. 48-month prune: firms dark >48mo carry no
+    recent-flow signal and are legitimately absent."""
+    return f"""
+CREATE TABLE gtm_entity_pricing_flow AS
+WITH ev AS (
+    SELECT uei,
+           action_date,
+           obligation AS obl,
+           CASE WHEN pricing_code IN ('A','B','J','K','L','M') THEN 'fixed'
+                WHEN pricing_code IN ('R','S','T','U','V')     THEN 'cost'
+                WHEN pricing_code IN ('Y','Z')                 THEN 'tm_lh'
+                ELSE 'other' END                               AS pricing_class,
+           (financing_code IS NULL
+            OR financing_code IN ('Z','NOT APPLICABLE'))       AS is_unfinanced,
+           (labor_standards_code = 'Y')                        AS is_labor_covered,
+           (action_type_code IS NULL)                          AS is_new_award,
+           (co_business_size = 'S')                            AS is_small_co,
+           (action_date >  DATE '{e24}')                                   AS r24,
+           (action_date <= DATE '{e24}' AND action_date > DATE '{e48}')    AS p24,
+           (action_date >  DATE '{e12}')                                   AS r12,
+           awarding_agency_code,
+           pop_state
+    FROM txn_events_combo
+    WHERE uei IS NOT NULL AND uei <> ''
+      AND action_date IS NOT NULL AND action_date > DATE '{e48}'
+)
+SELECT uei,
+       coalesce(sum(obl) FILTER (WHERE r24), 0)                            AS obl_total_recent24,
+       coalesce(sum(obl) FILTER (WHERE p24), 0)                            AS obl_total_prior24,
+       coalesce(sum(obl) FILTER (WHERE r12), 0)                            AS obl_total_recent12,
+       count(*)          FILTER (WHERE r24)                                AS action_ct_recent24,
+       count(*)          FILTER (WHERE p24)                                AS action_ct_prior24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='fixed'), 0)  AS obl_fixed_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='cost'),  0)  AS obl_cost_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='tm_lh'), 0)  AS obl_tm_lh_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='other'), 0)  AS obl_other_recent24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class='fixed'), 0)  AS obl_fixed_prior24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class='cost'),  0)  AS obl_cost_prior24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class='tm_lh'), 0)  AS obl_tm_lh_prior24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class='other'), 0)  AS obl_other_prior24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='cost'), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS cost_share_recent24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class='cost'), 0)
+           / NULLIF(sum(obl) FILTER (WHERE p24), 0)                        AS cost_share_prior24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class IN ('cost','tm_lh')), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS cost_tm_share_recent24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND pricing_class IN ('cost','tm_lh')), 0)
+           / NULLIF(sum(obl) FILTER (WHERE p24), 0)                        AS cost_tm_share_prior24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND pricing_class='fixed'), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS fixed_share_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_labor_covered), 0)       AS obl_labor_covered_recent24,
+       coalesce(sum(obl) FILTER (WHERE p24 AND is_labor_covered), 0)       AS obl_labor_covered_prior24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_labor_covered), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS labor_covered_share_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_unfinanced), 0)          AS obl_unfinanced_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_unfinanced), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS unfinanced_share_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_new_award), 0)           AS obl_new_award_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_new_award), 0)
+           / NULLIF(sum(obl) FILTER (WHERE r24), 0)                        AS new_award_share_recent24,
+       count(DISTINCT awarding_agency_code) FILTER (WHERE r24)             AS n_agencies_recent24,
+       count(DISTINCT pop_state)            FILTER (WHERE r24)             AS n_states_recent24,
+       coalesce(sum(obl) FILTER (WHERE r24 AND is_small_co), 0)            AS obl_small_co_recent24
+FROM ev
+GROUP BY uei
+ORDER BY uei
+"""
+
+
 # market-composition cycle (2026-07-17): entity-grain award book. Doctrine
 # encoded once: active = days_to_expiry > 0 AND NOT terminated; committed =
 # topology <> 'vehicle' (standalone + orders); every $ floored at 0 per award;
@@ -1828,6 +1927,17 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_ENTITY_PRICING_MIX_SQL)
         elif spec.get("entity_fy_won"):
             con.execute(_ENTITY_FY_WON_SQL)
+        elif spec.get("pricing_flow"):
+            # windows anchored to the data's max(action_date) watermark (FPDS
+            # publication lag — NOT current_date), computed here and inlined as
+            # DATE literals so the mart SQL is a single pure GROUP BY.
+            _b = con.execute(
+                "SELECT (max(action_date) - INTERVAL '12 months')::DATE, "
+                "(max(action_date) - INTERVAL '24 months')::DATE, "
+                "(max(action_date) - INTERVAL '48 months')::DATE FROM txn_events_combo"
+            ).fetchone()
+            con.execute(_entity_pricing_flow_sql(
+                _b[0].isoformat(), _b[1].isoformat(), _b[2].isoformat()))
         elif spec.get("construction_lane_months"):
             con.execute(_CONSTRUCTION_LANE_MONTHS_SQL)
         elif spec.get("entity_award_book"):
