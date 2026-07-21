@@ -1,0 +1,13 @@
+{
+  "government_contracted_prepaid_introductions_range": {
+    "slug": "government_contracted_prepaid_introductions_range",
+    "name": "Rare Structure (Government-Contracted) — Strategic Origination Agreement (Prepaid Introductions, Range) — v1 One-Page Body",
+    "archetype": "prepaid_introductions_range",
+    "document": "government_contracted_prepaid_introductions_range.html",
+    "stylesheets": {
+      "plain": "styles/plain.css",
+      "branded": "styles/branded.css"
+    },
+    "plain": true
+  }
+}
