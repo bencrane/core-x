@@ -1,7 +1,7 @@
 """Archetype-version render — the operator render surface → Send to DocRaptor.
 
-  GET  /api/v1/engagement-templates           service-token  selectable (path, archetype, version)
-  POST /api/v1/engagement-templates/render    service-token  render plain (default) -> R2 -> presigned PDF URL
+  GET  /api/v1/archetype-versions           service-token  selectable (path, archetype, version)
+  POST /api/v1/archetype-versions/render    service-token  render plain (default) -> R2 -> presigned PDF URL
 
 STANDALONE from the agreement-document pathway: its own catalog/assembly/DocRaptor/R2, and NO Documenso.
 The operator picks a template, clicks render, and gets a short-lived PDF link; affixing Documenso
@@ -30,7 +30,7 @@ from ..services import documenso_client
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/engagement-templates", tags=["engagement-templates"])
+router = APIRouter(prefix="/api/v1/archetype-versions", tags=["archetype-versions"])
 
 _PDF_TTL_SECONDS = 3600
 

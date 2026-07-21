@@ -4,7 +4,7 @@
 
 Called by the ``cal-book`` Trigger.dev task (one run per completed Close booking activity) via
 ``callHqx``. Gated by ``require_trigger_secret`` (TRIGGER_SHARED_SECRET) — the same ``/internal/*``
-contract the deal-materialize + engagement-template-push tasks use.
+contract the deal-materialize + archetype-version-push tasks use.
 
 Idempotent + double-book-safe: the ``ops.cal_booking_runs`` ledger is CLAIMED on
 ``close_activity_id`` BEFORE the cal.com call (INSERT … ON CONFLICT DO NOTHING). A duplicate delivery
