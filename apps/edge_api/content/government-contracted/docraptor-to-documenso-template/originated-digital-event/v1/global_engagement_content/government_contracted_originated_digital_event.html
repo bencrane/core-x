@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<!--
+  RARE STRUCTURE — Government-Contracted brand — Strategic Origination Agreement (ORIGINATED
+  DIGITAL EVENT). ARCHETYPE digital_event, VERSION v1. The operator executes as Rare Structure LLC
+  ("Principal"); the counterparty is the "Participant" (sides ruling 2026-07-21).
+
+  ONE-PAGE BODY BY DESIGN: the entire agreement body lives on page 1; the execution block is page 2
+  (.sig-wrap page-break-before: always). Same underscore-blank / field-prefill doctrine as
+  prepaid-introductions-range v1: NO handlebar tokens, NO declared inputs. Every dynamic value is a
+  plain underscore blank, DEFINED ONCE under a capitalized term. The operator drops a Documenso
+  TEXT field onto each blank in the template editor.
+
+  EVENT ECONOMICS (ruled 2026-07-21): SINGLE hosted live video conference per agreement. Attendance
+  is a MIN–MAX range; the Per-Attendee Price is defined at the MIN end (= Prepaid Event Fee /
+  Minimum Attendance). Settlement: prorated refund is the DEFAULT AND AUTOMATIC remedy =
+  max(0, Minimum Attendance - audited live attendees) x Per-Attendee Price; a Supplemental Event is
+  the EXCEPTION — the Participant may request one, granted (or not) at Principal's sole discretion,
+  displacing the refund only if granted and accepted. Delivery >= min settles in full; attendees
+  beyond min up to max are included at no charge; zero delivery refunds the full fee.
+  Event duration is FIXED TEXT in this version (60 minutes) — changing it is a new version, not a
+  variable (operator ruling).
+
+  DYNAMIC VALUE SLOTS — Documenso field labels in [brackets]; all four live in Section 2:
+    - Prepaid Event Fee     §2.1  [PrepaidFee]        the at-signing charge (machine-read FEE_KEYS)
+    - Minimum Attendance    §2.1  [MinAttendeesNum]   the guaranteed floor of the range
+    - Maximum Attendance    §2.1  [MaxAttendeesNum]   the declarative ceiling (no charge logic)
+    - Per-Attendee Price    §2.1  [AttendeePriceMin]  derived = PrepaidFee / MinAttendeesNum;
+                                                      operator supplies the derived figure at
+                                                      prefill — Documenso does no arithmetic
+
+  SIGNER BLANKS — Effective Date, Participant entity [Legal Entity Name] / d/b/a [D/B/A Name], and
+  the Participant sig-block Name [Full Name] / Title [Title] / Date lines — plain underscore runs;
+  fields are dropped in the Documenso editor. Principal side is pre-set inline (Benjamin J. Crane /
+  Managing Director).
+
+  The <head> stylesheet slot (plain | branded per manifest.json) is injected at render time.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Strategic Origination Agreement</title>
+<style>__STYLESHEET__</style>
+</head>
+<body>
+  <h1>Strategic Origination Agreement</h1>
+  <hr class="rule" />
+
+  <p class="lead">This Strategic Origination Agreement (the &ldquo;Agreement&rdquo;) is entered into and
+  made effective as of ____________________ (the &ldquo;Effective Date&rdquo;), by and between
+  Rare Structure LLC (&ldquo;Principal&rdquo;), and ____________________________________________________
+  (d/b/a ____________________________) (&ldquo;Participant&rdquo;).</p>
+
+  <h2>1. The Event</h2>
+  <p><strong>1.1 Originated Digital Event.</strong> Principal shall source the audience for, host, and
+  deliver one live video conference of up to sixty (60) minutes (the &ldquo;Event&rdquo;) on
+  Participant&rsquo;s behalf, on a hosting platform provided by Principal. Principal retains sole
+  discretion over its sourcing methods and networks, bears its own costs, and owes no reporting on its
+  internal logic; Principal is a data-routing and event-facilitation service &mdash; not a broker,
+  agency, or advisor &mdash; and makes no representation regarding any attendee.</p>
+  <p><strong>1.2 Audience.</strong> Participant may submit targeting preferences, which Principal
+  synthesizes at its sole discretion to assemble the Event audience. No personally identifying
+  attendee information is provided before the Event.</p>
+
+  <h2>2. Commercial Terms</h2>
+  <p><strong>2.1 Prepaid Event Fee &amp; Attendance Range.</strong> Participant shall pay an upfront fee
+  of ____________________ (the &ldquo;Prepaid Event Fee&rdquo;), due in full upon execution of this
+  Agreement. The Prepaid Event Fee secures the Event with no fewer than ________ live attendees (the
+  &ldquo;Minimum Attendance&rdquo;) and up to ________ live attendees (the &ldquo;Maximum
+  Attendance&rdquo;), establishing a unit price of ____________ per attendee (the &ldquo;Per-Attendee
+  Price&rdquo;, equal to the Prepaid Event Fee divided by the Minimum Attendance). Attendees beyond the
+  Minimum Attendance, up to the Maximum Attendance, are included at no additional charge.</p>
+  <p><strong>2.2 Scheduling.</strong> The parties shall select the Event date within thirty (30) days of
+  the Effective Date, with the Event held no earlier than thirty (30) days after selection and no later
+  than ninety (90) days after the Effective Date. Principal has no obligation to commence until the
+  Prepaid Event Fee has irrevocably cleared.</p>
+  <p><strong>2.3 Attendance Settlement.</strong> Live attendance is audited by a count taken five (5)
+  minutes after the Event&rsquo;s scheduled start. If audited attendance is below the Minimum
+  Attendance, Principal shall refund Participant the shortfall below the Minimum Attendance multiplied
+  by the Per-Attendee Price. Attendance at or above the Minimum Attendance settles the Event in full.
+  Participant may request a supplemental event in lieu of the refund; granting one is at
+  Principal&rsquo;s sole discretion, and only a granted and accepted supplemental event displaces the
+  refund.</p>
+  <p><strong>2.4 Attendee Roster.</strong> Within ninety-six (96) hours after the Event, Principal shall
+  deliver a roster of attendees who consented to be identified to Participant.</p>
+
+  <h2>3. General</h2>
+  <p><strong>3.1</strong> Each party shall keep the other&rsquo;s proprietary information strictly
+  confidential. This Agreement is governed by New York law; disputes are resolved by binding arbitration
+  in New York, NY under AAA rules, with attorneys&rsquo; fees to the prevailing party. This is the entire
+  agreement between the parties, amendable only in a writing signed by both. Each signatory below
+  represents due authority to bind the party for which they sign. Participant shall indemnify Principal
+  against claims arising from good-faith outreach executed on Participant&rsquo;s behalf hereunder.</p>
+
+  <!-- Execution block — page 2 via page-break-before: always. Principal pre-set; Participant blanks get
+       Documenso fields ([Full Name], [Title], signature/date) in the editor. -->
+  <div class="sig-wrap">
+    <table class="sig-grid"><tr>
+      <td>
+        <div class="sig-party">Principal</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> <span class="val">Benjamin J. Crane</span></div>
+        <div class="sig-field"><span class="lab">Title:</span> <span class="val">Managing Director</span></div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+      <td>
+        <div class="sig-party">Participant</div>
+        <div class="sig-entity"></div>
+        <div class="sig-line"></div>
+        <div class="sig-field"><span class="lab">Name:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Title:</span> ________________________</div>
+        <div class="sig-field"><span class="lab">Date:</span> ________________________</div>
+      </td>
+    </tr></table>
+  </div>
+</body>
+</html>
