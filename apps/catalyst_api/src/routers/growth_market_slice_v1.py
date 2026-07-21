@@ -242,14 +242,42 @@ def _rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(zip(cols, r)) for r in payload.get("rows") or []]
 
 
+# One grouped statement: every lane's at-rest summary (recent-12 from the
+# watermark) — the wall's card fronts carry numbers, never just description.
+_CATALOG_SQL = f"""
+WITH edge AS (SELECT max(month) AS mx FROM {MART}),
+w AS (
+  SELECT lane, uei, sum(obligation_sum) AS recent,
+         sum(new_award_obligation_sum) AS recent_new
+  FROM {MART}
+  WHERE month > (SELECT mx FROM edge) - INTERVAL '12 months'
+  GROUP BY 1, 2
+)
+SELECT lane,
+       (SELECT mx FROM edge)                                      AS watermark,
+       count(*) FILTER (WHERE recent > 0)                         AS firms,
+       round(coalesce(sum(recent), 0), 0)                         AS recent_usd,
+       round(coalesce(median(recent) FILTER (WHERE recent > 0), 0), 0) AS median_firm_usd,
+       round(100.0 * sum(recent_new) / nullif(sum(recent), 0), 1) AS new_work_pct
+FROM w GROUP BY 1"""
+
+
 @router.get("/catalog", dependencies=[Depends(require_service_token)])
 async def catalog() -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        wm = await _run_sidecar(client, f"SELECT max(month) AS watermark FROM {MART}", limit=1)
+        payload = await _run_sidecar(client, _CATALOG_SQL, limit=20)
+    stats = {r["lane"]: r for r in _rows(payload)}
+    watermark = next(iter(stats.values()), {}).get("watermark")
     return {
-        "cards": [{"lane": lane, **meta} for lane, meta in LANES.items()],
-        "watermark": _row(wm).get("watermark"),
+        "cards": [
+            {"lane": lane, **meta,
+             "summary": {k: stats.get(lane, {}).get(k)
+                         for k in ("firms", "recent_usd", "median_firm_usd", "new_work_pct")}}
+            for lane, meta in LANES.items()
+        ],
+        "watermark": watermark,
         "disclosures": _DISCLOSURES,
+        "artifact": payload.get("artifact"),
     }
 
 

@@ -94,3 +94,9 @@ def test_count_is_firms_only() -> None:
     sql = build_count_sql(LANE, parse_growth({"growth": {"multiple": 2}}), None)
     assert sql.strip().endswith("SELECT count(*) AS firms FROM m")
     assert "median" not in sql
+
+
+def test_catalog_sql_is_watermark_anchored_and_lane_grouped() -> None:
+    from apps.catalyst_api.src.routers.growth_market_slice_v1 import _CATALOG_SQL
+    assert "max(month)" in _CATALOG_SQL and "current_date" not in _CATALOG_SQL
+    assert "GROUP BY 1" in _CATALOG_SQL and "median" in _CATALOG_SQL
