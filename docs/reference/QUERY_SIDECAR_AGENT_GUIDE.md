@@ -149,6 +149,7 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `entity_hierarchy` | 1/uei · 148,766 | uei | SAM parent hierarchy: immediate + **ultimate** parent uei/name, hierarchy_depth, in_cycle. THE family disambiguator for shared-domain/slug resolution and the rollup dimension for family analysis |
 | `bridge_dsbs_pdl_linkedin` | 1/uei · 53k | uei | DSBS→PDL/LinkedIn resolution (best_domain + matched pdl id + company_linkedin_url) |
 | `dsbs_poc_linkedin` · `exa_person_linkedin_candidates` | 821 · 33k | uei | Person-side LinkedIn resolution candidates (raw JSON excluded) |
+| `us_software_companies` | 1/domain · 173,119 | domain | **US software/SaaS commercial universe** (2026-07-20 compliance-friction cycle). "Is this domain a commercial software vendor" as a warm join — 27 firmographic cols: company_name, `industry` (Software Development / IT Services / Technology-Internet dominant), employee_size_range, founded, total_funding_range, annual_revenue_clay/hubspot, specialties, description, linkedin_url, slug, `country` (~94% US). **Federal bridge: `JOIN gtm_sam_entities s ON s.normalized_domain = us_software_companies.domain`** (uei↔domain; ~73% of registrants resolve a domain) — commercial-software ∩ federal-behavior is ONE native join (measured 162 ms; was a Lance+Python cross-system hand-join). ~6% non-US present — add `country='United States'` when the population must be US-only |
 
 ### Debt / UCC layer (CA + CO; SAM∩UCC via the SoS crosswalk hub)
 | Table | Grain · rows | Sorted | Semantics |
@@ -622,6 +623,26 @@ SELECT site_name, component, state_code
 FROM military_installations
 WHERE country = 'USA' AND operational_status = 'act'
   AND abs(latitude - 32.72) < 0.36 AND abs(longitude - (-117.16)) < 0.44;
+
+### Commercial-software membership (2026-07-20 compliance-friction cycle)
+
+**(n) "Is this federal entity a commercial software vendor" — native, no Lance hand-join.**
+`us_software_companies` is the 173k-domain US software/SaaS universe; bridge to any federal
+population through `gtm_sam_entities.normalized_domain`. This replaces the sidecar→Lance→Python
+cross-system intersect used across the SBIR/GWAC/compliance analyses (measured 162 ms warm):
+
+```sql
+-- commercial-software vendors newly subbing under Tier-1 primes, with POC (SecurityPal shape)
+SELECT g.sub_uei, g.sub_name, u.domain, u.employee_size_range, g.n_teaming_primes, g.poc_full_name
+FROM govcon_subawardee_profiles g
+JOIN gtm_sam_entities s     ON s.uei = g.sub_uei
+JOIN us_software_companies u ON u.domain = s.normalized_domain   -- the membership test
+WHERE g.n_teaming_primes >= 3 AND g.poc_available
+  AND g.teaming_last_action_date >= DATE '2024-01-20';
+-- domain resolves for ~73% of registrants (gtm_sam_entities.normalized_domain coverage) —
+-- the join is a FLOOR on true membership; disclose it. ~6% of the universe is non-US
+-- (add u.country='United States' to force US-only).
+```
 
 ## 5. Performance model
 

@@ -447,6 +447,16 @@ MANIFEST: list[dict] = [
     {"ds": "military_installations_lance", "tier": "D",
      "dest": "military_installations", "sort": ["state_code"]},
     {"ds": "firmographics_blitz", "tier": "D", "sort": ["domain_norm"]},
+    # compliance-friction cycle (2026-07-20): the US software/SaaS commercial
+    # universe (173,119 domains, natural PK; landed s3://.../us_software_companies).
+    # The warm "is this a commercial software vendor" membership set. Demand:
+    # three consecutive analyses this session hand-joined it out of Lance
+    # (SIDECAR_GAP_REPORT_2026-07-20 sbir-phase3-crossover, gwac-vehicle-crosswalk,
+    # compliance-friction-securitypal). Domain-keyed → joins
+    # gtm_sam_entities.normalized_domain (the uei↔domain bridge, already warm), so
+    # "commercial-software ∩ federal-behavior" is a native join instead of a
+    # three-system hand-join. Generic copy, exact parity.
+    {"ds": "us_software_companies", "tier": "D", "sort": ["domain"]},
     # ── gap-pass-4: identity/enrichment coverage layer ────────────────────────
     # Demand: SIDECAR_GAP_REPORT_2026-07-10-funding-tab-pdl-match (PDL bridge) +
     # operator-recorded next-questions (icypeas/LinkedIn coverage on the same
