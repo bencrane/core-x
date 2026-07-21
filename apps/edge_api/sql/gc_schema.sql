@@ -93,7 +93,7 @@ ON CONFLICT (archetype_id, ordinal) DO NOTHING;
 ALTER TABLE gc.global_agreement_archetype_variables
     ADD COLUMN IF NOT EXISTS template_required   boolean,
     ADD COLUMN IF NOT EXISTS template_read_only  boolean,
-    ADD COLUMN IF NOT EXISTS recipient           text CHECK (recipient IN ('operator', 'principal')),
+    ADD COLUMN IF NOT EXISTS recipient           text CHECK (recipient IN ('principal', 'participant')),
     ADD COLUMN IF NOT EXISTS paragraph_ordinal   int,
     ADD COLUMN IF NOT EXISTS updated_at          timestamptz NOT NULL DEFAULT now();
 
@@ -114,18 +114,56 @@ SELECT a.id, p.ordinal, p.heading, p.body
   FROM gc.global_agreement_archetypes a,
        (VALUES
             (1, 'Preamble',
-             'This Strategic Origination Agreement is entered into and made effective as of ________ (the “Effective Date”), by and between Rare Structure LLC (“Operator”), and ________________ (d/b/a ________________) (“Principal”).'),
+             'This Strategic Origination Agreement is entered into and made effective as of ________ (the “Effective Date”), by and between Rare Structure LLC (“Principal”), and ________________ (d/b/a ________________) (“Participant”).'),
             (2, '§2.1 Prepaid Range Allocation',
-             'Principal shall pay an upfront fee of ________ (the “Prepaid Fee”), due in full upon execution. The Prepaid Fee secures a dedicated allocation of no fewer than ____ Introductions (the “Introduction Minimum”) and up to ____ Introductions (the “Introduction Maximum”), establishing a unit price of ________ per Introduction (the “Per-Introduction Price”, equal to the Prepaid Fee divided by the Introduction Minimum).'),
+             'Participant shall pay an upfront fee of ________ (the “Prepaid Fee”), due in full upon execution. The Prepaid Fee secures a dedicated allocation of no fewer than ____ Introductions (the “Introduction Minimum”) and up to ____ Introductions (the “Introduction Maximum”), establishing a unit price of ________ per Introduction (the “Per-Introduction Price”, equal to the Prepaid Fee divided by the Introduction Minimum).'),
             (3, '§2.2 Primary Term',
              'The window for fulfilling the allocation (the “Primary Term”) shall span ____ days, commencing the first Monday following the later of the Effective Date and the date the Prepaid Fee irrevocably clears.'),
-            (4, 'Execution — Operator column',
-             'Operator signature block: signature line, Name: Benjamin J. Crane (pre-set), Title: Managing Director (pre-set), Date: ________.'),
-            (5, 'Execution — Principal column',
-             'Principal signature block: signature line, Name: ________, Title: ________, Date: ________.')
+            (4, 'Execution — Principal column',
+             'Principal signature block: signature line, Name: Benjamin J. Crane (pre-set), Title: Managing Director (pre-set), Date: ________.'),
+            (5, 'Execution — Participant column',
+             'Participant signature block: signature line, Name: ________, Title: ________, Date: ________.')
        ) AS p(ordinal, heading, body)
  WHERE a.key = 'prepaid_introductions_range'
 ON CONFLICT (archetype_id, ordinal) DO NOTHING;
+-- SIDES RENAME (ruled 2026-07-21): the operator signs as 'principal'; the counterparty is
+-- 'participant'. Constraint swap is drop+add (idempotent as a pair); the guarded value rename
+-- only fires while legacy 'operator' rows exist, so re-runs never double-flip.
+ALTER TABLE gc.global_agreement_archetype_variables
+    DROP CONSTRAINT IF EXISTS global_agreement_archetype_variables_recipient_check;
+UPDATE gc.global_agreement_archetype_variables SET recipient = 'participant'
+ WHERE recipient = 'principal'
+   AND EXISTS (SELECT 1 FROM gc.global_agreement_archetype_variables WHERE recipient = 'operator');
+UPDATE gc.global_agreement_archetype_variables SET recipient = 'principal' WHERE recipient = 'operator';
+ALTER TABLE gc.global_agreement_archetype_variables
+    ADD CONSTRAINT global_agreement_archetype_variables_recipient_check
+        CHECK (recipient IN ('principal', 'participant'));
+
+-- Converge pre-rename paragraph rows to the current nomenclature (exact-text set; idempotent).
+UPDATE gc.global_agreement_archetype_paragraphs p SET heading = n.heading, body = n.body
+  FROM (VALUES
+        (1, 'Preamble', 'This Strategic Origination Agreement is entered into and made effective as of ________ (the “Effective Date”), by and between Rare Structure LLC (“Principal”), and ________________ (d/b/a ________________) (“Participant”).'),
+        (2, '§2.1 Prepaid Range Allocation', 'Participant shall pay an upfront fee of ________ (the “Prepaid Fee”), due in full upon execution. The Prepaid Fee secures a dedicated allocation of no fewer than ____ Introductions (the “Introduction Minimum”) and up to ____ Introductions (the “Introduction Maximum”), establishing a unit price of ________ per Introduction (the “Per-Introduction Price”, equal to the Prepaid Fee divided by the Introduction Minimum).'),
+        (3, '§2.2 Primary Term', 'The window for fulfilling the allocation (the “Primary Term”) shall span ____ days, commencing the first Monday following the later of the Effective Date and the date the Prepaid Fee irrevocably clears.'),
+        (4, 'Execution — Principal column', 'Principal signature block: signature line, Name: Benjamin J. Crane (pre-set), Title: Managing Director (pre-set), Date: ________.'),
+        (5, 'Execution — Participant column', 'Participant signature block: signature line, Name: ________, Title: ________, Date: ________.')
+       ) AS n(ordinal, heading, body),
+       gc.global_agreement_archetypes a
+ WHERE a.key = 'prepaid_introductions_range' AND p.archetype_id = a.id AND p.ordinal = n.ordinal;
+
+-- Documenso fact: signature/date fields carry NO Required / Read-Only — keep them NULL.
+UPDATE gc.global_agreement_archetype_variables
+   SET template_required = NULL, template_read_only = NULL
+ WHERE field_type IN ('date', 'signature')
+   AND (template_required IS NOT NULL OR template_read_only IS NOT NULL);
+-- Hardcoded date sides for the range archetype (ruled 2026-07-21): the effective-date Date and
+-- the Principal sig-block Date are the Principal's; the Participant sig-block Date is theirs.
+UPDATE gc.global_agreement_archetype_variables v SET recipient = m.r
+  FROM (VALUES (1, 'principal'), (10, 'principal'), (14, 'participant')) AS m(o, r),
+       gc.global_agreement_archetypes a
+ WHERE a.key = 'prepaid_introductions_range' AND v.archetype_id = a.id AND v.ordinal = m.o
+   AND v.recipient IS DISTINCT FROM m.r;
+
 -- Variable → paragraph mapping (only fills where unset, so operator edits are never clobbered).
 UPDATE gc.global_agreement_archetype_variables v
    SET paragraph_ordinal = m.para
