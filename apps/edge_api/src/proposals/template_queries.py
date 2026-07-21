@@ -1,4 +1,4 @@
-"""business.global_engagement_content persistence — psycopg async.
+"""business.global_agreement_content persistence — psycopg async.
 
 The authoring registry: drafts the operator edits, published templates the Proposals intake
 picker reads, and the slug→template resolution the real proposal-create path uses. The markdown
@@ -44,7 +44,7 @@ async def create_draft(
     created_by: str | None,
 ) -> dict[str, Any]:
     sql = f"""
-        INSERT INTO business.global_engagement_content
+        INSERT INTO business.global_agreement_content
             (id, status, markdown, token_manifest, name, created_by)
         VALUES (%s, 'draft', %s, %s, %s, %s)
         RETURNING {_SELECT_COLS}
@@ -77,7 +77,7 @@ async def update_draft(
         params.append(Jsonb(token_manifest))
 
     sql = (
-        f"UPDATE business.global_engagement_content SET {', '.join(sets)} "
+        f"UPDATE business.global_agreement_content SET {', '.join(sets)} "
         f"WHERE id = %s RETURNING {_SELECT_COLS}"
     )
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -90,7 +90,7 @@ async def update_draft(
 async def get(conn, id: str) -> dict[str, Any] | None:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS} FROM business.global_engagement_content WHERE id = %s", (id,)
+            f"SELECT {_SELECT_COLS} FROM business.global_agreement_content WHERE id = %s", (id,)
         )
         return await cur.fetchone()
 
@@ -99,7 +99,7 @@ async def get_published_by_slug(conn, slug: str) -> dict[str, Any] | None:
     """Resolve a published template by its selector — the real proposal-create path's lookup."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS} FROM business.global_engagement_content "
+            f"SELECT {_SELECT_COLS} FROM business.global_agreement_content "
             f"WHERE slug = %s AND status = 'published'",
             (slug,),
         )
@@ -130,7 +130,7 @@ async def list_all(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            f"SELECT {_SELECT_COLS_PT} FROM business.global_engagement_content pt {join} {where} "
+            f"SELECT {_SELECT_COLS_PT} FROM business.global_agreement_content pt {join} {where} "
             f"ORDER BY pt.updated_at DESC LIMIT %s",
             params + [limit],
         )
@@ -143,7 +143,7 @@ async def publish(
     """Promote a template to ``published`` with its name + selector. The caller maps a unique-slug
     collision (another template already owns this slug) to a 409."""
     sql = f"""
-        UPDATE business.global_engagement_content
+        UPDATE business.global_agreement_content
            SET status = 'published', name = %s, slug = %s, monthly_fee_cents = %s,
                published_at = COALESCE(published_at, now()), updated_at = now()
          WHERE id = %s

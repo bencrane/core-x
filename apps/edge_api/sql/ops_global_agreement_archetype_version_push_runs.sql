@@ -1,5 +1,5 @@
 -- QA ledger for the archetype-version render+push lane (repo content -> DocRaptor PDF -> Documenso
--- TEMPLATE). Written by apps/edge_api/src/engagement_templates/push.py record_run() on EVERY
+-- TEMPLATE). Written by apps/edge_api/src/archetype_versions/push.py record_run() on EVERY
 -- terminal state (success | error) from BOTH lanes (operator service-token route and the internal
 -- Trigger.dev route). Fire-and-forget: a ledger error never blocks or fails a push.
 --

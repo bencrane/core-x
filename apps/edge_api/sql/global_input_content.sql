@@ -1,4 +1,4 @@
--- Global Input Content — the CONTENT-SOURCE REGISTRY. One row per repo-resident engagement-content
+-- Global Input Content — the CONTENT-SOURCE REGISTRY. One row per repo-resident agreement-content
 -- asset (or DB-markdown source) the render+push lane can "grab from and get the content". A row names
 -- WHERE to pull from; the renderer resolves it to HTML, sends it through DocRaptor, and pushes the PDF
 -- to Documenso as a TEMPLATE. Applied to the hq-x control plane (HQX_DB_URL_POOLED). Idempotent DDL.
@@ -8,10 +8,10 @@
 -- guarded ALTERs add the source-selection columns the renderer needs:
 --
 --   brand        which content root to read     ('active-operators' | 'rare-structure')
---   source_kind  how to resolve the content      ('repo-html'  -> apps/edge_api/content/<brand>/<path>/global_engagement_content,
---                                                  'db-markdown'-> business.global_engagement_content WHERE slug = path)
+--   source_kind  how to resolve the content      ('repo-html'  -> apps/edge_api/content/<brand>/<path>/global_agreement_content,
+--                                                  'db-markdown'-> business.global_agreement_content WHERE slug = path)
 --
--- ``path`` is BRAND-RELATIVE and encodes the three engagement-template catalog segments joined with
+-- ``path`` is BRAND-RELATIVE and encodes the three archetype-version catalog segments joined with
 -- "/": ``<template-family>/<archetype>/<version>`` (e.g. ``docraptor-to-documenso-template/term-only/v1``).
 -- The renderer splits it back into (path, archetype, version) and resolves under content/<brand>/.
 
