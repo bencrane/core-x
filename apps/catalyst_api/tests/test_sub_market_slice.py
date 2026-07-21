@@ -205,3 +205,9 @@ def test_count_endpoint_response_shape(fake_sidecar) -> None:
     assert payload["elapsed_ms"] == 7.5
     assert payload["artifact"] == "query_sidecar_TEST"
     assert len(fake_sidecar) == 1 and "physical_state IN ('TX')" in fake_sidecar[0]
+
+
+def test_self_subaward_guard_in_every_section() -> None:
+    for sql in build_pack_sql(PAIRS, None).values():
+        assert "s.subawardee_uei <> s.prime_awardee_uei" in sql
+    assert "s.subawardee_uei <> s.prime_awardee_uei" in build_count_sql(PAIRS, None)

@@ -5,10 +5,10 @@
     "aerospace-craft-and-structural-component-15": {
      "family_name": "AEROSPACE CRAFT AND STRUCTURAL COMPONENTS",
      "language_phrases": [
-      "Airframe structural components",
-      "Rotary-wing aircraft",
-      "Space vehicles",
-      "Rotary-wing aircraft (helicopters)"
+      "Unmanned aircraft systems",
+      "Fixed-wing aircraft",
+      "Rotary wing aircraft",
+      "Airframe structural components"
      ],
      "one_liner": "Firms delivering under aerospace craft and structural components prime programs",
      "pairs": [
@@ -107,10 +107,10 @@
      ],
      "share_of_card_pct": 65.2,
      "stats": {
-      "cluster_usd": 23697955476.0,
-      "dominant_median_total": 486577.0,
-      "n_subs_active": 3128,
-      "n_subs_dominant": 2836
+      "cluster_usd": 23697159483.0,
+      "dominant_median_total": 486532.0,
+      "n_subs_active": 3127,
+      "n_subs_dominant": 2835
      }
     },
     "aerospace-craft-components-and-accessori-16": {
@@ -214,10 +214,10 @@
      ],
      "share_of_card_pct": 34.8,
      "stats": {
-      "cluster_usd": 12648497157.0,
-      "dominant_median_total": 225279.0,
-      "n_subs_active": 1962,
-      "n_subs_dominant": 1104
+      "cluster_usd": 12647876810.0,
+      "dominant_median_total": 225240.0,
+      "n_subs_active": 1961,
+      "n_subs_dominant": 1103
      }
     }
    },
@@ -410,11 +410,11 @@
    ],
    "title": "Airframes & Aerostructures",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 45,
-    "n_subs": 3937,
+    "n_subs": 3935,
     "pair_coverage_pct": 99.79,
-    "sub_usd": 36346452633.0
+    "sub_usd": 36345036293.0
    }
   },
   "defense-rd-programs": {
@@ -720,7 +720,7 @@
      ],
      "share_of_card_pct": 63.4,
      "stats": {
-      "cluster_usd": 9875620337.0,
+      "cluster_usd": 9875589915.0,
       "dominant_median_total": 234514.0,
       "n_subs_active": 5886,
       "n_subs_dominant": 5402
@@ -780,10 +780,10 @@
     "national-defense-r-d-services-department-ac13": {
      "family_name": "NATIONAL DEFENSE R&D SERVICES; DEPARTMENT OF DEFENSE - MILITARY; EXPERIMENTAL DEVELOPMENT",
      "language_phrases": [
-      "Experimental development R&D",
-      "Experimental defense development",
-      "Military aircraft experimental development",
-      "Defense experimental development"
+      "Missile and space vehicle experimental development",
+      "Defense missile experimental development",
+      "Defense experimental development engineering",
+      "National defense experimental development R&D"
      ],
      "one_liner": "Firms delivering under national defense r&d services; department of defense - military; experimental development prime programs",
      "pairs": [
@@ -838,10 +838,10 @@
      ],
      "share_of_card_pct": 23.2,
      "stats": {
-      "cluster_usd": 3610750421.0,
-      "dominant_median_total": 239489.0,
-      "n_subs_active": 1946,
-      "n_subs_dominant": 1321
+      "cluster_usd": 3610295421.0,
+      "dominant_median_total": 239375.0,
+      "n_subs_active": 1945,
+      "n_subs_dominant": 1320
      }
     }
    },
@@ -1221,11 +1221,11 @@
    ],
    "title": "Defense R&D Programs",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 92,
-    "n_subs": 7215,
+    "n_subs": 7214,
     "pair_coverage_pct": 99.15,
-    "sub_usd": 15565434556.0
+    "sub_usd": 15564949134.0
    }
   },
   "equipment-maintenance-overhaul": {
@@ -1491,10 +1491,10 @@
      ],
      "share_of_card_pct": 100.0,
      "stats": {
-      "cluster_usd": 14522738325.0,
-      "dominant_median_total": 209722.0,
-      "n_subs_active": 2971,
-      "n_subs_dominant": 2971
+      "cluster_usd": 14522625685.0,
+      "dominant_median_total": 209760.0,
+      "n_subs_active": 2970,
+      "n_subs_dominant": 2970
      }
     }
    },
@@ -1754,11 +1754,11 @@
    ],
    "title": "Equipment Maintenance & Overhaul",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 62,
-    "n_subs": 2971,
+    "n_subs": 2970,
     "pair_coverage_pct": 99.34,
-    "sub_usd": 14522738325.0
+    "sub_usd": 14522625685.0
    }
   },
   "federal-it-applications": {
@@ -1766,10 +1766,10 @@
     "adp-and-telecommunications-d3": {
      "family_name": "ADP AND TELECOMMUNICATIONS",
      "language_phrases": [
-      "Telecommunications network management services",
-      "IT and telecommunications support services",
-      "Integrated IT solutions and engineering services",
-      "Annual software maintenance service plans"
+      "Telecommunications and transmission services",
+      "Integrated telecommunications solutions and services",
+      "IT and telecommunications services",
+      "Integrated IT solutions, predominantly services"
      ],
      "one_liner": "Firms delivering under adp and telecommunications prime programs",
      "pairs": [
@@ -2315,7 +2315,7 @@
    ],
    "title": "Federal IT Applications",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 63,
     "n_subs": 3033,
     "pair_coverage_pct": 99.32,
@@ -2327,10 +2327,10 @@
     "management-support-services-r7": {
      "family_name": "MANAGEMENT SUPPORT SERVICES",
      "language_phrases": [
-      "Logistics support services",
-      "Management support services",
-      "Financial management support services",
-      "Financial audit services"
+      "Logistics management support services",
+      "Accounting and audit support services",
+      "Accounting support services",
+      "Advertising support services"
      ],
      "one_liner": "Firms delivering under management support services prime programs",
      "pairs": [
@@ -3060,10 +3060,10 @@
      ],
      "share_of_card_pct": 82.5,
      "stats": {
-      "cluster_usd": 34933475720.0,
-      "dominant_median_total": 293339.0,
-      "n_subs_active": 11822,
-      "n_subs_dominant": 11480
+      "cluster_usd": 34922865532.0,
+      "dominant_median_total": 293312.0,
+      "n_subs_active": 11820,
+      "n_subs_dominant": 11478
      }
     }
    },
@@ -3780,11 +3780,11 @@
    ],
    "title": "Professional & Engineering Services",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 176,
-    "n_subs": 13673,
+    "n_subs": 13671,
     "pair_coverage_pct": 99.41,
-    "sub_usd": 42357959805.0
+    "sub_usd": 42347349618.0
    }
   },
   "propulsion-engines": {
@@ -3792,8 +3792,8 @@
     "gas-turbines-and-jet-engines-aircraft-pr-2840": {
      "family_name": "GAS TURBINES AND JET ENGINES, AIRCRAFT, PRIME MOVING; AND COMPONENTS",
      "language_phrases": [
-      "Aircraft gas turbine and jet engine components",
-      "Aircraft gas turbine and jet engines"
+      "Aircraft gas turbine and jet engines",
+      "Aircraft gas turbine and jet engine components"
      ],
      "one_liner": "Firms delivering under gas turbines and jet engines, aircraft, prime moving; and components prime programs",
      "pairs": [
@@ -3821,10 +3821,10 @@
     "gas-turbines-and-jet-engines-non-aircraf-2835": {
      "family_name": "GAS TURBINES AND JET ENGINES; NON-AIRCRAFT PRIME MOVER, AIRCRAFT NON-PRIME MOVER, AND COMPONENTS",
      "language_phrases": [
+      "Aircraft reciprocating engines and components",
+      "Non-aircraft gas turbines and jet engines",
       "Non-aircraft gas turbines and components",
-      "Diesel engines and components",
-      "Miscellaneous engines and components",
-      "Rocket engines and components"
+      "Diesel engines and components"
      ],
      "one_liner": "Firms delivering under gas turbines and jet engines; non-aircraft prime mover, aircraft non-prime mover, and components prime programs",
      "pairs": [
@@ -3914,7 +3914,7 @@
    ],
    "title": "Propulsion & Engines",
    "verified": {
-    "artifact": "query-sidecar/query_sidecar_20260718T021418Z.duckdb",
+    "artifact": "query-sidecar/query_sidecar_20260720T025249Z.duckdb",
     "n_pairs": 10,
     "n_subs": 455,
     "pair_coverage_pct": 99.89,
@@ -3925,6 +3925,7 @@
  "definition": {
   "card": "explicit prime-combo pair-set; member subaward rows join on (prime naics6, prime psc4)",
   "pair_floor": "pairs kept while cumulative coverage < 99% of family-rule $ AND pair >= $5M sub-flow",
+  "self_subaward_guard": "subawardee_uei <> prime_awardee_uei everywhere (review finding 2026-07-20; sub-dossier parity)",
   "source": "subaward_canonical_slim_by_sub (FSRS disclosed subawards; ~3.9% of $ lacks combo codes universe-wide)"
  },
  "generated_from": "hq/data-cache/submarkets/sub_market_cards_v1.json",

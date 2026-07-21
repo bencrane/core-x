@@ -27,7 +27,9 @@ prime counts, chunk texture p20/median/p80, DoD share), top_primes (by farm-out
 $ in scope — name-reveal is a SURFACE dial, the payload always carries names),
 monthly_series (36mo flow), states (sub HQ), top_pairs (work language).
 Disclosures: FSRS = disclosed subawards only; ~3.9% of universe $ lacks combo
-codes; DoD share via awarding-agency name prefix.
+codes; DoD share via awarding-agency name prefix. Self-subawards
+(subawardee == prime awardee) are excluded everywhere — sub-dossier parity
+(review finding 2026-07-20; composition re-stamped with the same guard).
 """
 from __future__ import annotations
 
@@ -122,7 +124,8 @@ t AS (
   FROM subaward_canonical_slim_by_sub s
   JOIN pairs pr ON s.prime_award_naics_code = pr.naics_code
                AND s.prime_award_product_or_service_code = pr.psc_code
-  WHERE {_WINDOW} AND s.subaward_amount_num > 0{pred_leg}
+  WHERE {_WINDOW} AND s.subaward_amount_num > 0
+    AND s.subawardee_uei <> s.prime_awardee_uei{pred_leg}
 )"""
 
 
