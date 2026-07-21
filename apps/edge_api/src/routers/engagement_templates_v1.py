@@ -16,6 +16,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from ..db import get_db_connection
 from ..engagement_templates import catalog, push, render, store, values
 from ..engagement_templates.models import (
     RenderPushRequest,
@@ -108,8 +109,10 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
 
     Operator-driven sibling of POST /render (which stops at the presigned PDF). Reuses
     ``push.render_and_push`` — the SAME machinery the Trigger.dev `/internal` lane uses — but gated by
-    the operator service token (not the trigger secret). DB-free: no ops ledger row (that is the
-    automation lane's contract); the created Documenso template id is returned to the caller.
+    the operator service token (not the trigger secret). Every terminal state (success | error)
+    writes the ops.engagement_template_push_runs ledger, same as the automation lane — the ledger is
+    the "Pushed" source of truth for the archetype template-conformance surface. (The former
+    "DB-free" contract predates the operator lane becoming the primary push path.)
 
     A tokenized template (manifest ``inputs``, e.g. prepaid-introductions) carries the operator's
     values in ``body.values``; they are formatted into ``{{token}}`` substitutions and baked into the
@@ -126,6 +129,20 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
         except (ValueError, ArithmeticError) as e:
             raise HTTPException(status_code=400, detail=f"invalid values: {str(e)[:200]}") from e
 
+    async def _record_error(error: str) -> None:
+        async with get_db_connection() as conn:
+            await push.record_run(
+                conn,
+                status="error",
+                brand=body.brand,
+                path=body.path,
+                archetype=body.archetype,
+                version=body.version,
+                style=body.style,
+                source_kind=push.REPO_HTML,
+                error=error,
+            )
+
     try:
         outcome = await push.render_and_push(
             brand=body.brand,
@@ -140,11 +157,30 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
         )
     except (push.PushError, render.StyleError, render.MissingTokenError) as e:
         # Bad selector / unknown template / unwired source / bad style — operator-fixable.
+        await _record_error(str(e))
         raise HTTPException(status_code=400, detail=str(e)[:300]) from e
     except render.RenderConfigError as e:
+        await _record_error(str(e))
         raise HTTPException(status_code=503, detail=f"render: {str(e)[:300]}") from e
     except (render.RenderError, documenso_client.DocumensoError) as e:
+        await _record_error(str(e))
         raise HTTPException(status_code=502, detail=str(e)[:300]) from e
+
+    async with get_db_connection() as conn:
+        await push.record_run(
+            conn,
+            status="success",
+            brand=outcome.brand,
+            path=outcome.path,
+            archetype=outcome.archetype,
+            version=outcome.version,
+            style=outcome.style,
+            source_kind=outcome.source_kind,
+            documenso_template_id=outcome.documenso_template_id,
+            documenso_numeric_id=outcome.documenso_numeric_id,
+            pdf_r2_key=outcome.pdf_r2_key,
+            pdf_bytes=outcome.pdf_bytes,
+        )
 
     logger.info(
         "engagement-template render-push ok: %s/%s/%s/%s style=%s template=%s",
