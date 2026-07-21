@@ -27,6 +27,15 @@ logger = logging.getLogger(__name__)
 LM_URL = os.environ.get("LEADMAGIC_COMPANY_URL", "https://api.leadmagic.io/company-search")
 HTTP_TIMEOUT_S = 8.0
 
+
+def _enabled() -> bool:
+    """LeadMagic is an OPT-IN paid lane. Disabled unless ``LEADMAGIC_ENABLED`` is truthy — a
+    past-due account 403s every call and lands ``status='error'`` rows (fetch-once, so they
+    never self-heal). Flip ``LEADMAGIC_ENABLED=1`` in Doppler (core-x/prd) to re-enable once
+    billing is current — no redeploy of logic, just the env flip. While disabled the booking
+    firmo lane is served by the Blitz-firmo fallback (gc-hq-new Application Profile seed)."""
+    return os.environ.get("LEADMAGIC_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
 DDL = """
 CREATE TABLE IF NOT EXISTS corex.company_leadmagic (
     domain      text PRIMARY KEY,
@@ -42,6 +51,8 @@ async def fetch_and_store(conn, *, domain: str | None, company_name: str | None)
     """Fetch LeadMagic company firmographics for ``domain`` and upsert into
     ``corex.company_leadmagic``. Skips when a row already exists (company-grain, fetch-once).
     Never raises; the caller owns commit."""
+    if not _enabled():
+        return {"fetched": False, "reason": "leadmagic disabled"}
     key = os.environ.get("LEADMAGIC_API_KEY")
     if not key:
         return {"fetched": False, "reason": "LEADMAGIC_API_KEY unset"}
@@ -52,7 +63,9 @@ async def fetch_and_store(conn, *, domain: str | None, company_name: str | None)
     async with conn.cursor() as cur:
         await cur.execute("SELECT status FROM corex.company_leadmagic WHERE domain = %s", (domain,))
         row = await cur.fetchone()
-    if row:
+    # Fetch-once only on a TERMINAL result. An 'error' row (e.g. a past-due 403) is transient —
+    # let it re-fetch so re-enabling the lane self-heals the domains that failed while disabled.
+    if row and row[0] in ("found", "not_found"):
         return {"fetched": False, "reason": "exists", "status": row[0]}
 
     status = "error"
