@@ -230,6 +230,13 @@ CREATE TABLE IF NOT EXISTS gc.documenso_envelopes (
 -- satisfy) "mirrored back".
 ALTER TABLE gc.documenso_envelopes
     ADD COLUMN IF NOT EXISTS operator_mirrored_at timestamptz;
+-- CERTIFICATION (ruled 2026-07-21): stamped when an operator-initiated mirror's conformance check
+-- against the template's archetype comes back all-green (1:1). Durable once granted — the operator
+-- does not fiddle with field names post-certification; a real archetype redefinition knowingly
+-- restarts the loop. GATE: an uncertified template cannot be bound to an agreement, offered in the
+-- selection list, or minted against.
+ALTER TABLE gc.documenso_envelopes
+    ADD COLUMN IF NOT EXISTS conformance_passed_at timestamptz;
 
 CREATE UNIQUE INDEX IF NOT EXISTS documenso_envelopes_documenso_id_uidx ON gc.documenso_envelopes (documenso_id);
 CREATE INDEX IF NOT EXISTS gc_documenso_envelopes_template_documenso_id_idx ON gc.documenso_envelopes (template_documenso_id);
