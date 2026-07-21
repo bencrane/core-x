@@ -113,7 +113,10 @@ _SHAPE_RECIPIENT_TYPE = "naics"
 # verbatim in method.dials; overrides are range-validated in _merge_dials.
 DEFAULT_DIALS: dict[str, Any] = {
     "band_min": 1_000_000.0,
-    "band_max": 100_000_000.0,
+    # 2026-07-20 operator ruling: NO top cap on target eligibility — a $300M
+    # sub is a subject like any other. The lookalike-prime market never had a
+    # ceiling (market_prime_floor only); this band gates only the TARGET.
+    "band_max": 1e12,
     "shape_floor": 250_000.0,       # target lane obl_lifetime floor for "top shape"
     "sig_rank": 5,
     "sig_share": 0.05,
@@ -1296,7 +1299,7 @@ async def build(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/eligible", dependencies=[Depends(require_service_token)])
-async def eligible(band_min: float = 1_000_000.0, band_max: float = 100_000_000.0,
+async def eligible(band_min: float = 1_000_000.0, band_max: float = 1e12,
                    limit: int = 100, archetype: str = "sub",
                    prime_floor: float = 1_000_000.0,
                    sub_floor: float = 1_000_000.0) -> dict[str, Any]:
