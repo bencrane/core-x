@@ -253,17 +253,27 @@ async def patch_agreement(agreement_id: str, body: AgreementPatch) -> dict:
 
 
 async def _generate_inputs(cur, agreement_id: str) -> dict | None:
-    """Everything generate needs, one read: the agreement, its deal handles, the template's
-    gc field rules + verbatim envelope, and the signatory's email/name."""
+    """Everything generate needs, one read: the agreement, its deal handles, the ARCHETYPE's mint
+    rules + verbatim envelope, and the signatory's email/name.
+
+    Mint rules resolve at the ARCHETYPE level (ruled 2026-07-21): the template's mirrored
+    ``external_id`` carries the ontology address ``{archetype_key}/{version}`` stamped at push, so
+    ``split_part(external_id, '/', 1)`` names the archetype and its ``global_agreement_archetype_variables``
+    text rows ARE the field plan — one definition covers every template birthed under the archetype.
+    The per-template ``gc.documenso_template_field_rules`` are retired as a rule source. No archetype
+    defaults exist: values come solely from the agreement's ``field_values`` (a read-only label with
+    no value still 422s before the claim)."""
     await cur.execute(
         f"""
         SELECT {_ROW_COLS}, d.deal_handle, d.company_name,
-               (SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
-                          'default_document_field_value', r.default_value,
-                          'read_only', r.post_mint_read_only,
-                          'required', r.post_mint_required))
-                  FROM gc.documenso_template_field_rules r
-                 WHERE r.template_documenso_id::text = a.template_documenso_id) AS gc_field_settings,
+               (SELECT jsonb_object_agg(av.documenso_field_label_to_use, jsonb_build_object(
+                          'default_document_field_value', NULL,
+                          'read_only', av.post_mint_read_only IS TRUE,
+                          'required', av.post_mint_required IS TRUE))
+                  FROM gc.global_agreement_archetype_variables av
+                  JOIN gc.global_agreement_archetypes ga ON ga.id = av.archetype_id
+                 WHERE ga.key = split_part(env.external_id, '/', 1)
+                   AND av.field_type = 'text') AS gc_field_settings,
                env.documenso_response                     AS template_response,
                env.title                                  AS template_title,
                c.email                                                     AS recipient_email,
@@ -399,20 +409,22 @@ async def list_templates() -> list[TemplateOption]:
 @router.get("/templates/{template_id}/fields", dependencies=[Depends(require_service_token)])
 async def template_fields(template_id: int) -> dict:
     """The template's field vocabulary for the origination-details editor: per label, the
-    gc field-rule default + read_only flag (gc.documenso_template_field_rules
-    — the same rows generate resolves against). Falls back to the mirrored envelope's
-    labelled value fields when no config exists (labels only, empty defaults). 404 on a template
-    the mirror doesn't carry."""
+    ARCHETYPE mint rules (resolved via the template's ``external_id`` ontology address — the same
+    rows generate resolves against; per-template field rules are retired). Falls back to the
+    mirrored envelope's labelled value fields when the template isn't archetype-addressed (labels
+    only, empty defaults). 404 on a template the mirror doesn't carry."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 SELECT env.documenso_id, env.title,
-                       (SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
-                                  'default_document_field_value', r.default_value,
-                                  'read_only', r.post_mint_read_only))
-                          FROM gc.documenso_template_field_rules r
-                         WHERE r.template_documenso_id = env.documenso_id) AS field_settings,
+                       (SELECT jsonb_object_agg(av.documenso_field_label_to_use, jsonb_build_object(
+                                  'default_document_field_value', NULL,
+                                  'read_only', av.post_mint_read_only IS TRUE))
+                          FROM gc.global_agreement_archetype_variables av
+                          JOIN gc.global_agreement_archetypes ga ON ga.id = av.archetype_id
+                         WHERE ga.key = split_part(env.external_id, '/', 1)
+                           AND av.field_type = 'text') AS field_settings,
                        env.documenso_response
                   FROM gc.documenso_envelopes env
                  WHERE env.documenso_id = %s AND env.type = 'template' AND env.deleted_at IS NULL

@@ -151,11 +151,23 @@ UPDATE gc.global_agreement_archetype_paragraphs p SET heading = n.heading, body 
        gc.global_agreement_archetypes a
  WHERE a.key = 'prepaid_introductions_range' AND p.archetype_id = a.id AND p.ordinal = n.ordinal;
 
--- Documenso fact: signature/date fields carry NO Required / Read-Only — keep them NULL.
+-- MINT RULES (Build 2, ruled 2026-07-21): per text variable, how the field is transformed on the
+-- document minted against ANY template of this archetype — post_mint_required / post_mint_read_only.
+-- The value passed in is already declared by value_source (entered = agreement field_values;
+-- derived = computed at prefill; auto = ceremony fields, untouched by mint). These archetype rows
+-- REPLACE the per-template gc.documenso_template_field_rules as generate's rule source.
+ALTER TABLE gc.global_agreement_archetype_variables
+    ADD COLUMN IF NOT EXISTS post_mint_required   boolean,
+    ADD COLUMN IF NOT EXISTS post_mint_read_only  boolean;
+
+-- Documenso fact: signature/date fields carry NO Required / Read-Only (template-stage OR mint-stage)
+-- — keep them NULL.
 UPDATE gc.global_agreement_archetype_variables
-   SET template_required = NULL, template_read_only = NULL
+   SET template_required = NULL, template_read_only = NULL,
+       post_mint_required = NULL, post_mint_read_only = NULL
  WHERE field_type IN ('date', 'signature')
-   AND (template_required IS NOT NULL OR template_read_only IS NOT NULL);
+   AND (template_required IS NOT NULL OR template_read_only IS NOT NULL
+        OR post_mint_required IS NOT NULL OR post_mint_read_only IS NOT NULL);
 -- Hardcoded date + signature sides for the range archetype (ruled 2026-07-21): the
 -- effective-date Date and the Principal sig-block Date/Signature are the Principal's; the
 -- Participant sig-block Date/Signature are theirs.
