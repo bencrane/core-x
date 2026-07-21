@@ -49,3 +49,29 @@ acceptable (sub-month windows nixed).
 
 Entry 1 is the build: recurring × ~2s per interaction on a product surface (and 7s for
 the five-lane pack shape). Entry 2 is a usage pattern for the guide, no build.
+
+---
+
+## Disposition (2026-07-20, artifact query_sidecar_20260720T025249Z, 106 tables)
+
+| Entry | Verdict | Shipped | Measured before → after |
+|---|---|---|---|
+| 1 — lane-scoped growth windows | **PROMOTED** (operator directive; structural) | `gtm_construction_lane_months` — 5 lanes × uei × month, 535,123 rows, 2.1s build, aggregate parity OK (#1242) | single-lane 12/24 cut **2,269ms → 16.6ms (137×)** · five-lane per-lane **7,165ms → 34.3ms (209×)** · 72-month deep lookback **1,516ms → 16.0ms (95×)**; identical qualifying counts modulo the artifact refresh (130 vs 119 etc. — the new bake carries fresher transactions) |
+| 2 — publication watermark | **Routing/pattern — no build** | Guide §4 growth-window pattern anchors every window to `max(month)`, never `current_date` | n/a (0.6s diagnostic) |
+
+**Adjacency riders shipped (same GROUP BY, one line each):** `n_actions` + `n_awards`
+(volume texture beside dollars); `n_new_awards` + `new_award_obligation_sum` (new-work vs
+mods — the surety bonding-event signal; measured last-12: 82–93% of lane dollars are
+new-award rows in four of five lanes, 37.5% in industrial-defense); `n_agencies` (one buyer
+or many). **Next-question simulation** (all answerable post-build): per-firm monthly series
+= the mart rows (sparklines); new entrants = baseline IS NULL; drill-to-awards =
+`gtm_txn_events_slim` uei-pruned; names join at query time; whole-universe growth = the
+existing month marts.
+
+**Parked (structural-gated):** capital-card lane growth (scope-drift risk vs pg/overlay
+card definitions + no demand yet); sub-side lane growth (different substrate:
+`subaward_canonical_slim_by_sub`); day-grain windows (operator nixed — month grain ruled).
+
+**Probe correction retained (step-1 discipline):** `txn_recipient_month_pop` expresses the
+shape but cannot prune it (2.5s measured) — the promotion verdict was cost, not
+expressibility.
