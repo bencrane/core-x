@@ -2,13 +2,12 @@
 --
 -- Each row is one variant (e.g. a specific system fee + success %) of a PARAMETERIZED
 -- business.global_input_content source. The render+push generator pulls `params` FROM here to bake
--- into the PDF text and to create the Documenso TEMPLATE; the resulting business.documenso_templates
--- row links back via global_input_content_variant_id. This is the source of truth for both the
+-- into the PDF text and to create the Documenso TEMPLATE. This is the source of truth for both the
 -- PRINTED value and the CHARGED value (single row → no drift between the PDF and the payment intent).
 --
--- Why here and not on documenso_templates: at generation time the Documenso template does NOT yet
--- exist (its row is the OUTPUT of the render+push), so the values can't be read from it. They must
--- live on an INPUT parented to the content source the generator renders from.
+-- Why here and not on the template: at generation time the Documenso template does NOT yet exist (it is
+-- the OUTPUT of the render+push), so the values can't be read from it. They must live on an INPUT
+-- parented to the content source the generator renders from.
 --
 -- Idempotent (CREATE … IF NOT EXISTS); applied to HQX_DB_URL_POOLED at edge_api boot.
 
@@ -32,5 +31,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS global_input_content_variants_default_uidx
 
 CREATE INDEX IF NOT EXISTS global_input_content_variants_content_idx
   ON business.global_input_content_variants (global_input_content_id);
-
--- (documenso_templates linkage removed — business.documenso_templates is DROPPED.)

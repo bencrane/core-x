@@ -1,14 +1,10 @@
 -- Engagement Archetypes — the economic SHAPE of an engagement (which pricing variables exist and how
--- they combine), the low-cardinality classifier ABOVE business.documenso_templates. Applied to the
--- hq-x control-plane Postgres (HQX_DB_URL_POOLED) that edge_api reads. Idempotent DDL (safe to re-run).
+-- they combine): the low-cardinality classifier of engagement pricing. Applied to the hq-x control-plane
+-- Postgres (HQX_DB_URL_POOLED) that edge_api reads. Idempotent DDL (safe to re-run).
 --
 -- An archetype is a TYPE, not a value: the specific numbers (term length, fee %, flat amount) are a
 -- parameterization WITHIN an archetype and never mint a new one. A new archetype appears only when the
--- STRUCTURE changes — a variable is added/removed, or the fee combination rule changes. Each
--- documenso_template belongs to exactly one archetype (its body either carries the perf-fee clause or
--- it does not); one archetype maps to many templates (the per-term / per-fee matrix).
---
---   engagement_archetypes (1) ──< documenso_templates (N) ──< engagement_documenso_template_mappings
+-- STRUCTURE changes — a variable is added/removed, or the fee combination rule changes.
 --
 -- Seeded with the two live archetypes:
 --   term_only             — a fixed term / retainer only; no per-deal performance fee.
@@ -42,6 +38,3 @@ VALUES
      'A term / retainer PLUS a per-deal performance fee taken as the greater of a percentage or a flat amount.',
      'greater_of')
 ON CONFLICT (key) DO NOTHING;
-
--- (documenso_templates.archetype_id wiring removed — business.documenso_templates is DROPPED;
---  the gc plane's archetype linkage lives in gc.global_agreement_archetype_versions.)

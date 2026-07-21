@@ -11,29 +11,24 @@
 --
 -- WHAT IT HOLDS:
 --   content                — the deal's merge-field payload (carried concept from deals_content.content).
---   default_template_uuid  — the Documenso template stamped as THIS deal's default, FK to the
---                            business.documenso_templates catalog (its uuid PK, matching the
---                            documenso_template_uuid join key used by the mappings table). Replaces the
---                            pick-at-originate picker + loose org-level is_default with a per-deal stamp.
---   template_origin        — provenance of that stamp. 'default' = auto-stamped from the org default;
---                            an operator override writes a different marker.
+--   default_template_uuid  — LEGACY, unused; superseded by default_template_documenso_id (below).
+--   template_origin        — provenance of the attached template. 'default' = auto-stamped from the org
+--                            default; an operator override writes a different marker.
 --
--- FK targets (business.deals, business.documenso_templates) are upstream-owned and already exist in
--- prod — consistent with this suite's "already-provisioned control plane" contract (cf.
--- documenso_templates_is_default.sql). CREATE-only + idempotent; safe to re-apply on every boot.
+-- FK target business.deals is upstream-owned and already exists in prod — consistent with this suite's
+-- "already-provisioned control plane" contract. CREATE-only + idempotent; safe to re-apply on every boot.
 CREATE TABLE IF NOT EXISTS business.deal_details (
     deal_id               uuid PRIMARY KEY
                               REFERENCES business.deals (id) ON DELETE CASCADE,
     content               jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    default_template_uuid uuid,  -- legacy registry key; the FK died with business.documenso_templates (DROP CASCADE)
+    default_template_uuid uuid,  -- LEGACY, unused; superseded by default_template_documenso_id
     template_origin       text        NOT NULL DEFAULT 'default',
     created_at            timestamptz NOT NULL DEFAULT now(),
     updated_at            timestamptz NOT NULL DEFAULT now()
 );
 
--- The MIRROR template attached to this deal, keyed by the envelope mirror's numeric documenso_id
--- (business.documenso_envelopes.documenso_id). Supersedes default_template_uuid (which keys the legacy
--- business.documenso_templates registry); attaches made via the mirror dropdown write THIS column. No FK
--- to the projector-owned mirror — validated at write. Idempotent ALTER, safe to re-apply on every boot.
+-- The MIRROR template attached to this deal — the LIVE attach key, keyed by the envelope mirror's
+-- numeric documenso_id (gc.documenso_envelopes.documenso_id). The deal's template dropdown writes it.
+-- No FK to the projector-owned mirror — validated at write. Idempotent ALTER, safe to re-apply on every boot.
 ALTER TABLE business.deal_details
     ADD COLUMN IF NOT EXISTS default_template_documenso_id bigint;
