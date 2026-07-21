@@ -9,7 +9,7 @@ deal-materialize / gtm pipeline tasks use.
 CHOOSE-WHERE-TO-PULL: pass a ``registryPath`` (or ``registryId``) to resolve a
 ``business.global_input_content`` row (brand + source_kind + brand-relative path), OR pass an explicit
 ``brand`` / ``path`` / ``archetype`` / ``version``. Either way the lane renders the content and creates
-a Documenso TEMPLATE, recording a terminal row in ops.engagement_template_push_runs.
+a Documenso TEMPLATE, recording a terminal row in ops.global_agreement_archetype_version_push_runs.
 """
 from __future__ import annotations
 

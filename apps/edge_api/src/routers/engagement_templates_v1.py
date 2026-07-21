@@ -110,7 +110,7 @@ async def render_push_template(body: RenderPushRequest) -> RenderPushResult:
     Operator-driven sibling of POST /render (which stops at the presigned PDF). Reuses
     ``push.render_and_push`` — the SAME machinery the Trigger.dev `/internal` lane uses — but gated by
     the operator service token (not the trigger secret). Every terminal state (success | error)
-    writes the ops.engagement_template_push_runs ledger, same as the automation lane — the ledger is
+    writes the ops.global_agreement_archetype_version_push_runs ledger, same as the automation lane — the ledger is
     the "Pushed" source of truth for the archetype template-conformance surface. (The former
     "DB-free" contract predates the operator lane becoming the primary push path.)
 

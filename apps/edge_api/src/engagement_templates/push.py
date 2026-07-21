@@ -9,7 +9,7 @@ The terminal step of the content-source-selectable lane:
         -> Documenso TEMPLATE create (documenso_client.create_template_from_pdf)
 
 ``render_and_push`` is DB-free (pure HTTP/filesystem) and raises a typed error on any failure;
-``record_run`` writes the ops.engagement_template_push_runs ledger (fire-and-forget). The caller
+``record_run`` writes the ops.global_agreement_archetype_version_push_runs ledger (fire-and-forget). The caller
 (``routers/internal_engagement_templates_v1.py``) owns the resolve→push→ledger orchestration.
 """
 from __future__ import annotations
@@ -153,13 +153,13 @@ async def record_run(
     pdf_bytes: int | None = None,
     error: str | None = None,
 ) -> None:
-    """Write one terminal-state row to ops.engagement_template_push_runs. Fire-and-forget: a ledger
+    """Write one terminal-state row to ops.global_agreement_archetype_version_push_runs. Fire-and-forget: a ledger
     failure is logged, never raised — it must not turn a successful push into a 500."""
     try:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO ops.engagement_template_push_runs
+                INSERT INTO ops.global_agreement_archetype_version_push_runs
                     (run_id, brand, path, archetype, version, style, source_kind, status,
                      documenso_template_id, documenso_numeric_id, pdf_r2_key, pdf_bytes, error)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -172,4 +172,4 @@ async def record_run(
             )
         await conn.commit()
     except Exception:  # noqa: BLE001 — ledger is best-effort
-        logger.exception("ops.engagement_template_push_runs write failed (non-fatal)")
+        logger.exception("ops.global_agreement_archetype_version_push_runs write failed (non-fatal)")
