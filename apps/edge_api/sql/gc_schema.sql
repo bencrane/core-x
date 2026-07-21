@@ -86,6 +86,55 @@ SELECT a.id, v.ordinal, v.label, v.field_type, v.value_source
  WHERE a.key = 'prepaid_introductions_range'
 ON CONFLICT (archetype_id, ordinal) DO NOTHING;
 
+-- Template-stage definition columns (Build 1, ruled 2026-07-21): the checklist the operator
+-- follows in the Documenso editor — which side (recipient) the field is created under, and its
+-- Required / Read-Only toggles AS THEY SHOULD EXIST ON THE TEMPLATE. Distinct from post-mint
+-- treatment (what generate applies to a minted document), which is a later, separate ruling.
+ALTER TABLE gc.global_agreement_archetype_variables
+    ADD COLUMN IF NOT EXISTS template_required   boolean,
+    ADD COLUMN IF NOT EXISTS template_read_only  boolean,
+    ADD COLUMN IF NOT EXISTS recipient           text CHECK (recipient IN ('operator', 'principal')),
+    ADD COLUMN IF NOT EXISTS paragraph_ordinal   int,
+    ADD COLUMN IF NOT EXISTS updated_at          timestamptz NOT NULL DEFAULT now();
+
+-- Canonical context paragraphs — decision context for the field-rules surface (paragraph cards).
+-- Deliberately decoupled from the version HTML: wording drift vs a version is acceptable; the
+-- version HTML is the legal SoR, these are not.
+CREATE TABLE IF NOT EXISTS gc.global_agreement_archetype_paragraphs (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    archetype_id  uuid NOT NULL REFERENCES gc.global_agreement_archetypes(id),
+    ordinal       int  NOT NULL,
+    heading       text,
+    body          text NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT global_agreement_archetype_paragraphs_ordinal_uniq UNIQUE (archetype_id, ordinal)
+);
+INSERT INTO gc.global_agreement_archetype_paragraphs (archetype_id, ordinal, heading, body)
+SELECT a.id, p.ordinal, p.heading, p.body
+  FROM gc.global_agreement_archetypes a,
+       (VALUES
+            (1, 'Preamble',
+             'This Strategic Origination Agreement is entered into and made effective as of ________ (the “Effective Date”), by and between Rare Structure LLC (“Operator”), and ________________ (d/b/a ________________) (“Principal”).'),
+            (2, '§2.1 Prepaid Range Allocation',
+             'Principal shall pay an upfront fee of ________ (the “Prepaid Fee”), due in full upon execution. The Prepaid Fee secures a dedicated allocation of no fewer than ____ Introductions (the “Introduction Minimum”) and up to ____ Introductions (the “Introduction Maximum”), establishing a unit price of ________ per Introduction (the “Per-Introduction Price”, equal to the Prepaid Fee divided by the Introduction Minimum).'),
+            (3, '§2.2 Primary Term',
+             'The window for fulfilling the allocation (the “Primary Term”) shall span ____ days, commencing the first Monday following the later of the Effective Date and the date the Prepaid Fee irrevocably clears.'),
+            (4, 'Execution — Operator column',
+             'Operator signature block: signature line, Name: Benjamin J. Crane (pre-set), Title: Managing Director (pre-set), Date: ________.'),
+            (5, 'Execution — Principal column',
+             'Principal signature block: signature line, Name: ________, Title: ________, Date: ________.')
+       ) AS p(ordinal, heading, body)
+ WHERE a.key = 'prepaid_introductions_range'
+ON CONFLICT (archetype_id, ordinal) DO NOTHING;
+-- Variable → paragraph mapping (only fills where unset, so operator edits are never clobbered).
+UPDATE gc.global_agreement_archetype_variables v
+   SET paragraph_ordinal = m.para
+  FROM (VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,2),(8,3),(9,4),(10,4),(11,5),(12,5),(13,5),(14,5))
+       AS m(ord, para),
+       gc.global_agreement_archetypes a
+ WHERE a.key = 'prepaid_introductions_range'
+   AND v.archetype_id = a.id AND v.ordinal = m.ord AND v.paragraph_ordinal IS NULL;
+
 -- Per (Documenso template, field label): the AFTER-MINTING state in Documenso's own terms
 -- (post_mint_required / post_mint_read_only) + the template-level default value. The template's
 -- own Required/Read-Only are facts on the mirror; these rows are what generate/payments resolve.
