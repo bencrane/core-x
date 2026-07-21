@@ -27,8 +27,8 @@ blanks once, in the editor). Two structural changes from v3:
 | `IntroNumMax` | §2.1 | Entered | Read-Only |
 | `PricePerIntroMin` | §2.1 | **Derived** = PrepaidFee ÷ IntroNumMin (operator supplies the figure — Documenso does no arithmetic) | Read-Only |
 | `DaysToFill` | §2.2 | Entered | Read-Only |
-| `Full Name` | sig block (Principal Name) | Entered/signer | per operator ruling |
-| `Title` | sig block (Principal Title) | Entered/signer | per operator ruling |
+| `Full Name` | sig block (Participant Name) | Entered/signer | per operator ruling |
+| `Title` | sig block (Participant Title) | Entered/signer | per operator ruling |
 | signature / date fields | both sig columns | Documenso native | Required |
 
 Counterparty-visible labels are presentation-optimized (`Legal Entity Name`, `D/B/A Name`,
