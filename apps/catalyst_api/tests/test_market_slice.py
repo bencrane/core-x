@@ -228,3 +228,40 @@ def test_mega_series_reads_fy_won_over_unfinanced_holders() -> None:
     sql = build_mega_sql(dict(_DEFAULT_BAND))["series"]
     assert "active_obl_fin_unfin > 0" in sql
     assert "gtm_entity_fy_won" in sql and "w.fy >= 2019" in sql
+
+
+# ── active awards as points (the award-grain lens) ───────────────────────────
+
+def test_awards_sql_joins_centroids_on_the_known_key() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, _ = build_awards_sql(None, 4000)
+    assert "c.generated_unique_award_id = p.award_key" in points
+    assert "LEFT JOIN usaspending_award_pop_centroids" in points, "geo never drops awards"
+
+
+def test_awards_sql_active_definition_and_ranking() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 2500)
+    for sql in (points, count):
+        assert "a.current_end_date >= current_date" in sql
+        assert "a.is_terminated = FALSE" in sql
+    assert "ORDER BY obl DESC, award_key" in points and "LIMIT 2500" in points
+
+
+def test_awards_predicate_leg_rides_both_statements() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    expr, _, _ = compile_predicates(
+        {"predicates": [{"term": "active_award_pricing_mix", "min_ffp_unfinanced_share": 0.7}]}
+    )
+    points, count = build_awards_sql(expr, 4000)
+    for sql in (points, count):
+        assert "a.recipient_uei IN (" in sql
+        assert "active_ffp_unfinanced_share" in sql
+
+
+def test_awards_count_is_full_cohort_totals() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    _, count = build_awards_sql(None, 100)
+    assert "count(*) AS awards" in count
+    assert "count(DISTINCT a.recipient_uei) AS firms" in count
+    assert "LIMIT" not in count
