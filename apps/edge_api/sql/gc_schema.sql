@@ -13,9 +13,10 @@ CREATE TABLE IF NOT EXISTS gc.global_agreement_archetypes (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO gc.global_agreement_archetypes (key, name) VALUES
-    ('prepaid_introductions', 'Prepaid Introductions'),
-    ('digital_event',         'Digital Event'),
-    ('capital_facility',      'Capital Facility')
+    ('prepaid_introductions',       'Prepaid Introductions'),
+    ('digital_event',               'Digital Event'),
+    ('capital_facility',            'Capital Facility'),
+    ('prepaid_introductions_range', 'Prepaid Introductions (Range)')
 ON CONFLICT (key) DO NOTHING;
 
 -- One row per VERSION within an archetype (mirrors the repo content tree; content_path is the
@@ -29,6 +30,16 @@ CREATE TABLE IF NOT EXISTS gc.global_agreement_archetype_versions (
     created_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT global_agreement_archetype_versions_archetype_version_uniq UNIQUE (archetype_id, version)
 );
+-- Seeded version rows (idempotent on content_path — the repo SoR pointer, 4 segments:
+-- brand/path/archetype/version, exactly what the BFF splits for render/push).
+INSERT INTO gc.global_agreement_archetype_versions (archetype_id, content_path, name, version)
+SELECT a.id,
+       'government-contracted/docraptor-to-documenso-template/prepaid-introductions-range/v1',
+       'Strategic Origination Agreement (Prepaid Introductions, Range) — One-Page Body',
+       'v1'
+  FROM gc.global_agreement_archetypes a
+ WHERE a.key = 'prepaid_introductions_range'
+ON CONFLICT (content_path) DO NOTHING;
 
 -- Per (Documenso template, field label): the AFTER-MINTING state in Documenso's own terms
 -- (post_mint_required / post_mint_read_only) + the template-level default value. The template's
