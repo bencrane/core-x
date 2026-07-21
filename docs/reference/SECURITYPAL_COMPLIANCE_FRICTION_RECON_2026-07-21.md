@@ -7,8 +7,9 @@
 - **Thesis:** Federal security compliance (NIST SP 800-171, CMMC L2, DFARS flow-downs, prime SCRM)
   is exponentially harder than commercial. Federal awards data pinpoints which commercial software
   vendors are hitting that wall *now* — SecurityPal's targeting substrate.
-- **Deliverable table:** `gtm.securitypal_segment_a` (HQX Postgres) — the actionable Segment A list
-  with POC. This doc is the reproducible analysis; the table is the hand-off asset.
+- **Deliverable tables (HQX Postgres):** `gtm.securitypal_segment_a` (1,579), `gtm.securitypal_segment_b`
+  (470), `gtm.securitypal_segment_c` (360) — actionable lists with POC. This doc is the reproducible
+  analysis; the tables are the hand-off assets (POC PII lives in the DB, not git).
 
 The core move: you don't need a contract to see the compliance wall — you need to see who is being
 **forced through someone else's security review right now.** Three data shapes expose that.
@@ -57,7 +58,8 @@ not build.
 
 **TAM:** 1,292 software vendors first-touched DoD in 18 mo; **470** are true crossers (prior
 civilian federal), **141** of those in the commercial-SaaS universe; **153** already have ≥$100k
-DoD obligated in 12 mo (money at stake now).
+DoD obligated in 12 mo (money at stake now). **Materialized:** `gtm.securitypal_segment_b` (470
+true crossers, POC via `sam_pocs`; example: Domino Data Lab, $16.5M DoD/12 mo).
 
 ## Segment C — the Scope-Verified CMMC/Clearance-Gated Subs  ★ surgical
 
@@ -68,7 +70,8 @@ requirement (`requires_clearance`/`requires_cmmc`).
 list. Coverage-limited (17% scope extraction) → a floor.
 
 **TAM:** **360** software subs flagged (314 active). Scaling the `govcon_scope_vectors` extraction
-would lift this materially.
+would lift this materially. **Materialized:** `gtm.securitypal_segment_c` (360 rows, `is_active`
+flag, `req_cert_tags` / `req_clearance_level_max`).
 
 ---
 
@@ -102,10 +105,13 @@ WHERE g.n_teaming_primes >= 3 AND g.teaming_last_action_date >= DATE '2024-01-20
 ORDER BY g.n_teaming_primes DESC, g.teaming_dollars_5y DESC NULLS LAST;
 ```
 
-Segment B (crossers) and C (scope-verified): see git history of this recon / the
-`gtm_txn_events_slim` first-DoD-touch + `govcon_subawardee_profiles` flag patterns. All three run
-warm against the published artifact — no Lance scan, no cross-system hand-join (that native
-join-ability is the 2026-07-20 `us_software_companies` sidecar promotion; guide §4 pattern (n)).
+Segment B (crossers): `gtm_txn_events_slim` first-DoD-touch (agencies 097/021/017/057) filtered to
+`first_dod >= 2024-01-20`, joined to `gtm_entity_behavior_rollup` for the prior-civilian test
+(`first_action_date < first_dod`) + `sam_pocs` for a contact. Segment C: `govcon_subawardee_profiles`
+`requires_cmmc OR requires_clearance`, software-filtered. Both are **materialized** (tables B/C
+above) with the full definition captured in each table's `COMMENT`. All three run warm against the
+published artifact — no Lance scan, no cross-system hand-join (that native join-ability is the
+2026-07-20 `us_software_companies` sidecar promotion; guide §4 pattern (n)).
 
 ---
 
