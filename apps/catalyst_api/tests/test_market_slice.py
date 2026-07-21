@@ -186,3 +186,45 @@ def test_grammar_entities_band_filters_both_statements() -> None:
 def test_grammar_entities_no_band_no_where() -> None:
     ent, cnt = build_grammar_entities_sql("SELECT uei FROM gtm_sam_entities", None, 50)
     assert "active_obl, 0) >=" not in ent and "active_obl, 0) >=" not in cnt
+
+
+# ── mega pack (everything unfinanced-in-force, no scope) ─────────────────────
+
+def test_mega_has_all_sections() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_mega_sql
+    sections = build_mega_sql(dict(_DEFAULT_BAND))
+    assert set(sections) == {"tiles", "matrix", "band_tier", "series"}
+
+
+def test_mega_tiles_are_single_table_entity_grain() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_mega_sql
+    sections = build_mega_sql(dict(_DEFAULT_BAND))
+    for name in ("tiles", "matrix"):
+        sql = sections[name]
+        assert "FROM gtm_entity_pricing_mix" in sql
+        assert "JOIN" not in sql, f"{name} must never join (the 83M-join class)"
+        assert sql.rstrip().endswith("FROM gtm_entity_pricing_mix"), (
+            f"{name} is the whole corpus — no top-level WHERE"
+        )
+
+
+def test_mega_band_tier_filters_on_band() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_mega_sql
+    sections = build_mega_sql({"min": 5e6, "max": 1e8})
+    assert "active_obl >= 5000000.0 AND active_obl <= 100000000.0" in sections["band_tier"]
+
+
+def test_mega_matrix_has_twenty_cells() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_mega_sql
+    sql = build_mega_sql(dict(_DEFAULT_BAND))["matrix"]
+    for pc in ("fixed", "cost", "tm_lh", "other"):
+        for fc in ("unfin", "prog", "perf", "comm", "othfin"):
+            assert f"active_obl_{pc}_{fc}" in sql
+            assert f"active_{pc}_{fc}_ct" in sql
+
+
+def test_mega_series_reads_fy_won_over_unfinanced_holders() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_mega_sql
+    sql = build_mega_sql(dict(_DEFAULT_BAND))["series"]
+    assert "active_obl_fin_unfin > 0" in sql
+    assert "gtm_entity_fy_won" in sql and "w.fy >= 2019" in sql

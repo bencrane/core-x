@@ -439,6 +439,98 @@ async def count(body: dict[str, Any]) -> dict[str, Any]:
         "artifact": payload.get("artifact"),
     }
 
+# ── mega market — everything unfinanced-in-force in FPDS (ruled 2026-07-21) ──
+#
+# The vantage point one level above every card: active awards (end ≥ today,
+# not terminated) whose latest FPDS contract-financing code is absent / Z /
+# NOT APPLICABLE, across the WHOLE corpus — no pair scope, no band on the
+# headline. Entity-grain single pass over gtm_entity_pricing_mix (the 71-col
+# billing lens); the FY series reads gtm_entity_fy_won over the
+# unfinanced-holding cohort. No predicates: the mega page is a standing
+# statement; cuts belong to Explore and the cards.
+
+_MEGA_PC = ("fixed", "cost", "tm_lh", "other")
+_MEGA_FC = ("unfin", "prog", "perf", "comm", "othfin")
+
+_MEGA_DEFINITION = (
+    "unfinanced = latest FPDS contract-financing code absent or 'not applicable'; "
+    "in force = award end date >= today and not terminated; "
+    "dollars = life-to-date obligations on those awards"
+)
+
+
+def build_mega_sql(band: dict[str, float]) -> dict[str, str]:
+    """Pure SQL assembly for the mega pack — one statement per section."""
+    tile_cols = """
+       count(*) FILTER (WHERE active_obl_fin_unfin > 0) AS firms,
+       coalesce(sum(active_fin_unfin_ct), 0) AS awards_unfin,
+       round(coalesce(sum(active_obl), 0), 0) AS tot_usd,
+       round(coalesce(sum(active_obl_fin_unfin), 0), 0) AS unfin_usd,
+       round(coalesce(sum(active_obl_fixed_unfin), 0), 0) AS fixed_usd,
+       round(coalesce(sum(active_obl_cost_unfin), 0), 0) AS cost_usd,
+       round(coalesce(sum(active_obl_tm_lh_unfin), 0), 0) AS tm_usd,
+       round(coalesce(sum(active_obl_other_unfin), 0), 0) AS other_usd,
+       round(coalesce(sum(active_obl_fin_prog), 0), 0) AS prog_usd,
+       round(coalesce(sum(active_obl_fin_perf), 0), 0) AS perf_usd,
+       round(coalesce(sum(active_obl_fin_comm), 0), 0) AS comm_usd,
+       round(coalesce(sum(active_obl_fin_othfin), 0), 0) AS othfin_usd"""
+    matrix_cols = ",\n".join(
+        f"       round(coalesce(sum(active_obl_{pc}_{fc}), 0), 0) AS {pc}_{fc}_usd,\n"
+        f"       coalesce(sum(active_{pc}_{fc}_ct), 0) AS {pc}_{fc}_ct"
+        for pc in _MEGA_PC for fc in _MEGA_FC
+    )
+    return {
+        "tiles": f"SELECT{tile_cols}\nFROM gtm_entity_pricing_mix",
+        "matrix": f"SELECT\n{matrix_cols}\nFROM gtm_entity_pricing_mix",
+        "band_tier": f"SELECT{tile_cols}\nFROM gtm_entity_pricing_mix\n"
+                     f"WHERE active_obl >= {band['min']} AND active_obl <= {band['max']}",
+        "series": """
+WITH m AS (SELECT uei FROM gtm_entity_pricing_mix WHERE active_obl_fin_unfin > 0)
+SELECT w.fy AS fy,
+       round(coalesce(sum(w.won_obl), 0), 0) AS won_usd,
+       count(DISTINCT w.uei) AS firms
+FROM gtm_entity_fy_won w JOIN m USING (uei)
+WHERE w.fy >= 2019
+GROUP BY 1 ORDER BY 1""",
+    }
+
+
+@router.post("/mega", dependencies=[Depends(require_service_token)])
+async def mega(body: dict[str, Any]) -> dict[str, Any]:
+    """The mega-market pack — the aggregate the cards are constituents of.
+
+    Body: optionally {"band": {min, max}} for the tier section (defaults to
+    the capital band). Sections: tiles (whole corpus), the pricing×financing
+    matrix, the banded tier, and the FY-won series of the unfinanced-holding
+    cohort. Every number artifact-stamped; the definition rides the response.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    band = _parse_band(body)
+    sections = build_mega_sql(band)
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        results = await asyncio.gather(*[_run_sidecar(client, sql) for sql in sections.values()])
+    payloads = dict(zip(sections.keys(), results))
+
+    mrow = _row(payloads["matrix"])
+    matrix = [
+        {"pricing": pc, "financing": fc,
+         "usd": mrow.get(f"{pc}_{fc}_usd", 0), "awards": mrow.get(f"{pc}_{fc}_ct", 0)}
+        for pc in _MEGA_PC for fc in _MEGA_FC
+    ]
+    return {
+        "definition": _MEGA_DEFINITION,
+        "band": band,
+        "tiles": _row(payloads["tiles"]),
+        "matrix": matrix,
+        "band_tier": _row(payloads["band_tier"]),
+        "series": _rows(payloads["series"]),
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": payloads["tiles"].get("artifact"),
+    }
+
+
 _GEO_DISCLOSURE = (
     "coordinates are the firm's SAM registration location (gtm_entity_geo, HQ grain); "
     "firms without a geocode are served in the rows and the count, never dropped"
