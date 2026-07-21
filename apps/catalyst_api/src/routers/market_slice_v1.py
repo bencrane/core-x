@@ -622,6 +622,204 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── the award profile — one award's full anatomy, sectioned (2026-07-21) ─────
+#
+# The award-dot click read: everything the substrate knows about ONE award,
+# grouped into presentation-ready sections. Language comes from the
+# combo-grain layers (naics_psc_labor_profile.work_summary +
+# naics_psc_deliverable.what_was_done + the pg JTBD phrases) — NEVER
+# award_descriptions (sparse, low quality; operator ruling 2026-07-21).
+
+import re as _re
+
+_AWARD_KEY_RE = _re.compile(r"^[A-Za-z0-9_.\-]{8,120}$")
+
+
+def _safe_award_key(raw: Any) -> str:
+    key = str(raw or "")
+    if not _AWARD_KEY_RE.match(key):
+        raise _refuse("award_key must be a contract_award_unique_key (alnum/_/./- only)")
+    return key
+
+
+async def _award_jtbd(naics: str | None, psc: str | None) -> list[str]:
+    """Canonical job-to-be-done phrases for the award's combo (pg; soft-fail)."""
+    if not naics or not psc:
+        return []
+    try:
+        from ..db import get_db_connection
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT DISTINCT job_phrase FROM gtm.combo_job_to_be_done "
+                    "WHERE naics_code = %s AND psc_code = %s AND model_id = %s "
+                    "ORDER BY job_phrase",
+                    (naics, psc, "opus-4.8-canonical"),
+                )
+                return [r[0] for r in await cur.fetchall()]
+    except Exception:  # language garnish — never fail the profile over it
+        logger.warning("award jtbd lookup failed", exc_info=True)
+        return []
+
+
+@router.post("/award", dependencies=[Depends(require_service_token)])
+async def award_profile(body: dict[str, Any]) -> dict[str, Any]:
+    """One award's profile — sectioned for the Explore award drawer.
+
+    Body: {"award_key": "<contract_award_unique_key>"}. Sections: header,
+    work (combo language + JTBD), money, payment, clock, ledger (FY sums +
+    recent actions), vehicle, subcontracting, place. Artifact-stamped.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    key = _safe_award_key(body.get("award_key"))
+
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        state_payload = await _run_sidecar(client, f"""
+SELECT award_id_piid, recipient_uei, recipient_name, naics_code,
+       product_or_service_code, award_topology, idv_type_code, award_type_code,
+       type_of_set_aside_code, awarding_agency_code, awarding_sub_agency_code,
+       greatest(coalesce(life_to_date_obligated,0),0) AS obligated,
+       greatest(coalesce(current_total_value_of_award,0),0) AS current_value,
+       greatest(coalesce(potential_ceiling,0),0) AS potential_ceiling,
+       remaining_ceiling_headroom, consumed_pct,
+       pop_start_date, current_end_date, potential_end_date, days_to_expiry,
+       first_action_date, last_action_date, is_terminated,
+       latest_pricing_code, latest_financing_code, latest_business_size, latest_plan,
+       parent_award_id_piid, parent_awarding_agency_code, parent_idv_type_code,
+       parent_award_type_code, parent_match_flag
+FROM usaspending_fpds_prime_award_state
+WHERE contract_award_unique_key = '{key}'""", limit=1)
+        s = _row(state_payload)
+        if not s:
+            raise HTTPException(status_code=404, detail=f"unknown award '{key}'")
+        naics = s.get("naics_code")
+        psc = s.get("product_or_service_code")
+
+        lang_sql = f"""
+SELECT lp.naics_title, lp.psc_title, lp.work_summary,
+       d.what_was_done, d.work_type, d.regime,
+       n.naics_name AS naics_name_fallback, p.psc_name AS psc_name_fallback
+FROM (SELECT 1) one
+LEFT JOIN naics_psc_labor_profile lp ON lp.naics_code = '{naics}' AND lp.psc_code = '{psc}'
+LEFT JOIN naics_psc_deliverable d ON d.naics_code = '{naics}' AND d.psc_code = '{psc}'
+LEFT JOIN v_naics_names n ON n.naics_code = '{naics}'
+LEFT JOIN v_psc_names p ON p.psc_code = '{psc}'"""
+        fy_sql = f"""
+SELECT fy, round(sum(obligation),0) AS obligated, count(*) AS actions
+FROM txn_events_combo WHERE award_key = '{key}' GROUP BY 1 ORDER BY 1"""
+        recent_sql = f"""
+SELECT action_date, action_type_description, round(federal_action_obligation,0) AS obligation
+FROM txn_rows WHERE contract_award_unique_key = '{key}'
+ORDER BY action_date DESC LIMIT 8"""
+        vocab_sql = "SELECT field, code, name FROM fpds_code_vocab"
+        agency_sql = f"""
+SELECT (SELECT any_value(name) FROM agency_vocab WHERE code = '{s.get("awarding_agency_code")}') AS agency,
+       (SELECT any_value(name) FROM agency_sub_vocab WHERE code = '{s.get("awarding_sub_agency_code")}') AS sub_agency,
+       (SELECT any_value(name) FROM agency_vocab WHERE code = '{s.get("parent_awarding_agency_code")}') AS parent_agency"""
+        subout_sql = f"""
+SELECT sub_ct, distinct_subs, round(sub_amount_total,0) AS sub_amount_total,
+       first_sub_date, last_sub_date
+FROM award_subout_rollup WHERE prime_award_unique_key = '{key}'"""
+        place_sql = f"""
+SELECT (SELECT zip5 FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS zip5,
+       (SELECT state_code FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS state_code,
+       (SELECT pop_county_name FROM txn_events_combo WHERE award_key = '{key}'
+          AND pop_county_name IS NOT NULL ORDER BY action_date DESC LIMIT 1) AS county,
+       (SELECT pop_country_code FROM txn_events_combo WHERE award_key = '{key}'
+          ORDER BY action_date DESC LIMIT 1) AS country_code"""
+
+        results = await asyncio.gather(
+            _run_sidecar(client, lang_sql, limit=1),
+            _run_sidecar(client, fy_sql, limit=40),
+            _run_sidecar(client, recent_sql, limit=8),
+            _run_sidecar(client, vocab_sql, limit=200),
+            _run_sidecar(client, agency_sql, limit=1),
+            _run_sidecar(client, subout_sql, limit=1),
+            _run_sidecar(client, place_sql, limit=1),
+            _award_jtbd(str(naics) if naics else None, str(psc) if psc else None),
+        )
+    lang = _row(results[0])
+    by_fy = _rows(results[1])
+    recent = _rows(results[2])
+    vocab = {(r["field"], r["code"]): r["name"] for r in _rows(results[3])}
+    agencies = _row(results[4])
+    subout = _row(results[5]) or None
+    place = _row(results[6])
+    jtbd = results[7]
+
+    def vname(field: str, code: Any) -> str | None:
+        return vocab.get((field, str(code))) if code is not None else None
+
+    fin_code = s.get("latest_financing_code")
+    unfin = (fin_code is None) or (str(fin_code) in ("Z", "NOT APPLICABLE"))
+    obligated = float(s.get("obligated") or 0)
+    current_value = float(s.get("current_value") or 0)
+
+    return {
+        "award_key": key,
+        "header": {
+            "piid": s.get("award_id_piid"),
+            "recipient_name": s.get("recipient_name"),
+            "uei": s.get("recipient_uei"),
+            "agency": agencies.get("agency"),
+            "sub_agency": agencies.get("sub_agency"),
+            "topology": s.get("award_topology"),
+            "award_type_code": s.get("award_type_code"),
+            "idv_type_code": s.get("idv_type_code"),
+            "set_aside_code": s.get("type_of_set_aside_code"),
+            "is_terminated": s.get("is_terminated"),
+        },
+        "work": {
+            "naics": {"code": naics, "title": lang.get("naics_title") or lang.get("naics_name_fallback")},
+            "psc": {"code": psc, "title": lang.get("psc_title") or lang.get("psc_name_fallback")},
+            "work_summary": lang.get("work_summary"),
+            "what_was_done": lang.get("what_was_done"),
+            "work_type": lang.get("work_type"),
+            "regime": lang.get("regime"),
+            "jtbd": jtbd,
+        },
+        "money": {
+            "obligated": round(obligated),
+            "current_value": round(current_value),
+            "potential_ceiling": round(float(s.get("potential_ceiling") or 0)),
+            "remaining_ceiling_headroom": s.get("remaining_ceiling_headroom"),
+            "consumed_pct": s.get("consumed_pct"),
+            "unfunded_value": round(max(current_value - obligated, 0)),
+        },
+        "payment": {
+            "pricing": {"code": s.get("latest_pricing_code"),
+                        "name": vname("pricing", s.get("latest_pricing_code"))},
+            "financing": {"code": fin_code, "name": vname("financing", fin_code)},
+            "unfinanced": unfin,
+            "business_size": {"code": s.get("latest_business_size"),
+                              "name": vname("business_size_determination", s.get("latest_business_size"))},
+            "subcontracting_plan": s.get("latest_plan"),
+        },
+        "clock": {
+            "pop_start": s.get("pop_start_date"),
+            "current_end": s.get("current_end_date"),
+            "potential_end": s.get("potential_end_date"),
+            "days_to_expiry": s.get("days_to_expiry"),
+            "first_action": s.get("first_action_date"),
+            "last_action": s.get("last_action_date"),
+        },
+        "ledger": {"by_fy": by_fy, "recent": recent},
+        "vehicle": {
+            "parent_piid": s.get("parent_award_id_piid"),
+            "parent_agency": agencies.get("parent_agency"),
+            "parent_idv_type_code": s.get("parent_idv_type_code"),
+            "parent_award_type_code": s.get("parent_award_type_code"),
+            "parent_match_flag": s.get("parent_match_flag"),
+        },
+        "subcontracting": subout,
+        "place": place,
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": state_payload.get("artifact"),
+    }
+
+
 _GEO_DISCLOSURE = (
     "coordinates are the firm's SAM registration location (gtm_entity_geo, HQ grain); "
     "firms without a geocode are served in the rows and the count, never dropped"

@@ -265,3 +265,13 @@ def test_awards_count_is_full_cohort_totals() -> None:
     assert "count(*) AS awards" in count
     assert "count(DISTINCT a.recipient_uei) AS firms" in count
     assert "LIMIT" not in count
+
+
+# ── award profile (the award-dot click read) ─────────────────────────────────
+
+def test_award_key_validation_refuses_injection() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import _safe_award_key
+    assert _safe_award_key("CONT_AWD_DEAC0500OR22725_8900_-NONE-_-NONE-")
+    for bad in ("x' OR 1=1 --", "a b", "short", "", None, "k;semicolons"):
+        with pytest.raises(HTTPException):
+            _safe_award_key(bad)
