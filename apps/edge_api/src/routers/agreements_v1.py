@@ -267,7 +267,7 @@ async def _generate_inputs(cur, agreement_id: str) -> dict | None:
         f"""
         SELECT {_ROW_COLS}, d.deal_handle, d.company_name,
                (SELECT jsonb_object_agg(av.documenso_field_label_to_use, jsonb_build_object(
-                          'default_document_field_value', NULL,
+                          'default_document_field_value', av.default_value,
                           'read_only', av.post_mint_read_only IS TRUE,
                           'required', av.post_mint_required IS TRUE))
                   FROM gc.global_agreement_archetype_variables av
@@ -419,7 +419,7 @@ async def template_fields(template_id: int) -> dict:
                 """
                 SELECT env.documenso_id, env.title,
                        (SELECT jsonb_object_agg(av.documenso_field_label_to_use, jsonb_build_object(
-                                  'default_document_field_value', NULL,
+                                  'default_document_field_value', av.default_value,
                                   'read_only', av.post_mint_read_only IS TRUE))
                           FROM gc.global_agreement_archetype_variables av
                           JOIN gc.global_agreement_archetypes ga ON ga.id = av.archetype_id
