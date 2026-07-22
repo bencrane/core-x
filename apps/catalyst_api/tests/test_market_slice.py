@@ -313,3 +313,25 @@ def test_flow_active_only_predicate_uses_aliased_uei() -> None:
     )
     sql = build_flow_sql(expr, 2019, 2025, active_only=True)
     assert "t.uei IN (" in sql and "physical_state IN ('CA')" in sql
+
+
+# ── firm profile (the award-drawer flip) ─────────────────────────────────────
+def test_firm_uei_guard_accepts_and_normalizes() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import _safe_uei
+    assert _safe_uei("wbbsnba9gbl7") == "WBBSNBA9GBL7"
+    assert _safe_uei(" WBBSNBA9GBL7 ") == "WBBSNBA9GBL7"
+
+
+def test_firm_uei_guard_refuses_injection_and_shape() -> None:
+    import pytest
+    from fastapi import HTTPException
+    from apps.catalyst_api.src.routers.market_slice_v1 import _safe_uei
+    for bad in ("", "short", "evil' OR '1'='1", "WBBSNBA9GBL7X", "WBBSNBA9GBL", None):
+        with pytest.raises(HTTPException):
+            _safe_uei(bad)
+
+
+def test_firm_fy_series_never_shows_fy26() -> None:
+    from apps.catalyst_api.src.routers import market_slice_v1 as m
+    assert m._FIRM_FY_END == 2025, "FY2026 does not exist on camera (operator ruling)"
+    assert m._FIRM_FY_START == 2001

@@ -984,3 +984,199 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
         "artifact": ent_payload.get("artifact"),
     }
+
+
+# ── the firm profile (the award-drawer FLIP read) ─────────────────────────────
+#
+# The award⇄firm flip: everything the substrate knows about ONE firm, grouped
+# into presentation-ready sections. Every leg is a point-read on a uei-sorted
+# mart, so unlike /award (award-key probes on non-award-sorted txn tables,
+# ~13s cold) this profile is ms-class end to end. FY-won series is capped at
+# FY2025 — FY2026 does not exist on any camera-facing surface (operator
+# ruling 2026-07-21).
+
+_FIRM_FY_START = 2001
+_FIRM_FY_END = 2025
+
+_POC_DISCLOSURE = (
+    "points of contact carry name/title/geo only — the SAM source has no "
+    "email/phone columns; n_dialable/n_emailable count enrichment-layer coverage"
+)
+
+
+def _safe_uei(raw: Any) -> str:
+    uei = str(raw or "").strip().upper()
+    if not _re.match(r"^[A-Z0-9]{12}$", uei):
+        raise _refuse("uei must be a 12-char alphanumeric UEI")
+    return uei
+
+
+@router.post("/firm", dependencies=[Depends(require_service_token)])
+async def firm_profile(body: dict[str, Any]) -> dict[str, Any]:
+    """One firm's profile — sectioned for the Explore award-drawer flip.
+
+    Body: {"uei": "<UEI>"}. Sections: identity, posture (active book +
+    committed/vehicle split), mix (pricing x financing composition of the
+    active book), fy_won (prime $ won per completed FY, 2001-2025), agencies
+    (who funds them, by $), sub_work (their subawardee side), contacts
+    (SAM POCs + contactability coverage). Artifact-stamped.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    uei = _safe_uei(body.get("uei"))
+
+    core_sql = f"""
+SELECT e.legal_business_name, e.physical_city, e.physical_state, e.physical_zip,
+       e.primary_naics, e.sam_is_active, e.in_dsbs, e.cage_code, e.normalized_domain,
+       f.industry, f.employee_size_range, f.year_founded, f.linkedin_slug,
+       b.prime_obl_24mo, b.prime_obl_lifetime, b.sub_amt_24mo, b.sub_amt_lifetime,
+       b.active_award_ct, b.active_obl, b.last_action_date, b.top_naics, b.top_agency_code,
+       (SELECT any_value(name) FROM agency_vocab WHERE code = b.top_agency_code) AS top_agency_name,
+       k.committed_award_ct, k.committed_value, k.committed_obligated, k.committed_runway,
+       k.committed_award_median, k.vehicle_ct, k.vehicle_ceiling,
+       k.next_committed_end_date, k.active_agency_ct,
+       p.active_fixed_share, p.active_financed_share, p.active_ffp_unfinanced_share,
+       p.active_obl_fixed, p.active_obl_cost, p.active_obl_tm_lh, p.active_obl_other,
+       p.active_obl_fin_unfin, p.active_obl_fin_prog, p.active_obl_fin_perf,
+       p.active_obl_fin_comm, p.active_obl_fin_othfin,
+       a.dsbs_8a, a.dsbs_hubzone, a.dsbs_wosb, a.dsbs_sdvosb,
+       a.n_dialable, a.n_emailable, a.total_amt_24mo, a.total_amt_lifetime
+FROM gtm_sam_entities e
+LEFT JOIN gtm_entity_firmographics f ON f.uei = e.uei
+LEFT JOIN gtm_entity_behavior_rollup b ON b.uei = e.uei
+LEFT JOIN gtm_entity_award_book k ON k.uei = e.uei
+LEFT JOIN gtm_entity_pricing_mix p ON p.uei = e.uei
+LEFT JOIN gtm_audience_entities a ON a.uei = e.uei
+WHERE e.uei = '{uei}'"""
+
+    fy_sql = f"""
+SELECT fy, won_obl, award_ct, action_ct, won_obl_set_aside
+FROM gtm_entity_fy_won
+WHERE uei = '{uei}' AND fy BETWEEN {_FIRM_FY_START} AND {_FIRM_FY_END}
+ORDER BY fy"""
+
+    agency_sql = f"""
+SELECT t.awarding_agency_code AS code, any_value(v.name) AS name,
+       SUM(t.obligation) AS obligated, COUNT(*) AS actions
+FROM gtm_txn_events_slim t
+LEFT JOIN agency_vocab v ON v.code = t.awarding_agency_code
+WHERE t.uei = '{uei}'
+GROUP BY 1 ORDER BY 3 DESC LIMIT 8"""
+
+    sub_sql = f"""
+SELECT COUNT(*) AS subaward_ct, SUM(subaward_amount_num) AS subaward_amount,
+       COUNT(DISTINCT prime_awardee_uei) AS prime_ct
+FROM subaward_canonical_slim_by_sub
+WHERE subawardee_uei = '{uei}'"""
+
+    sub_primes_sql = f"""
+SELECT s.prime_awardee_uei AS uei, any_value(e.legal_business_name) AS name,
+       SUM(s.subaward_amount_num) AS amount, COUNT(*) AS subawards
+FROM subaward_canonical_slim_by_sub s
+LEFT JOIN gtm_sam_entities e ON e.uei = s.prime_awardee_uei
+WHERE s.subawardee_uei = '{uei}'
+GROUP BY 1 ORDER BY 3 DESC LIMIT 5"""
+
+    poc_sql = f"""
+SELECT poc_type, poc_slot_no, first_name, last_name, title, city, state
+FROM sam_pocs
+WHERE uei = '{uei}'
+ORDER BY poc_type, poc_slot_no LIMIT 24"""
+
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        core_p, fy_p, agency_p, sub_p, sub_primes_p, poc_p = await asyncio.gather(
+            _run_sidecar(client, core_sql, limit=1),
+            _run_sidecar(client, fy_sql, limit=64),
+            _run_sidecar(client, agency_sql, limit=8),
+            _run_sidecar(client, sub_sql, limit=1),
+            _run_sidecar(client, sub_primes_sql, limit=5),
+            _run_sidecar(client, poc_sql, limit=24),
+        )
+    c = _row(core_p)
+    if not c:
+        raise HTTPException(status_code=404, detail=f"unknown uei '{uei}'")
+    sub = _row(sub_p)
+
+    return {
+        "uei": uei,
+        "identity": {
+            "legal_business_name": c.get("legal_business_name"),
+            "city": c.get("physical_city"),
+            "state": c.get("physical_state"),
+            "zip": c.get("physical_zip"),
+            "primary_naics": c.get("primary_naics"),
+            "cage_code": c.get("cage_code"),
+            "domain": c.get("normalized_domain"),
+            "linkedin_slug": c.get("linkedin_slug"),
+            "sam_is_active": c.get("sam_is_active"),
+            "in_dsbs": c.get("in_dsbs"),
+            "industry": c.get("industry"),
+            "employee_size_range": c.get("employee_size_range"),
+            "year_founded": c.get("year_founded"),
+            "designations": {
+                "dsbs_8a": c.get("dsbs_8a"),
+                "dsbs_hubzone": c.get("dsbs_hubzone"),
+                "dsbs_wosb": c.get("dsbs_wosb"),
+                "dsbs_sdvosb": c.get("dsbs_sdvosb"),
+            },
+        },
+        "posture": {
+            "active_obl": c.get("active_obl"),
+            "active_award_ct": c.get("active_award_ct"),
+            "committed_award_ct": c.get("committed_award_ct"),
+            "committed_value": c.get("committed_value"),
+            "committed_obligated": c.get("committed_obligated"),
+            "committed_runway": c.get("committed_runway"),
+            "committed_award_median": c.get("committed_award_median"),
+            "vehicle_ct": c.get("vehicle_ct"),
+            "vehicle_ceiling": c.get("vehicle_ceiling"),
+            "next_committed_end_date": c.get("next_committed_end_date"),
+            "active_agency_ct": c.get("active_agency_ct"),
+            "prime_obl_24mo": c.get("prime_obl_24mo"),
+            "prime_obl_lifetime": c.get("prime_obl_lifetime"),
+            "total_amt_24mo": c.get("total_amt_24mo"),
+            "total_amt_lifetime": c.get("total_amt_lifetime"),
+            "last_action_date": c.get("last_action_date"),
+            "top_naics": c.get("top_naics"),
+            "top_agency_code": c.get("top_agency_code"),
+            "top_agency_name": c.get("top_agency_name"),
+        },
+        "mix": {
+            "active_fixed_share": c.get("active_fixed_share"),
+            "active_financed_share": c.get("active_financed_share"),
+            "active_ffp_unfinanced_share": c.get("active_ffp_unfinanced_share"),
+            "by_pricing": {
+                "fixed": c.get("active_obl_fixed"),
+                "cost": c.get("active_obl_cost"),
+                "tm_lh": c.get("active_obl_tm_lh"),
+                "other": c.get("active_obl_other"),
+            },
+            "by_financing": {
+                "unfinanced": c.get("active_obl_fin_unfin"),
+                "progress": c.get("active_obl_fin_prog"),
+                "performance": c.get("active_obl_fin_perf"),
+                "commercial": c.get("active_obl_fin_comm"),
+                "other_financed": c.get("active_obl_fin_othfin"),
+            },
+        },
+        "fy_won": _rows(fy_p),
+        "agencies": _rows(agency_p),
+        "sub_work": {
+            "subaward_ct": sub.get("subaward_ct", 0),
+            "subaward_amount": sub.get("subaward_amount"),
+            "prime_ct": sub.get("prime_ct", 0),
+            "sub_amt_24mo": c.get("sub_amt_24mo"),
+            "sub_amt_lifetime": c.get("sub_amt_lifetime"),
+            "top_primes": _rows(sub_primes_p),
+        },
+        "contacts": {
+            "pocs": _rows(poc_p),
+            "n_dialable": c.get("n_dialable"),
+            "n_emailable": c.get("n_emailable"),
+        },
+        "disclosures": [_POC_DISCLOSURE],
+        "fy_range": [_FIRM_FY_START, _FIRM_FY_END],
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": core_p.get("artifact"),
+    }
