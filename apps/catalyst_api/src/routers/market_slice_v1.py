@@ -783,19 +783,17 @@ SELECT award_id_piid, recipient_uei, recipient_name, naics_code,
        latest_pricing_code, latest_financing_code, latest_business_size, latest_plan,
        parent_award_id_piid, parent_awarding_agency_code, parent_idv_type_code,
        parent_award_type_code, parent_match_flag
-FROM usaspending_fpds_prime_award_state
-WHERE contract_award_unique_key = '{key}'""", limit=1)
+FROM prime_award_state_by_key
+WHERE award_key_pfx = substr('{key}', 10, 12) AND contract_award_unique_key = '{key}'""", limit=1)
         s = _row(state_payload)
         if not s:
             raise HTTPException(status_code=404, detail=f"unknown award '{key}'")
         naics = s.get("naics_code")
         psc = s.get("product_or_service_code")
-        uei = str(s.get("recipient_uei") or "")
-        # Every per-award txn probe carries the recipient predicate: the txn
-        # tables are not award-key-sorted, and the uei predicate prunes the
-        # 108M scan to the firm's slice (measured 11.6s -> 1.1s per probe).
-        uei_leg = f"uei = '{uei}' AND " if _AWARD_KEY_RE.match(uei) else ""
-        uei_leg_rows = f"recipient_uei = '{uei}' AND " if _AWARD_KEY_RE.match(uei) else ""
+        # Build-cycle 2026-07-21: every per-award probe rides an award-key-
+        # sorted companion table (prime_award_state_by_key, txn_events_combo_
+        # by_award, txn_rows_by_award, award_pop_centroids_by_key) — the #1299
+        # uei-pruning legs are gone; key probes prune zone maps directly.
 
         lang_sql = f"""
 SELECT lp.naics_title, lp.psc_title, lp.work_summary,
@@ -808,10 +806,12 @@ LEFT JOIN v_naics_names n ON n.naics_code = '{naics}'
 LEFT JOIN v_psc_names p ON p.psc_code = '{psc}'"""
         fy_sql = f"""
 SELECT fy, round(sum(obligation),0) AS obligated, count(*) AS actions
-FROM txn_events_combo WHERE {uei_leg}award_key = '{key}' GROUP BY 1 ORDER BY 1"""
+FROM txn_events_combo_by_award
+WHERE award_key_pfx = substr('{key}', 10, 12) AND award_key = '{key}' GROUP BY 1 ORDER BY 1"""
         recent_sql = f"""
 SELECT action_date, action_type_description, round(federal_action_obligation,0) AS obligation
-FROM txn_rows WHERE {uei_leg_rows}contract_award_unique_key = '{key}'
+FROM txn_rows_by_award
+WHERE award_key_pfx = substr('{key}', 10, 12) AND contract_award_unique_key = '{key}'
 ORDER BY action_date DESC LIMIT 8"""
         vocab_sql = "SELECT field, code, name FROM fpds_code_vocab"
         agency_sql = f"""
@@ -823,11 +823,11 @@ SELECT sub_ct, distinct_subs, round(sub_amount_total,0) AS sub_amount_total,
        first_sub_date, last_sub_date
 FROM award_subout_rollup WHERE prime_award_unique_key = '{key}'"""
         place_sql = f"""
-SELECT (SELECT zip5 FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS zip5,
-       (SELECT state_code FROM usaspending_award_pop_centroids WHERE generated_unique_award_id = '{key}' LIMIT 1) AS state_code,
-       (SELECT pop_county_name FROM txn_events_combo WHERE {uei_leg}award_key = '{key}'
+SELECT (SELECT zip5 FROM award_pop_centroids_by_key WHERE award_key_pfx = substr('{key}', 10, 12) AND generated_unique_award_id = '{key}' LIMIT 1) AS zip5,
+       (SELECT state_code FROM award_pop_centroids_by_key WHERE award_key_pfx = substr('{key}', 10, 12) AND generated_unique_award_id = '{key}' LIMIT 1) AS state_code,
+       (SELECT pop_county_name FROM txn_events_combo_by_award WHERE award_key_pfx = substr('{key}', 10, 12) AND award_key = '{key}'
           AND pop_county_name IS NOT NULL ORDER BY action_date DESC LIMIT 1) AS county,
-       (SELECT pop_country_code FROM txn_events_combo WHERE {uei_leg}award_key = '{key}'
+       (SELECT pop_country_code FROM txn_events_combo_by_award WHERE award_key_pfx = substr('{key}', 10, 12) AND award_key = '{key}'
           ORDER BY action_date DESC LIMIT 1) AS country_code"""
 
         results = await asyncio.gather(
@@ -999,8 +999,8 @@ _FIRM_FY_START = 2001
 _FIRM_FY_END = 2025
 
 _POC_DISCLOSURE = (
-    "points of contact carry name/title/geo only — the SAM source has no "
-    "email/phone columns; n_dialable/n_emailable count enrichment-layer coverage"
+    "people are served from gtm_person_channels (SAM people x enrichment "
+    "contactability): email/phone/linkedin where resolved, else name/title only"
 )
 
 
@@ -1078,10 +1078,12 @@ WHERE s.subawardee_uei = '{uei}'
 GROUP BY 1 ORDER BY 3 DESC LIMIT 5"""
 
     poc_sql = f"""
-SELECT poc_type, poc_slot_no, first_name, last_name, title, city, state
-FROM sam_pocs
+SELECT display_name, first_name, last_name, best_title AS title,
+       email, email_verification_status, phone, phone_status,
+       person_linkedin_url_norm AS linkedin, is_govt_poc, is_ebiz_poc, n_sources
+FROM gtm_person_channels
 WHERE uei = '{uei}'
-ORDER BY poc_type, poc_slot_no LIMIT 24"""
+ORDER BY n_sources DESC, sam_person_id LIMIT 24"""
 
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=90.0) as client:
