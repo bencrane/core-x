@@ -548,18 +548,38 @@ _AWARDS_GEO_DISCLOSURE = (
 )
 
 
-def build_awards_sql(predicate_expr: str | None, limit: int) -> tuple[str, str]:
-    """(points_sql, count_sql) over the active-award universe ∪ predicates."""
+def build_awards_sql(
+    predicate_expr: str | None,
+    limit: int,
+    pairs: list[tuple[str, str]] | None = None,
+    uei: str | None = None,
+) -> tuple[str, str]:
+    """(points_sql, count_sql) over the active-award universe ∪ predicates.
+
+    `pairs` narrows to a market's WORK SCOPE (award naics×psc in the card's
+    pair set — semantics (b), operator-ruled 2026-07-22: the market's actual
+    paper, not every award its cohort firms hold; band deliberately does NOT
+    apply, award grain has no firm-size band). `uei` narrows to one firm (the
+    firm-dot PoP overlay). Both compose with the predicate leg.
+    """
     pred_leg = (
         f"\n  AND a.recipient_uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
     )
+    uei_leg = f"\n  AND a.recipient_uei = '{uei}'" if uei else ""
+    pair_values = ",".join(f"('{n}','{p}')" for n, p in (pairs or []))
+    pair_cte = f"pairs(naics_code, psc_code) AS (VALUES {pair_values}),\n" if pairs else ""
+    pair_join = (
+        "\nJOIN pairs pr ON a.naics_code = pr.naics_code AND a.product_or_service_code = pr.psc_code"
+        if pairs
+        else ""
+    )
     base = f"""
-FROM usaspending_fpds_prime_award_state a
-WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}"""
+FROM usaspending_fpds_prime_award_state a{pair_join}
+WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}{uei_leg}"""
     # Rank first, hydrate geo after: the centroid join runs over the ≤limit
     # page, never as a 30.7M hash build (measured 15.3s → sub-second).
     points = f"""
-WITH page AS (
+WITH {pair_cte}page AS (
   SELECT a.contract_award_unique_key AS award_key,
          a.award_id_piid AS piid,
          a.recipient_uei AS uei,
@@ -575,8 +595,9 @@ SELECT p.*, c.latitude, c.longitude
 FROM page p
 LEFT JOIN usaspending_award_pop_centroids c ON c.generated_unique_award_id = p.award_key
 ORDER BY p.obl DESC, p.award_key"""
+    count_cte = f"WITH pairs(naics_code, psc_code) AS (VALUES {pair_values})\n" if pairs else ""
     count = f"""
-SELECT count(*) AS awards,
+{count_cte}SELECT count(*) AS awards,
        round(coalesce(sum(greatest(coalesce(a.life_to_date_obligated, 0), 0)), 0), 0) AS obl_usd,
        count(DISTINCT a.recipient_uei) AS firms
 {base}"""
@@ -587,11 +608,14 @@ SELECT count(*) AS awards,
 async def awards(body: dict[str, Any]) -> dict[str, Any]:
     """Active awards as PoP points — the Explore award-lens map read.
 
-    Body: {"predicates"?: [...], "limit"? ≤ 4000}. Rows are the top-N active
-    awards by life-to-date obligations (with PoP geo LEFT-joined); `count` /
-    `obl_usd` / `firms` are always the FULL cohort. Unscoped reads are allowed
-    here by design: the universe statement ("a quarter-million active awards")
-    IS the surface's opening state.
+    Body: {"predicates"?: [...], "limit"? ≤ 4000, "slug"?, "uei"?}. Rows are the
+    top-N active awards by life-to-date obligations (with PoP geo LEFT-joined);
+    `count` / `obl_usd` / `firms` are always the FULL cohort. Unscoped reads are
+    allowed here by design: the universe statement ("a quarter-million active
+    awards") IS the surface's opening state. With `slug`, the read narrows to
+    the market's WORK SCOPE (award naics×psc in the card's pair set — the
+    market's actual paper). With `uei`, one firm's active awards (the firm-dot
+    PoP overlay).
     """
     if not isinstance(body, dict):
         raise _refuse("body must be an object")
@@ -600,7 +624,21 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
         raise _refuse(f"limit must be an integer in [1, {_AWARDS_MAX}]")
     expr, echoes, disclosures = _compile_body_predicates(body)
 
-    points_sql, count_sql = build_awards_sql(expr, limit)
+    slug = str(body.get("slug") or "")
+    pairs: list[tuple[str, str]] | None = None
+    title = None
+    if slug:
+        scope = await _resolve_scope(slug)
+        pairs = scope["pairs"]
+        title = scope["title"]
+        disclosures = [*disclosures,
+                       "narrowed to the market's work scope: award NAICS x PSC within the card's pair set "
+                       "(the market's paper — no firm-size band at award grain)"]
+    uei = str(body.get("uei") or "") or None
+    if uei is not None and not _AWARD_KEY_RE.match(uei):
+        raise _refuse("uei must be alphanumeric")
+
+    points_sql, count_sql = build_awards_sql(expr, limit, pairs=pairs, uei=uei)
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=90.0) as client:
         points_payload, count_payload = await asyncio.gather(
@@ -610,6 +648,8 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
     rows = _rows(points_payload)
     totals = _row(count_payload)
     return {
+        "slug": slug or None,
+        "title": title,
         "predicates": echoes,
         "disclosures": [*disclosures, _AWARDS_GEO_DISCLOSURE],
         "awards": rows,
