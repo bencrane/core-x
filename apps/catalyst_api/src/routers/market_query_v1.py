@@ -527,13 +527,15 @@ def active_award_value_award_keys(spec: dict) -> tuple[str, dict]:
 
 def _c_avg_annual_obligations(spec: dict) -> tuple[str, str, dict]:
     """Throughput fit: the firm's AVERAGE prime obligations per year over the
-    trailing five years (prime_obl_60mo / 5 — years with nothing count as
-    zero, so the one-hit wonder reads as run-rate, not peak). Whole-firm by
-    construction (disclosed): the size of the operation, not the slice."""
+    trailing TWO years (prime_obl_24mo / 2 — the current-scale reading,
+    operator-ruled 2026-07-22: a rolling window anchored to the snapshot, so
+    it reads the firm as it operates now, not its five-year steady state;
+    quiet months count as zero). Whole-firm by construction (disclosed):
+    the size of the operation, not the slice."""
     term = "avg_annual_obligations"
     mn = _req_num(spec, "min", term)
     mx = _req_num(spec, "max", term)
-    where = _min_max_where("prime_obl_60mo / 5.0", mn, mx, term)
+    where = _min_max_where("prime_obl_24mo / 2.0", mn, mx, term)
     sql = f"SELECT uei FROM gtm_entity_behavior_rollup WHERE {where}"
     return "affirmative", sql, {"term": term, "min": mn, "max": mx}
 
@@ -1093,7 +1095,7 @@ VOCABULARY: list[dict[str, Any]] = [
      "definition": "The firm holds at least one open award whose life-to-date obligations fall in the dollar range.",
      "dials": {"min/max": "dollars (at least one required)"}},
     {"term": "avg_annual_obligations", "family": "momentum",
-     "definition": "The firm's average prime obligations per year over the trailing five years (trailing-60-month total / 5; whole-firm).",
+     "definition": "The firm's average prime obligations per year over the trailing two years (trailing-24-month total / 2; whole-firm).",
      "dials": {"min/max": "dollars per year (at least one required)"}},
     {"term": "awarded_by_agency", "family": "buyers",
      "definition": "The firm has obligations awarded by the named agencies (FPDS awarding-agency codes).",

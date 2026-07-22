@@ -520,12 +520,13 @@ def test_active_award_value_holder_and_award_grain() -> None:
     assert "generated_unique_award_id" in key_sql and kecho["grain"] == "award"
 
 
-def test_avg_annual_obligations_is_trailing_60mo_over_5() -> None:
+def test_avg_annual_obligations_is_trailing_24mo_over_2() -> None:
+    # Current-scale basis (operator-ruled 2026-07-22): the favorable window.
     from apps.catalyst_api.src.routers.market_query_v1 import _c_avg_annual_obligations
     kind, sql, _ = _c_avg_annual_obligations({"min": 2e6, "max": 2e7})
     assert kind == "affirmative"
     assert "gtm_entity_behavior_rollup" in sql
-    assert "prime_obl_60mo / 5.0" in sql
+    assert "prime_obl_24mo / 2.0" in sql
 
 
 def test_money_fit_terms_refuse_empty_range() -> None:
