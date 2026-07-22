@@ -154,7 +154,7 @@ def _compile_body_predicates(body: dict[str, Any]) -> tuple[str | None, list[dic
 
 def build_pack_sql(
     pairs: list[tuple[str, str]],
-    band: dict[str, float],
+    band: dict[str, float] | None,
     predicate_expr: str | None,
     basis: str = "unfinanced",
 ) -> dict[str, str]:
@@ -198,8 +198,13 @@ m_any AS (
   WHERE TRUE{pred_leg}
 )"""
 
-    in_band = f"active_obl >= {band['min']} AND active_obl <= {band['max']}"
-    over_band = f"active_obl > {band['max']}"
+    # band=None (operator-ruled 2026-07-22): NO size gate — the band is a rail
+    # dial now, not a baked default. over_band degenerates to FALSE (no "above
+    # the band" lane when there is no band).
+    in_band = (
+        f"active_obl >= {band['min']} AND active_obl <= {band['max']}" if band else "TRUE"
+    )
+    over_band = f"active_obl > {band['max']}" if band else "FALSE"
 
     return {
         "tiles": cohort(in_band) + """
@@ -272,7 +277,7 @@ GROUP BY 1 ORDER BY 1""",
 
 def build_entities_sql(
     pairs: list[tuple[str, str]],
-    band: dict[str, float],
+    band: dict[str, float] | None,
     predicate_expr: str | None,
     limit: int,
     basis: str = "unfinanced",
@@ -350,7 +355,7 @@ LEFT JOIN gtm_entity_pricing_mix p USING (uei){band_where}"""
     return entities, count
 
 
-def build_count_sql(pairs: list[tuple[str, str]], band: dict[str, float],
+def build_count_sql(pairs: list[tuple[str, str]], band: dict[str, float] | None,
                     predicate_expr: str | None, basis: str = "unfinanced") -> str:
     sections = build_pack_sql(pairs, band, predicate_expr, basis=basis)
     prefix = sections["tiles"].split("SELECT (SELECT count(*) FROM m)")[0]
@@ -1016,7 +1021,9 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     if slug:
         scope = await _resolve_scope(slug)
-        band = _parse_band(body)
+        # No band unless the caller sends one (operator-ruled 2026-07-22): the
+        # Explore surface reads the whole market; the band is a rail dial.
+        band = _parse_band(body) if body.get("band") is not None else None
         ent_sql = build_entities_sql(scope["pairs"], band, expr, limit, basis=basis)
         count_sql = build_count_sql(scope["pairs"], band, expr, basis=basis)
         money_basis = "unfinanced_in_scope" if basis == "unfinanced" else "active_in_scope"
