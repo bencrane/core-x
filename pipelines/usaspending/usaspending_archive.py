@@ -1,26 +1,27 @@
-"""USAspending Award Data Archive ingest (LOCAL CLI) — monthly Full + Delta → two append Lance tables.
+"""USAspending Award Data Archive ingest (LOCAL CLI) — monthly Full + Delta → one Lance dataset per month.
 
 Lands the USAspending **Award Data Archive** monthly contract files (operator-dropped into the R2
 landing zone) VERBATIM — every column, every row, all-VARCHAR, exact download column names — into
-TWO append-only, snapshot-stamped Lance tables, SEPARATE from the pg-dump SoR
+per-month Lance datasets in the ``active/`` SoR, SEPARATE from the pg-dump SoR
 (``usaspending/transaction_search_fpds``) and the API fresh feed (``usaspending_api_fresh``):
 
-    FULL  → s3://data-sink/active/usaspending_archive_full_fpds/   (current-state FY snapshots)
-    DELTA → s3://data-sink/active/usaspending_archive_delta_fpds/  (change log; correction_delete_ind)
+    FULL  → s3://data-sink/active/usaspending_archive_full/<stamp>/    (that month's current-state FY snapshot)
+    DELTA → s3://data-sink/active/usaspending_archive_delta/<stamp>/   (that month's change log; correction_delete_ind)
 
-APPEND-ONLY. STAMPED. NO DATA LEFT BEHIND. Each monthly file is read verbatim (``read_csv``,
-``all_varchar=true``, SELECT *, no filter) + three provenance columns (``archive_snapshot_stamp`` /
-``archive_kind`` / ``archive_source_file``) and APPENDED — never overwritten, never cherry-picked.
-The FULL table accumulates monthly snapshots (latest wins at canonical-read via
-``max(last_modified_date)``); the DELTA table is the permanent deletion/mutation ledger (every
-``correction_delete_ind`` row — C/D/added — retained forever; the D rows are the only deletion signal).
+PER-MONTH. IMMUTABLE. STAMPED. Each monthly file is read verbatim (``read_csv``, ``all_varchar=true``,
+SELECT *, no filter) + three provenance columns (``archive_snapshot_stamp`` / ``archive_kind`` /
+``archive_source_file``) and written to its OWN dataset keyed by the snapshot stamp — one Lance dataset
+per month per kind, never co-mingled. The FULL ``<stamp>`` dataset is that month's current-state FY
+snapshot; the DELTA ``<stamp>`` dataset is that month's permanent deletion/mutation ledger (every
+``correction_delete_ind`` row — C/D/added — retained; the D rows are the only deletion signal).
 
-Runs LOCAL (doppler + uv) — no Modal, no auto-retries (a retry would double-append, since the write
-commits before the index builds), no detach. ``LANCE_BYPASS_SPILLING=true`` sorts the scalar-index
+Runs LOCAL (doppler + uv) — no Modal, no detach. ``LANCE_BYPASS_SPILLING=true`` sorts the scalar-index
 build in-RAM (the small DataFusion external-merge pool OOMs otherwise). Data-driven idempotency: an
-append is skipped if its ``archive_snapshot_stamp`` is already present in the table (robust to a prior
-partial run). Direct-to-R2 write at ``max_rows_per_file=250_000`` (small uniform fragments dodge R2's
-multipart rule); the multi-GB CSV streams via a record-batch reader so RAM stays bounded.
+ingest is skipped if the month's dataset already carries its ``archive_snapshot_stamp`` (pass force to
+re-write). A month's dataset is written whole (``mode="overwrite"`` locally, then a full prefix-replace
+publish), so a re-run cleanly replaces that ONE month and never touches another. Write at
+``max_rows_per_file=250_000`` (small uniform fragments dodge R2's multipart rule); the multi-GB CSV
+streams via a record-batch reader so RAM stays bounded.
 
     doppler run -p core-x -c prd -- uv run --no-project \
       --with 'pylance>=7' --with 'pyarrow>=17' --with 'duckdb>=1.5,<2' \
@@ -29,6 +30,7 @@ multipart rule); the multi-GB CSV streams via a record-batch reader so RAM stays
 
       ingest full  'landing/usaspending/2026-06-06/FY2026_All_Contracts_Full_20260606.zip'  20260606
       ingest delta 'landing/usaspending/2026-06-06/FY(All)_All_Contracts_Delta_20260606.zip' 20260606
+      verify full 20260606
 """
 
 from __future__ import annotations
@@ -47,8 +49,9 @@ os.environ.setdefault("LANCE_BYPASS_SPILLING", "true")
 
 BUCKET = "data-sink"
 ACTIVE = "s3://data-sink/active"
-FULL_URI = os.environ.get("ARCHIVE_FULL_URI", f"{ACTIVE}/usaspending_archive_full_fpds").rstrip("/") + "/"
-DELTA_URI = os.environ.get("ARCHIVE_DELTA_URI", f"{ACTIVE}/usaspending_archive_delta_fpds").rstrip("/") + "/"
+# One immutable Lance dataset per month per kind, addressed as <base>/<stamp>/ (see _dataset_uri).
+FULL_BASE = os.environ.get("ARCHIVE_FULL_BASE", f"{ACTIVE}/usaspending_archive_full").rstrip("/")
+DELTA_BASE = os.environ.get("ARCHIVE_DELTA_BASE", f"{ACTIVE}/usaspending_archive_delta").rstrip("/")
 DATA_STORAGE_VERSION = "2.1"
 MAX_ROWS_PER_FILE = 250_000
 BATCH_ROWS = 200_000
@@ -76,6 +79,12 @@ def _r2_so() -> dict[str, str]:
     return {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
             "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
             "endpoint": ep, "region": "auto"}
+
+
+def _dataset_uri(kind: str, stamp: str) -> str:
+    """Per-month dataset URI: <base>/<stamp>/ — one immutable Lance dataset per month per kind."""
+    base = FULL_BASE if kind == "full" else DELTA_BASE
+    return f"{base}/{stamp}/"
 
 
 def _s3():
@@ -186,7 +195,7 @@ def ingest(kind: str, zip_key: str, stamp: str, force: bool = False) -> dict:
     import lance
     if kind not in ("full", "delta"):
         raise SystemExit(f"kind must be 'full' or 'delta', got {kind!r}")
-    uri = FULL_URI if kind == "full" else DELTA_URI
+    uri = _dataset_uri(kind, stamp)
     so = _r2_so()
     started = dt.datetime.now(dt.timezone.utc)
 
@@ -216,8 +225,8 @@ def ingest(kind: str, zip_key: str, stamp: str, force: bool = False) -> dict:
         cols = len(reader.schema.names)
         write_mode = "overwrite"
         # Write Lance to LOCAL disk + index locally (no network), then boto3-publish to R2 — the
-        # blip-resilient path (see _publish_local_to_r2). Tables are (re)built fresh; the monthly-
-        # append cadence is a separate path (TODO) — here both tables start empty.
+        # blip-resilient path (see _publish_local_to_r2). Each month is its OWN dataset (<base>/<stamp>/),
+        # written whole — overwrite replaces only THIS month's dataset, never another month's.
         local_ds = os.path.join(SCRATCH, f"{kind}_lance")
         shutil.rmtree(local_ds, ignore_errors=True)
         log(f"writing Lance LOCALLY ({kind}, stamp={stamp}, {cols} cols) → {local_ds}")
@@ -266,10 +275,10 @@ def ingest(kind: str, zip_key: str, stamp: str, force: bool = False) -> dict:
             "write_mode": write_mode, "indices_built": built, "status": status}
 
 
-def verify(kind: str) -> dict:
+def verify(kind: str, stamp: str) -> dict:
     import duckdb
     import lance
-    uri = FULL_URI if kind == "full" else DELTA_URI
+    uri = _dataset_uri(kind, stamp)
     so = _r2_so()
     ds = lance.dataset(uri, storage_options=so)
     cols = set(ds.schema.names)
@@ -301,7 +310,7 @@ def main():
         force = len(sys.argv) > 5 and sys.argv[5].lower() in ("1", "true", "force")
         print(json.dumps(ingest(kind, zip_key, stamp, force=force), indent=2, default=str))
     elif cmd == "verify":
-        print(json.dumps(verify(sys.argv[2] if len(sys.argv) > 2 else "full"), indent=2, default=str))
+        print(json.dumps(verify(sys.argv[2], sys.argv[3]), indent=2, default=str))
     else:
         print(f"unknown command: {cmd} (init_ops|ingest|verify)")
         sys.exit(2)
