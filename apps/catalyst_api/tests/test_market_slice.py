@@ -291,6 +291,73 @@ def test_awards_no_band_no_holder_leg() -> None:
         assert "gtm_entity_pricing_mix" not in sql
 
 
+def test_awards_key_exprs_filter_the_paper() -> None:
+    # Award-grain geography (Awards-drawer semantics): the leg gates
+    # contract_award_unique_key, never recipient_uei.
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    key_sql = ("SELECT generated_unique_award_id FROM gtm_open_awards "
+               "WHERE primary_place_of_performance_state_code IN ('HI')")
+    points, count = build_awards_sql(None, 4000, award_key_exprs=[key_sql])
+    for sql in (points, count):
+        assert "a.contract_award_unique_key IN (" in sql
+        assert "primary_place_of_performance_state_code IN ('HI')" in sql
+
+
+def test_pop_award_key_projections() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import (
+        pop_states_award_keys, pop_within_award_keys)
+    sql, echo = pop_states_award_keys({"states": ["hi", "TX"]})
+    assert "SELECT generated_unique_award_id FROM gtm_open_awards" in sql
+    assert "IN ('HI','TX')" in sql and echo["grain"] == "award"
+    sql, echo = pop_within_award_keys({"zip": "76544", "miles": 150})
+    assert "generated_unique_award_id" in sql and "asin(sqrt(" in sql
+    assert echo["grain"] == "award" and echo["miles"] == 150.0
+
+
+# ── the WHEN frame (won-in-window) ───────────────────────────────────────────
+
+def test_parse_when_active_and_absent_mean_standing() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import _parse_when
+    assert _parse_when({}) is None
+    assert _parse_when({"when": {"mode": "active"}}) is None
+
+
+def test_parse_when_won_window() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import _parse_when
+    assert _parse_when({"when": {"mode": "won", "fy_start": 2025, "fy_end": 2026}}) == {
+        "fy_start": 2025, "fy_end": 2026}
+    for bad in ({"mode": "won", "fy_start": 2025},                       # missing end
+                {"mode": "won", "fy_start": 2026, "fy_end": 2025},        # inverted
+                {"mode": "won", "fy_start": 1999, "fy_end": 2025},        # out of range
+                {"mode": "lifetime"}):                                     # unknown mode
+        with pytest.raises(HTTPException):
+            _parse_when({"when": bad})
+
+
+def test_won_entities_sql_shape() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_won_entities_sql
+    ent, count = build_won_entities_sql(
+        PAIRS, {"min": 1e6, "max": 1e8}, None, 2000,
+        {"fy_start": 2025, "fy_end": 2026})
+    for sql in (ent, count):
+        assert "FROM txn_events_combo t" in sql
+        assert "t.fy BETWEEN 2025 AND 2026" in sql
+        assert "HAVING sum(t.obligation) > 0" in sql          # membership = introduction
+        assert "gtm_entity_pricing_mix" in sql                # band = holder property
+    assert "round(won.won_usd, 0) AS unfin_usd" in ent        # wire alias stable
+    assert "count(DISTINCT t.award_key) AS awards_touched" in ent
+    assert "ORDER BY unfin_usd DESC" in ent and "LIMIT 2000" in ent
+    assert "count(*) AS firms" in count and "LIMIT" not in count
+
+
+def test_won_entities_pairless_and_predicated() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_won_entities_sql
+    ent, _ = build_won_entities_sql(
+        None, None, "SELECT uei FROM x", 100, {"fy_start": 2024, "fy_end": 2024})
+    assert "JOIN pairs" not in ent
+    assert "t.uei IN (" in ent                                # predicate prunes inside won
+
+
 # ── award profile (the award-dot click read) ─────────────────────────────────
 
 def test_award_key_validation_refuses_injection() -> None:

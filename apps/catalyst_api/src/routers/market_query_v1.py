@@ -579,6 +579,19 @@ def _c_pop_active(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, {"term": term, "states": states}
 
 
+def pop_states_award_keys(spec: dict) -> tuple[str, dict]:
+    """AWARD-GRAIN projection of place_of_performance_of_active_awards: the
+    open-award KEYS whose own PoP state matches — the paper itself, not the
+    holders (the Awards-drawer semantics, operator-ruled 2026-07-22). Same
+    validation, same universe (gtm_open_awards) as the holder compiler."""
+    term = "place_of_performance_of_active_awards"
+    states = _parse_states(spec, term)
+    in_list = ",".join(f"'{s}'" for s in states)
+    sql = (f"SELECT generated_unique_award_id FROM gtm_open_awards "
+           f"WHERE primary_place_of_performance_state_code IN ({in_list})")
+    return sql, {"term": term, "states": states, "grain": "award"}
+
+
 def _c_performed_in(spec: dict) -> tuple[str, str, dict]:
     """Place-of-performance by state with an optional FY lookback — the txn-grain
     complement to the active-grain term above. "Performed work in TX during FY25"
@@ -602,12 +615,10 @@ def _c_performed_in(spec: dict) -> tuple[str, str, dict]:
 _ZIP_RE = re.compile(r"^\d{5}$")
 
 
-def _c_pop_within(spec: dict) -> tuple[str, str, dict]:
-    """Radius cut: firms with an ACTIVE award performed within N miles of an
-    anchor (a zip5 or an explicit lat/lon, e.g. a military installation).
-    Anchor resolves in-query (zip -> avg of that zip's award-PoP centroids);
-    the haversine runs over gtm_open_awards (163k, centroid pre-joined) — a
-    full pass is ms-class, no pruning needed. Miles is a query-time dial."""
+def _pop_within_parts(spec: dict) -> tuple[str, float, dict]:
+    """Shared validation + anchor resolution for the radius cut — used by the
+    holder compiler below and the award-grain projection. Returns
+    (anchor_cte, miles, echo)."""
     term = "place_of_performance_within"
     miles = spec.get("miles", 150)
     if not isinstance(miles, (int, float)) or isinstance(miles, bool) or not (1 <= float(miles) <= 500):
@@ -634,17 +645,46 @@ def _c_pop_within(spec: dict) -> tuple[str, str, dict]:
     if label is not None:
         label = str(label)[:80]
         echo_anchor["label"] = label
-    # 3958.8 = earth radius in MILES; haversine over the active-award centroids.
+    return anchor_cte, miles, {"term": term, "miles": miles, **echo_anchor}
+
+
+# 3958.8 = earth radius in MILES; haversine over the active-award centroids.
+_HAVERSINE = (
+    "2 * 3958.8 * asin(sqrt("
+    "pow(sin(radians(o.latitude - c.alat) / 2), 2) + "
+    "cos(radians(c.alat)) * cos(radians(o.latitude)) * "
+    "pow(sin(radians(o.longitude - c.alon) / 2), 2)))"
+)
+
+
+def _c_pop_within(spec: dict) -> tuple[str, str, dict]:
+    """Radius cut: firms with an ACTIVE award performed within N miles of an
+    anchor (a zip5 or an explicit lat/lon, e.g. a military installation).
+    Anchor resolves in-query (zip -> avg of that zip's award-PoP centroids);
+    the haversine runs over gtm_open_awards (163k, centroid pre-joined) — a
+    full pass is ms-class, no pruning needed. Miles is a query-time dial."""
+    anchor_cte, miles, echo = _pop_within_parts(spec)
     sql = (
         f"SELECT DISTINCT o.recipient_uei AS uei "
         f"FROM gtm_open_awards o CROSS JOIN ({anchor_cte}) c "
         f"WHERE o.latitude IS NOT NULL AND c.alat IS NOT NULL "
-        f"AND 2 * 3958.8 * asin(sqrt("
-        f"pow(sin(radians(o.latitude - c.alat) / 2), 2) + "
-        f"cos(radians(c.alat)) * cos(radians(o.latitude)) * "
-        f"pow(sin(radians(o.longitude - c.alon) / 2), 2))) <= {miles}"
+        f"AND {_HAVERSINE} <= {miles}"
     )
-    return "affirmative", sql, {"term": term, "miles": miles, **echo_anchor}
+    return "affirmative", sql, echo
+
+
+def pop_within_award_keys(spec: dict) -> tuple[str, dict]:
+    """AWARD-GRAIN projection of place_of_performance_within: the open-award
+    KEYS whose own PoP centroid sits inside the ring — the paper itself, not
+    the holders (the Awards-drawer semantics, operator-ruled 2026-07-22)."""
+    anchor_cte, miles, echo = _pop_within_parts(spec)
+    sql = (
+        f"SELECT o.generated_unique_award_id "
+        f"FROM gtm_open_awards o CROSS JOIN ({anchor_cte}) c "
+        f"WHERE o.latitude IS NOT NULL AND c.alat IS NOT NULL "
+        f"AND {_HAVERSINE} <= {miles}"
+    )
+    return sql, {**echo, "grain": "award"}
 
 
 def _c_designations(spec: dict) -> tuple[str, str, dict]:
