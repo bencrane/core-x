@@ -20,8 +20,8 @@ def test_vocabulary_matches_compilers_exactly() -> None:
 
 
 def test_thirty_terms() -> None:
-    # 32 + active_award_value + avg_annual_obligations (2026-07-22)
-    assert len(_COMPILERS) == 34
+    # 34 + active_work_category + self_declared_naics (2026-07-22)
+    assert len(_COMPILERS) == 36
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────

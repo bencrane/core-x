@@ -535,3 +535,26 @@ def test_money_fit_terms_refuse_empty_range() -> None:
     for fn in (_c_active_award_value, _c_avg_annual_obligations):
         with pytest.raises(HTTPException):
             fn({})
+
+
+def test_active_work_category_buckets() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import (
+        _c_active_work_category, active_work_category_award_keys)
+    kind, sql, echo = _c_active_work_category({"categories": ["new_construction", "demolition"]})
+    assert kind == "affirmative" and "gtm_open_awards" in sql
+    assert "= 'Y'" in sql and "IN ('P4','P5')" in sql
+    key_sql, kecho = active_work_category_award_keys({"categories": ["repair_maintenance"]})
+    assert "generated_unique_award_id" in key_sql and "= 'Z'" in key_sql
+    assert kecho["grain"] == "award"
+    with pytest.raises(HTTPException):
+        _c_active_work_category({"categories": ["cooking"]})
+
+
+def test_self_declared_naics_prefix() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_self_declared_naics
+    kind, sql, echo = _c_self_declared_naics({"prefixes": ["23"]})
+    assert kind == "affirmative"
+    assert "gtm_sam_entities" in sql and "primary_naics LIKE '23%'" in sql
+    for bad in ([], ["2"], ["abc"], ["2345678"]):
+        with pytest.raises(HTTPException):
+            _c_self_declared_naics({"prefixes": bad})
