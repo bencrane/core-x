@@ -275,3 +275,23 @@ def test_award_key_validation_refuses_injection() -> None:
     for bad in ("x' OR 1=1 --", "a b", "short", "", None, "k;semicolons"):
         with pytest.raises(HTTPException):
             _safe_award_key(bad)
+
+
+# ── flow lens (obligations by fiscal year) ───────────────────────────────────
+
+def test_flow_sql_shape_and_window() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_flow_sql
+    sql = build_flow_sql(None, 2019, 2026)
+    assert "FROM txn_events_combo" in sql
+    assert "fy >= 2019 AND fy <= 2026" in sql
+    assert "GROUP BY 1 ORDER BY 1" in sql
+    assert "uei IN (" not in sql
+
+
+def test_flow_predicate_leg() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_flow_sql
+    expr, _, _ = compile_predicates(
+        {"predicates": [{"term": "registered_in_state", "states": ["TX"]}]}
+    )
+    sql = build_flow_sql(expr, 2019, 2026)
+    assert "uei IN (" in sql and "physical_state IN ('TX')" in sql
