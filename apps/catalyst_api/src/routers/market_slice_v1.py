@@ -624,18 +624,46 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
 
 # ── obligation flow by fiscal year — the Explore flow lens (2026-07-21) ──────
 #
-# The year-bars read: dollars obligated per FY over the whole corpus, or over
-# the grammar cohort's holders when predicates ride along. FY2026 is in
-# progress AND lag-suppressed (DoD ~90-day embargo) — the disclosure rides
-# every response so no surface can present the partial year as a fact.
+# Two modes:
+#   whole-corpus — dollars obligated per FY across ALL actions (the annual
+#     flow; a bar can include money on awards that have since ended).
+#   active_only  — the VINTAGE DECOMPOSITION of the active book: each bar is
+#     the obligations from that FY that sit on awards STILL ACTIVE today. These
+#     bars sum to the map's stock ($2.44T), so "click → the years peel the map
+#     apart" is exact. Joins txn_events_combo to the active-award key set.
+# Predicates narrow to the cohort's holders in either mode. FY2026 partial-year
+# disclosure rides only when the window includes it.
 
-_FLOW_DISCLOSURE = (
+_FLOW_DISCLOSURE_FY26 = (
     "FY2026 is in progress and reporting-lagged (DoD actions post up to ~90 "
     "days late) — its bar is a floor, not a year"
 )
+_FLOW_DISCLOSURE_ACTIVE = (
+    "each bar is obligations from that fiscal year that sit on awards still "
+    "active today (end date >= today, not terminated) — the vintage "
+    "decomposition of the active book, not total annual obligations"
+)
 
 
-def build_flow_sql(predicate_expr: str | None, fy_start: int, fy_end: int) -> str:
+def build_flow_sql(
+    predicate_expr: str | None, fy_start: int, fy_end: int, active_only: bool = False
+) -> str:
+    if active_only:
+        pred_leg = f"\n  AND t.uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
+        return f"""
+WITH act AS (
+  SELECT contract_award_unique_key AS k
+  FROM usaspending_fpds_prime_award_state
+  WHERE current_end_date >= current_date AND is_terminated = FALSE
+)
+SELECT t.fy AS fy,
+       round(sum(t.obligation), 0) AS obligated,
+       count(*) AS actions,
+       count(DISTINCT t.uei) AS firms
+FROM txn_events_combo t
+JOIN act ON t.award_key = act.k
+WHERE t.fy >= {fy_start} AND t.fy <= {fy_end}{pred_leg}
+GROUP BY 1 ORDER BY 1"""
     pred_leg = f"\n  AND uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
     return f"""
 SELECT fy,
@@ -651,9 +679,9 @@ GROUP BY 1 ORDER BY 1"""
 async def flow(body: dict[str, Any]) -> dict[str, Any]:
     """Obligations by fiscal year — the Explore flow-lens read.
 
-    Body: {"predicates"?: [...], "fy_start"?: int, "fy_end"?: int} (defaults
-    FY2019–FY2026). Unscoped reads allowed: the whole market's annual flow is
-    a standing statement.
+    Body: {"predicates"?, "fy_start"?, "fy_end"?, "active_only"?}. Defaults
+    FY2019–FY2026 whole-corpus. active_only intersects the active-award set so
+    the bars decompose the map's stock by obligation vintage. Unscoped allowed.
     """
     if not isinstance(body, dict):
         raise _refuse("body must be an object")
@@ -664,17 +692,24 @@ async def flow(body: dict[str, Any]) -> dict[str, Any]:
             raise _refuse(f"{name} must be an integer fiscal year in [2001, 2030]")
     if fy_end < fy_start:
         raise _refuse("fy_end must be >= fy_start")
+    active_only = bool(body.get("active_only", False))
     expr, echoes, disclosures = _compile_body_predicates(body)
 
-    sql = build_flow_sql(expr, fy_start, fy_end)
+    sql = build_flow_sql(expr, fy_start, fy_end, active_only)
+    extra_disc: list[str] = []
+    if active_only:
+        extra_disc.append(_FLOW_DISCLOSURE_ACTIVE)
+    if fy_end >= 2026:
+        extra_disc.append(_FLOW_DISCLOSURE_FY26)
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=90.0) as client:
         payload = await _run_sidecar(client, sql, limit=40)
     return {
         "predicates": echoes,
-        "disclosures": [*disclosures, _FLOW_DISCLOSURE],
+        "disclosures": [*disclosures, *extra_disc],
         "fy_start": fy_start,
         "fy_end": fy_end,
+        "active_only": active_only,
         "series": _rows(payload),
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
         "artifact": payload.get("artifact"),
