@@ -295,3 +295,21 @@ def test_flow_predicate_leg() -> None:
     )
     sql = build_flow_sql(expr, 2019, 2026)
     assert "uei IN (" in sql and "physical_state IN ('TX')" in sql
+
+
+def test_flow_active_only_intersects_active_awards() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_flow_sql
+    sql = build_flow_sql(None, 2019, 2025, active_only=True)
+    assert "usaspending_fpds_prime_award_state" in sql
+    assert "current_end_date >= current_date AND is_terminated = FALSE" in sql
+    assert "JOIN act ON t.award_key = act.k" in sql
+    assert "t.fy >= 2019 AND t.fy <= 2025" in sql
+
+
+def test_flow_active_only_predicate_uses_aliased_uei() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_flow_sql
+    expr, _, _ = compile_predicates(
+        {"predicates": [{"term": "registered_in_state", "states": ["CA"]}]}
+    )
+    sql = build_flow_sql(expr, 2019, 2025, active_only=True)
+    assert "t.uei IN (" in sql and "physical_state IN ('CA')" in sql
