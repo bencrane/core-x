@@ -622,6 +622,65 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── obligation flow by fiscal year — the Explore flow lens (2026-07-21) ──────
+#
+# The year-bars read: dollars obligated per FY over the whole corpus, or over
+# the grammar cohort's holders when predicates ride along. FY2026 is in
+# progress AND lag-suppressed (DoD ~90-day embargo) — the disclosure rides
+# every response so no surface can present the partial year as a fact.
+
+_FLOW_DISCLOSURE = (
+    "FY2026 is in progress and reporting-lagged (DoD actions post up to ~90 "
+    "days late) — its bar is a floor, not a year"
+)
+
+
+def build_flow_sql(predicate_expr: str | None, fy_start: int, fy_end: int) -> str:
+    pred_leg = f"\n  AND uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
+    return f"""
+SELECT fy,
+       round(sum(obligation), 0) AS obligated,
+       count(*) AS actions,
+       count(DISTINCT uei) AS firms
+FROM txn_events_combo
+WHERE fy >= {fy_start} AND fy <= {fy_end}{pred_leg}
+GROUP BY 1 ORDER BY 1"""
+
+
+@router.post("/flow", dependencies=[Depends(require_service_token)])
+async def flow(body: dict[str, Any]) -> dict[str, Any]:
+    """Obligations by fiscal year — the Explore flow-lens read.
+
+    Body: {"predicates"?: [...], "fy_start"?: int, "fy_end"?: int} (defaults
+    FY2019–FY2026). Unscoped reads allowed: the whole market's annual flow is
+    a standing statement.
+    """
+    if not isinstance(body, dict):
+        raise _refuse("body must be an object")
+    fy_start = body.get("fy_start", 2019)
+    fy_end = body.get("fy_end", 2026)
+    for name, v in (("fy_start", fy_start), ("fy_end", fy_end)):
+        if not isinstance(v, int) or isinstance(v, bool) or not (2001 <= v <= 2030):
+            raise _refuse(f"{name} must be an integer fiscal year in [2001, 2030]")
+    if fy_end < fy_start:
+        raise _refuse("fy_end must be >= fy_start")
+    expr, echoes, disclosures = _compile_body_predicates(body)
+
+    sql = build_flow_sql(expr, fy_start, fy_end)
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        payload = await _run_sidecar(client, sql, limit=40)
+    return {
+        "predicates": echoes,
+        "disclosures": [*disclosures, _FLOW_DISCLOSURE],
+        "fy_start": fy_start,
+        "fy_end": fy_end,
+        "series": _rows(payload),
+        "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+        "artifact": payload.get("artifact"),
+    }
+
+
 # ── the award profile — one award's full anatomy, sectioned (2026-07-21) ─────
 #
 # The award-dot click read: everything the substrate knows about ONE award,
