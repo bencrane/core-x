@@ -51,13 +51,19 @@ def test_band_defaults_to_capital_band() -> None:
     assert _parse_band({}) == _DEFAULT_BAND == {"min": 1_000_000.0, "max": 100_000_000.0}
 
 
-def test_band_override() -> None:
-    assert _parse_band({"band": {"min": 5e6}}) == {"min": 5e6, "max": 1e8}
+def test_band_explicit_is_open_ended_not_default_filled() -> None:
+    # "$100M+" / "under $1M" presets: a partial band opens at the missing edge —
+    # it must NEVER collapse into the $1M–$100M capital default (the old
+    # fill-from-default made both presets refuse as empty ranges).
+    from apps.catalyst_api.src.routers.market_slice_v1 import _BAND_UNBOUNDED
+    assert _parse_band({"band": {"min": 5e6}}) == {"min": 5e6, "max": _BAND_UNBOUNDED}
+    assert _parse_band({"band": {"min": 2e8}}) == {"min": 2e8, "max": _BAND_UNBOUNDED}
+    assert _parse_band({"band": {"max": 1e6}}) == {"min": 0.0, "max": 1e6}
 
 
 def test_band_inverted_refuses() -> None:
     with pytest.raises(HTTPException):
-        _parse_band({"band": {"min": 2e8}})
+        _parse_band({"band": {"min": 2e8, "max": 1e8}})
 
 
 def test_band_negative_refuses() -> None:
@@ -265,6 +271,24 @@ def test_awards_count_is_full_cohort_totals() -> None:
     assert "count(*) AS awards" in count
     assert "count(DISTINCT a.recipient_uei) AS firms" in count
     assert "LIMIT" not in count
+
+
+def test_awards_band_applies_through_the_holder() -> None:
+    # Firm-identity dials follow the holder across grains (operator-ruled
+    # 2026-07-22): band at award grain = awards held by banded firms, gated on
+    # the SAME column the firm cohort uses (gtm_entity_pricing_mix.active_obl).
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 4000, band={"min": 1e6, "max": 1e8})
+    for sql in (points, count):
+        assert "gtm_entity_pricing_mix" in sql
+        assert "active_obl >= 1000000.0 AND active_obl <= 100000000.0" in sql
+
+
+def test_awards_no_band_no_holder_leg() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 4000)
+    for sql in (points, count):
+        assert "gtm_entity_pricing_mix" not in sql
 
 
 # ── award profile (the award-dot click read) ─────────────────────────────────
