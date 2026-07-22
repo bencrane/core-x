@@ -128,6 +128,21 @@ def _parse_band(body: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+def _parse_basis(body: dict[str, Any]) -> str:
+    """Measure basis for a market scope — the audience-lens abstraction
+    (operator-ruled 2026-07-22): the market IS the pair set (work scope,
+    audience-agnostic); the capital reading (unfinanced-$ membership + money)
+    is one BASIS, not the market's definition.
+
+    "unfinanced" (default, the capital reading — back-compatible) |
+    "active"     (any active in-scope work; money = all in-scope obligations).
+    """
+    basis = str(body.get("basis") or "unfinanced")
+    if basis not in ("unfinanced", "active"):
+        raise _refuse("basis must be 'unfinanced' | 'active'")
+    return basis
+
+
 def _compile_body_predicates(body: dict[str, Any]) -> tuple[str | None, list[dict], list[str]]:
     preds = body.get("predicates")
     if preds in (None, []):
@@ -141,10 +156,16 @@ def build_pack_sql(
     pairs: list[tuple[str, str]],
     band: dict[str, float],
     predicate_expr: str | None,
+    basis: str = "unfinanced",
 ) -> dict[str, str]:
-    """Pure SQL assembly: the pack's per-section statements over one cohort CTE."""
+    """Pure SQL assembly: the pack's per-section statements over one cohort CTE.
+
+    `basis` gates cohort membership: "unfinanced" = at least one unfinanced
+    active in-scope award (the capital reading); "active" = any active
+    in-scope award (audience-agnostic work scope)."""
     values = ",".join(f"('{n}','{p}')" for n, p in pairs)
     pred_leg = f"\n    AND s.uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
+    member_gate = "s.unfin" if basis == "unfinanced" else "TRUE"
 
     def cohort(band_where: str) -> str:
         return f"""
@@ -170,7 +191,7 @@ scoped AS (
 band AS (SELECT uei FROM gtm_entity_pricing_mix WHERE {band_where}),
 m AS (
   SELECT DISTINCT s.uei FROM scoped s JOIN band USING (uei)
-  WHERE s.unfin{pred_leg}
+  WHERE {member_gate}{pred_leg}
 ),
 m_any AS (
   SELECT DISTINCT s.uei FROM scoped s JOIN band USING (uei)
@@ -254,6 +275,7 @@ def build_entities_sql(
     band: dict[str, float],
     predicate_expr: str | None,
     limit: int,
+    basis: str = "unfinanced",
 ) -> str:
     """The slice cohort as per-firm rows with geo — the Explore map/table read.
 
@@ -262,8 +284,12 @@ def build_entities_sql(
     gtm_entity_geo (a firm without a geocode still returns — the map discloses
     plotted-vs-total, the table carries everyone).
     """
-    sections = build_pack_sql(pairs, band, predicate_expr)
+    sections = build_pack_sql(pairs, band, predicate_expr, basis=basis)
     prefix = sections["tiles"].split("SELECT (SELECT count(*) FROM m)")[0]
+    # Money follows the basis: unfinanced-in-scope (capital) or ALL active
+    # in-scope obligations (agnostic). Wire aliases stay stable; money_basis
+    # on the envelope names the semantics.
+    money_filter = " FILTER (WHERE s.unfin)" if basis == "unfinanced" else ""
     return prefix + f"""
 SELECT m.uei,
        any_value(e.legal_business_name) AS legal_business_name,
@@ -271,8 +297,8 @@ SELECT m.uei,
        any_value(e.physical_state) AS physical_state,
        any_value(g.latitude) AS latitude,
        any_value(g.longitude) AS longitude,
-       round(coalesce(sum(s.obl) FILTER (WHERE s.unfin), 0), 0) AS unfin_usd,
-       count(*) FILTER (WHERE s.unfin) AS awards_unfin
+       round(coalesce(sum(s.obl){money_filter}, 0), 0) AS unfin_usd,
+       count(*){money_filter} AS awards_unfin
 FROM m
 JOIN scoped s USING (uei)
 LEFT JOIN gtm_sam_entities e ON e.uei = m.uei
@@ -325,8 +351,8 @@ LEFT JOIN gtm_entity_pricing_mix p USING (uei){band_where}"""
 
 
 def build_count_sql(pairs: list[tuple[str, str]], band: dict[str, float],
-                    predicate_expr: str | None) -> str:
-    sections = build_pack_sql(pairs, band, predicate_expr)
+                    predicate_expr: str | None, basis: str = "unfinanced") -> str:
+    sections = build_pack_sql(pairs, band, predicate_expr, basis=basis)
     prefix = sections["tiles"].split("SELECT (SELECT count(*) FROM m)")[0]
     return prefix + "SELECT count(*) AS firms FROM m"
 
@@ -985,14 +1011,15 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
         raise _refuse(f"limit must be an integer in [1, {_ENTITIES_MAX}]")
     slug = str(body.get("slug") or "")
     expr, echoes, disclosures = _compile_body_predicates(body)
+    basis = _parse_basis(body)
 
     t0 = time.monotonic()
     if slug:
         scope = await _resolve_scope(slug)
         band = _parse_band(body)
-        ent_sql = build_entities_sql(scope["pairs"], band, expr, limit)
-        count_sql = build_count_sql(scope["pairs"], band, expr)
-        money_basis = "unfinanced_in_scope"
+        ent_sql = build_entities_sql(scope["pairs"], band, expr, limit, basis=basis)
+        count_sql = build_count_sql(scope["pairs"], band, expr, basis=basis)
+        money_basis = "unfinanced_in_scope" if basis == "unfinanced" else "active_in_scope"
         title, lens = scope["title"], scope["lens"]
     else:
         if expr is None:

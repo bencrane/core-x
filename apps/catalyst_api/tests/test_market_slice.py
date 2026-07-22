@@ -356,3 +356,27 @@ def test_awards_sql_unscoped_unchanged() -> None:
     from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
     points, count = build_awards_sql(None, 4000)
     assert "pairs" not in points and "pairs" not in count and "recipient_uei = '" not in points
+
+
+# ── basis abstraction (agnostic market scope, 2026-07-22) ────────────────────
+def test_basis_active_gates_membership_and_money() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_entities_sql
+    sql = build_entities_sql([("237310", "Y1DA")], {"min": 1e6, "max": 1e8}, None, 100, basis="active")
+    assert "WHERE TRUE" in sql, "active basis admits any active in-scope firm"
+    assert "FILTER (WHERE s.unfin)" not in sql, "active basis money = all in-scope obligations"
+
+
+def test_basis_default_is_capital_reading() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_entities_sql
+    sql = build_entities_sql([("237310", "Y1DA")], {"min": 1e6, "max": 1e8}, None, 100)
+    assert "WHERE s.unfin" in sql and "FILTER (WHERE s.unfin)" in sql
+
+
+def test_basis_refuses_unknown() -> None:
+    import pytest
+    from fastapi import HTTPException
+    from apps.catalyst_api.src.routers.market_slice_v1 import _parse_basis
+    assert _parse_basis({}) == "unfinanced"
+    assert _parse_basis({"basis": "active"}) == "active"
+    with pytest.raises(HTTPException):
+        _parse_basis({"basis": "equipment"})
