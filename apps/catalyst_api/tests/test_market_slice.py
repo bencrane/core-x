@@ -394,3 +394,23 @@ def test_entities_explicit_band_still_gates() -> None:
     from apps.catalyst_api.src.routers.market_slice_v1 import build_entities_sql
     sql = build_entities_sql([("237310", "Y1DA")], {"min": 1e6, "max": 1e8}, None, 100)
     assert "active_obl >= 1000000.0 AND active_obl <= 100000000.0" in sql
+
+
+# ── family rollup (entity altitude, 2026-07-22) ──────────────────────────────
+def test_family_wrap_folds_to_ultimate_parent() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import wrap_family_rollup
+    sql = wrap_family_rollup("SELECT 1 AS uei")
+    assert "coalesce(h.ultimate_parent_uei, per_uei.uei) AS uei" in sql
+    assert "LEFT JOIN entity_hierarchy h" in sql
+    assert "count(*) AS members" in sql
+    assert "sum(per_uei.unfin_usd)" in sql
+
+
+def test_rollup_parser() -> None:
+    import pytest
+    from fastapi import HTTPException
+    from apps.catalyst_api.src.routers.market_slice_v1 import _parse_rollup
+    assert _parse_rollup({}) == "entity"
+    assert _parse_rollup({"rollup": "family"}) == "family"
+    with pytest.raises(HTTPException):
+        _parse_rollup({"rollup": "parent"})

@@ -143,6 +143,16 @@ def _parse_basis(body: dict[str, Any]) -> str:
     return basis
 
 
+def _parse_rollup(body: dict[str, Any]) -> str:
+    """Entity altitude: "entity" (default — one row per UEI) | "family"
+    (one row per ultimate parent via entity_hierarchy; money summed, the row
+    keyed + geocoded at the family head)."""
+    rollup = str(body.get("rollup") or "entity")
+    if rollup not in ("entity", "family"):
+        raise _refuse("rollup must be 'entity' | 'family'")
+    return rollup
+
+
 def _compile_body_predicates(body: dict[str, Any]) -> tuple[str | None, list[dict], list[str]]:
     preds = body.get("predicates")
     if preds in (None, []):
@@ -311,6 +321,30 @@ LEFT JOIN gtm_entity_geo g ON g.uei = m.uei
 GROUP BY m.uei
 ORDER BY unfin_usd DESC, m.uei
 LIMIT {limit}"""
+
+
+def wrap_family_rollup(entities_sql: str) -> str:
+    """Fold a per-UEI entities statement to FAMILY grain: group by the
+    ultimate parent (entity_hierarchy; self when unparented), sum the money,
+    key + name + geocode the row at the family head. Column aliases stay
+    wire-identical; `members` rides as the family size."""
+    return f"""
+WITH per_uei AS ({entities_sql})
+SELECT coalesce(h.ultimate_parent_uei, per_uei.uei) AS uei,
+       coalesce(any_value(h.ultimate_parent_name), any_value(per_uei.legal_business_name)) AS legal_business_name,
+       any_value(pe.physical_city) AS physical_city,
+       any_value(pe.physical_state) AS physical_state,
+       any_value(pg.latitude) AS latitude,
+       any_value(pg.longitude) AS longitude,
+       round(sum(per_uei.unfin_usd), 0) AS unfin_usd,
+       sum(per_uei.awards_unfin) AS awards_unfin,
+       count(*) AS members
+FROM per_uei
+LEFT JOIN entity_hierarchy h ON h.uei = per_uei.uei
+LEFT JOIN gtm_sam_entities pe ON pe.uei = coalesce(h.ultimate_parent_uei, per_uei.uei)
+LEFT JOIN gtm_entity_geo pg ON pg.uei = coalesce(h.ultimate_parent_uei, per_uei.uei)
+GROUP BY 1
+ORDER BY unfin_usd DESC, uei"""
 
 
 def build_grammar_entities_sql(
@@ -1017,6 +1051,10 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
     slug = str(body.get("slug") or "")
     expr, echoes, disclosures = _compile_body_predicates(body)
     basis = _parse_basis(body)
+    rollup = _parse_rollup(body)
+    # Family grain folds over the FULL cohort, then pages — a page-then-fold
+    # would under-count family members.
+    inner_limit = 1_000_000 if rollup == "family" else limit
 
     t0 = time.monotonic()
     if slug:
@@ -1024,7 +1062,7 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
         # No band unless the caller sends one (operator-ruled 2026-07-22): the
         # Explore surface reads the whole market; the band is a rail dial.
         band = _parse_band(body) if body.get("band") is not None else None
-        ent_sql = build_entities_sql(scope["pairs"], band, expr, limit, basis=basis)
+        ent_sql = build_entities_sql(scope["pairs"], band, expr, inner_limit, basis=basis)
         count_sql = build_count_sql(scope["pairs"], band, expr, basis=basis)
         money_basis = "unfinanced_in_scope" if basis == "unfinanced" else "active_in_scope"
         title, lens = scope["title"], scope["lens"]
@@ -1034,9 +1072,16 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
                 "slug or predicates required (an unscoped read of the whole universe is refused)"
             )
         band = _parse_band(body) if body.get("band") is not None else None
-        ent_sql, count_sql = build_grammar_entities_sql(expr, band, limit)
+        ent_sql, count_sql = build_grammar_entities_sql(expr, band, inner_limit)
         money_basis = "active_obligations"
         title, lens = None, None
+    if rollup == "family":
+        folded = wrap_family_rollup(ent_sql)
+        ent_sql = folded + f"\nLIMIT {limit}"
+        count_sql = f"SELECT count(*) AS firms FROM ({folded}) fam"
+        disclosures = [*disclosures,
+                       "family rollup: one row per ultimate parent (entity_hierarchy); money summed "
+                       "across members; the row keyed and geocoded at the family head"]
 
     async with httpx.AsyncClient(timeout=90.0) as client:
         ent_payload, count_payload = await asyncio.gather(
@@ -1049,6 +1094,7 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "lens": lens,
         "band": band,
+        "rollup": rollup,
         "predicates": echoes,
         "disclosures": [*disclosures, _GEO_DISCLOSURE],
         "money_basis": money_basis,
