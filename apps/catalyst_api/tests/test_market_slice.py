@@ -335,3 +335,24 @@ def test_firm_fy_series_never_shows_fy26() -> None:
     from apps.catalyst_api.src.routers import market_slice_v1 as m
     assert m._FIRM_FY_END == 2025, "FY2026 does not exist on camera (operator ruling)"
     assert m._FIRM_FY_START == 2001
+
+
+# ── award lens x market composition (semantics (b), 2026-07-22) ──────────────
+def test_awards_sql_pair_scope_rides_both_statements() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 100, pairs=[("237310", "Y1DA"), ("237990", "Z2BB")])
+    for stmt in (points, count):
+        assert "pairs(naics_code, psc_code) AS (VALUES ('237310','Y1DA'),('237990','Z2BB'))" in stmt
+        assert "JOIN pairs pr ON a.naics_code = pr.naics_code" in stmt
+
+
+def test_awards_sql_uei_overlay_leg() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 50, uei="WBBSNBA9GBL7")
+    assert "a.recipient_uei = 'WBBSNBA9GBL7'" in points and "a.recipient_uei = 'WBBSNBA9GBL7'" in count
+
+
+def test_awards_sql_unscoped_unchanged() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_awards_sql
+    points, count = build_awards_sql(None, 4000)
+    assert "pairs" not in points and "pairs" not in count and "recipient_uei = '" not in points
