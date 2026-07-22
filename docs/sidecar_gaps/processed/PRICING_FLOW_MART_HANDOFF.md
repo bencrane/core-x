@@ -1,3 +1,14 @@
+# [RESOLVED 2026-07-22] HANDOFF — `gtm_entity_pricing_flow` mart
+
+> **STATUS: SHIPPED + SERVING.** The mart is live in `query_sidecar_20260722T023655Z` (and forward),
+> 163k rows, sorted uei. It built clean under the spawn-on-deployed launch pattern (the client-tether
+> failures that blocked it — runs 40/42/43, `Query interrupted` — were diagnosed as non-detached
+> `modal run` dying with the local client, NOT container preemption; fixed by
+> `modal deploy` + `Function.spawn`). Catalog row added to the agent guide §3. This handoff is
+> retained for history; no action remains. Original content below.
+
+---
+
 # HANDOFF — `gtm_entity_pricing_flow` mart: landed in code, NOT yet served
 
 **Status (2026-07-21):** the mart **code is merged to `main`** (PR #1273, squash commit

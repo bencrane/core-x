@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.37B rows across 102 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — ~1.37B rows across 113 sorted tables — in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -85,13 +85,18 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 |---|---|---|---|
 | `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, **`pop_country_code`** (ISO3 — splits the no-US-state bucket into overseas vs unstated; names via `country_vocab`), **`type_of_set_aside_code`** (the set-aside dial), `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), **the pricing-terms dials (2026-07-15 cycle): `pricing_code`** (type of contract pricing — J=FFP, U=CPFF, Y=T&M…; the cash-flow-shape signal), **`financing_code`** (progress/performance-based payments), **`pba_code`**, **`co_business_size`** (CO size determination S/O — the effective net-15 tier), **`labor_standards_code`** (SCA/DBA applies) — names for all five via `fpds_code_vocab`, `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
 | `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
-| `award_subout_rollup` | 1/prime award with subs · ~1M | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out" |
+| `txn_events_combo_by_award` | same rows | **award_key_pfx**, award_key, action_date | **Award-key point-read copy** (2026-07-21 award-key cycle): per-award FY/ledger reads. See the award-key-pfx note below — probe `WHERE award_key_pfx = substr('<key>',10,12) AND award_key = '<key>'` |
+| `txn_rows_by_award` | same rows as `txn_rows` · 108M | **award_key_pfx**, contract_award_unique_key, action_date | Award-key copy of the wire-row serving — per-award "recent actions". Same pfx probe shape |
+| `award_subout_rollup` | 1/prime award with subs · ~197k | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out". GROUP-BY aggregate (197k rows, not the 6.3M raw subawards) — a bare `WHERE prime_award_unique_key = '<key>'` scan is already cheap; no award-key-pfx copy needed |
+| `prime_award_state_by_key` | 1/award · 83M | **award_key_pfx**, contract_award_unique_key | **Award-key point-read copy** of `usaspending_fpds_prime_award_state` (full 56-col width). The award-drawer anchor read: was 4.8s on the `current_end_date`-sorted spine, ms-class here. Probe `WHERE award_key_pfx = substr('<key>',10,12) AND contract_award_unique_key = '<key>'` |
+| `award_pop_centroids_by_key` | 1/award centroid | **award_key_pfx**, generated_unique_award_id | Award-key copy of `usaspending_award_pop_centroids` — per-award PoP point-read. Same pfx probe shape |
 | `agency_sub_vocab` | 1/sub-agency code | code | code → majority name (agency trends display) |
 | `award_descriptions` | 1/award · 30.7M | recipient_uei | Award requirement `description` + `solicitation_identifier`/`solicitation_date` (PDF-handoff join keys) + PIID + both award keys. **History tabs:** a UEI's awards + descriptions (or the glaring lack) = one pruned read. Sub-side: `subaward_canonical_slim.subaward_description` AND the prime's `prime_award_base_transaction_description` on the same row |
 | `award_plan_state` | 1/award · ~40M | contract_award_unique_key | Latest-action state per award: `latest_plan`, `latest_pricing_code`, `latest_financing_code`, `latest_business_size`. **Since 2026-07-16 these are ALSO denormalized onto `usaspending_fpds_prime_award_state` — never join this to award_state at query time** (32–49 s measured; the 83M-join saturation class). Billing shapes read award_state single-table; entity-level mix reads `gtm_entity_pricing_mix` |
 | `gtm_entity_fy_won` | 1/(uei, federal FY) | uei, fy | **Market-composition cycle (2026-07-17): the FY-window won measure as a pruned leg.** `won_obl` (Σ obligations), `action_ct`, `award_ct`, and the set-aside WIN family — `won_obl_set_aside` (any) + `won_obl_8a/sdvosb/wosb/hubzone`. "Won FY23–25" = `SUM(won_obl) WHERE fy IN (2023,2024,2025)` per uei — the window stays a query-time dial deliberately. Replaces the 790ms 108M group-by |
 | `gtm_entity_award_book` | 1/uei | uei | **The ontology's committed/vehicle book as named columns** (doctrine pinned once: active = PoP live AND NOT terminated; committed = topology ≠ vehicle; every $ floored 0/award): `committed_award_ct/value/obligated/runway`, `committed_award_median/avg` (size texture), `committed_value_set_aside`, `vehicle_ct/ceiling/headroom` (NEVER blended with committed), `next_committed_end_date`, `active_agency_ct` |
 | `gtm_entity_firmographics` | 1/uei bridged · ~464k | uei | **The employee-size/industry predicate, ms-class** (was a 10.0s query-time bridge⋈PDL join): employee_size_range, industry, locality/region/country, year_founded, linkedin_slug, normalized_domain + is_generic_domain, company_name, duns, pdl_company_id. Best-row-per-uei (prefers employee_size, then non-generic domain). Coverage = the bridge (~464k of 2.0M registrants) — disclose |
+| `gtm_entity_pricing_flow` | 1/uei · 163k | uei | **The trailing-window pricing/labor FLOW** (complement to `gtm_entity_pricing_mix`'s active STOCK; 2026-07-21 cycle): 12/24/48-month windows of pricing-class transition (FFP→cost/T&M shift) + SCA/DBA labor exposure. Windows anchored to the data's max(action_date) watermark. "Who is shifting into cash-intensive contract types" = one uei-sorted read |
 | `gtm_entity_pricing_mix` | 1/uei · 767k · **71 cols** | uei | **The billing/capital-provider lens** (2026-07-16; combo matrix 2026-07-17 operator directive): active vs total book by pricing class — `active_obl_fixed/cost/tm_lh/other` (class map: fixed A,B,J,K,L,M · cost R,S,T,U,V · tm_lh Y,Z), FFP-unfinanced pair + `active_obl_small_determined` + `active_fixed_share`/`active_ffp_unfinanced_share`. **Financing classes** (`unfin` NULL/Z/NA · `prog` A,B,E+text twins · `perf` C · `comm` D · `othfin` rest incl. undocumented F): `active_obl_fin_{cls}`/`active_fin_{cls}_ct` + `active_financed_share`. **Full pricing×financing matrix**: `active_obl_{fixed,cost,tm_lh,other}_{unfin,prog,perf,comm,othfin}` + `active_{pc}_{fc}_ct` (20 cells ×2). **Instrument riders** (standalone split D vs B): `lifetime/active_definitive_ct`, `lifetime/active_purchase_order_ct`, `active_obl_definitive/purchase_order`. "Primes ≥X% progress-payment-financed" = one uei-sorted read, ms-class |
 | `action_type_vocab` | 1/action_type_code · 22 (21 codes + NULL base row) | — | **The action-type language layer** (2026-07-15): `source_description` (empirical majority — source pairs are messy: 102 raw tuples), `plain_english` (subject-first query phrase: "received additional funding", "had an option year exercised"), `family` (new_award\|more_work\|funding_only\|termination\|definitization\|closeout\|admin), `is_more_work` (A,B,D,G,L), `is_funding_released` (C,G — G carries BOTH: option exercise turns on work AND its money; C is the only pure-money event). NULL code row = base/initial award (FPDS stamps action type on mods only) |
 | `fpds_code_vocab` | 1/(field, code) · ~100 | field, code | Name resolution for the five pricing-terms code spaces: `field` ∈ pricing \| financing \| performance_based \| business_size_determination \| labor_standards, majority name per code |
@@ -201,6 +206,7 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 |---|---|---|
 | `gtm_sam_people` | 1/(uei, name_key) · 2.3M | uei |
 | `gtm_sam_person_contactability` | 1/sam_person_id · 152k | sam_person_id |
+| `gtm_person_channels` | 1/(uei, sam_person_id) · 2.25M | uei | **SAM people ⋈ enrichment contactability, pre-joined at uei grain** (2026-07-21 cycle): `display_name`, `first_name`, `last_name`, `best_title`, `email`, `email_verification_status`, `phone`, `phone_status`, `person_linkedin_url_norm`, `is_govt_poc`, `is_ebiz_poc`, `n_sources`. One uei-sorted point-read for "the people at firm X + how to reach them". Channel coverage is thin (~10% have email/phone) — email/phone/linkedin where enrichment resolved, name/title otherwise (LEFT JOIN, every SAM person preserved) |
 | `sam_pocs` | 1/(uei, role, slot) · 8.1M | uei |
 | `sam_master_entities` | 1/uei SAM registration master · 1.5M | uei | ⚠ declaration columns: use the LIST columns `naics_codes`/`psc_codes` (VARCHAR[]) — or `v_sam_declared_codes`, which unnests them. The `*_counter`/`*_string` near-duplicates are raw ingest artifacts; counting on them produced a retracted figure (84% vs the true ~21% PSC declaration rate). Measured semantics: NAICS declarations near-universal among registrants, PSC sparse/optional |
 | `people_canonical` | 1/canonical_person_id · 132k | canonical_person_id |
@@ -522,6 +528,31 @@ WHERE fy IN (2024, 2025) GROUP BY 1 HAVING sum(won_obl_8a) > 0;
 SELECT uei FROM gtm_entity_award_book
 WHERE committed_award_median BETWEEN 1e6 AND 1e7 AND committed_award_ct >= 3;
 ```
+
+### Award-key point-reads — the award_key_pfx pruning leg (2026-07-21 cycle)
+
+Per-award drawer reads (anchor row, FY ledger, recent actions, PoP) hit the four award-key
+copies: `prime_award_state_by_key`, `txn_events_combo_by_award`, `txn_rows_by_award`,
+`award_pop_centroids_by_key`. **Every probe MUST carry the `award_key_pfx` leg** or it
+full-scans:
+
+```sql
+-- the award drawer's FY ledger, ms-class (was 11.5s)
+SELECT fy, sum(obligation) FROM txn_events_combo_by_award
+WHERE award_key_pfx = substr('CONT_AWD_N0001922F2503_9700_N0001919G0029_9700', 10, 12)
+  AND award_key = 'CONT_AWD_N0001922F2503_9700_N0001919G0029_9700'
+GROUP BY 1 ORDER BY 1;
+```
+
+**Why the pfx leg is load-bearing (durable substrate lesson):** every FPDS award key opens the
+literal 9-char prefix `CONT_AWD_` or `CONT_IDV_`, and DuckDB's string min/max zone-map statistics
+**truncate to an 8-byte prefix**. So a table sorted by the full award key alone has an *identical*
+zone-map min/max on every row group (`CONT_AWD`) → the scan cannot prune → it reads all 108M/83M
+rows (measured 8.6–11.5s, ∝ row count). The fix: materialize `award_key_pfx = substr(key, 10, 12)`
+(the PIID region, selective in its first bytes) as the **leading** sort key; probes filter on it
+first, then the full key for exactness. This applies to ANY future table sorted by a key with a
+long shared prefix (award keys, `CONT_*` PIIDs, prefixed transaction ids). `award_subout_rollup` is
+exempt only because it is a 197k-row aggregate where a full scan is already cheap.
 
 ### Audience-spec counts (2026-07-15 cycle)
 

@@ -67,3 +67,17 @@
 
 (Related, already ledgered separately this session: `2026-07-21-firm-contact-channels.md`
 — person-grain contact channels for the firm drawer's people section.)
+
+---
+
+## DISPOSITION (2026-07-22)
+
+- **Entry 1 (outlay spine / paid-%):** PARKED. Blocked upstream of the sidecar — the api_fresh pull
+  is `last_modified`-windowed (half the active book by count) and the bulk `award_search` snapshot is
+  six weeks stale with a stalled delta. Protocol path (per operator ruling): a NEW reconciled
+  award-grain spine (bulk `award_search` ∪ `api_fresh`, argmax(last_modified), never upserting the
+  immutable bulk — the transactions-spine pattern), parity-checked to the 255,901 active keys, THEN
+  promoted. For the video, outlay aggregates are frozen as page constants with floor framing — no
+  sidecar dependency. Promote the spine on the next data-leg cycle.
+- **Entry 2 (award-key probes):** PROMOTED + shipped — see `2026-07-21-award-key-probes.md`
+  disposition. Four companions + the award_key_pfx pruning leg; /award drawer 13–27s → 0.81s.
