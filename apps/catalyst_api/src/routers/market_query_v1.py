@@ -609,6 +609,70 @@ def _c_registered_in_state(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, {"term": term, "states": states}
 
 
+_WORK_CATEGORY_PSC: dict[str, str] = {
+    # The four operator categories (2026-07-22) — deterministic PSC-prefix
+    # buckets, no language model in the loop.
+    "new_construction": "substr(product_or_service_code,1,1) = 'Y'",
+    "repair_maintenance": "substr(product_or_service_code,1,1) = 'Z'",
+    "facility_equipment": "substr(product_or_service_code,1,1) IN ('J','N')",
+    "demolition": "substr(product_or_service_code,1,2) IN ('P4','P5')",
+}
+
+
+def _work_category_where(spec: dict, term: str) -> tuple[str, list[str]]:
+    raw = spec.get("categories")
+    if not isinstance(raw, list) or not raw:
+        raise _refuse(f"{term}.categories must be a non-empty list of "
+                      f"{sorted(_WORK_CATEGORY_PSC)}")
+    cats = []
+    for c in raw:
+        c = str(c)
+        if c not in _WORK_CATEGORY_PSC:
+            raise _refuse(f"{term}: unknown category '{c}' "
+                          f"(choose from {sorted(_WORK_CATEGORY_PSC)})")
+        if c not in cats:
+            cats.append(c)
+    where = " OR ".join(f"({_WORK_CATEGORY_PSC[c]})" for c in cats)
+    return where, cats
+
+
+def _c_active_work_category(spec: dict) -> tuple[str, str, dict]:
+    """What the firm's OPEN awards are for, at operator altitude: construct
+    new / repair-maintain existing / install-service facility equipment /
+    demolish. PSC-prefix buckets over the open-award universe."""
+    term = "active_work_category"
+    where, cats = _work_category_where(spec, term)
+    sql = f"SELECT DISTINCT recipient_uei AS uei FROM gtm_open_awards WHERE {where}"
+    return "affirmative", sql, {"term": term, "categories": cats}
+
+
+def active_work_category_award_keys(spec: dict) -> tuple[str, dict]:
+    """AWARD-GRAIN projection: the open-award keys in the categories."""
+    term = "active_work_category"
+    where, cats = _work_category_where(spec, term)
+    sql = f"SELECT generated_unique_award_id FROM gtm_open_awards WHERE {where}"
+    return sql, {"term": term, "categories": cats, "grain": "award"}
+
+
+def _c_self_declared_naics(spec: dict) -> tuple[str, str, dict]:
+    """The firm's OWN SAM registration says it is this industry (primary
+    NAICS prefix match) — self-identity, not demonstrated behavior."""
+    term = "self_declared_naics"
+    raw = spec.get("prefixes")
+    if not isinstance(raw, list) or not raw:
+        raise _refuse(f"{term}.prefixes must be a non-empty list of NAICS prefixes")
+    prefixes = []
+    for pfx in raw:
+        pfx = str(pfx)
+        if not pfx.isdigit() or not (2 <= len(pfx) <= 6):
+            raise _refuse(f"{term}: prefixes must be 2–6 digit NAICS strings")
+        if pfx not in prefixes:
+            prefixes.append(pfx)
+    where = " OR ".join(f"primary_naics LIKE '{pfx}%'" for pfx in prefixes)
+    sql = f"SELECT uei FROM gtm_sam_entities WHERE {where}"
+    return "affirmative", sql, {"term": term, "prefixes": prefixes}
+
+
 def _c_pop_active(spec: dict) -> tuple[str, str, dict]:
     term = "place_of_performance_of_active_awards"
     states = _parse_states(spec, term)
@@ -1018,6 +1082,8 @@ _COMPILERS: dict[str, Callable[[dict], tuple[str, str, dict]]] = {
     "open_idvs": _c_open_idvs,
     "active_award_value": _c_active_award_value,
     "avg_annual_obligations": _c_avg_annual_obligations,
+    "active_work_category": _c_active_work_category,
+    "self_declared_naics": _c_self_declared_naics,
     "awarded_by_agency": _c_awarded_by_agency,
     "distinct_agency_breadth": _c_agency_breadth,
     "registered_in_state": _c_registered_in_state,
@@ -1097,6 +1163,12 @@ VOCABULARY: list[dict[str, Any]] = [
     {"term": "avg_annual_obligations", "family": "momentum",
      "definition": "The firm's average prime obligations per year over the trailing two years (trailing-24-month total / 2; whole-firm).",
      "dials": {"min/max": "dollars per year (at least one required)"}},
+    {"term": "active_work_category", "family": "work",
+     "definition": "The firm holds open awards whose work falls in the named categories (PSC-prefix buckets: new_construction Y*, repair_maintenance Z*, facility_equipment J*/N*, demolition P4/P5).",
+     "dials": {"categories": "list from the four category keys"}},
+    {"term": "self_declared_naics", "family": "work",
+     "definition": "The firm's SAM-registered primary NAICS starts with the given prefixes (self-declared industry).",
+     "dials": {"prefixes": "2–6 digit NAICS prefixes"}},
     {"term": "awarded_by_agency", "family": "buyers",
      "definition": "The firm has obligations awarded by the named agencies (FPDS awarding-agency codes).",
      "dials": {"agencies": "codes, ≤50", "scope": "active | lifetime (default lifetime)", "min_dollars": "optional floor"}},

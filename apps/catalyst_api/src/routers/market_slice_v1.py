@@ -64,6 +64,7 @@ from ..service_token import require_service_token
 from .market_collections_v1 import _load_collections, _cache as _collections_cache
 from .market_query_v1 import (
     active_award_value_award_keys,
+    active_work_category_award_keys,
     compile_predicates,
     pop_states_award_keys,
     pop_within_award_keys,
@@ -832,7 +833,8 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
                        if isinstance(p, dict)
                        and p.get("term") in ("place_of_performance_of_active_awards",
                                              "place_of_performance_within",
-                                             "active_award_value")]
+                                             "active_award_value",
+                                             "active_work_category")]
     holder_specs = [p for p in (preds_in or []) if p not in award_geo_specs]
     expr, echoes, disclosures = _compile_body_predicates({"predicates": holder_specs})
     award_key_exprs: list[str] = []
@@ -841,6 +843,8 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
             key_sql, echo = pop_states_award_keys(spec)
         elif spec.get("term") == "place_of_performance_within":
             key_sql, echo = pop_within_award_keys(spec)
+        elif spec.get("term") == "active_work_category":
+            key_sql, echo = active_work_category_award_keys(spec)
         else:
             key_sql, echo = active_award_value_award_keys(spec)
         award_key_exprs.append(key_sql)
