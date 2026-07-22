@@ -19,7 +19,7 @@ Vocabulary (30 terms; family → terms):
                obligations_under_naics_psc_pairs · inferred_capable_of_codes
   lifecycle    active_awards · awards_expiring · open_idvs
   buyers       awarded_by_agency · distinct_agency_breadth
-  geography    registered_in_state · place_of_performance_of_active_awards
+  geography    registered_in_state · place_of_performance_of_active_awards · performed_in (states + FY lookback) · place_of_performance_within (zip|lat/lon radius)
   designations small_business_designations · set_aside_obligations · employee_size ·
                sam_registration_active
   pricing      active_award_pricing_mix
@@ -579,6 +579,74 @@ def _c_pop_active(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, {"term": term, "states": states}
 
 
+def _c_performed_in(spec: dict) -> tuple[str, str, dict]:
+    """Place-of-performance by state with an optional FY lookback — the txn-grain
+    complement to the active-grain term above. "Performed work in TX during FY25"
+    reads txn_events_combo_by_geo (sorted pop_state — the state predicate prunes)."""
+    term = "performed_in"
+    states = _parse_states(spec, term)
+    in_list = ",".join(f"'{s}'" for s in states)
+    clock = spec.get("clock")
+    if clock is not None:
+        if not isinstance(clock, dict) or clock.get("basis") != "fiscal_years":
+            raise _refuse(f"{term}.clock must be {{basis: fiscal_years, fy_start, fy_end}}")
+        a, b = _fy_range(clock, term)
+        sql = (f"SELECT DISTINCT uei FROM txn_events_combo_by_geo "
+               f"WHERE pop_state IN ({in_list}) AND fy BETWEEN {a} AND {b}")
+        return "affirmative", sql, {"term": term, "states": states,
+                                    "clock": {"basis": "fiscal_years", "fy_start": a, "fy_end": b}}
+    sql = f"SELECT DISTINCT uei FROM txn_events_combo_by_geo WHERE pop_state IN ({in_list})"
+    return "affirmative", sql, {"term": term, "states": states}
+
+
+_ZIP_RE = re.compile(r"^\d{5}$")
+
+
+def _c_pop_within(spec: dict) -> tuple[str, str, dict]:
+    """Radius cut: firms with an ACTIVE award performed within N miles of an
+    anchor (a zip5 or an explicit lat/lon, e.g. a military installation).
+    Anchor resolves in-query (zip -> avg of that zip's award-PoP centroids);
+    the haversine runs over gtm_open_awards (163k, centroid pre-joined) — a
+    full pass is ms-class, no pruning needed. Miles is a query-time dial."""
+    term = "place_of_performance_within"
+    miles = spec.get("miles", 150)
+    if not isinstance(miles, (int, float)) or isinstance(miles, bool) or not (1 <= float(miles) <= 500):
+        raise _refuse(f"{term}.miles must be a number in [1, 500]")
+    miles = float(miles)
+    zip5 = spec.get("zip")
+    lat, lon = spec.get("lat"), spec.get("lon")
+    if zip5 is not None:
+        zip5 = str(zip5)
+        if not _ZIP_RE.match(zip5):
+            raise _refuse(f"{term}.zip must be a 5-digit zip code")
+        anchor_cte = (f"SELECT avg(latitude) AS alat, avg(longitude) AS alon "
+                      f"FROM usaspending_award_pop_centroids "
+                      f"WHERE zip5 = '{zip5}' AND latitude IS NOT NULL")
+        echo_anchor: dict = {"zip": zip5}
+    elif isinstance(lat, (int, float)) and isinstance(lon, (int, float)) \
+            and not isinstance(lat, bool) and not isinstance(lon, bool) \
+            and -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180:
+        anchor_cte = f"SELECT {float(lat)} AS alat, {float(lon)} AS alon"
+        echo_anchor = {"lat": float(lat), "lon": float(lon)}
+    else:
+        raise _refuse(f"{term} needs a zip (5-digit) or a lat/lon anchor")
+    label = spec.get("label")
+    if label is not None:
+        label = str(label)[:80]
+        echo_anchor["label"] = label
+    # 3958.8 = earth radius in MILES; haversine over the active-award centroids.
+    sql = (
+        f"SELECT DISTINCT o.recipient_uei AS uei "
+        f"FROM gtm_open_awards o CROSS JOIN ({anchor_cte}) c "
+        f"WHERE o.latitude IS NOT NULL AND c.alat IS NOT NULL "
+        f"AND 2 * 3958.8 * asin(sqrt("
+        f"pow(sin(radians(o.latitude - c.alat) / 2), 2) + "
+        f"cos(radians(c.alat)) * cos(radians(o.latitude)) * "
+        f"pow(sin(radians(o.longitude - c.alon) / 2), 2))) <= {miles}"
+    )
+    return "affirmative", sql, {"term": term, "miles": miles, **echo_anchor}
+
+
 def _c_designations(spec: dict) -> tuple[str, str, dict]:
     term = "small_business_designations"
     raw = spec.get("designations")
@@ -873,6 +941,8 @@ _COMPILERS: dict[str, Callable[[dict], tuple[str, str, dict]]] = {
     "distinct_agency_breadth": _c_agency_breadth,
     "registered_in_state": _c_registered_in_state,
     "place_of_performance_of_active_awards": _c_pop_active,
+    "performed_in": _c_performed_in,
+    "place_of_performance_within": _c_pop_within,
     "small_business_designations": _c_designations,
     "set_aside_obligations": _c_set_aside,
     "employee_size": _c_employee_size,
@@ -952,6 +1022,18 @@ VOCABULARY: list[dict[str, Any]] = [
     {"term": "place_of_performance_of_active_awards", "family": "geography",
      "definition": "The firm has active awards whose reported place of performance is in the named state(s).",
      "dials": {"states": "state codes"}},
+    {"term": "performed_in", "family": "geography",
+     "definition": "The firm performed work (any FPDS action) whose place of performance is "
+                   "in the named state(s) — optionally within a fiscal-year lookback window.",
+     "dials": {"states": "state codes",
+               "clock": "optional {basis: fiscal_years, fy_start, fy_end}; omitted = all-time"}},
+    {"term": "place_of_performance_within", "family": "geography",
+     "definition": "The firm has an ACTIVE award whose place of performance lies within N miles "
+                   "of the anchor (a zip5 centroid, or an explicit lat/lon such as a military "
+                   "installation).",
+     "dials": {"zip": "5-digit zip anchor", "lat": "anchor latitude (with lon)",
+               "lon": "anchor longitude (with lat)", "miles": "radius in miles, 1-500 (default 150)",
+               "label": "optional anchor display name (echoed)"}},
     {"term": "small_business_designations", "family": "designations",
      "definition": "SBA/registration designations on the firm (8(a), HUBZone, WOSB, SDVOSB, …).",
      "dials": {"designations": "tokens (dsbs_* / fsrs_* / in_dsbs)", "match": "all | any (default all)"}},

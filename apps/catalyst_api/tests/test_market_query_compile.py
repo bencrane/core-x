@@ -20,7 +20,7 @@ def test_vocabulary_matches_compilers_exactly() -> None:
 
 
 def test_thirty_terms() -> None:
-    assert len(_COMPILERS) == 30
+    assert len(_COMPILERS) == 32
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────
