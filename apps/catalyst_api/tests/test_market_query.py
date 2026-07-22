@@ -1192,3 +1192,47 @@ def test_collapse_route_gates(monkeypatch):
     body = _json.loads(res.body)
     assert body["meta"]["collapse"] == "recipients"
     assert body["meta"]["distinctRecipients"] == 0
+
+
+# ── geo grammar (2026-07-22): performed_in + place_of_performance_within ─────
+def test_performed_in_states_with_fy_lookback() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_performed_in
+    kind, sql, echo = _c_performed_in(
+        {"states": ["TX", "OK"], "clock": {"basis": "fiscal_years", "fy_start": 2025, "fy_end": 2025}}
+    )
+    assert kind == "affirmative"
+    assert "txn_events_combo_by_geo" in sql, "must ride the pop_state-sorted copy"
+    assert "pop_state IN ('OK','TX')" in sql and "fy BETWEEN 2025 AND 2025" in sql
+    assert echo["clock"]["fy_start"] == 2025
+
+
+def test_performed_in_no_clock_is_all_time() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_performed_in
+    _, sql, echo = _c_performed_in({"states": ["CA"]})
+    assert "fy BETWEEN" not in sql and "clock" not in echo
+
+
+def test_pop_within_zip_anchor_and_miles_dial() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_pop_within
+    _, sql, echo = _c_pop_within({"zip": "76544", "miles": 150})
+    assert "gtm_open_awards" in sql and "zip5 = '76544'" in sql
+    assert "3958.8" in sql, "haversine in miles"
+    assert "<= 150.0" in sql
+    assert echo == {"term": "place_of_performance_within", "miles": 150.0, "zip": "76544"}
+
+
+def test_pop_within_latlon_anchor() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_pop_within
+    _, sql, echo = _c_pop_within({"lat": 31.1351, "lon": -97.7845, "miles": 50, "label": "Fort Cavazos"})
+    assert "31.1351 AS alat" in sql and "-97.7845 AS alon" in sql
+    assert echo["label"] == "Fort Cavazos" and echo["miles"] == 50.0
+
+
+def test_pop_within_refuses_bad_input() -> None:
+    import pytest
+    from fastapi import HTTPException
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_pop_within
+    for bad in ({"zip": "abc12"}, {"miles": 150}, {"zip": "76544", "miles": 0},
+                {"zip": "76544", "miles": 10_000}, {"lat": 95, "lon": 0}):
+        with pytest.raises(HTTPException):
+            _c_pop_within(bad)
