@@ -222,6 +222,12 @@ MANIFEST: list[dict] = [
      "sort": ["naics_code", "psc_code"],
      "from_table": "usaspending_fpds_prime_award_state", "combo_active": True,
      "aggregate": True},
+    # award-key companion: the profile's anchor row keyed by the award (was a
+    # 4.8s zone-map crawl on the current_end_date-sorted spine). Full-width —
+    # every column any by-key consumer will ask for rides free.
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
+     "dest": "prime_award_state_by_key", "sort": ["contract_award_unique_key"],
+     "from_table": "usaspending_fpds_prime_award_state"},
     # inferred-code semi-join legs: sorted by (code_type, code) so a code
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
     {"ds": "gtm_entity_inferred_primeable_codes", "tier": "C", "sort": ["code_type", "code"]},
@@ -242,10 +248,19 @@ MANIFEST: list[dict] = [
          # structure verbatim (code + source desc) — additive to the 16-col
          # wire contract, existing consumers select by name.
          "type_of_contract_pricing_code", "type_of_contract_pric_desc"]},
+    # award-key point-read companion (gap 2026-07-21-award-key-probes): the
+    # award drawer's "recent actions" leg keyed by the award — local sort copy.
+    {"ds": "txn_rows", "tier": "C", "dest": "txn_rows_by_award",
+     "sort": ["contract_award_unique_key", "action_date"], "from_table": "txn_rows"},
     # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
     {"ds": "usaspending_award_pop_centroids", "tier": "C", "sort": ["state_code", "zip5"]},
+    # award-key companion: centroid point-read keyed by the award (was 0.9s on
+    # the state/zip5-sorted copy).
+    {"ds": "usaspending_award_pop_centroids", "tier": "C",
+     "dest": "award_pop_centroids_by_key", "sort": ["generated_unique_award_id"],
+     "from_table": "usaspending_award_pop_centroids"},
     # ── combo-portrait layer ──────────────────────────────────────────────────
     # ONE fact, every dial: combo (substr rollups), time (action_date + fy),
     # action codes, subk plan, topology (award_state join at build), geo
@@ -256,6 +271,10 @@ MANIFEST: list[dict] = [
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_geo",
      "sort": ["pop_state", "pop_county_fips", "action_date"],
      "from_table": "txn_events_combo"},
+    # award-key companion: the drawer's FY-ledger leg keyed by the award —
+    # turns the per-award combo probe (0.65s uei-pruned, 11.6s raw) ms-class.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_award",
+     "sort": ["award_key", "action_date"], "from_table": "txn_events_combo"},
     # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
     # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
     # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
@@ -546,6 +565,11 @@ MANIFEST: list[dict] = [
     {"ds": "occupation_alias_lookup", "tier": "D", "sort": ["alias_norm", "code"]},
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
+    # person contact channels (gap 2026-07-21-firm-contact-channels, operator-
+    # directed): people ⋈ contactability pre-joined at uei grain so the firm
+    # drawer's people section is one ms-class point-read with email/phone/li.
+    {"ds": "gtm_sam_people", "tier": "D", "dest": "gtm_person_channels",
+     "sort": ["uei"], "from_table": "gtm_sam_people", "person_channels": True},
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
     {"ds": "sam_master_entities", "tier": "D", "sort": ["uei"]},
     {"ds": "people_canonical", "tier": "D", "sort": ["canonical_person_id"]},
@@ -1823,6 +1847,8 @@ CREATE TABLE IF NOT EXISTS ops.query_sidecar_runs (
 );
 CREATE INDEX IF NOT EXISTS query_sidecar_runs_status_idx ON ops.query_sidecar_runs (status);
 CREATE INDEX IF NOT EXISTS query_sidecar_runs_recorded_idx ON ops.query_sidecar_runs (recorded_at DESC);
+ALTER TABLE ops.query_sidecar_runs ADD COLUMN IF NOT EXISTS launch_mode text;
+ALTER TABLE ops.query_sidecar_runs ADD COLUMN IF NOT EXISTS function_call_id text;
 """
 
 
@@ -1879,6 +1905,27 @@ def _s3_client():
             response_checksum_validation="when_required",
         ),
     )
+
+
+_PERSON_CHANNELS_SQL = """
+CREATE TABLE gtm_person_channels AS
+SELECT p.uei, p.sam_person_id, p.display_name, p.first_name, p.last_name,
+       p.best_title, p.is_govt_poc, p.is_ebiz_poc, p.n_sources,
+       c.email, c.email_verification_status, c.phone, c.phone_status, c.phone_type,
+       c.person_linkedin_url_norm, c.linkedin_match_score
+FROM gtm_sam_people p
+LEFT JOIN gtm_sam_person_contactability c ON c.sam_person_id = p.sam_person_id
+ORDER BY p.uei, p.sam_person_id
+"""
+
+
+def _current_call_id() -> str | None:
+    """The Modal function-call id of THIS build, for the ledger (autopsy aid)."""
+    try:
+        import modal
+        return modal.current_function_call_id()
+    except Exception:  # noqa: BLE001 — instrumentation never fails the build
+        return None
 
 
 def _record_run(**fields) -> None:
@@ -1948,6 +1995,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_UCC_LENDER_FILINGS_SQL)
         elif spec.get("slug_lookup"):
             con.execute(_SLUG_LOOKUP_SQL)
+        elif spec.get("person_channels"):
+            con.execute(_PERSON_CHANNELS_SQL)
         else:
             order = ", ".join(spec["sort"])
             con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
@@ -2060,7 +2109,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
     timeout=60 * 60 * 12,
 )
 def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
-          trigger_callback_url: str | None = None) -> dict:
+          trigger_callback_url: str | None = None,
+          launch_mode: str | None = None) -> dict:
     """Build the query-sidecar .duckdb for the requested tiers; publish blue-green to R2."""
     import duckdb
 
@@ -2151,6 +2201,7 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
             file_bytes=file_bytes, r2_key=r2_key, latest_updated=latest_updated,
             status=status, error_message=error_message,
             started_at=started_at, completed_at=dt.datetime.now(dt.timezone.utc),
+            launch_mode=launch_mode, function_call_id=_current_call_id(),
         )
         if trigger_callback_url:
             _post_callback(trigger_callback_url, status, parity)
