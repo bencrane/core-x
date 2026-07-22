@@ -505,3 +505,32 @@ def test_rollup_parser() -> None:
     assert _parse_rollup({"rollup": "family"}) == "family"
     with pytest.raises(HTTPException):
         _parse_rollup({"rollup": "parent"})
+
+
+# ── the money-fit pair (2026-07-22): deal size + run rate ────────────────────
+
+def test_active_award_value_holder_and_award_grain() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import (
+        _c_active_award_value, active_award_value_award_keys)
+    kind, sql, echo = _c_active_award_value({"min": 5e6, "max": 2.5e7})
+    assert kind == "affirmative"
+    assert "FROM gtm_open_awards" in sql and "total_obligation" in sql
+    assert "recipient_uei" in sql
+    key_sql, kecho = active_award_value_award_keys({"min": 5e6})
+    assert "generated_unique_award_id" in key_sql and kecho["grain"] == "award"
+
+
+def test_avg_annual_obligations_is_trailing_60mo_over_5() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import _c_avg_annual_obligations
+    kind, sql, _ = _c_avg_annual_obligations({"min": 2e6, "max": 2e7})
+    assert kind == "affirmative"
+    assert "gtm_entity_behavior_rollup" in sql
+    assert "prime_obl_60mo / 5.0" in sql
+
+
+def test_money_fit_terms_refuse_empty_range() -> None:
+    from apps.catalyst_api.src.routers.market_query_v1 import (
+        _c_active_award_value, _c_avg_annual_obligations)
+    for fn in (_c_active_award_value, _c_avg_annual_obligations):
+        with pytest.raises(HTTPException):
+            fn({})
