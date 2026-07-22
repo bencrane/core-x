@@ -62,7 +62,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..service_token import require_service_token
 from .market_collections_v1 import _load_collections, _cache as _collections_cache
-from .market_query_v1 import compile_predicates
+from .market_query_v1 import compile_predicates, pop_states_award_keys, pop_within_award_keys
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,50 @@ def _parse_band(body: dict[str, Any]) -> dict[str, float]:
     if out["max"] <= out["min"]:
         raise _refuse("band.max must be greater than band.min")
     return out
+
+
+def _parse_when(body: dict[str, Any]) -> dict[str, int] | None:
+    """The WHEN frame (operator-ruled 2026-07-22): None = "holding now" (the
+    standing active book — every read as before). {"mode": "won", fy_start,
+    fy_end} = the introduction frame: membership and money become obligations
+    INTRODUCED in the FY window on the in-scope combos (txn grain)."""
+    w = body.get("when")
+    if w is None:
+        return None
+    if not isinstance(w, dict):
+        raise _refuse('when must be an object {"mode": "active"|"won", fy_start?, fy_end?}')
+    mode = str(w.get("mode") or "active")
+    if mode not in ("active", "won"):
+        raise _refuse("when.mode must be 'active' | 'won'")
+    if mode == "active":
+        return None
+    fys: dict[str, int] = {}
+    for key in ("fy_start", "fy_end"):
+        v = w.get(key)
+        if not isinstance(v, int) or isinstance(v, bool) or not (2008 <= v <= 2026):
+            raise _refuse(f"when.{key} must be an integer fiscal year in [2008, 2026]")
+        fys[key] = v
+    if fys["fy_end"] < fys["fy_start"]:
+        raise _refuse("when.fy_end must be >= when.fy_start")
+    return fys
+
+
+async def _resolve_scope_union(body: dict[str, Any]) -> dict[str, Any] | None:
+    """One scope from `slugs` (union of pair sets — the Work layer, multi-
+    select) or the back-compat single `slug`. None when neither is sent."""
+    slugs = body.get("slugs")
+    if isinstance(slugs, list) and slugs:
+        if not all(isinstance(s, str) and s for s in slugs):
+            raise _refuse("slugs must be a list of non-empty strings")
+        scopes = [await _resolve_scope(s) for s in slugs]
+        pairs = sorted({tuple(p) for sc in scopes for p in sc["pairs"]})
+        return {"title": " + ".join(sc["title"] for sc in scopes),
+                "lens": "union" if len(scopes) > 1 else scopes[0]["lens"],
+                "pairs": pairs}
+    slug = str(body.get("slug") or "")
+    if slug:
+        return await _resolve_scope(slug)
+    return None
 
 
 def _parse_basis(body: dict[str, Any]) -> str:
@@ -328,6 +372,65 @@ LEFT JOIN gtm_entity_geo g ON g.uei = m.uei
 GROUP BY m.uei
 ORDER BY unfin_usd DESC, m.uei
 LIMIT {limit}"""
+
+
+def build_won_entities_sql(
+    pairs: list[tuple[str, str]] | None,
+    band: dict[str, float] | None,
+    predicate_expr: str | None,
+    limit: int,
+    when: dict[str, int],
+) -> tuple[str, str]:
+    """The WON frame's per-firm read: membership = any obligation introduced in
+    [fy_start, fy_end] on the in-scope combos (txn_events_combo, txn grain);
+    money = the sum of those introductions. Financing/basis gates do not apply
+    in this frame (introductions are pre-financing-composition by definition);
+    the size band stays a holder property (standing active_obl). Returns
+    (entities_sql, count_sql). Wire aliases match the standing read
+    (unfin_usd carries the window money; awards_unfin = awards touched)."""
+    a, b = when["fy_start"], when["fy_end"]
+    pair_values = ",".join(f"('{n}','{p}')" for n, p in (pairs or []))
+    pair_cte = f"pairs(naics_code, psc_code) AS (VALUES {pair_values}),\n" if pairs else ""
+    pair_join = (
+        "\n  JOIN pairs pr ON t.naics_code = pr.naics_code AND t.psc_code = pr.psc_code"
+        if pairs
+        else ""
+    )
+    pred_leg = f"\n    AND t.uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
+    band_join = (
+        f"\nJOIN (SELECT uei FROM gtm_entity_pricing_mix WHERE active_obl >= {band['min']}"
+        f" AND active_obl <= {band['max']}) bd USING (uei)"
+        if band
+        else ""
+    )
+    won_cte = f"""
+WITH {pair_cte}won AS (
+  SELECT t.uei,
+         sum(t.obligation) AS won_usd,
+         count(DISTINCT t.award_key) AS awards_touched
+  FROM txn_events_combo t{pair_join}
+  WHERE t.fy BETWEEN {a} AND {b}{pred_leg}
+  GROUP BY t.uei
+  HAVING sum(t.obligation) > 0
+)"""
+    entities = f"""{won_cte}
+SELECT won.uei,
+       e.legal_business_name,
+       e.physical_city,
+       e.physical_state,
+       g.latitude,
+       g.longitude,
+       round(won.won_usd, 0) AS unfin_usd,
+       won.awards_touched AS awards_unfin
+FROM won{band_join}
+LEFT JOIN gtm_sam_entities e ON e.uei = won.uei
+LEFT JOIN gtm_entity_geo g ON g.uei = won.uei
+ORDER BY unfin_usd DESC, won.uei
+LIMIT {limit}"""
+    count = f"""{won_cte}
+SELECT count(*) AS firms
+FROM won{band_join}"""
+    return entities, count
 
 
 def wrap_family_rollup(entities_sql: str) -> str:
@@ -626,6 +729,7 @@ def build_awards_sql(
     pairs: list[tuple[str, str]] | None = None,
     uei: str | None = None,
     band: dict[str, float] | None = None,
+    award_key_exprs: list[str] | None = None,
 ) -> tuple[str, str]:
     """(points_sql, count_sql) over the active-award universe ∪ predicates.
 
@@ -648,6 +752,13 @@ def build_awards_sql(
         if band
         else ""
     )
+    # Award-grain geography (the Awards-drawer semantics): each expr selects
+    # open-award KEYS whose OWN PoP matches — the paper itself, never a
+    # holder gate.
+    key_legs = "".join(
+        f"\n  AND a.contract_award_unique_key IN (\n{expr}\n)"
+        for expr in (award_key_exprs or [])
+    )
     pair_values = ",".join(f"('{n}','{p}')" for n, p in (pairs or []))
     pair_cte = f"pairs(naics_code, psc_code) AS (VALUES {pair_values}),\n" if pairs else ""
     pair_join = (
@@ -657,7 +768,7 @@ def build_awards_sql(
     )
     base = f"""
 FROM usaspending_fpds_prime_award_state a{pair_join}
-WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}{uei_leg}{band_leg}"""
+WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}{uei_leg}{band_leg}{key_legs}"""
     # Rank first, hydrate geo after: the centroid join runs over the ≤limit
     # page, never as a 30.7M hash build (measured 15.3s → sub-second).
     points = f"""
@@ -706,18 +817,40 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
     limit = body.get("limit", _AWARDS_MAX)
     if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= _AWARDS_MAX):
         raise _refuse(f"limit must be an integer in [1, {_AWARDS_MAX}]")
-    expr, echoes, disclosures = _compile_body_predicates(body)
+    # Geography splits by grain here (the Awards-drawer semantics, operator-
+    # ruled 2026-07-22): PoP terms filter the PAPER (award keys by the award's
+    # own place of performance); every other predicate stays a holder gate.
+    preds_in = body.get("predicates")
+    if preds_in is not None and not isinstance(preds_in, list):
+        raise _refuse("predicates must be a list of {term, ...dials} objects")
+    award_geo_specs = [p for p in (preds_in or [])
+                       if isinstance(p, dict)
+                       and p.get("term") in ("place_of_performance_of_active_awards",
+                                             "place_of_performance_within")]
+    holder_specs = [p for p in (preds_in or []) if p not in award_geo_specs]
+    expr, echoes, disclosures = _compile_body_predicates({"predicates": holder_specs})
+    award_key_exprs: list[str] = []
+    for spec in award_geo_specs:
+        if spec.get("term") == "place_of_performance_of_active_awards":
+            key_sql, echo = pop_states_award_keys(spec)
+        else:
+            key_sql, echo = pop_within_award_keys(spec)
+        award_key_exprs.append(key_sql)
+        echoes = [*echoes, echo]
+    if award_key_exprs:
+        disclosures = [*disclosures,
+                       "geography filters the paper itself: awards whose own place of performance "
+                       "matches (open-award universe; awards without a resolvable PoP do not satisfy)"]
 
-    slug = str(body.get("slug") or "")
+    scope = await _resolve_scope_union(body)
     pairs: list[tuple[str, str]] | None = None
     title = None
-    if slug:
-        scope = await _resolve_scope(slug)
+    if scope is not None:
         pairs = scope["pairs"]
         title = scope["title"]
         disclosures = [*disclosures,
-                       "narrowed to the market's work scope: award NAICS x PSC within the card's pair set "
-                       "(the market's paper)"]
+                       "narrowed to the selected work: award NAICS x PSC within the union of the "
+                       "selected collections' pair sets (the paper)"]
     uei = str(body.get("uei") or "") or None
     if uei is not None and not _AWARD_KEY_RE.match(uei):
         raise _refuse("uei must be alphanumeric")
@@ -727,7 +860,8 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
                        "size band applies through the holder: awards held by firms whose total active "
                        "obligations fall in the band (gtm_entity_pricing_mix — the same gate the firm cohort uses)"]
 
-    points_sql, count_sql = build_awards_sql(expr, limit, pairs=pairs, uei=uei, band=band)
+    points_sql, count_sql = build_awards_sql(expr, limit, pairs=pairs, uei=uei, band=band,
+                                             award_key_exprs=award_key_exprs)
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=90.0) as client:
         points_payload, count_payload = await asyncio.gather(
@@ -737,7 +871,8 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
     rows = _rows(points_payload)
     totals = _row(count_payload)
     return {
-        "slug": slug or None,
+        "slug": str(body.get("slug") or "") or None,
+        "slugs": body.get("slugs") if isinstance(body.get("slugs"), list) else None,
         "title": title,
         "predicates": echoes,
         "disclosures": [*disclosures, _AWARDS_GEO_DISCLOSURE],
@@ -1072,20 +1207,37 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
     limit = body.get("limit", _ENTITIES_MAX)
     if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= _ENTITIES_MAX):
         raise _refuse(f"limit must be an integer in [1, {_ENTITIES_MAX}]")
-    slug = str(body.get("slug") or "")
     expr, echoes, disclosures = _compile_body_predicates(body)
     basis = _parse_basis(body)
     rollup = _parse_rollup(body)
+    when = _parse_when(body)
     # Family grain folds over the FULL cohort, then pages — a page-then-fold
     # would under-count family members.
     inner_limit = 1_000_000 if rollup == "family" else limit
 
     t0 = time.monotonic()
-    if slug:
-        scope = await _resolve_scope(slug)
-        # No band unless the caller sends one (operator-ruled 2026-07-22): the
-        # Explore surface reads the whole market; the band is a rail dial.
-        band = _parse_band(body) if body.get("band") is not None else None
+    scope = await _resolve_scope_union(body)
+    # No band unless the caller sends one (operator-ruled 2026-07-22): the
+    # Explore surface reads the whole market; the band is a rail dial.
+    band = _parse_band(body) if body.get("band") is not None else None
+    if when is not None:
+        # The WON frame: membership + money = obligations INTRODUCED in the
+        # window on the in-scope combos. Basis does not apply (introductions
+        # precede financing composition); band stays a holder property.
+        if scope is None and expr is None:
+            raise _refuse(
+                "slug(s) or predicates required (an unscoped read of the whole universe is refused)"
+            )
+        a, b = when["fy_start"], when["fy_end"]
+        ent_sql, count_sql = build_won_entities_sql(
+            scope["pairs"] if scope else None, band, expr, inner_limit, when)
+        money_basis = f"won_fy{a}_fy{b}"
+        title, lens = (scope["title"], scope["lens"]) if scope else (None, None)
+        disclosures = [*disclosures,
+                       f"won frame: dollars are obligations introduced FY{a}–FY{b} on the in-scope "
+                       "combos (txn grain); membership = any such introduction; the financing basis "
+                       "does not apply in this frame"]
+    elif scope is not None:
         ent_sql = build_entities_sql(scope["pairs"], band, expr, inner_limit, basis=basis)
         count_sql = build_count_sql(scope["pairs"], band, expr, basis=basis)
         money_basis = "unfinanced_in_scope" if basis == "unfinanced" else "active_in_scope"
@@ -1095,7 +1247,6 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
             raise _refuse(
                 "slug or predicates required (an unscoped read of the whole universe is refused)"
             )
-        band = _parse_band(body) if body.get("band") is not None else None
         ent_sql, count_sql = build_grammar_entities_sql(expr, band, inner_limit)
         money_basis = "active_obligations"
         title, lens = None, None
@@ -1114,10 +1265,12 @@ async def entities(body: dict[str, Any]) -> dict[str, Any]:
         )
     rows = _rows(ent_payload)
     return {
-        "slug": slug or None,
+        "slug": str(body.get("slug") or "") or None,
+        "slugs": body.get("slugs") if isinstance(body.get("slugs"), list) else None,
         "title": title,
         "lens": lens,
         "band": band,
+        "when": when,
         "rollup": rollup,
         "predicates": echoes,
         "disclosures": [*disclosures, _GEO_DISCLOSURE],
