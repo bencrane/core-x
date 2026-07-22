@@ -501,6 +501,43 @@ def _c_awards_expiring(spec: dict) -> tuple[str, str, dict]:
     return "affirmative", sql, echo
 
 
+def _c_active_award_value(spec: dict) -> tuple[str, str, dict]:
+    """Deal-size fit: the firm holds ≥1 OPEN award whose life-to-date
+    obligations fall in [min, max]. Open-award universe (gtm_open_awards),
+    same as the geography terms; obligated dollars — the measure every
+    surface already displays — never ceiling/options value."""
+    term = "active_award_value"
+    mn = _req_num(spec, "min", term)
+    mx = _req_num(spec, "max", term)
+    where = _min_max_where("total_obligation", mn, mx, term)
+    sql = f"SELECT DISTINCT recipient_uei AS uei FROM gtm_open_awards WHERE {where}"
+    return "affirmative", sql, {"term": term, "min": mn, "max": mx}
+
+
+def active_award_value_award_keys(spec: dict) -> tuple[str, dict]:
+    """AWARD-GRAIN projection of active_award_value: the open-award KEYS in
+    the dollar range — the award property applied to the paper itself."""
+    term = "active_award_value"
+    mn = _req_num(spec, "min", term)
+    mx = _req_num(spec, "max", term)
+    where = _min_max_where("total_obligation", mn, mx, term)
+    sql = f"SELECT generated_unique_award_id FROM gtm_open_awards WHERE {where}"
+    return sql, {"term": term, "min": mn, "max": mx, "grain": "award"}
+
+
+def _c_avg_annual_obligations(spec: dict) -> tuple[str, str, dict]:
+    """Throughput fit: the firm's AVERAGE prime obligations per year over the
+    trailing five years (prime_obl_60mo / 5 — years with nothing count as
+    zero, so the one-hit wonder reads as run-rate, not peak). Whole-firm by
+    construction (disclosed): the size of the operation, not the slice."""
+    term = "avg_annual_obligations"
+    mn = _req_num(spec, "min", term)
+    mx = _req_num(spec, "max", term)
+    where = _min_max_where("prime_obl_60mo / 5.0", mn, mx, term)
+    sql = f"SELECT uei FROM gtm_entity_behavior_rollup WHERE {where}"
+    return "affirmative", sql, {"term": term, "min": mn, "max": mx}
+
+
 def _c_open_idvs(spec: dict) -> tuple[str, str, dict]:
     term = "open_idvs"
     value = spec.get("value")
@@ -977,6 +1014,8 @@ _COMPILERS: dict[str, Callable[[dict], tuple[str, str, dict]]] = {
     "active_awards": _c_active_awards,
     "awards_expiring": _c_awards_expiring,
     "open_idvs": _c_open_idvs,
+    "active_award_value": _c_active_award_value,
+    "avg_annual_obligations": _c_avg_annual_obligations,
     "awarded_by_agency": _c_awarded_by_agency,
     "distinct_agency_breadth": _c_agency_breadth,
     "registered_in_state": _c_registered_in_state,
@@ -1050,6 +1089,12 @@ VOCABULARY: list[dict[str, Any]] = [
     {"term": "open_idvs", "family": "lifecycle",
      "definition": "The firm holds IDVs whose ordering window is open.",
      "dials": {"value": "false to require NONE", "min_count": "default 1"}},
+    {"term": "active_award_value", "family": "lifecycle",
+     "definition": "The firm holds at least one open award whose life-to-date obligations fall in the dollar range.",
+     "dials": {"min/max": "dollars (at least one required)"}},
+    {"term": "avg_annual_obligations", "family": "momentum",
+     "definition": "The firm's average prime obligations per year over the trailing five years (trailing-60-month total / 5; whole-firm).",
+     "dials": {"min/max": "dollars per year (at least one required)"}},
     {"term": "awarded_by_agency", "family": "buyers",
      "definition": "The firm has obligations awarded by the named agencies (FPDS awarding-agency codes).",
      "dials": {"agencies": "codes, ≤50", "scope": "active | lifetime (default lifetime)", "min_dollars": "optional floor"}},
