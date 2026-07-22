@@ -1,0 +1,572 @@
+[
+ {
+  "lender_nln": "MIDCAP FINANCIAL LLC",
+  "party_example_raw": "MIDCAP FINANCIAL, LLC, AS AGENT",
+  "crd_number": "143161",
+  "adviser_legal_name": "APOLLO CAPITAL MANAGEMENT, L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "MidCap Financial is the Apollo-affiliated middle-market direct lender externally managed within Apollo Capital Management, acting as administrative agent on its own loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "VARAGON CAPITAL PARTNERS",
+  "party_example_raw": "VARAGON CAPITAL PARTNERS AGENT, LLC, AS ADMINISTRATIVE AGENT",
+  "crd_number": "281851",
+  "adviser_legal_name": "VARAGON CAPITAL PARTNERS, L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.96,
+  "llm_rationale": "'Varagon Capital Partners Agent, LLC' is Varagon's own administrative-agent vehicle serving as agent on the manager's direct loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "SOUND POINT AGENCY LLC",
+  "party_example_raw": "SOUND POINT AGENCY LLC, AS COLLATERAL AGENT",
+  "crd_number": "128132",
+  "adviser_legal_name": "SOUND POINT LUNA LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Sound Point Agency LLC is Sound Point Capital's collateral-agent entity on its own direct loans, and the adviser Sound Point Luna LLC is itself a Sound Point family vehicle.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "CRESTLINE DIRECT FINANCE LP",
+  "party_example_raw": "CRESTLINE DIRECT FINANCE, L.P., AS COLLATERAL AGENT",
+  "crd_number": "122711",
+  "adviser_legal_name": "CRESTLINE MANAGEMENT, L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Crestline Direct Finance, L.P. is Crestline's collateral-agent entity for its Crestline Direct Lending funds, so the debtor belongs in Crestline Management's private-credit book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ACORE CAPITAL MORTGAGE LP",
+  "party_example_raw": "ACORE CAPITAL MORTGAGE, LP",
+  "crd_number": "175054",
+  "adviser_legal_name": "ACORE CAPITAL, LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "ACORE Capital Mortgage, LP is the CRE mortgage-lending vehicle of the distinctively named CRE-debt manager ACORE Capital, LP.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "KENNEDY LEWIS AGENCY PARTNERS LLC",
+  "party_example_raw": "KENNEDY LEWIS AGENCY PARTNERS LLC, AS ADMINISTRATIVE AGENT",
+  "crd_number": "290399",
+  "adviser_legal_name": "KENNEDY LEWIS MANAGEMENT LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.93,
+  "llm_rationale": "Kennedy Lewis Agency Partners LLC is the loan-agency vehicle of Kennedy Lewis Investment Management acting as administrative agent on the manager's own direct-lending credits.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "CRESCENT DIRECT LENDING LLC",
+  "party_example_raw": "CRESCENT DIRECT LENDING, LLC, AS ADMINISTRATIVE AGENT",
+  "crd_number": "153966",
+  "adviser_legal_name": "CRESCENT CAPITAL GROUP LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Crescent Direct Lending LLC is Crescent Capital Group's direct-lending platform acting as administrative agent on its own originated loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "VARDE INVESTMENT PARTNERS LP",
+  "party_example_raw": "VARDE INVESTMENT PARTNERS, L.P.",
+  "crd_number": "148949",
+  "adviser_legal_name": "VARDE MANAGEMENT, L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "Varde Investment Partners, L.P. is a direct fund vehicle of Varde Management, L.P., confirmed by its offshore master/feeder entities in the same corporate family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "BENEFIT STREET PARTNERS CRE FINANCE LLC",
+  "party_example_raw": "Benefit Street Partners CRE Finance LLC",
+  "crd_number": "158672",
+  "adviser_legal_name": "BENEFIT STREET PARTNERS L.L.C.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "Benefit Street Partners CRE Finance LLC is the commercial-real-estate credit lending vehicle of Benefit Street Partners L.L.C. (Franklin Templeton's alternative-credit arm).",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "GOLDMAN SACHS AND CO",
+  "party_example_raw": "GOLDMAN, SACHS & CO.",
+  "crd_number": "361",
+  "adviser_legal_name": "GOLDMAN SACHS & CO. LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.95,
+  "llm_rationale": "'Goldman, Sachs & Co.' is the pre-2017 legal name of Goldman Sachs & Co. LLC (CRD 361), the identical SEC-registered entity, matching at sim 1.0.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "RUNWAY GROWTH CREDIT FUND INC",
+  "party_example_raw": "RUNWAY GROWTH CREDIT FUND INC., AS AGENT",
+  "crd_number": "281514",
+  "adviser_legal_name": "RUNWAY GROWTH CAPITAL LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Runway Growth Credit Fund Inc. (later Runway Growth Finance Corp.) is the BDC managed by Runway Growth Capital LLC, acting as agent on its own direct loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "AB COMMERCIAL REAL ESTATE DEBT FUND III",
+  "party_example_raw": "AB COMMERCIAL REAL ESTATE DEBT FUND III",
+  "crd_number": "108477",
+  "adviser_legal_name": "ALLIANCEBERNSTEIN L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "'AB' is AllianceBernstein, and AB Commercial Real Estate Debt Fund III is an AllianceBernstein-managed CRE debt fund vehicle confirmed by the SICAV-SIF fam candidates.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "NEW MOUNTAIN FINANCE SERVICING LLC",
+  "party_example_raw": "NEW MOUNTAIN FINANCE SERVICING, L.L.C., AS COLLATERAL AGENT",
+  "crd_number": "155493",
+  "adviser_legal_name": "NEW MOUNTAIN FINANCE ADVISERS BDC, L.L.C.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.96,
+  "llm_rationale": "New Mountain Finance Servicing, L.L.C. is the collateral/servicing agent entity for New Mountain Finance Corporation's BDC direct loans, part of the same New Mountain Capital private-credit family as the adviser.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "PIMCO PRIVATE INCOME FUND LP",
+  "party_example_raw": "PIMCO PRIVATE INCOME FUND LP",
+  "crd_number": "104559",
+  "adviser_legal_name": "PACIFIC INVESTMENT MANAGEMENT COMPANY LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.97,
+  "llm_rationale": "PIMCO Private Income Fund LP is a private-credit fund managed by Pacific Investment Management Company LLC (PIMCO), directly its lending vehicle.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "TCW ASSET MANAGEMENT COMPANY",
+  "party_example_raw": "TCW ASSET MANAGEMENT COMPANY, AS ADMINISTRATIVE AGENT",
+  "crd_number": "105742",
+  "adviser_legal_name": "TCW ASSET MANAGEMENT COMPANY LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.98,
+  "llm_rationale": "TCW Asset Management Company acting as administrative agent is the SEC-registered manager itself (sim 1.0) on its own direct loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "LEVINE LEICHTMAN CAPITAL PARTNERS SBIC FUND LP",
+  "party_example_raw": "Levine Leichtman Capital Partners SBIC Fund, L.P.",
+  "crd_number": "140980",
+  "adviser_legal_name": "LEVINE LEICHTMAN CAPITAL PARTNERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.95,
+  "llm_rationale": "The LLCP SBIC Fund, L.P. is a Levine Leichtman Capital Partners-managed SBIC lending fund, a vehicle of the named manager.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "NORTH HAVEN CREDIT PARTNERS II LP",
+  "party_example_raw": "NORTH HAVEN CREDIT PARTNERS II L.P., AS COLLATERAL AGENT",
+  "crd_number": "147521",
+  "adviser_legal_name": "MS CAPITAL PARTNERS ADVISER INC.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "'North Haven' is Morgan Stanley Investment Management's private-credit brand; North Haven Credit Partners II L.P. is a fund advised by MS Capital Partners Adviser Inc., acting as collateral agent on its own loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "SANDTON CAPITAL SOLUTIONS MASTER FUND V DELAWARE LP",
+  "party_example_raw": "SANDTON CAPITAL SOLUTIONS MASTER FUND V (DELAWARE), LP",
+  "crd_number": "160364",
+  "adviser_legal_name": "SANDTON CAPITAL PARTNERS, LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.96,
+  "llm_rationale": "Sandton Capital Solutions Master Fund V is a distressed-debt lending fund managed by Sandton Capital Partners, matching its named family funds directly.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "SILVER POINT FINANCE LLC AS DIP",
+  "party_example_raw": "SILVER POINT FINANCE, LLC, AS DIP AGENT",
+  "crd_number": "157738",
+  "adviser_legal_name": "SILVER POINT CAPITAL, L.P.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.95,
+  "llm_rationale": "Silver Point Finance, LLC is the affiliated lending/agent entity of credit manager Silver Point Capital, L.P., acting as DIP agent on the firm's own credit exposures.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "TREE LINE CAPITAL",
+  "party_example_raw": "TREE LINE CAPITAL AGENT, LLC, AS COLLATERAL AGENT",
+  "crd_number": "173784",
+  "adviser_legal_name": "TREE LINE CAPITAL PARTNERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.96,
+  "llm_rationale": "Tree Line Capital Agent, LLC is the collateral-agent affiliate of direct lender Tree Line Capital Partners, LLC, on the manager's own middle-market loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "CAPITAL DYNAMICS US INC",
+  "party_example_raw": "Capital Dynamics US, Inc.",
+  "crd_number": "130320",
+  "adviser_legal_name": "CAPITAL DYNAMICS, INC.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.93,
+  "llm_rationale": "Capital Dynamics US, Inc. is the US entity of global private-assets manager Capital Dynamics, Inc., the same corporate family and exact family-candidate match.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "MANULIFE INVESTMENT MANAGEMENT PRIVATE EQUITY AND CREDIT US LLC",
+  "party_example_raw": "MANULIFE INVESTMENT MANAGEMENT PRIVATE EQUITY AND CREDIT (US) LLC, AS AGENT",
+  "crd_number": "145508",
+  "adviser_legal_name": "MANULIFE INVESTMENT MANAGEMENT PRIVATE MARKETS (US) LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "The 'Private Equity and Credit (US) LLC' agent entity is the direct-lending arm of the same Manulife Investment Management Private Markets corporate family, acting as agent on its own private-credit loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "CREDIT SUISSE SECURITIESUSA LLC",
+  "party_example_raw": "CREDIT SUISSE SECURITIES(USA) LLC",
+  "crd_number": "816",
+  "adviser_legal_name": "CREDIT SUISSE SECURITIES (USA) LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.98,
+  "llm_rationale": "Identical legal name (only a missing space) \u2014 the UCC secured party is the same registered Credit Suisse Securities (USA) LLC entity.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "LAFAYETTE SQUARE LOAN SERVICING LLC",
+  "party_example_raw": "LAFAYETTE SQUARE LOAN SERVICING, LLC, AS AGENT",
+  "crd_number": "313799",
+  "adviser_legal_name": "LS BDC ADVISER, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.86,
+  "llm_rationale": "'Lafayette Square Loan Servicing, LLC, as Agent' is the loan-servicing arm of the Lafayette Square family (fam candidate 'Lafayette Square USA, Inc.') whose BDC is advised by LS BDC Adviser, LLC.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "AXONIC MULTIFAMILY BRIDGE SELLER N LLC",
+  "party_example_raw": "AXONIC MULTIFAMILY BRIDGE SELLER (N) LLC",
+  "crd_number": "159518",
+  "adviser_legal_name": "AXONIC CAPITAL LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "The seller LLC is a securitization/seller vehicle of Axonic's Multifamily Bridge Master Fund, directly controlled by Axonic Capital.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "GOLUB CAPITAL MARKETS LLC AS SECOND LIEN",
+  "party_example_raw": "GOLUB CAPITAL MARKETS LLC, AS SECOND LIEN COLLATERAL AGENT",
+  "crd_number": "148687",
+  "adviser_legal_name": "GC ADVISORS LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Golub Capital Markets LLC is the arranging/collateral-agent arm of the Golub Capital complex whose registered adviser is GC Advisors LLC.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "MESA WEST LV SA LLC",
+  "party_example_raw": "MESA WEST LV SA, LLC",
+  "crd_number": "158959",
+  "adviser_legal_name": "MESA WEST CAPITAL, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "MESA WEST LV SA, LLC is a Mesa West Capital CRE-debt lending SPV whose own GP (MESA WEST LV SA GP, LLC) and sibling SPVs (DSA, CPSA) sit in the same family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "GOLUB CAPITAL MARKETS LLC AS FIRST LIEN",
+  "party_example_raw": "GOLUB CAPITAL MARKETS LLC, AS FIRST LIEN COLLATERAL AGENT",
+  "crd_number": "148687",
+  "adviser_legal_name": "GC ADVISORS LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Golub Capital Markets LLC is the Golub Capital arranging/collateral-agent entity on loans advised by GC Advisors LLC, Golub's SEC-registered adviser.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "FIRST EAGLE ALTERNATIVE CAPITAL",
+  "party_example_raw": "FIRST EAGLE ALTERNATIVE CAPITAL AGENT, INC., AS COLLATERAL AGENT",
+  "crd_number": "150900",
+  "adviser_legal_name": "FIRST EAGLE ALTERNATIVE CREDIT, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "First Eagle Alternative Capital Agent, Inc. is the collateral-agent entity for First Eagle Alternative Credit's own direct loans (formerly THL Credit).",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "FIRST EAGLE PRIVATE CREDIT LLC",
+  "party_example_raw": "FIRST EAGLE PRIVATE CREDIT, LLC",
+  "crd_number": "150900",
+  "adviser_legal_name": "FIRST EAGLE ALTERNATIVE CREDIT, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "First Eagle Private Credit, LLC is the direct-lending brand within First Eagle Investments, the same corporate family as the adviser First Eagle Alternative Credit, LLC.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ACCEL KKR CREDIT PARTNERS II LP",
+  "party_example_raw": "ACCEL-KKR CREDIT PARTNERS II LP, AS AGENT",
+  "crd_number": "156498",
+  "adviser_legal_name": "AKKR FUND II MANAGEMENT COMPANY, LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Accel-KKR Credit Partners II LP is an Accel-KKR credit fund managed by AKKR (Accel-KKR) Fund II Management Company, LP \u2014 the same firm acting as agent on its own loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "SANDTON CAPITAL SOLUTIONS FUND VI LP",
+  "party_example_raw": "SANDTON CAPITAL SOLUTIONS FUND VI, LP, AS COLLATERAL AGENT",
+  "crd_number": "160364",
+  "adviser_legal_name": "SANDTON CAPITAL PARTNERS, LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.93,
+  "llm_rationale": "Sandton Capital Solutions Fund VI, LP acting as collateral agent is a Sandton distressed-credit fund managed by Sandton Capital Partners, LP \u2014 the manager on its own loans.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "PIMCO CORPORATE OPPORTUNITIES FUND IV LP",
+  "party_example_raw": "PIMCO CORPORATE OPPORTUNITIES FUND IV, L.P.",
+  "crd_number": "104559",
+  "adviser_legal_name": "PACIFIC INVESTMENT MANAGEMENT COMPANY LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.97,
+  "llm_rationale": "PIMCO Corporate Opportunities Fund IV is a named PIMCO credit fund, confirmed by the II/III/offshore-feeder series in the same corporate family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "PENTWATER CAPITAL LLC",
+  "party_example_raw": "PENTWATER CAPITAL, LLC",
+  "crd_number": "156873",
+  "adviser_legal_name": "PENTWATER CAPITAL MANAGEMENT LP",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.85,
+  "llm_rationale": "'Pentwater Capital' is a highly distinctive brand; the LLC is a GP/affiliate vehicle of the Pentwater Capital Management event-driven manager.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ALLSTATE INVESTMENT LLC",
+  "party_example_raw": "ALLSTATE INVESTMENT, LLC",
+  "crd_number": "107775",
+  "adviser_legal_name": "ALLSTATE INVESTMENT MANAGEMENT COMPANY",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.72,
+  "llm_rationale": "Allstate's captive investment arm (historically 'Allstate Investments, LLC') under a distinctive brand; this is the same Allstate investment-management family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "PARTNERS FOR GROWTH II LP",
+  "party_example_raw": "PARTNERS FOR GROWTH II, L.P.",
+  "crd_number": "163495",
+  "adviser_legal_name": "PARTNERS FOR GROWTH MANAGERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Partners for Growth II, L.P. is a venture-debt fund managed by Partners for Growth Managers, LLC \u2014 a direct fund vehicle of the adviser.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "JEFFRIES FINANCE LLC",
+  "party_example_raw": "JEFFRIES FINANCE LLC, AS COLLATERAL AGENT",
+  "crd_number": "162264",
+  "adviser_legal_name": "JEFFERIES FINANCE LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.95,
+  "llm_rationale": "The secured party is the manager itself (only a one-letter typo, Jeffries vs Jefferies) acting as collateral agent on its own leveraged-finance loans, and the GLEIF family name matches exactly.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "RIVERSIDE FUND III LP",
+  "party_example_raw": "RIVERSIDE FUND III L.P.",
+  "crd_number": "160523",
+  "adviser_legal_name": "RIVERSIDE PARTNERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.58,
+  "llm_rationale": "'Riverside Fund III L.P.' fits Riverside Partners' own fund-series naming and GLEIF places a sibling 'Riverside Value Fund II, L.P.' in the same corporate family, indicating a manager-controlled fund vehicle.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "STEPSTONE SECONDARY OPPORTUNITIES FUND V EUROPE HOLDINGS",
+  "party_example_raw": "STEPSTONE SECONDARY OPPORTUNITIES FUND V EUROPE HOLDINGS",
+  "crd_number": "284947",
+  "adviser_legal_name": "STEPSTONE GROUP EUROPE ALTERNATIVE INVESTMENTS LIMITED",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "The party is a StepStone European secondaries fund vehicle (Fund V) managed by the StepStone Group Europe adviser, with GLEIF placing sibling Fund VI Europe vehicles in the same family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ENNERDALE VAN NESS LLC",
+  "party_example_raw": "ENNERDALE VAN NESS, LLC",
+  "crd_number": "136591",
+  "adviser_legal_name": "LIGHTHOUSE INVESTMENT PARTNERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.62,
+  "llm_rationale": "\"Ennerdale\" is a highly distinctive non-generic token and \"Ennerdale SP\" is confirmed within Lighthouse's GLEIF corporate family, consistent with Lighthouse's SP/SPV lending vehicles.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "MONROE CAPITAL MANANGEMENT ADVISORS LLC",
+  "party_example_raw": "MONROE CAPITAL MANANGEMENT ADVISORS, LLC, AS ADMINISTRATIVE AGENT",
+  "crd_number": "157073",
+  "adviser_legal_name": "MONROE CAPITAL MANAGEMENT ADVISORS LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.98,
+  "llm_rationale": "The party is Monroe Capital Management Advisors itself acting as administrative agent on its own direct private-credit loans (sim 0.983, mere misspelling).",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "THE PRUDENTIAL INSURANCE COMPANY",
+  "party_example_raw": "THE PRUDENTIAL INSURANCE COMPANY",
+  "crd_number": "105676",
+  "adviser_legal_name": "PGIM, INC.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.78,
+  "llm_rationale": "The Prudential Insurance Company's general-account private placements are managed by PGIM Private Capital, so its secured-party loans genuinely populate PGIM's private-credit book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "QUADRANT REAL ESTATE ADVISORS FUNDING LLC",
+  "party_example_raw": "QUADRANT REAL ESTATE ADVISORS FUNDING, LLC",
+  "crd_number": "138077",
+  "adviser_legal_name": "QUADRANT REAL ESTATE ADVISORS LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "'Quadrant Real Estate Advisors Funding, LLC' is a same-named funding vehicle of the Quadrant Real Estate Advisors real-estate-credit manager.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ARES ENERGY OPPORTUNITIES FUND B LP",
+  "party_example_raw": "ARES ENERGY OPPORTUNITIES FUND B, L.P.",
+  "crd_number": "130074",
+  "adviser_legal_name": "ARES MANAGEMENT LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.88,
+  "llm_rationale": "'Ares Energy Opportunities Fund B, L.P.' is a fund vehicle managed by Ares Management, matching its fund-family naming.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "MGG INVESTMETN GROUP LP",
+  "party_example_raw": "MGG INVESTMETN GROUP LP, AS COLLATERAL AGENT",
+  "crd_number": "174126",
+  "adviser_legal_name": "MGG INVESTMENT GROUP LP",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.97,
+  "llm_rationale": "The private-credit manager MGG Investment Group itself acting as collateral agent on its own direct loans, with only an OCR-style typo separating the names.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "ORBIMED ROYALTY AND CREDIT OPPORTUNITIES IV LP",
+  "party_example_raw": "ORBIMED ROYALTY & CREDIT OPPORTUNITIES IV, LP",
+  "crd_number": "118608",
+  "adviser_legal_name": "ORBIMED ADVISORS LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.96,
+  "llm_rationale": "This is a named OrbiMed Royalty & Credit Opportunities fund series (IV alongside the V candidates) directly managed by OrbiMed Advisors LLC.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "PARTNERS FOR GROWTH LP",
+  "party_example_raw": "PARTNERS FOR GROWTH, L.P.",
+  "crd_number": "163495",
+  "adviser_legal_name": "PARTNERS FOR GROWTH MANAGERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Partners for Growth, L.P. is the venture-debt fund vehicle managed by Partners for Growth Managers, LLC, so its liens are the manager's own private-credit book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "METROPOLIAN LIFE INSURANCE COMPANY",
+  "party_example_raw": "METROPOLIAN LIFE INSURANCE COMPANY",
+  "crd_number": "142463",
+  "adviser_legal_name": "METLIFE INVESTMENT MANAGEMENT, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.8,
+  "llm_rationale": "Metropolitan Life Insurance Company (misspelled) is MetLife's insurer whose general-account private-credit assets are managed by MetLife Investment Management, so the filing belongs in that book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "GOTHAM GREEN PARTNERS SPV VII LP",
+  "party_example_raw": "GOTHAM GREEN PARTNERS SPV VII, L.P.",
+  "crd_number": "288771",
+  "adviser_legal_name": "GOTHAM GREEN PARTNERS, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "Gotham Green Partners SPV VII, L.P. is a lending special-purpose vehicle of the cannabis-credit manager Gotham Green Partners, LLC.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "MESA WEST CORE LENDING FUND LLC",
+  "party_example_raw": "MESA WEST CORE LENDING FUND, LLC",
+  "crd_number": "158959",
+  "adviser_legal_name": "MESA WEST CAPITAL, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.95,
+  "llm_rationale": "Mesa West Core Lending Fund, LLC is a commercial-real-estate debt vehicle managed by Mesa West Capital, LLC, confirmed by its own GP 'Mesa West Core Lending Fund GP, LLC' in the family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "METLIFE INVESTMENT MANAGEMENT",
+  "party_example_raw": "METLIFE INVESTMENT MANAGEMENT",
+  "crd_number": "142463",
+  "adviser_legal_name": "METLIFE INVESTMENT MANAGEMENT, LLC",
+  "llm_relationship": "is_manager",
+  "match_confidence": 0.98,
+  "llm_rationale": "Exact name identity (sim 1.0) \u2014 the UCC secured party is the SEC-registered manager MetLife Investment Management, LLC itself.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "STEPSTONE CAPITAL PARTNERS IV EUROPE HOLDINGS SCSP",
+  "party_example_raw": "STEPSTONE CAPITAL PARTNERS IV EUROPE HOLDINGS, SCSP",
+  "crd_number": "284947",
+  "adviser_legal_name": "STEPSTONE GROUP EUROPE ALTERNATIVE INVESTMENTS LIMITED",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.92,
+  "llm_rationale": "StepStone Capital Partners Europe SCSP fund vehicles are managed by StepStone Group Europe Alternative Investments Limited; the party is a StepStone-managed fund within the same manager family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "THE PRUDENTIAL INBSURANCE COMPANY OF AMERICA",
+  "party_example_raw": "THE PRUDENTIAL INBSURANCE COMPANY OF AMERICA",
+  "crd_number": "105676",
+  "adviser_legal_name": "PGIM, INC.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.83,
+  "llm_rationale": "PGIM is Prudential's own SEC-registered manager and PGIM Private Capital originates direct loans in the name of The Prudential Insurance Company of America's general account, confirmed by the Prudential-branded CLO vehicle in PGIM's GLEIF family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "METROPLOITAN LIFE INSURANCE COMAPNY",
+  "party_example_raw": "METROPLOITAN LIFE INSURANCE COMAPNY",
+  "crd_number": "142463",
+  "adviser_legal_name": "METLIFE INVESTMENT MANAGEMENT, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.88,
+  "llm_rationale": "MetLife Investment Management is MetLife's captive in-house manager that runs Metropolitan Life Insurance Company's general-account private placements and direct lending, so the insurer's secured-party filings are genuinely MIM's private-credit book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "GOLUB CAPITAL LLCAS",
+  "party_example_raw": "GOLUB CAPITAL LLC,AS ADMINISTRATIVE AGENT AND COLLATERAL AGENT",
+  "crd_number": "148687",
+  "adviser_legal_name": "GC ADVISORS LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "GC Advisors LLC is the affiliated SEC-registered adviser to Golub Capital's direct-lending funds/BDCs, so Golub Capital acting as administrative and collateral agent on its own middle-market loans is genuinely this manager's private-credit book.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "THE PRUDENTIAL INSURANCE COMPANY OF",
+  "party_example_raw": "THE PRUDENTIAL INSURANCE COMPANY OF",
+  "crd_number": "105676",
+  "adviser_legal_name": "PGIM, INC.",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.83,
+  "llm_rationale": "The Prudential Insurance Company of America's general-account direct lending is originated and managed by PGIM, Prudential's own SEC-registered manager, as confirmed by the Prudential vehicle in PGIM's GLEIF family.",
+  "source": "llm_adjudicated_v1"
+ },
+ {
+  "lender_nln": "NORTHWESTERN MUTUAL LIFE INS CO",
+  "party_example_raw": "NORTHWESTERN MUTUAL LIFE INS CO",
+  "crd_number": "160955",
+  "adviser_legal_name": "NORTHWESTERN MUTUAL CAPITAL, LLC",
+  "llm_relationship": "is_vehicle_of_manager",
+  "match_confidence": 0.9,
+  "llm_rationale": "Northwestern Mutual Capital, LLC is the affiliated SEC-registered manager that originates private placements and direct/mezzanine loans on behalf of Northwestern Mutual Life Insurance Company's general account, so the insurer's filings are this manager's private-credit book.",
+  "source": "llm_adjudicated_v1"
+ }
+]
