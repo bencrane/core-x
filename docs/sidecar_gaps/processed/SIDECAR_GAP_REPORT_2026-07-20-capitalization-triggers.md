@@ -95,3 +95,14 @@ demand asserted):**
 
 *Demand capture only — no proposed solutions, per §7. Promotion gating, adjacency sweep, and
 build disposition are Mode-2 (build-cycle) work.*
+
+---
+
+## DISPOSITION (2026-07-22) — FOLDED into `gtm_entity_pricing_flow`, now SERVED
+
+Entries 1 (FFP→cost/T&M transition FLOW) and the labor-exposure entry were folded into the
+`gtm_entity_pricing_flow` mart (code landed 2026-07-21 as #1273; see the now-archived
+`PRICING_FLOW_MART_HANDOFF.md`). That mart shipped LIVE in the `query_sidecar_20260722T023655Z`
+rebuild (163k rows · sorted uei · 12/24/48-mo windows anchored to max(action_date)). The recurring
+"who is shifting into cash-intensive contract types" segment is now one uei-sorted ms-class read
+instead of the 2.8s 108M off-sort-key scan. Report closed.
