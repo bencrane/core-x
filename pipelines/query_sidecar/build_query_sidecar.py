@@ -224,9 +224,12 @@ MANIFEST: list[dict] = [
      "aggregate": True},
     # award-key companion: the profile's anchor row keyed by the award (was a
     # 4.8s zone-map crawl on the current_end_date-sorted spine). Full-width —
-    # every column any by-key consumer will ask for rides free.
+    # every column any by-key consumer will ask for rides free. Prefix-led
+    # sort — see txn_rows_by_award note.
     {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
-     "dest": "prime_award_state_by_key", "sort": ["contract_award_unique_key"],
+     "dest": "prime_award_state_by_key",
+     "extra_select": "substr(contract_award_unique_key, 10, 12) AS award_key_pfx",
+     "sort": ["award_key_pfx", "contract_award_unique_key"],
      "from_table": "usaspending_fpds_prime_award_state"},
     # inferred-code semi-join legs: sorted by (code_type, code) so a code
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
@@ -249,17 +252,24 @@ MANIFEST: list[dict] = [
          # wire contract, existing consumers select by name.
          "type_of_contract_pricing_code", "type_of_contract_pric_desc"]},
     # award-key point-read companion (gap 2026-07-21-award-key-probes): the
-    # award drawer's "recent actions" leg keyed by the award — local sort copy.
+    # award drawer's "recent actions" leg keyed by the award. award_key_pfx
+    # leads the sort: full keys share an 8-byte prefix (CONT_AWD_/CONT_IDV_)
+    # and DuckDB string zone-maps truncate at 8 bytes, so sorting by the full
+    # key alone cannot prune — probes carry pfx + full-key equality.
     {"ds": "txn_rows", "tier": "C", "dest": "txn_rows_by_award",
-     "sort": ["contract_award_unique_key", "action_date"], "from_table": "txn_rows"},
+     "extra_select": "substr(contract_award_unique_key, 10, 12) AS award_key_pfx",
+     "sort": ["award_key_pfx", "contract_award_unique_key", "action_date"],
+     "from_table": "txn_rows"},
     # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
     {"ds": "usaspending_award_pop_centroids", "tier": "C", "sort": ["state_code", "zip5"]},
     # award-key companion: centroid point-read keyed by the award (was 0.9s on
-    # the state/zip5-sorted copy).
+    # the state/zip5-sorted copy). Prefix-led sort — see txn_rows_by_award note.
     {"ds": "usaspending_award_pop_centroids", "tier": "C",
-     "dest": "award_pop_centroids_by_key", "sort": ["generated_unique_award_id"],
+     "dest": "award_pop_centroids_by_key",
+     "extra_select": "substr(generated_unique_award_id, 10, 12) AS award_key_pfx",
+     "sort": ["award_key_pfx", "generated_unique_award_id"],
      "from_table": "usaspending_award_pop_centroids"},
     # ── combo-portrait layer ──────────────────────────────────────────────────
     # ONE fact, every dial: combo (substr rollups), time (action_date + fy),
@@ -273,8 +283,11 @@ MANIFEST: list[dict] = [
      "from_table": "txn_events_combo"},
     # award-key companion: the drawer's FY-ledger leg keyed by the award —
     # turns the per-award combo probe (0.65s uei-pruned, 11.6s raw) ms-class.
+    # Prefix-led sort — see txn_rows_by_award note.
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_award",
-     "sort": ["award_key", "action_date"], "from_table": "txn_events_combo"},
+     "extra_select": "substr(award_key, 10, 12) AS award_key_pfx",
+     "sort": ["award_key_pfx", "award_key", "action_date"],
+     "from_table": "txn_events_combo"},
     # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
     # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
     # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
@@ -1999,7 +2012,9 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
             con.execute(_PERSON_CHANNELS_SQL)
         else:
             order = ", ".join(spec["sort"])
-            con.execute(f'CREATE TABLE "{dest}" AS SELECT * FROM "{src_table}" ORDER BY {order}')
+            extra = spec.get("extra_select")
+            select = "SELECT *" + (f", {extra}" if extra else "")
+            con.execute(f'CREATE TABLE "{dest}" AS {select} FROM "{src_table}" ORDER BY {order}')
     else:
         ds = lance.dataset(f"{LANCE_BASE}{name}/", storage_options=so)
         pinned_version = ds.version
