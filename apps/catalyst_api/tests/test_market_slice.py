@@ -380,3 +380,17 @@ def test_basis_refuses_unknown() -> None:
     assert _parse_basis({"basis": "active"}) == "active"
     with pytest.raises(HTTPException):
         _parse_basis({"basis": "equipment"})
+
+
+# ── optional band (rail dial, 2026-07-22) ────────────────────────────────────
+def test_entities_no_band_reads_whole_market() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_entities_sql
+    sql = build_entities_sql([("237310", "Y1DA")], None, None, 100)
+    assert "band AS (SELECT uei FROM gtm_entity_pricing_mix WHERE TRUE)" in sql
+    assert "active_obl >=" not in sql
+
+
+def test_entities_explicit_band_still_gates() -> None:
+    from apps.catalyst_api.src.routers.market_slice_v1 import build_entities_sql
+    sql = build_entities_sql([("237310", "Y1DA")], {"min": 1e6, "max": 1e8}, None, 100)
+    assert "active_obl >= 1000000.0 AND active_obl <= 100000000.0" in sql
