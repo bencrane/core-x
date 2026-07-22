@@ -109,13 +109,20 @@ async def _resolve_scope(slug: str) -> dict[str, Any]:
     return {"title": c["title"], "lens": "canonical", "pairs": sorted(pairs)}
 
 
+_BAND_UNBOUNDED = 1e18  # open upper edge (SQL-safe scientific literal; all money ≪ 1e18)
+
+
 def _parse_band(body: dict[str, Any]) -> dict[str, float]:
     band = body.get("band")
     if band is None:
         return dict(_DEFAULT_BAND)
     if not isinstance(band, dict):
         raise _refuse("band must be an object {min, max}")
-    out = dict(_DEFAULT_BAND)
+    # An explicit band is open-ended where unspecified: {min} = "min and up",
+    # {max} = "up to max". The capital default fills nothing here — it exists
+    # only for the band-less card endpoints ("under $1M" / "$100M+" presets
+    # must never collapse into the $1M–$100M default).
+    out = {"min": 0.0, "max": _BAND_UNBOUNDED}
     for key in ("min", "max"):
         v = band.get(key)
         if v is None:
@@ -618,19 +625,29 @@ def build_awards_sql(
     limit: int,
     pairs: list[tuple[str, str]] | None = None,
     uei: str | None = None,
+    band: dict[str, float] | None = None,
 ) -> tuple[str, str]:
     """(points_sql, count_sql) over the active-award universe ∪ predicates.
 
     `pairs` narrows to a market's WORK SCOPE (award naics×psc in the card's
     pair set — semantics (b), operator-ruled 2026-07-22: the market's actual
-    paper, not every award its cohort firms hold; band deliberately does NOT
-    apply, award grain has no firm-size band). `uei` narrows to one firm (the
-    firm-dot PoP overlay). Both compose with the predicate leg.
+    paper, not every award its cohort firms hold). `uei` narrows to one firm
+    (the firm-dot PoP overlay). `band` applies THROUGH THE HOLDER (firm-identity
+    dials follow the holder across grains — operator-ruled 2026-07-22): awards
+    held by firms whose total active obligations (gtm_entity_pricing_mix
+    .active_obl, the same gate the firm cohort uses) fall in the band. All
+    legs compose.
     """
     pred_leg = (
         f"\n  AND a.recipient_uei IN (\n{predicate_expr}\n)" if predicate_expr else ""
     )
     uei_leg = f"\n  AND a.recipient_uei = '{uei}'" if uei else ""
+    band_leg = (
+        "\n  AND a.recipient_uei IN (SELECT uei FROM gtm_entity_pricing_mix"
+        f" WHERE active_obl >= {band['min']} AND active_obl <= {band['max']})"
+        if band
+        else ""
+    )
     pair_values = ",".join(f"('{n}','{p}')" for n, p in (pairs or []))
     pair_cte = f"pairs(naics_code, psc_code) AS (VALUES {pair_values}),\n" if pairs else ""
     pair_join = (
@@ -640,7 +657,7 @@ def build_awards_sql(
     )
     base = f"""
 FROM usaspending_fpds_prime_award_state a{pair_join}
-WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}{uei_leg}"""
+WHERE a.current_end_date >= current_date AND a.is_terminated = FALSE{pred_leg}{uei_leg}{band_leg}"""
     # Rank first, hydrate geo after: the centroid join runs over the ≤limit
     # page, never as a 30.7M hash build (measured 15.3s → sub-second).
     points = f"""
@@ -673,14 +690,16 @@ ORDER BY p.obl DESC, p.award_key"""
 async def awards(body: dict[str, Any]) -> dict[str, Any]:
     """Active awards as PoP points — the Explore award-lens map read.
 
-    Body: {"predicates"?: [...], "limit"? ≤ 4000, "slug"?, "uei"?}. Rows are the
-    top-N active awards by life-to-date obligations (with PoP geo LEFT-joined);
-    `count` / `obl_usd` / `firms` are always the FULL cohort. Unscoped reads are
-    allowed here by design: the universe statement ("a quarter-million active
-    awards") IS the surface's opening state. With `slug`, the read narrows to
-    the market's WORK SCOPE (award naics×psc in the card's pair set — the
-    market's actual paper). With `uei`, one firm's active awards (the firm-dot
-    PoP overlay).
+    Body: {"predicates"?: [...], "limit"? ≤ 4000, "slug"?, "uei"?, "band"?}.
+    Rows are the top-N active awards by life-to-date obligations (with PoP geo
+    LEFT-joined); `count` / `obl_usd` / `firms` are always the FULL cohort.
+    Unscoped reads are allowed here by design: the universe statement ("a
+    quarter-million active awards") IS the surface's opening state. With
+    `slug`, the read narrows to the market's WORK SCOPE (award naics×psc in
+    the card's pair set — the market's actual paper). With `uei`, one firm's
+    active awards (the firm-dot PoP overlay). With `band`, awards held by
+    firms in the size band — the firm-grain dial following the holder, so the
+    firm⇄award grain flip is continuous.
     """
     if not isinstance(body, dict):
         raise _refuse("body must be an object")
@@ -698,12 +717,17 @@ async def awards(body: dict[str, Any]) -> dict[str, Any]:
         title = scope["title"]
         disclosures = [*disclosures,
                        "narrowed to the market's work scope: award NAICS x PSC within the card's pair set "
-                       "(the market's paper — no firm-size band at award grain)"]
+                       "(the market's paper)"]
     uei = str(body.get("uei") or "") or None
     if uei is not None and not _AWARD_KEY_RE.match(uei):
         raise _refuse("uei must be alphanumeric")
+    band = _parse_band(body) if body.get("band") is not None else None
+    if band is not None:
+        disclosures = [*disclosures,
+                       "size band applies through the holder: awards held by firms whose total active "
+                       "obligations fall in the band (gtm_entity_pricing_mix — the same gate the firm cohort uses)"]
 
-    points_sql, count_sql = build_awards_sql(expr, limit, pairs=pairs, uei=uei)
+    points_sql, count_sql = build_awards_sql(expr, limit, pairs=pairs, uei=uei, band=band)
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=90.0) as client:
         points_payload, count_payload = await asyncio.gather(
