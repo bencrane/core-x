@@ -63,24 +63,37 @@ async def get_fee_and_contact(conn, opportunity_id: str) -> dict | None:
 
 async def get_agreement_fee_and_contact(conn, agreement_handle: str) -> dict | None:
     """Resolve, by the public ``agreement_handle``: the agreement's raw ``field_values`` (operator
-    overrides, keyed by template field LABEL), the bound template's gc field rules projected as ``field_settings``
-    (label → defaults — the other half of the generate-time merge), and the signatory contact. The
-    caller merges via ``deals.originate.resolve_field_values`` so the resolved fee equals what generate
-    stamped (and locked) into the signed document. None when the handle is unknown."""
+    overrides, keyed by template field LABEL), the bound template's ARCHETYPE mint rules projected as
+    ``field_settings`` (label → defaults — the other half of the generate-time merge), and the
+    signatory contact. The caller merges via ``deals.originate.resolve_field_values`` so the resolved
+    fee equals what generate stamped (and locked) into the signed document. None when the handle is
+    unknown.
+
+    ARCHETYPE-LEVEL (ruled 2026-07-21, same resolution as ``_generate_inputs``): the template's
+    mirrored ``external_id`` carries the ontology address ``{archetype_key}/{version}``, and
+    ``gc.global_agreement_archetype_variables`` text rows are the field plan — the retired
+    per-template ``gc.documenso_template_field_rules`` must NOT be read here, or an archetype-default
+    ``PrepaidFee`` (no per-deal override) resolves to 0 and the payment surface 409s on a signed
+    document."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
             SELECT a.field_values,
-                   COALESCE((SELECT jsonb_object_agg(r.field_label, jsonb_build_object(
-                                      'default_document_field_value', r.default_value,
-                                      'read_only', r.post_mint_read_only))
-                               FROM gc.documenso_template_field_rules r
-                              WHERE r.template_documenso_id::text = a.template_documenso_id),
+                   COALESCE((SELECT jsonb_object_agg(av.documenso_field_label_to_use, jsonb_build_object(
+                                      'default_document_field_value', av.default_value,
+                                      'read_only', av.post_mint_read_only IS TRUE))
+                               FROM gc.global_agreement_archetype_variables av
+                               JOIN gc.global_agreement_archetypes ga ON ga.id = av.archetype_id
+                              WHERE ga.key = split_part(env.external_id, '/', 1)
+                                AND av.field_type = 'text'),
                             '{}'::jsonb),
                    c.email,
                    NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), '')
               FROM business.agreements a
-              LEFT JOIN business.contacts c ON c.id = a.signatory_contact_id
+         LEFT JOIN gc.documenso_envelopes env
+                ON env.documenso_id::text = a.template_documenso_id
+               AND env.type = 'template' AND env.deleted_at IS NULL
+         LEFT JOIN business.contacts c ON c.id = a.signatory_contact_id
              WHERE a.agreement_handle = %s
              LIMIT 1
             """,
