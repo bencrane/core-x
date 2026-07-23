@@ -3,6 +3,9 @@
 **Status:** live · **Ingested:** 2026-07-23 UTC · **Module:** [`pipelines/reference/bea_io_use_ingest.py`](../../pipelines/reference/bea_io_use_ingest.py)
 **Directive:** `~/Desktop/hq/directives/2026-07-11-bea-io-use-contingent-labor-ingest.md`
 **Predecessor:** [`LABOR_SHARE_OF_REVENUE_STACK.md`](LABOR_SHARE_OF_REVENUE_STACK.md)
+**Execution record:** [`BEA_IO_USE_INGEST_EXECUTION_RECORD.md`](BEA_IO_USE_INGEST_EXECUTION_RECORD.md) — probe
+method, the `bea_naics_concordance` name collision and how it was avoided, every directive
+deviation, and the full verification chain.
 
 ## Why this exists — the blind leg of the sourcing decomposition
 
