@@ -37,8 +37,10 @@ fit verified ~1 line of headroom at Letter/1in).
 | `Title` | Participant sig column | Entered | Participant |
 | `Date` | Participant sig column | auto | Participant |
 
-Template placeholder recipients: `principal@example.com` (Principal / operator),
-`participant@example.com` (Participant) — the side-conformance checks resolve through these emails.
+Template recipients (re-ruled 2026-07-23): `benjamin.crane@governmentcontracted.com` (Principal —
+the operator's real signing identity; the Provider entity identity is `is@governmentcontracted.com`
+and holds no signer slot), `participant@example.com` (Participant placeholder, overridden per deal)
+— the side-conformance checks resolve through these emails.
 
 ## Lane
 

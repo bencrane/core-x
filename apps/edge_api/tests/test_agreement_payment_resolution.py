@@ -63,3 +63,10 @@ def test_provider_slot_placeholder_domain_is_provider_side() -> None:
 
 def test_operator_mailbox_domain_is_provider_side() -> None:
     assert "engineereddemand.com" in _PROVIDER_SIGNING_DOMAINS
+
+
+def test_principal_and_provider_identity_domain_is_provider_side() -> None:
+    # Re-ruled 2026-07-23: the Principal signs as benjamin.crane@governmentcontracted.com and the
+    # Provider entity identity is is@governmentcontracted.com — that domain being provider-side is
+    # what keeps the operator's countersignature from flipping the counterparty pay gate.
+    assert "governmentcontracted.com" in _PROVIDER_SIGNING_DOMAINS

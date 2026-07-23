@@ -439,13 +439,15 @@ async def create_document_from_template(
 
 
 # ── Template CREATE (render+push lane) ────────────────────────────────────────────────────────────
-# Placeholder recipients stamped onto a freshly-created TEMPLATE. They are PLACEHOLDERS — overridden
-# with the real signers per-deal at /template/use (or /envelope/use) instantiation, so neutral
-# example.com addresses are correct here (no real PII persisted on the template). Override via the
-# ``recipients`` arg. Both SIGNER — Participant first so a single-signer flow picks it up.
+# Recipients stamped onto a freshly-created TEMPLATE. The Participant is a PLACEHOLDER — overridden
+# with the real counterparty per-deal at /template/use (or /envelope/use) instantiation. The
+# PRINCIPAL is the operator's REAL signing identity (identities re-ruled 2026-07-23: the operator is
+# the Principal, no longer the "Provider"; the Provider entity identity is
+# is@governmentcontracted.com and holds no signer slot here). Override via the ``recipients`` arg.
+# Both SIGNER — Participant first so a single-signer flow picks it up.
 _DEFAULT_TEMPLATE_RECIPIENTS: tuple[dict[str, str], ...] = (
     {"name": "Participant", "email": "participant@example.com", "role": "SIGNER"},
-    {"name": "Provider", "email": "provider@example.com", "role": "SIGNER"},
+    {"name": "Benjamin Crane", "email": "benjamin.crane@governmentcontracted.com", "role": "SIGNER"},
 )
 
 
