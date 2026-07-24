@@ -35,18 +35,37 @@ intent).
   #     two concurrent first-run CREATEs can deadlock; pre-create the table once):
   doppler run -p core-x -c prd -- python3 -m pipelines.usaspending.usaspending_award_canonical init_ops
 
-  # 1) BULK-only FIRST LANDING (FRESH-independent — lands the 30.7M spine without the fresh flip):
-  modal run --detach pipelines/usaspending/usaspending_award_canonical_modal.py::build --include-fresh false
+  # 1) BULK-only FIRST LANDING (FRESH-independent — lands the 30.7M spine without the fresh flip).
+  #    ::build deploy-if-stales (modal deploy fires when the deployed snapshot's commit != git HEAD),
+  #    SPAWNS build_fn on the DEPLOYED app, prints FUNCTION_CALL_ID (fc-…), and RETURNS — the run is
+  #    untethered from this client (ASYNC input; laptop sleep cannot kill it). The entrypoint no
+  #    longer prints the metrics dict: the worker's terminal ledger row
+  #    (ops.usaspending_award_canonical_runs) and the fc-id are the record.
+  modal run pipelines/usaspending/usaspending_award_canonical_modal.py::build --include-fresh false
+  #    Follow: modal app logs usaspending-award-canonical
+  #    Result: python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
+  #    COMPLETION stays the two-source AND (d.8): fc/app state AND a FRESH status='success' ledger
+  #    row. A post-incident re-run after a mid-publish cancel must pass --force explicitly (an
+  #    emptied prefix passes the existence guard; a PARTIAL prefix may present a stale manifest).
 
-  # 2) INDEX — /tmp-staged append-only BTREE/BITMAP. Runs AFTER build verifies clean.
+  # 2) INDEX — /tmp-staged append-only BTREE/BITMAP. Spawn ONLY after build's two-source sentinel
+  #    passes clean (operator-gated — NEVER auto-chain the phases):
   modal run pipelines/usaspending/usaspending_award_canonical_modal.py::index
+  #    index_fn writes NO ledger row — the fc-id is the ONLY completion signal for this phase:
+  #    .get(timeout=0) returns the metrics dict (rows, indices_built, n_new_manifests,
+  #    version_hint_reuploaded) or raises the fail-closed RuntimeError. An immediate .get() probe
+  #    after spawn is cheap and catches a mis-targeted URI ({'status': 'dataset_not_found'}) early.
 
-  # 3) VERIFY — read-back assertions. After a BULK-only build pass --include-fresh false (or omit it:
-  #     verify_fn infers the mode from the latest status='success' ledger row). An explicit flag wins.
+  # 3) VERIFY — read-back assertions; spawn ONLY after index completes (operator-gated). After a
+  #     BULK-only build pass --include-fresh false (or omit it: verify_fn infers the mode from the
+  #     latest status='success' ledger row). An explicit flag wins.
   modal run pipelines/usaspending/usaspending_award_canonical_modal.py::verify --include-fresh false
+  #    The check dict is the phase artifact (no ledger row) — retrieve via the fc-id .get(timeout=0)
+  #    (raises on failed assertions).
 
-  # 4) RECONCILE-LATER FLIP (once FRESH landed + verified) — default include_fresh=True:
-  modal run --detach pipelines/usaspending/usaspending_award_canonical_modal.py::build
+  # 4) RECONCILE-LATER FLIP (once FRESH landed + verified) — default include_fresh=True; same
+  #    spawn-per-phase, operator-gated sequence:
+  modal run pipelines/usaspending/usaspending_award_canonical_modal.py::build
   modal run pipelines/usaspending/usaspending_award_canonical_modal.py::index
   modal run pipelines/usaspending/usaspending_award_canonical_modal.py::verify
 
@@ -59,7 +78,7 @@ width, so the 30.7M row count does NOT license 64 GiB / 512 GiB (that reproduces
 
   knob                            build_fn                 index_fn                 verify_fn
   ─────────────────────────────────────────────────────────────────────────────────────────
-  container memory                131072 (128 GiB)         49152 (48 GiB)           32768 (32 GiB)
+  container memory                196608 (192 GiB)         49152 (48 GiB)           32768 (32 GiB)
   ephemeral_disk                  1_048_576 (1 TiB)        1_048_576 (1 TiB)        —
   container cpu                   16.0                     8.0                      4.0
   timeout                         60*60*6 (6h)             60*60*3 (3h)             60*60 (1h)
@@ -624,22 +643,29 @@ def build(since: str = "", target_uri: str = "", include_fresh: str = "", force:
     """Full ~30.7M merge → local Lance on /tmp → boto3 publish. Prod first landing passes
     --include-fresh false; the reconcile-later flip passes the default (True). Prod passes NO --since.
     --force is REQUIRED to overwrite an existing spine (SoR-protection guard); the routine fresh
-    reconcile uses the merge/append worker, not this overwrite."""
-    import json
+    reconcile uses the merge/append worker, not this overwrite.
 
-    print(json.dumps(
-        build_fn.remote(since=since or None, target_uri=target_uri or None,
-                        include_fresh=_coerce_include_fresh(include_fresh), force=force),
-        indent=2, default=str,
-    ))
+    SPAWNS build_fn on the DEPLOYED app (deploy-if-stale) and returns the fc-… id — does NOT block
+    on the result. Metrics live in the worker's terminal ledger row
+    (ops.usaspending_award_canonical_runs) and via modal.FunctionCall.from_id(fc).get(timeout=0)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-award-canonical", "build_fn", deploy_file=__file__,
+                   since=since or None, target_uri=target_uri or None,
+                   include_fresh=_coerce_include_fresh(include_fresh), force=force)
 
 
 @app.local_entrypoint()
 def index(target_uri: str = "") -> None:
-    """/tmp-staged append-only BTREE/BITMAP index. Runs AFTER build verifies clean."""
-    import json
+    """/tmp-staged append-only BTREE/BITMAP index. Runs AFTER build verifies clean.
 
-    print(json.dumps(index_fn.remote(target_uri=target_uri or None), indent=2, default=str))
+    SPAWNS index_fn on the DEPLOYED app (deploy-if-stale) and returns the fc-… id — index_fn writes
+    NO ledger row, so the fc-id (modal.FunctionCall.from_id(fc).get(timeout=0)) is the ONLY
+    completion signal for this phase."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-award-canonical", "index_fn", deploy_file=__file__,
+                   target_uri=target_uri or None)
 
 
 @app.local_entrypoint()
@@ -648,11 +674,11 @@ def verify(target_uri: str = "", include_fresh: str = "") -> None:
     gates assert the correct direction. When --include-fresh is OMITTED, the mode is INFERRED from the
     latest status='success' ledger row (so a BULK-only landing verifies with the correct FALSE direction
     without a flag); an explicit flag always overrides. The raw string ("" when absent) is forwarded so
-    verify_fn can distinguish "omitted → infer" from an explicit value."""
-    import json
+    verify_fn can distinguish "omitted → infer" from an explicit value.
 
-    print(json.dumps(
-        verify_fn.remote(target_uri=target_uri or None,
-                         include_fresh=include_fresh or None),
-        indent=2, default=str,
-    ))
+    SPAWNS verify_fn on the DEPLOYED app (deploy-if-stale) and returns the fc-… id — the check dict
+    is retrieved via modal.FunctionCall.from_id(fc).get(timeout=0) (raises on failed assertions)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-award-canonical", "verify_fn", deploy_file=__file__,
+                   target_uri=target_uri or None, include_fresh=include_fresh or None)

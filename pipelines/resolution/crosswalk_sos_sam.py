@@ -31,10 +31,24 @@ Data plane (clean-room — DuckDB does 100% of the transform):
 
 Control plane: on terminal state writes ops.crosswalk_sos_sam_runs and POSTs the flat callback.
 
-    modal run    pipelines/resolution/crosswalk_sos_sam.py::init_ops   # create ops table
-    modal run    pipelines/resolution/crosswalk_sos_sam.py --dry-run   # gates 1-7+5b, no write
-    modal run    pipelines/resolution/crosswalk_sos_sam.py             # build + verify
-    modal deploy pipelines/resolution/crosswalk_sos_sam.py             # dispatcher-resolvable
+Launch (spawn-on-deployed): the entrypoint deploy-if-stale gates via pipelines._shared.launch
+(spawn executes the DEPLOYED snapshot, never worktree code), spawns on the deployed app,
+prints the fc-id, and exits — the run survives client death. The entrypoint no longer prints
+the result JSON; the worker's ops.crosswalk_sos_sam_runs row and app logs are the record.
+
+    modal deploy pipelines/resolution/crosswalk_sos_sam.py             # publish snapshot
+    modal run    pipelines/resolution/crosswalk_sos_sam.py::init_ops   # create ops table (sync idempotent DDL, seconds)
+    modal run    pipelines/resolution/crosswalk_sos_sam.py --dry-run   # spawn plan_crosswalk: gates 1-7+5b, no write
+    modal run    pipelines/resolution/crosswalk_sos_sam.py             # PHASE 1: spawn build_crosswalk
+
+Record the printed fc-id. Follow: ``modal app logs resolution-sos-sam-pipelines``; result:
+``modal.FunctionCall.from_id("fc-...").get(timeout=0)`` (TimeoutError while running); ledger:
+SELECT status FROM ops.crosswalk_sos_sam_runs ORDER BY recorded_at DESC LIMIT 1.
+PHASE 2 — spawn verify_crosswalk ONLY after phase-1 terminal SUCCESS (a spawned build that
+fails no longer auto-suppresses verify via exception propagation; this gate replaces it):
+``modal.Function.from_name("resolution-sos-sam-pipelines", "verify_crosswalk").spawn()``, then
+fetch its dict via FunctionCall.get(). verify_crosswalk and plan_crosswalk write no ledger
+rows — their results live only in the function-call result/logs, so fetch promptly.
 """
 
 from __future__ import annotations
@@ -553,10 +567,13 @@ def plan_crosswalk() -> dict:
 
 @app.local_entrypoint()
 def build(dry_run: bool = False) -> None:
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
     if dry_run:
-        print(json.dumps(plan_crosswalk.remote(), indent=2, default=str))
+        print("PHASE plan (dry-run): spawning plan_crosswalk — gates 1-7+5b, no write")
+        spawn_deployed("resolution-sos-sam-pipelines", "plan_crosswalk", deploy_file=__file__)
         return
-    print(json.dumps(build_crosswalk.remote(trigger_callback_url=None), indent=2, default=str))
-    print(json.dumps(verify_crosswalk.remote(), indent=2, default=str))
+    print("PHASE 1: spawning build_crosswalk — spawn verify_crosswalk only after terminal "
+          "success (module docstring, PHASE 2)")
+    spawn_deployed("resolution-sos-sam-pipelines", "build_crosswalk", deploy_file=__file__,
+                   trigger_callback_url=None)

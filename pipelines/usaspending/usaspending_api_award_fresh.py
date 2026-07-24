@@ -65,9 +65,16 @@ Measured 2026-07-04 (live download/awards, 1-day last_modified window 2026-06-23
 
     modal deploy pipelines/usaspending/usaspending_api_award_fresh.py
     modal run pipelines/usaspending/usaspending_api_award_fresh.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::backfill            # create
-    modal run --detach pipelines/usaspending/usaspending_api_award_fresh.py::daily 10            # APPEND
+    modal run pipelines/usaspending/usaspending_api_award_fresh.py::backfill                     # create
+    modal run pipelines/usaspending/usaspending_api_award_fresh.py::daily                        # APPEND
     modal run pipelines/usaspending/usaspending_api_award_fresh.py::verify
+
+  ::backfill / ::daily SPAWN their worker on the DEPLOYED app (deploy-if-stale, ASYNC input —
+  survives client loss), print FUNCTION_CALL_ID, and return in seconds. The result JSON is no
+  longer printed by the entrypoint: the worker's ops.usaspending_api_award_fresh_runs row and app
+  logs are the record. Follow with `modal app logs usaspending-api-award-fresh` or
+  `modal.FunctionCall.from_id('<fc-id>').get(timeout=0)`. NEVER `modal run --detach ::backfill` /
+  `::daily` — --detach detaches the app, not the SYNC input, which dies ~90 s after client loss.
 """
 
 from __future__ import annotations
@@ -556,15 +563,17 @@ def init_ops() -> None:
 @app.local_entrypoint()
 def backfill(days: int = 30, chunk_days: int = CHUNK_DAYS, force: bool = False) -> None:
     """Past `days` (default 30) of contract award summaries → create the table (chunked small)."""
-    import json
-    print(json.dumps(run_backfill.remote(days=days, chunk_days=chunk_days, force=force), indent=2, default=str))
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-api-award-fresh", "run_backfill", deploy_file=__file__,
+                   days=days, chunk_days=chunk_days, force=force)
 
 
 @app.local_entrypoint()
 def daily(days: int = 10, chunk_days: int = CHUNK_DAYS) -> None:
     """Trailing-window APPEND top-up (mode=append, never overwrites)."""
-    import json
-    print(json.dumps(run_daily.remote(days=days, chunk_days=chunk_days), indent=2, default=str))
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-api-award-fresh", "run_daily", deploy_file=__file__,
+                   days=days, chunk_days=chunk_days)
 
 
 @app.local_entrypoint()

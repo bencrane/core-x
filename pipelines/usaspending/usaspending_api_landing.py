@@ -42,10 +42,18 @@ lance.write_dataset(small fragments) → ops audit row + Trigger callback.
 
     modal deploy pipelines/usaspending/usaspending_api_landing.py
     modal run pipelines/usaspending/usaspending_api_landing.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_api_landing.py::run               # trailing 45d (survives disconnect)
-    modal run --detach pipelines/usaspending/usaspending_api_landing.py::run \
+    modal run pipelines/usaspending/usaspending_api_landing.py::run                         # trailing 45d — spawn-fires on the DEPLOYED app, prints fc-id, returns
+    modal run pipelines/usaspending/usaspending_api_landing.py::run \
               --window-start 2026-03-01 --window-end 2026-06-04                             # explicit backfill window
     modal run pipelines/usaspending/usaspending_api_landing.py::verify --pull-date 2026-06-04
+
+Launch durability: ``::run`` deploys-if-stale, SPAWNS land_award_search_window on the
+DEPLOYED app (ASYNC input — no client tether) and prints the fc-… id; it does NOT
+print the result — the worker's ops ledger row + app logs are the record. Follow with
+``modal app logs usaspending-api-landing`` or
+``python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"``.
+NEVER ``modal run --detach …::run``: --detach detaches the app, not the SYNC input,
+which the server cancels ~74–131 s after client loss.
 """
 
 from __future__ import annotations
@@ -421,13 +429,16 @@ def init_ops() -> None:
 
 @app.local_entrypoint()
 def run(window_start: str = "", window_end: str = "") -> None:
-    """Manual run (no Trigger callback). Defaults to the trailing window. Use
-    ``modal run --detach`` so the landing survives a client/session disconnect."""
-    import json
+    """Manual run (no Trigger callback). Defaults to the trailing window. Spawns on
+    the DEPLOYED app and returns immediately — the fc-id is the durable handle; the
+    worker's ledger row (ops.usaspending_award_search_api_landing_runs) and app logs
+    are the record, not this entrypoint's stdout."""
+    from pipelines._shared.launch import spawn_deployed
 
-    print(json.dumps(land_award_search_window.remote(
+    spawn_deployed(
+        "usaspending-api-landing", "land_award_search_window", deploy_file=__file__,
         window_start=window_start or None, window_end=window_end or None,
-        trigger_callback_url=None), indent=2, default=str))
+        trigger_callback_url=None)
 
 
 @app.local_entrypoint()

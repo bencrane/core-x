@@ -27,9 +27,16 @@ run row to ``ops.sba_foia_runs`` via psycopg and (2) POSTs a FLAT JSON body
 ``{status, rows, feed, program, dataset_uri, as_of}`` to that url to wake the
 suspended Trigger run. No ``{"data": ...}`` envelope.
 
-    modal run    pipelines/sba_foia/ingest.py::run_all                 # both programs
-    modal run    pipelines/sba_foia/ingest.py::run_one --program 7a    # one program
-    modal deploy pipelines/sba_foia/ingest.py
+Launch (spawn-on-deployed): ``modal deploy pipelines/sba_foia/ingest.py`` first, then
+
+    modal run    pipelines/sba_foia/ingest.py::run_all                 # both programs (spawn-only)
+    modal run    pipelines/sba_foia/ingest.py::run_one --program 7a    # one program (spawn-only)
+
+Each entrypoint deploy-if-stales, spawns ``ingest_sba_program`` on the DEPLOYED app,
+prints the ``fc-…`` id(s), and returns — it does not wait for or print the result dict;
+the worker's terminal row in ``ops.sba_foia_runs`` and the app logs are the record.
+Follow with ``modal app logs sba-7a-504``; probe with
+``modal.FunctionCall.from_id('fc-…').get(timeout=0)``.
 """
 
 from __future__ import annotations
@@ -681,15 +688,22 @@ def patch_surrogate_id(program: str, trigger_callback_url: str | None = None) ->
 
 @app.local_entrypoint()
 def run_all(as_of: str = AS_OF_DEFAULT) -> None:
-    """Run both programs (distinct datasets → independent). No callback (manual)."""
+    """Spawn both programs on the deployed app (distinct datasets → independent).
+    No callback (manual). Prints one fc-id per program and returns."""
+    from pipelines._shared.launch import spawn_deployed
+
     for program in ("504", "7a"):
         print(f"\n=== {program} ===")
-        print(ingest_sba_program.remote(program, as_of=as_of, trigger_callback_url=None))
+        spawn_deployed("sba-7a-504", "ingest_sba_program", deploy_file=__file__,
+                       program=program, as_of=as_of, trigger_callback_url=None)
 
 
 @app.local_entrypoint()
 def run_one(program: str, as_of: str = AS_OF_DEFAULT) -> None:
-    print(ingest_sba_program.remote(program, as_of=as_of, trigger_callback_url=None))
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("sba-7a-504", "ingest_sba_program", deploy_file=__file__,
+                   program=program, as_of=as_of, trigger_callback_url=None)
 
 
 @app.local_entrypoint()

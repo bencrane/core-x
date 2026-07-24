@@ -30,9 +30,17 @@ WHY contracts + IDVs in one call: A/B/C/D + IDV_* land in a SINGLE 297-col
 
     modal deploy pipelines/usaspending/usaspending_api_fresh.py
     modal run pipelines/usaspending/usaspending_api_fresh.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_api_fresh.py::backfill            # past 90d → create (overwrite)
-    modal run --detach pipelines/usaspending/usaspending_api_fresh.py::daily 10            # past 10d → APPEND (never overwrites)
+    modal run pipelines/usaspending/usaspending_api_fresh.py::backfill                     # past 90d → create (overwrite); spawn-fires, prints fc-… id, returns
+    modal run pipelines/usaspending/usaspending_api_fresh.py::daily 10                     # past 10d → APPEND (never overwrites); spawn-fires, prints fc-… id, returns
     modal run pipelines/usaspending/usaspending_api_fresh.py::verify
+
+The backfill/daily/compact entrypoints deploy-if-stale, then SPAWN the worker on the
+DEPLOYED app (ASYNC input — survives client disconnect) and return immediately with the
+fc-… id. Follow: `modal app logs usaspending-api-fresh` or
+`modal.FunctionCall.from_id("fc-…").get(timeout=0)`; terminal truth is the worker's
+ops.usaspending_api_fresh_runs row (the entrypoints no longer print the result dict).
+NEVER launch these via `modal run --detach`: --detach detaches the app, NOT the .remote()
+SYNC input, which Modal cancels ~74–131 s after the launching client is lost.
 """
 
 from __future__ import annotations
@@ -510,27 +518,39 @@ def init_ops() -> None:
 @app.local_entrypoint()
 def backfill(days: int = 90, force: bool = False) -> None:
     """Get the past `days` (default 90) of contract+IDV transactions NOW → create the table.
-    Use `modal run --detach …::backfill` so the long async pull survives a disconnect."""
-    import json
-    print(json.dumps(run_backfill.remote(days=days, force=force), indent=2, default=str))
+    Spawns run_backfill on the DEPLOYED app (ASYNC input — survives disconnect; `--detach`
+    does NOT protect a .remote() SYNC input) and prints the fc-… id. Follow via
+    `modal app logs usaspending-api-fresh`; terminal truth is the
+    ops.usaspending_api_fresh_runs row (the result dict is no longer printed here)."""
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-api-fresh", "run_backfill", deploy_file=__file__,
+                   days=days, force=force)
 
 
 @app.local_entrypoint()
 def daily(days: int = 7) -> None:
     """Trailing-window APPEND top-up NOW (mode=append, never overwrites). 10-day window:
-        modal run --detach pipelines/usaspending/usaspending_api_fresh.py::daily 10
-    Launched locally, EXECUTES ON MODAL (fresh-IP-per-retry beats USAspending's IP throttle)."""
-    import json
-    print(json.dumps(run_daily.remote(days=days), indent=2, default=str))
+        modal run pipelines/usaspending/usaspending_api_fresh.py::daily 10
+    Spawns run_daily on the DEPLOYED app (ASYNC input — survives disconnect) and prints the
+    fc-… id; fresh-IP-per-retry beats USAspending's IP throttle on Modal. No
+    trigger_callback_url on manual runs (callback no-ops; the scheduled Trigger.dev path
+    supplies its own). Follow via `modal app logs usaspending-api-fresh` / the
+    ops.usaspending_api_fresh_runs row (the result dict is no longer printed here)."""
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-api-fresh", "run_daily", deploy_file=__file__, days=days)
 
 
 @app.local_entrypoint()
 def compact(min_fragments: int = 12, force: bool = False) -> None:
     """Threshold-gated fragment compaction (no-op unless get_fragments() > min_fragments, or force).
         modal run …::compact --force true            # force, ignore the gate
-        modal run …::compact --min-fragments 3       # exercise the GATED fire path"""
-    import json
-    print(json.dumps(run_compaction.remote(min_fragments=min_fragments, force=force), indent=2, default=str))
+        modal run …::compact --min-fragments 3       # exercise the GATED fire path
+    Spawns run_compaction on the DEPLOYED app (ASYNC input — the up-to-~60-min rewrite survives
+    disconnect) and prints the fc-… id. Outcome (including the compacted:false no-op signal)
+    lands in the ops.usaspending_api_fresh_runs row / app logs — not printed here."""
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-api-fresh", "run_compaction", deploy_file=__file__,
+                   min_fragments=min_fragments, force=force)
 
 
 @app.local_entrypoint()

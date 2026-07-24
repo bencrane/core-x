@@ -44,9 +44,22 @@ looks like a real domain (is_domain: has a dot, 4–253 chars, no spaces, ends i
 ≥2-char alpha TLD) AND is not in CONSUMER_BLOCK; otherwise it is written to NULL
 and therefore can never satisfy the inner equijoin (multi-tenant suppression).
 
-    modal run    pipelines/resolution/sam_fmcsa_domain_spine.py            # build
-    modal run    pipelines/resolution/sam_fmcsa_domain_spine.py --dry-run  # plan + counts, no write
-    modal deploy pipelines/resolution/sam_fmcsa_domain_spine.py
+Launch (spawn-on-deployed — durable, no client tether):
+    modal deploy pipelines/resolution/sam_fmcsa_domain_spine.py   # mandatory first deploy; re-deploy when stale
+    modal run    pipelines/resolution/sam_fmcsa_domain_spine.py   # build: entrypoint deploys-if-stale, SPAWNS
+                                                                  # build_domain_spine on the deployed app,
+                                                                  # prints the fc-... id, and exits
+    # Follow:  modal app logs resolution-pipelines
+    # Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('<fc-id>').get(timeout=0))"
+    # Ledger:  ops.bridge_runs (bridge='bridge_sam_fmcsa_domain') — the worker writes its own terminal
+    #          row in its finally block; the build result dict is no longer printed at the launch
+    #          terminal (counts live in the ledger row, app logs, and verify_spine).
+    # Phase 2 (AFTER the build fc completes — never concurrent; it reads the URI mid-republish):
+    #   python3 -c "import modal; print(modal.Function.from_name('resolution-pipelines','verify_spine').remote())"
+    modal run    pipelines/resolution/sam_fmcsa_domain_spine.py --dry-run   # plan + counts, no write
+                                                                  # (runs entirely on the client; needs R2 env)
+    # NEVER launch the real build as a tethered `modal run` of build_domain_spine, with or without
+    # --detach — the SYNC input dies ~90 s after client loss.
 """
 
 from __future__ import annotations
@@ -400,6 +413,7 @@ def _materialize(con, sam, cen, label: str):
     timeout=60 * 60,
     memory=16384,
     cpu=4.0,
+    max_containers=1,  # double-fire corrupts the live prefix (interleaved clear/upload)
 )
 def build_domain_spine(trigger_callback_url: str | None = None) -> dict:
     """Build the SAM↔FMCSA domain spine and publish it to R2 active. Idempotent:
@@ -495,5 +509,7 @@ def build(dry_run: bool = False) -> None:
               f"distinct_dot={len(set(table.column('dot_number').to_pylist())):,}")
         con.close()
         return
-    print(build_domain_spine.remote(trigger_callback_url=None))
-    print(verify_spine.remote())
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("resolution-pipelines", "build_domain_spine",
+                   deploy_file=__file__, trigger_callback_url=None)

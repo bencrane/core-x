@@ -35,12 +35,24 @@ Control plane (Trigger v4 durable callback): each function accepts
 ``ops.ca_sos_runs`` via psycopg and (2) POSTs a FLAT JSON body to that url. No
 ``{"data": ...}`` envelope.
 
-    modal deploy pipelines/ca_sos/entities_bulk.py
+    modal deploy pipelines/ca_sos/entities_bulk.py                          # ALWAYS first — run_all spawns DEPLOYED code
     modal run    pipelines/ca_sos/entities_bulk.py::init_state              # create ops.ca_sos_runs
-    modal run    pipelines/ca_sos/entities_bulk.py::run_all                 # explode + parallel ingest (all 3)
+    modal run    pipelines/ca_sos/entities_bulk.py::run_all                 # spawn-fires run_all_remote on the deployed
+                                                                            #   app; prints fc-... and returns in seconds
     modal run    pipelines/ca_sos/entities_bulk.py::explode                 # Phase 1 only
     modal run    pipelines/ca_sos/entities_bulk.py::ingest --member agents  # Phase 2, one member
     modal run    pipelines/ca_sos/entities_bulk.py::reindex --member entities
+
+run_all no longer blocks or prints row counts — the fc-id is the durable handle; the
+record is app logs + ops.ca_sos_runs (terminal = 1 phase='explode' + 3 phase='ingest'
+rows with status='success' for the as_of). Follow:
+    modal app logs ca-sos-businesses
+    python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+Sequencing lives INSIDE run_all_remote: explode_zip.remote() gates the fan-out (no
+ingest spawns after a failed Phase 1); a failed member re-raises in the coordinator
+while sibling ingests finish on the deployed app — per-member truth is the ledger.
+Recovery: ::explode re-runs Phase 1 alone; ::ingest --member <m> re-runs one member
+(idempotent overwrite).
 """
 
 from __future__ import annotations
@@ -606,6 +618,55 @@ def reindex_member(member: str) -> dict:
             "indexes": built, "index_count": len(built)}
 
 
+@app.function(timeout=60 * 110)
+def run_all_remote(
+    as_of: str = AS_OF_DEFAULT,
+    zip_key: str | None = None,
+    trigger_callback_url: str | None = None,
+) -> dict:
+    """Thin coordinator — sequences the full run in ITS OWN container (no client
+    tether). explode_zip.remote() gates Phase 1 (it re-raises on failure, so no
+    ingest spawns after a failed explode); then ingest_member fans out 3-way
+    parallel via .spawn(). Phase workers receive trigger_callback_url=None and
+    write their own terminal ops.ca_sos_runs rows; this function POSTs the flat
+    aggregate on terminal state. .get() re-raises on the first failed member while
+    sibling ingests run to completion on the deployed app — per-member truth is
+    the ledger, not this result alone."""
+    status, error = "error", None
+    res_explode: dict = {}
+    results: dict[str, dict] = {}
+    try:
+        print("=== Phase 1 — explode ===")
+        res_explode = explode_zip.remote(as_of, zip_key, trigger_callback_url=None)
+
+        print("=== Phase 2 — parallel ingest ===")
+        calls = {m: ingest_member.spawn(m, as_of=as_of, trigger_callback_url=None)
+                 for m in MEMBERS}
+        results = {m: c.get() for m, c in calls.items()}
+        status = "success"
+    except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
+        error = str(exc)
+        status = "error"
+    finally:
+        total = sum(int(r.get("rows_processed", 0)) for r in results.values())
+        print("=== FINAL ROW COUNTS ===")
+        for m, r in results.items():
+            print(f"  {m:12s} rows={r.get('rows_processed', 0):>12,}  "
+                  f"rejected={r.get('rejected_rows', 0):>6,}  -> {r.get('dataset_uri')}")
+        print(f"  {'TOTAL':12s} rows={total:>12,}")
+        _post_callback(
+            trigger_callback_url,
+            {"status": status, "phase": "run_all", "as_of": as_of,
+             "explode": res_explode, "members": results,
+             "total_rows": total, "error": error},
+        )
+
+    if status != "success":
+        raise RuntimeError(f"ca_sos run_all failed: {error}")
+    return {"status": status, "phase": "run_all", "as_of": as_of,
+            "explode": res_explode, "members": results, "total_rows": total}
+
+
 @app.local_entrypoint()
 def init_state() -> None:
     """Create ops.ca_sos_runs (idempotent)."""
@@ -626,29 +687,14 @@ def ingest(member: str, as_of: str = AS_OF_DEFAULT) -> None:
 
 @app.local_entrypoint()
 def run_all(as_of: str = AS_OF_DEFAULT, zip_key: str = "") -> None:
-    """End-to-end manual run: explode, then ingest all 3 members in PARALLEL (distinct
-    datasets → no shared-writer conflict). Prints final row counts."""
-    import json
+    """End-to-end run, durable: spawn run_all_remote on the DEPLOYED app and return.
+    Sequencing (explode gate → 3-way parallel ingest) runs in the coordinator's own
+    container; the printed fc-id is the durable handle. Row counts land in app logs
+    and ops.ca_sos_runs, not here."""
+    from pipelines._shared.launch import spawn_deployed
 
-    print("=== Phase 1 — explode ===")
-    print(json.dumps(explode_zip.remote(as_of, zip_key or None, trigger_callback_url=None),
-                     indent=2, default=str))
-
-    print("\n=== Phase 2 — parallel ingest ===")
-    calls = {m: ingest_member.spawn(m, as_of=as_of, trigger_callback_url=None)
-             for m in MEMBERS}
-    results: dict[str, dict] = {}
-    for m, call in calls.items():
-        results[m] = call.get()
-        print(json.dumps(results[m], default=str))
-
-    print("\n=== FINAL ROW COUNTS ===")
-    total = 0
-    for m, r in results.items():
-        n = r.get("rows_processed", 0)
-        total += n
-        print(f"  {m:12s} rows={n:>12,}  rejected={r.get('rejected_rows'):>6,}  -> {r.get('dataset_uri')}")
-    print(f"  {'TOTAL':12s} rows={total:>12,}")
+    spawn_deployed("ca-sos-businesses", "run_all_remote", deploy_file=__file__,
+                   as_of=as_of, zip_key=zip_key or None, trigger_callback_url=None)
 
 
 @app.local_entrypoint()

@@ -30,8 +30,10 @@ TARGETS:
 INDEXES: people      — BTREE uei/person_id/person_linkedin_url ; BITMAP poc_source/poc_type/match_source/universe/is_principal/has_work_email/has_mobile
          unresolved  — BTREE uei ; BITMAP poc_source/poc_type/universe/is_principal
 
-    modal run    pipelines/gtm/materialize_sam_labor_poc_people.py::run
-    modal deploy pipelines/gtm/materialize_sam_labor_poc_people.py
+    modal deploy pipelines/gtm/materialize_sam_labor_poc_people.py    # required first launch; thereafter ::run deploys-if-stale
+    modal run    pipelines/gtm/materialize_sam_labor_poc_people.py::run   # spawn-fires ingest on the DEPLOYED app, prints the fc-… id, returns
+    # follow: modal app logs sam-labor-poc-people ; result: modal.FunctionCall.from_id('fc-…').get(timeout=0)
+    # terminal truth: ops.sam_labor_poc_people_runs — the launch no longer prints the result JSON
     # local: doppler run -p core-x -c prd -- uv run --no-project --with pylance --with duckdb --with pyarrow \
     #        --with 'psycopg[binary]' --with modal python pipelines/gtm/materialize_sam_labor_poc_people.py
 """
@@ -399,8 +401,13 @@ def ingest() -> dict:
 
 @app.local_entrypoint()
 def run() -> None:
-    import json
-    print(json.dumps(ingest.remote(), indent=2, default=str))
+    # Spawns ingest on the DEPLOYED app (ASYNC input, no client tether) and returns.
+    # ingest.remote() here would issue a SYNC input the server cancels ~90 s after
+    # client loss. Result JSON is no longer printed at launch — the worker's ledger
+    # row (ops.sam_labor_poc_people_runs) and `modal app logs sam-labor-poc-people`
+    # are the record.
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("sam-labor-poc-people", "ingest", deploy_file=__file__)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,14 @@ to that url to wake the suspended Trigger run.
 
     modal run    pipelines/resolution/crosswalk_sam_usaspending.py::init_ops   # create ops table
     modal deploy pipelines/resolution/crosswalk_sam_usaspending.py             # dispatcher-resolvable
-    modal run    pipelines/resolution/crosswalk_sam_usaspending.py             # build (local entrypoint)
+    modal run    pipelines/resolution/crosswalk_sam_usaspending.py::build      # durable launch:
+        # deploy-if-stale, then SPAWN build_crosswalk on the DEPLOYED app, print the fc-id, exit.
+        # Build/verify results are no longer printed inline — the worker's terminal ledger row
+        # (ops.crosswalk_sam_usaspending_runs) and `modal app logs resolution-crosswalk-pipelines`
+        # are the record; collect with modal.FunctionCall.from_id("fc-...").get(timeout=0).
+        # Phase 2, only after a success ledger row: spawn verify_crosswalk on the deployed app —
+        # modal.Function.from_name("resolution-crosswalk-pipelines", "verify_crosswalk").spawn()
+        # — and confirm grain_ok, the three BTREE indices, and the match_breakdown.
     modal run    pipelines/resolution/crosswalk_sam_usaspending.py --dry-run   # plan + counts, no write
 """
 
@@ -610,8 +617,10 @@ def build(dry_run: bool = False) -> None:
             con.close()
         print(f"[dry-run] sam_label={sam_label} {metrics}")
         return
-    print(build_crosswalk.remote(trigger_callback_url=None))
-    print(verify_crosswalk.remote())
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("resolution-crosswalk-pipelines", "build_crosswalk",
+                   deploy_file=__file__, trigger_callback_url=None)
 
 
 @app.local_entrypoint()

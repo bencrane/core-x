@@ -48,8 +48,26 @@ ops.entity_award_lines_gold_runs and POSTs the flat callback to wake the suspend
 
     modal run    pipelines/resolution/award_lines_gold.py::init_ops   # ops table
     modal deploy pipelines/resolution/award_lines_gold.py             # publish worker
-    modal run    pipelines/resolution/award_lines_gold.py             # build + verify
-    modal run    pipelines/resolution/award_lines_gold.py --dry-run   # counts, no write
+    modal run    pipelines/resolution/award_lines_gold.py             # SPAWN build (fc-id)
+    modal run    pipelines/resolution/award_lines_gold.py --dry-run   # counts, no write (sync)
+
+The default entrypoint no longer tethers the build or prints its result: it deploy-if-stale
+gates (pipelines/_shared/launch.py), spawns ``build_entity_award_lines_gold`` on the
+DEPLOYED app, prints the ``fc-…`` id, and returns. The worker's terminal
+ops.entity_award_lines_gold_runs row and the app logs are the record. Follow protocol
+(build → verify is two phases):
+
+  1. Follow:  ``modal app logs entity-award-lines-gold-pipelines``
+     Result:  ``modal.FunctionCall.from_id("fc-...").get(timeout=0)``  # TimeoutError while running
+  2. Build is terminal when the fc returns or ops.entity_award_lines_gold_runs gains the
+     run's row (feed='entity_award_lines_gold', status='success').
+  3. Only then run phase 2 (read-only, timeout 600 — sync is safe)::
+
+         modal.Function.from_name("entity-award-lines-gold-pipelines",
+                                  "verify_entity_award_lines_gold").remote()
+
+  4. Stranded-unindexed generation (index-gate failure or suspected kill): recover via
+     ``reindex_entity_award_lines_gold`` on the deployed app.
 """
 
 from __future__ import annotations
@@ -358,6 +376,7 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     timeout=60 * 120,
     memory=65536,
     cpu=8.0,
+    max_containers=1,
 )
 def build_entity_award_lines_gold(trigger_callback_url: str | None = None) -> dict:
     """Precompute per-UEI active/closed prime award line items and publish to R2 active.
@@ -543,5 +562,9 @@ def build(dry_run: bool = False) -> None:
     if dry_run:
         print(plan_entity_award_lines_gold.remote())
         return
-    print(build_entity_award_lines_gold.remote(trigger_callback_url=None))
-    print(verify_entity_award_lines_gold.remote())
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("entity-award-lines-gold-pipelines", "build_entity_award_lines_gold",
+                   deploy_file=__file__, trigger_callback_url=None)
+    print("Phase 2 (after build is terminal — module docstring follow protocol): run "
+          "verify_entity_award_lines_gold on the deployed app.")

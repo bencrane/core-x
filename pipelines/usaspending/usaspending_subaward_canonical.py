@@ -1382,21 +1382,31 @@ if modal is not None:
 
     @modal_app.local_entrypoint()
     def modal_main(cmd: str = "build", since: str = "", target_uri: str = CANONICAL_URI):
+        """build/refresh SPAWN on the DEPLOYED app (durable ASYNC input — the mutating,
+        non-idempotent phases must survive client loss; the old build_spawn ephemeral-app
+        variant is gone) and print the fc-… id; terminal truth is the worker's
+        ops.usaspending_subaward_canonical_runs row, or FunctionCall.from_id(fc).get(timeout=0).
+        trigger_callback_url stays unset on manual spawns — only the Trigger.dev cadence path
+        supplies it. index/verify are short read-mostly phases (observed ≤7 min) and stay
+        tethered .remote() prints; run them AFTER the build/refresh ledger row shows success.
+        Follow: modal app logs usaspending-subaward-canonical"""
         s = since or None
         if cmd == "build":
-            print(json.dumps(build_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
-        elif cmd == "build_spawn":
-            call = build_fn.spawn(since=s, target_uri=target_uri)
-            print(json.dumps({"spawned": "build_fn", "call_id": call.object_id,
-                              "target_uri": target_uri, "since": s}, default=str))
+            from pipelines._shared.launch import spawn_deployed
+
+            spawn_deployed("usaspending-subaward-canonical", "build_fn", deploy_file=__file__,
+                           since=s, target_uri=target_uri)
+        elif cmd == "refresh":
+            from pipelines._shared.launch import spawn_deployed
+
+            spawn_deployed("usaspending-subaward-canonical", "refresh_fn", deploy_file=__file__,
+                           since=s, target_uri=target_uri)
         elif cmd == "index":
             print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
         elif cmd == "verify":
             print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
-        elif cmd == "refresh":
-            print(json.dumps(refresh_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
         else:
-            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|verify|refresh)")
+            raise SystemExit(f"unknown --cmd: {cmd} (build|index|verify|refresh)")
 
 
 # =========================================================================================== #

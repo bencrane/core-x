@@ -38,9 +38,17 @@ publish path: `--only` narrows WITHIN the SAM set, it cannot widen it, and a pub
 guard refuses any run whose selected keys fall outside SAM scope — so the destructive
 `_replace_r2_prefix` can never wipe/overwrite the system-of-record with foreign rows.
 
-    modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill
-    modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print deduped keys
+Launch (durable spawn-on-deployed — the entrypoint deploys-if-stale, spawns
+run_backfill on the DEPLOYED app, prints the fc-… id, and exits; no client tether):
+
     modal deploy pipelines/sam_gov/entity_registrations_bulk.py
+    modal run    pipelines/sam_gov/entity_registrations_bulk.py             # full backfill (spawn, prints fc-id)
+    modal run    pipelines/sam_gov/entity_registrations_bulk.py --dry-run   # print deduped keys (short sync)
+
+Follow with `modal app logs sam-gov-entity-pipelines`; collect the result via
+`modal.FunctionCall.from_id('fc-…').get(timeout=0)`. The entrypoint no longer prints
+run_backfill's return dict — terminal truth is the per-file rows in
+ops.sam_entity_registration_runs plus the 'Published N files' log line.
 """
 
 from __future__ import annotations
@@ -421,6 +429,7 @@ def select_backfill_keys() -> list[str]:
     memory=16384,
     cpu=4.0,
     ephemeral_disk=524288,  # Modal's explicit floor (512 GiB); staging needs ~12 GiB
+    max_containers=1,  # double-fire interleaves the destructive wipe+upload over the SoR prefix
 )
 def run_backfill(trigger_callback_url: str | None = None, only: str = "") -> dict:
     """Stage every deduped landing extract into one LOCAL Lance dataset (append),
@@ -534,4 +543,7 @@ def backfill(only: str = "", dry_run: bool = False) -> None:
         for k in keys:
             print("  ", k)
         return
-    print(run_backfill.remote(trigger_callback_url=None, only=only))
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("sam-gov-entity-pipelines", "run_backfill", deploy_file=__file__,
+                   trigger_callback_url=None, only=only)

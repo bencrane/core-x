@@ -16,8 +16,16 @@ fixtures) across three execution arms and reports wall-clock + result parity:
      (sorted current_end_date) and both inferred-code projections
      (sorted code_type, code). All legs run natively in the file.
 
-Invoke:  modal run pipelines/query_sidecar/benchmark_phase2.py::bench
-Output:  JSON results printed; verdicts land in the Phase 2 run record.
+Launch:  modal deploy pipelines/query_sidecar/benchmark_phase2.py, then
+         modal run pipelines/query_sidecar/benchmark_phase2.py::main --runs 3
+         (spawn-fires bench on the deployed app, prints the fc-id, exits; the
+         helper deploy-if-stale gate re-deploys automatically when the deployed
+         snapshot's commit != HEAD).
+         NEVER modal run ...::bench — the SYNC input dies ~90 s after client loss.
+Follow:  modal app logs query-sidecar-bench, or
+         python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+Output:  JSON under '=== BENCH JSON ===' in worker logs, plus a durable record at
+         s3://data-sink/query-sidecar/bench/; verdicts land in the Phase 2 run record.
 """
 
 from __future__ import annotations
@@ -405,10 +413,20 @@ def bench(runs: int = 3) -> dict:
            "runs": runs, "results": results}
     print("=== BENCH JSON ===")
     print(json.dumps(out))
+
+    # durable terminal record (this file has no ops ledger; the spawned call's
+    # return value is only retrievable within Modal's retention window) —
+    # timestamp+fc-id keyed, so a double-fire yields two distinct records.
+    fc_id = modal.current_function_call_id() or "local"
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    record_key = f"query-sidecar/bench/bench_{ts}_{fc_id}.json"
+    s3.put_object(Bucket=R2_BUCKET, Key=record_key, Body=json.dumps(out).encode())
+    print(f"[record] s3://{R2_BUCKET}/{record_key}")
     return out
 
 
 @app.local_entrypoint()
 def main(runs: int = 3):
-    r = bench.remote(runs=runs)
-    print(f"done: {len(r['results'])} workloads")
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("query-sidecar-bench", "bench", deploy_file=__file__, runs=runs)

@@ -7,8 +7,23 @@ same merge_insert motion, same IVF_PQ/scalar campaign, same CUI bracket). One co
 single-committer by construction (no lease needed). Marked (CUI) chunks are bracketed out and stay
 NULL — excluded from the ANN index by construction (verified).
 
-    doppler run -p core-x -c prd -- modal run pipelines/sam_gov/sam_attachment_embed_modal.py
-    # options: --sink scope|unknown|both (default both) · --do-index/--no-do-index · --limit N (smoke)
+Launch (spawn-on-deployed — each invocation spawns ONE phase on the deployed app, prints the
+fc-ids, and returns in seconds; the entrypoint deploy-if-stales via pipelines/_shared/launch.py):
+
+    doppler run -p core-x -c prd -- modal deploy pipelines/sam_gov/sam_attachment_embed_modal.py
+    doppler run -p core-x -c prd -- modal run pipelines/sam_gov/sam_attachment_embed_modal.py --mode embed
+    # follow:  modal app logs govcon-embed
+    # result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+    # options: --sink scope|unknown|both (default both) · --mode embed|index|scalars|all · --limit N (smoke, embed only)
+
+Phases are operator-gated, NOT auto-chained — `--mode all` no longer runs end-to-end: it spawns
+embed only and prints the follow-up commands. After BOTH embed fc-ids resolve run `--mode index`;
+after those resolve run `--mode scalars`. build_index hard-gates phase order worker-side (raises
+while worklist NULLs remain), so a premature index spawn fails loudly. Result dicts are no longer
+printed locally — the workers' DONE prints (`modal app logs govcon-embed`) and
+`FunctionCall.from_id(fc).get(timeout=0)` are the record; completion ground truth is worklist
+count == 0 per sink + list_indices showing the embedding + scalar plan. No ops.*_runs ledger row
+is written (accepted): the fc-id + worklist-NULL count are the durable completion check.
 """
 import modal
 
@@ -194,14 +209,35 @@ def build_scalars(name: str):
 
 @app.local_entrypoint()
 def main(sink: str = "both", do_index: bool = True, limit: int = 0, mode: str = "all"):
+    from pipelines._shared.launch import spawn_deployed
+
     names = ["scope", "unknown"] if sink == "both" else [sink]
     lim = limit or None
-    if mode != "scalars":
+    if mode in ("all", "embed"):
         print(f"== embed (unmarked bulk) on Modal {GPU}: {names} ==", flush=True)
-        print("embed results:", list(embed_unmarked.starmap([(n, 50000, lim) for n in names])), flush=True)
-        if do_index and not lim:
-            print(f"== IVF_PQ (GPU): {names} ==", flush=True)
-            print("ivf results:", list(build_index.map(names)), flush=True)
-    if mode in ("all", "scalars") and not lim:
+        for n in names:
+            print(f"-- embed[{n}] --", flush=True)
+            spawn_deployed("govcon-embed", "embed_unmarked", deploy_file=__file__,
+                           name=n, flush_rows=50000, limit=lim)
+        if mode == "all" and not lim:
+            if do_index:
+                print(f"== next (after ALL embed fc-ids resolve): --mode index --sink {sink} ==", flush=True)
+            print(f"== then (after index fc-ids resolve): --mode scalars --sink {sink} ==", flush=True)
+    elif mode == "index":
+        if lim:
+            print("--limit is a smoke flag for embed only; index not spawned", flush=True)
+            return
+        print(f"== IVF_PQ (GPU): {names} ==", flush=True)
+        for n in names:
+            print(f"-- index[{n}] --", flush=True)
+            spawn_deployed("govcon-embed", "build_index", deploy_file=__file__, name=n)
+    elif mode == "scalars":
+        if lim:
+            print("--limit is a smoke flag for embed only; scalars not spawned", flush=True)
+            return
         print(f"== scalar indexes (high-mem CPU): {names} ==", flush=True)
-        print("scalar results:", list(build_scalars.map(names)), flush=True)
+        for n in names:
+            print(f"-- scalars[{n}] --", flush=True)
+            spawn_deployed("govcon-embed", "build_scalars", deploy_file=__file__, name=n)
+    else:
+        raise ValueError(f"unknown --mode {mode!r} (embed|index|scalars|all)")

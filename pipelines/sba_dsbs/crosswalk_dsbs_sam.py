@@ -35,9 +35,15 @@ REFRESH. ``run`` full overwrite (deterministic over stable Lance snapshots). Reb
     downstream of any upstream refresh; a single weekly control-plane task is sufficient.
 
     modal run    pipelines/sba_dsbs/crosswalk_dsbs_sam.py::init_ops
-    modal run    pipelines/sba_dsbs/crosswalk_dsbs_sam.py::run
     modal run    pipelines/sba_dsbs/crosswalk_dsbs_sam.py::verify_only
     modal deploy pipelines/sba_dsbs/crosswalk_dsbs_sam.py
+    # durable launch — ::run is spawn-only: deploys if stale, spawns `ingest` on the
+    # DEPLOYED app, prints the fc-id, and returns immediately (it no longer blocks on
+    # or prints the result; the worker's ledger row and app logs are the record):
+    modal run    pipelines/sba_dsbs/crosswalk_dsbs_sam.py::run
+    # follow:  modal app logs crosswalk-dsbs-sam
+    # result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+    # terminal truth: latest row in ops.crosswalk_dsbs_sam_runs
     # local materialize (no Modal): doppler run --project core-x --config prd -- \
     #   uv run --with pylance --with duckdb --with pyarrow --with 'psycopg[binary]' --with modal \
     #   python pipelines/sba_dsbs/crosswalk_dsbs_sam.py
@@ -374,8 +380,8 @@ def init_ops() -> None:
 
 @app.local_entrypoint()
 def run() -> None:
-    import json
-    print(json.dumps(ingest.remote(), indent=2, default=str))
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("crosswalk-dsbs-sam", "ingest", deploy_file=__file__)
 
 
 @app.local_entrypoint()

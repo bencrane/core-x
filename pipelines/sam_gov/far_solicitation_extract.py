@@ -14,6 +14,16 @@ Pipeline stages:
 Idempotency: track (notice_id, extraction_version) in ops.far_extract_runs to avoid
 redundant LLM calls on pipeline retry.
 
+Launch (durable spawn-on-deployed — NEVER a tethered .remote(); the SYNC input dies
+~74-131s after client loss, and --detach does not protect it):
+  modal run pipelines/sam_gov/far_solicitation_extract.py --limit 10
+    (entrypoint deploy-if-stales via pipelines/_shared/launch.spawn_deployed, spawn-fires
+    extract_far_subcontracting_goals on the DEPLOYED app, prints fc-..., and returns)
+  Follow:  modal app logs far-solicitation-extract
+  Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+  The entrypoint no longer prints the result dict — the worker's ops.far_extract_runs
+  ledger row and the app logs are the record.
+
 Data storage contract:
   - far_solicitation_subcontracting_goals:
     notice_id, solicitation_number, title, response_deadline,
@@ -172,6 +182,7 @@ def _get_extracted_notice_ids() -> set[str]:
     timeout=60 * 60,  # 1 hour for full pipeline
     memory=16384,
     cpu=8.0,
+    max_containers=1,  # double-fire duplicates SoR rows (append + dead dedup guard)
 )
 def extract_far_subcontracting_goals(
     dry_run: bool = False,
@@ -372,5 +383,14 @@ Return ONLY valid JSON, no markdown."""
 @app.local_entrypoint()
 def main(
     dry_run: bool = False,
+    limit: int = 10,
 ) -> None:
-    print(extract_far_subcontracting_goals.remote(dry_run=dry_run))
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed(
+        "far-solicitation-extract",
+        "extract_far_subcontracting_goals",
+        deploy_file=__file__,
+        dry_run=dry_run,
+        limit=limit,
+    )

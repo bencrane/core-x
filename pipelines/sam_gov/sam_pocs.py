@@ -53,8 +53,23 @@ to ops.sam_pocs_runs and POSTs the flat callback to wake the suspended Trigger r
 
     modal run    pipelines/sam_gov/sam_pocs.py::init_ops    # create ops table
     modal deploy pipelines/sam_gov/sam_pocs.py              # dispatcher-resolvable
-    modal run    pipelines/sam_gov/sam_pocs.py              # build (local entrypoint)
-    modal run    pipelines/sam_gov/sam_pocs.py --dry-run    # plan + counts, no write
+    modal run    pipelines/sam_gov/sam_pocs.py              # build — spawns build_sam_pocs
+        # on the DEPLOYED app (deploy-if-stale gate), prints the fc-… id, returns
+        # immediately. SAM_POCS_LANCE_URI env override still honored for scratch
+        # targets. The entrypoint no longer prints the build metrics dict — the
+        # worker's ops.sam_pocs_runs row and app logs are the record. Follow:
+        #   modal app logs sam-gov-pocs-pipelines
+        #   modal.FunctionCall.from_id('fc-…').get(timeout=0)
+        #   SELECT status, rows_written, error FROM ops.sam_pocs_runs
+        #     ORDER BY recorded_at DESC LIMIT 1
+    modal run    pipelines/sam_gov/sam_pocs.py --dry-run    # plan + counts, no write (sync)
+
+Build and verify are SEPARATE phases — verify is never chained inside the build
+tether. Phase 2 (verify), only after the ledger row shows success:
+    modal.Function.from_name('sam-gov-pocs-pipelines',
+                             'verify_sam_pocs').remote(dataset_uri=<same uri>)
+— short (600 s timeout) read-only read-back, sync acceptable; spawn it instead if
+the session may not outlive it.
 """
 
 from __future__ import annotations
@@ -717,5 +732,9 @@ def build(dry_run: bool = False) -> None:
     if dry_run:
         print(plan_sam_pocs.remote(dataset_uri=uri))
         return
-    print(build_sam_pocs.remote(trigger_callback_url=None, dataset_uri=uri))
-    print(verify_sam_pocs.remote(dataset_uri=uri))
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("sam-gov-pocs-pipelines", "build_sam_pocs", deploy_file=__file__,
+                   trigger_callback_url=None, dataset_uri=uri)
+    print("phase 2 (verify): after ops.sam_pocs_runs shows success, run "
+          "verify_sam_pocs — see module docstring")

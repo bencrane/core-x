@@ -40,12 +40,19 @@ only (never ``.fetch_arrow_table()``); ``max_rows_per_file=1048576`` +
 ``max_bytes_per_file=90 * 1024**3``; NO ``use_lsm_write``; flat JSON callback body
 (no ``{"data": ...}`` envelope); no bare DuckDB VARIANT on the Arrow wire.
 
-    modal deploy pipelines/usaspending/usaspending_bulk.py
+    modal deploy pipelines/usaspending/usaspending_bulk.py              # mandatory before first spawn
     modal run    pipelines/usaspending/usaspending_bulk.py::init_ops     # create ops.* table
-    modal run    pipelines/usaspending/usaspending_bulk.py::stage        # Phase 1: explode ZIP → R2
-    modal run    pipelines/usaspending/usaspending_bulk.py::stage --dry-run
-    modal run    pipelines/usaspending/usaspending_bulk.py::backfill      # Phase 2: ingest → Lance
-    modal run    pipelines/usaspending/usaspending_bulk.py::index         # Phase 3: scalar indexes
+    modal run    pipelines/usaspending/usaspending_bulk.py::stage        # Phase 1: SPAWNS stage_all → fc-id
+    modal run    pipelines/usaspending/usaspending_bulk.py::stage --dry-run   # manifest print (sync, short)
+    modal run    pipelines/usaspending/usaspending_bulk.py::backfill      # Phase 2: SPAWNS backfill_all → fc-id
+    modal run    pipelines/usaspending/usaspending_bulk.py::index         # Phase 3: SPAWNS index_all → fc-id
+
+    The three phase entrypoints deploy-if-stale, spawn their coordinator on the DEPLOYED
+    app (ASYNC input — survives client loss; the old client-side fan-out died with the
+    session), print FUNCTION_CALL_ID, and return. Phases stay operator-gated: spawn the
+    next only after the prior is terminal (::verify / ::ops_status / ::active are the
+    read-only cross-checks). Follow: modal app logs usaspending-bulk; result:
+    python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
 """
 
 from __future__ import annotations
@@ -1041,11 +1048,11 @@ def init_ops() -> None:
     print(apply_ops_ddl.remote(sql))
 
 
-@app.local_entrypoint()
-def stage(dry_run: bool = False, only: str = "") -> None:
-    """Phase 1 — explode the ZIP into per-member R2 landing objects (parallel
-    fan-out; independent keys, no serialization). ``--only SUBSTR`` filters;
-    ``--dry-run`` prints the manifest."""
+@app.function(timeout=60 * 60 * 10, retries=0)
+def stage_all(only: str = "") -> dict:
+    """Phase-1 coordinator — the manifest fan-out runs in ITS OWN container on the
+    deployed app (no client tether; the old client-side .map died with the session).
+    Same filter, same fan-out, same summary — now in worker logs + the fc result."""
     manifest = plan_manifest.remote()
     if only:
         manifest = [m for m in manifest if only in m["table"] or only in m["dump_id"]]
@@ -1054,8 +1061,6 @@ def stage(dry_run: bool = False, only: str = "") -> None:
     for m in manifest:
         print(f"  {m['member']:<16} {m['schema']}.{m['table']:<48} "
               f"{m['gz_bytes']:>14,} B  [{m['size_class']}]")
-    if dry_run:
-        return
 
     ok = mismatch = failed = 0
     table_ok = 0
@@ -1073,6 +1078,65 @@ def stage(dry_run: bool = False, only: str = "") -> None:
 
     print(f"\nStaged OK: {ok}/{len(manifest)}  (table members: {table_ok})  "
           f"mismatch={mismatch} failed={failed}")
+    return {"total": len(manifest), "staged_ok": ok, "table_members_ok": table_ok,
+            "size_mismatch": mismatch, "failed": failed}
+
+
+@app.function(timeout=60 * 60 * 20, retries=0)
+def backfill_all(only: str = "") -> list:
+    """Phase-2 coordinator — sequential per-table ingest in ITS OWN container.
+    First failure propagates (abort-on-first-failure preserved); each table's worker
+    writes its own terminal ops.usaspending_table_runs row regardless."""
+    entries = [e for e in TABLE_REGISTRY if e["ingest"]]
+    if only:
+        entries = [e for e in entries if only in e["table"]]
+    print(f"Phase 2 — ingesting {len(entries)} table(s) → {ACTIVE_BASE}<table>/")
+    results = []
+    for e in entries:
+        size_class = _size_class(e["gz_bytes"])
+        fn = ingest_giant_table if size_class == "giant" else ingest_table
+        r = fn.remote(e["schema"], e["table"], trigger_callback_url=None)
+        print(r)
+        results.append(r)
+    return results
+
+
+@app.function(timeout=60 * 60 * 22, retries=0)
+def index_all(only: str = "") -> list:
+    """Phase-3 coordinator — sequential index builds in ITS OWN container. Writes NO
+    ops rows (Phase-3 rows would corrupt ops_summary's latest-row semantics); the fc
+    result list (committed_indices per table) is the completion record."""
+    import json
+
+    tables = [t for t in INDEX_PLAN if (only in t if only else True)]
+    results = []
+    for t in tables:
+        r = build_table_indexes.remote(t)
+        print(json.dumps(r, indent=2, default=str))
+        results.append(r)
+    return results
+
+
+@app.local_entrypoint()
+def stage(dry_run: bool = False, only: str = "") -> None:
+    """Phase 1 — explode the ZIP into per-member R2 landing objects. ``--only SUBSTR``
+    filters (matches table OR dump_id); ``--dry-run`` prints the manifest (sync, short).
+    The real run SPAWNS stage_all on the DEPLOYED app (deploy-if-stale), prints the
+    fc-… id, and returns — summary lands in worker logs / the fc result; ::verify is
+    the independent cross-check."""
+    if dry_run:
+        manifest = plan_manifest.remote()
+        if only:
+            manifest = [m for m in manifest if only in m["table"] or only in m["dump_id"]]
+        print(f"Phase 1 (dry-run) — {len(manifest)} object(s) → "
+              f"s3://{BUCKET}/{LANDING_PREFIX}{SNAPSHOT_STAMP}/")
+        for m in manifest:
+            print(f"  {m['member']:<16} {m['schema']}.{m['table']:<48} "
+                  f"{m['gz_bytes']:>14,} B  [{m['size_class']}]")
+        return
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-bulk", "stage_all", deploy_file=__file__, only=only)
 
 
 @app.local_entrypoint()
@@ -1136,33 +1200,40 @@ def cleanup_mpus() -> None:
 def backfill(only: str = "", dry_run: bool = False) -> None:
     """Phase 2 (manual, no callback) — ingest landed members into per-table Lance
     datasets. Production cadence runs via the Trigger task; this is for ops. Giants
-    route to the large-disk container automatically."""
-    entries = [e for e in TABLE_REGISTRY if e["ingest"]]
-    if only:
-        entries = [e for e in entries if only in e["table"]]
-    print(f"Phase 2 — ingesting {len(entries)} table(s) → {ACTIVE_BASE}<table>/")
-    for e in entries:
-        size_class = _size_class(e["gz_bytes"])
-        if dry_run:
-            print(f"  {e['schema']}.{e['table']:<48} [{size_class}]")
-            continue
-        fn = ingest_giant_table if size_class == "giant" else ingest_table
-        print(fn.remote(e["schema"], e["table"], trigger_callback_url=None))
+    route to the large-disk container automatically. ``--dry-run`` prints the plan
+    locally (no Modal input); the real run SPAWNS backfill_all on the DEPLOYED app,
+    prints the fc-… id, and returns — per-table terminal truth stays the workers'
+    ops.usaspending_table_runs rows (::ops_status)."""
+    if dry_run:
+        entries = [e for e in TABLE_REGISTRY if e["ingest"]]
+        if only:
+            entries = [e for e in entries if only in e["table"]]
+        print(f"Phase 2 (dry-run) — {len(entries)} table(s) → {ACTIVE_BASE}<table>/")
+        for e in entries:
+            print(f"  {e['schema']}.{e['table']:<48} [{_size_class(e['gz_bytes'])}]")
+        return
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-bulk", "backfill_all", deploy_file=__file__, only=only)
 
 
 @app.local_entrypoint()
 def stream_ingest(table: str = "subaward_search", schema: str = "rpt") -> None:
     """Phase 2 (preemption-safe, manual) — ingest one table via the httpfs streaming
-    path (no .gz download, no ephemeral_disk): the next-snapshot replacement for the
-    spot-preempted giant path. Defaults to rpt.subaward_search."""
-    print(ingest_stream_table.remote(schema, table, trigger_callback_url=None))
+    path (no .gz download, no ephemeral_disk). Defaults to rpt.subaward_search.
+    SPAWNS ingest_stream_table on the DEPLOYED app and prints the fc-… id; the worker
+    writes its own terminal ops.usaspending_table_runs row (::ops_status to check)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-bulk", "ingest_stream_table", deploy_file=__file__,
+                   schema=schema, table=table, trigger_callback_url=None)
 
 
 @app.local_entrypoint()
 def index(only: str = "") -> None:
-    """Phase 3 — build scalar indexes on the planned datasets."""
-    import json
+    """Phase 3 — build scalar indexes on the planned datasets. SPAWNS index_all on the
+    DEPLOYED app and prints the fc-… id; the per-table result dicts (committed_indices)
+    are the completion record — collect via FunctionCall.from_id(fc).get(timeout=0)."""
+    from pipelines._shared.launch import spawn_deployed
 
-    tables = [t for t in INDEX_PLAN if (only in t if only else True)]
-    for t in tables:
-        print(json.dumps(build_table_indexes.remote(t), indent=2, default=str))
+    spawn_deployed("usaspending-bulk", "index_all", deploy_file=__file__, only=only)

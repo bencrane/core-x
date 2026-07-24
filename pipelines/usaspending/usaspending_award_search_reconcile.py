@@ -26,9 +26,19 @@ Watermarking: tracks max(last_modified_date) merged via ops.* audit row + Trigge
 
     modal deploy pipelines/usaspending/usaspending_award_search_reconcile.py
     modal run pipelines/usaspending/usaspending_award_search_reconcile.py::init_ops
-    modal run --detach pipelines/usaspending/usaspending_award_search_reconcile.py::backfill
-    modal run --detach pipelines/usaspending/usaspending_award_search_reconcile.py::daily 7
+    modal run pipelines/usaspending/usaspending_award_search_reconcile.py::backfill
+    modal run pipelines/usaspending/usaspending_award_search_reconcile.py::daily 7
     modal run pipelines/usaspending/usaspending_award_search_reconcile.py::verify
+
+Launch protocol (spawn-on-deployed): ::backfill and ::daily deploy-if-stale, SPAWN the
+worker on the DEPLOYED app (ASYNC input, untethered from the client), print the fc-...
+id, and return in seconds. They no longer print the worker's result dict — terminal
+truth is the ops.usaspending_award_search_merged_runs row; follow with
+`modal app logs usaspending-award-search-reconcile` and collect the result via
+`python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"`
+(raises TimeoutError while still running). NEVER launch via
+`modal run --detach ...::backfill` / `::daily` — the SYNC input dies ~74-131 s after
+client loss, detached or not.
 """
 
 from __future__ import annotations
@@ -503,15 +513,17 @@ def init_ops() -> None:
 @app.local_entrypoint()
 def backfill() -> None:
     """Full merge of all landings >= snapshot date → create the merged spine."""
-    import json
-    print(json.dumps(run_backfill.remote(), indent=2, default=str))
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-award-search-reconcile", "run_backfill",
+                   deploy_file=__file__, trigger_callback_url=None)
 
 
 @app.local_entrypoint()
 def daily(days: int = 7) -> None:
     """Trailing-window merge (default 7d) → overwrite merged spine (upsert-merge)."""
-    import json
-    print(json.dumps(run_daily.remote(days=days), indent=2, default=str))
+    from pipelines._shared.launch import spawn_deployed
+    spawn_deployed("usaspending-award-search-reconcile", "run_daily",
+                   deploy_file=__file__, days=int(days), trigger_callback_url=None)
 
 
 @app.local_entrypoint()

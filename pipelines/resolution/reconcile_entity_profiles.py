@@ -66,10 +66,24 @@ the in-flight window; overwrite-in-place is the operator-directed shape here.)
 Control plane (Trigger v4 durable callback): on terminal state writes the run row to
 ops.entity_profile_gold_runs and POSTs the flat callback to wake the suspended Trigger run.
 
-    modal run    pipelines/resolution/reconcile_entity_profiles.py::init_ops   # ops table
+    modal run    pipelines/resolution/reconcile_entity_profiles.py::init_ops   # ops table (short, idempotent)
     modal deploy pipelines/resolution/reconcile_entity_profiles.py             # publish worker
-    modal run    pipelines/resolution/reconcile_entity_profiles.py             # build + verify
-    modal run    pipelines/resolution/reconcile_entity_profiles.py --dry-run   # counts, no write
+    modal run    pipelines/resolution/reconcile_entity_profiles.py             # SPAWNS build on the
+        # DEPLOYED app (deploy-if-stale gate), prints FUNCTION_CALL_ID, exits — no client tether
+    modal run    pipelines/resolution/reconcile_entity_profiles.py --dry-run   # SPAWNS plan — counts,
+        # no write, NO ledger row: metrics retrievable ONLY via FunctionCall.from_id(fc).get()
+
+Follow:  modal app logs entity-profile-gold-pipelines
+Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+Terminal truth is ops.entity_profile_gold_runs — the worker writes its own row in its finally;
+the entrypoint no longer prints build/verify results.
+
+Two-phase protocol: phase 1 = the build fc; gate on terminal success (fc.get() returns the
+result dict / ledger row status='success'); phase 2 = verify_entity_profile_gold (seconds-class,
+read-only), run attended AFTER the gate:
+    python3 -c "import modal; print(modal.Function.from_name(
+        'entity-profile-gold-pipelines', 'verify_entity_profile_gold').remote())"
+Failure recovery stays reindex_entity_profile_gold.
 """
 
 from __future__ import annotations
@@ -528,6 +542,7 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     timeout=60 * 120,
     memory=65536,
     cpu=8.0,
+    max_containers=1,
 )
 def build_entity_profile_gold(trigger_callback_url: str | None = None) -> dict:
     """Reconcile SAM + USAspending into entity_profile_gold and publish to R2 active.
@@ -719,8 +734,14 @@ def plan_entity_profile_gold() -> dict:
 
 @app.local_entrypoint()
 def build(dry_run: bool = False) -> None:
+    from pipelines._shared.launch import spawn_deployed
+
     if dry_run:
-        print(plan_entity_profile_gold.remote())
+        spawn_deployed("entity-profile-gold-pipelines", "plan_entity_profile_gold",
+                       deploy_file=__file__)
+        print("NOTE: plan writes NO ledger row — metrics only via the Result command above.")
         return
-    print(build_entity_profile_gold.remote(trigger_callback_url=None))
-    print(verify_entity_profile_gold.remote())
+    spawn_deployed("entity-profile-gold-pipelines", "build_entity_profile_gold",
+                   deploy_file=__file__, trigger_callback_url=None)
+    print("Phase 2 (verify_entity_profile_gold) runs AFTER the build fc completes — "
+          "see the module docstring.")

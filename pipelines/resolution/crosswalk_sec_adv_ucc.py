@@ -45,8 +45,18 @@ is a lower bound on each manager's book, never the complete portfolio.
 
     modal run    pipelines/resolution/crosswalk_sec_adv_ucc.py::init_ops   # create ops table
     modal deploy pipelines/resolution/crosswalk_sec_adv_ucc.py             # dispatcher-resolvable
-    modal run    pipelines/resolution/crosswalk_sec_adv_ucc.py             # build (local entrypoint)
-    modal run    pipelines/resolution/crosswalk_sec_adv_ucc.py --dry-run   # coverage plan, no write
+    modal run    pipelines/resolution/crosswalk_sec_adv_ucc.py             # spawn build on the DEPLOYED app → prints fc-… and returns
+    modal run    pipelines/resolution/crosswalk_sec_adv_ucc.py --dry-run   # coverage plan, local, no write, no ops row
+
+Follow a spawned build: ``modal app logs resolution-sec-adv-ucc-pipelines``, or poll
+``modal.FunctionCall.from_id("fc-…").get(timeout=0)``. The worker writes its own terminal
+row to ``ops.crosswalk_sec_adv_ucc_runs``; the build metrics dict lives in that row and in
+the app logs (the entrypoint no longer prints it). Phase 2 — ``verify_crosswalk`` — is NOT
+auto-chained: only after the build fc reaches terminal success (ledger status='success' or
+``fc.get()`` returns) spawn it on the deployed app —
+``modal.Function.from_name("resolution-sec-adv-ucc-pipelines", "verify_crosswalk").spawn()``
+— and collect the handle. Never spawn verify concurrently with a build; it would read the
+pre-build dataset.
 """
 
 from __future__ import annotations
@@ -629,8 +639,10 @@ def build(dry_run: bool = False) -> None:
             con.close()
         print(f"[dry-run] {metrics}")
         return
-    print(build_crosswalk.remote(trigger_callback_url=None))
-    print(verify_crosswalk.remote())
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("resolution-sec-adv-ucc-pipelines", "build_crosswalk",
+                   deploy_file=__file__, trigger_callback_url=None)
 
 
 @app.local_entrypoint()

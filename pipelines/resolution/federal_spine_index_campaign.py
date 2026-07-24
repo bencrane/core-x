@@ -38,11 +38,20 @@ Targets (operator-authorized 2026-06-01) — BTREE only, schema-gated at runtime
                 bridge_sam_pdl          → normalized_domain
 
     modal run …::probe                          # read-only ground truth (schema/indices/size)
-    modal run …::run    [--group safe|giant] [--only <substr>] [--cols a,b]   # direct-R2
-    modal run …::run_staged --only <fabs|hmda_lar> [--cols …]                 # /tmp-staged giants
+    modal run …::run    [--group safe|giant] [--only <substr>] [--cols a,b]   # direct-R2 — spawn-fires
+    modal run …::run_staged --only <fabs|hmda_lar> [--cols …]                 # /tmp-staged giants — spawn-fires
     modal run …::verify                         # list_indices() sweep → table
     modal run …::cleanup                        # abort dangling multipart uploads
     modal run …::prune  [--only <substr>] [--execute]   # delete unreferenced _indices orphans
+
+The mutating entrypoints (::run, ::run_staged) deploy-if-stale, then SPAWN their
+worker on the DEPLOYED app (``spawn_deployed``): one fc-… id per dataset prints
+and the entrypoint exits in seconds — the inputs survive client loss. The inline
+per-dataset result JSON no longer prints; the worker's own
+``ops.federal_spine_index_runs`` row and ``modal app logs
+federal-spine-index-campaign`` are the record. Collect a result later via
+``modal.FunctionCall.from_id('fc-…').get(timeout=0)``; ::verify is the read-only
+proof. Never fire the same dataset twice concurrently.
 """
 
 from __future__ import annotations
@@ -445,13 +454,20 @@ def index_dataset(name: str, cols: str = "") -> dict:
 
 @app.local_entrypoint()
 def run(group: str = "", only: str = "", cols: str = "") -> None:
-    """Build the planned BTREE indices in place.
+    """Build the planned BTREE indices in place — spawns on the deployed app.
 
     --group safe|giant   restrict to the small/medium set or the 4 giants
     --only  <substr>     restrict to datasets whose name contains <substr>
     --cols  a,b          restrict to these columns (decisive single-column tests)
+
+    One spawn per matched dataset; datasets are independent manifests, so the
+    spawned builds run in PARALLEL containers. Never fire the same dataset twice
+    concurrently — concurrent builds on one dataset conflict on the manifest
+    version. Results no longer print here: the worker writes its own
+    ops.federal_spine_index_runs row and `modal app logs` carries the build
+    output; ::verify is the read-only proof.
     """
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
     targets = list(DATASETS)
     if group == "safe":
@@ -464,8 +480,9 @@ def run(group: str = "", only: str = "", cols: str = "") -> None:
         print(f"No datasets matched group={group!r} only={only!r}")
         return
     for name in targets:
-        res = index_dataset.remote(name, cols)
-        print(json.dumps(res, indent=2, default=str))
+        print(f"spawning {name}")
+        spawn_deployed("federal-spine-index-campaign", "index_dataset",
+                       deploy_file=__file__, name=name, cols=cols)
 
 
 # ──────────── Index build — /tmp-staged (over-threshold giants) ────────────
@@ -481,6 +498,9 @@ def run(group: str = "", only: str = "", cols: str = "") -> None:
                      # 16 GiB); NO ephemeral_disk override (its 512 GiB floor forces spot),
                      # so the worker stays on stable capacity.
     cpu=8.0,
+    max_containers=1,  # same-dataset double-fire mints the SAME next _versions/<n>.manifest
+                       # key → last-writer-wins clobber of the SoR manifest; serialize all
+                       # staged inputs (queued inputs don't consume the 4h execution timeout).
 )
 def index_dataset_staged(name: str, cols: str = "", refresh: bool = False) -> dict:
     """Build BTREE indices on a dataset whose index files exceed R2's multipart
@@ -592,19 +612,29 @@ def index_dataset_staged(name: str, cols: str = "", refresh: bool = False) -> di
 
 @app.local_entrypoint()
 def run_staged(only: str = "", cols: str = "", refresh: bool = False) -> None:
-    """/tmp-staged index build for the over-threshold giants (no spot, append-only).
+    """/tmp-staged index build for the over-threshold giants (no spot, append-only)
+    — spawns on the deployed app.
     --only <substr>  restrict datasets (e.g. fabs, hmda_lar)
     --cols a,b       explicit columns (e.g. hmda repair: lei,action_taken,property_state,county_code)
     --refresh        force a clean re-stage from R2
+
+    Never fire the same dataset twice concurrently: both runs mint the SAME next
+    _versions/<n>.manifest key — last-writer-wins clobber (max_containers=1 on
+    the worker serializes inputs as the backstop). A killed staged run is healed
+    by simply re-running: absent/size-changed files re-upload. Results no longer
+    print here: the worker writes its own ops.federal_spine_index_runs row and
+    `modal app logs` carries the build output; ::verify is the read-only proof.
     """
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
     targets = [t for t in DATASETS if (only in t if only else True)]
     if not targets:
         print(f"No datasets matched only={only!r}")
         return
     for name in targets:
-        print(json.dumps(index_dataset_staged.remote(name, cols, refresh), indent=2, default=str))
+        print(f"spawning {name}")
+        spawn_deployed("federal-spine-index-campaign", "index_dataset_staged",
+                       deploy_file=__file__, name=name, cols=cols, refresh=refresh)
 
 
 # ───────────────── Diagnostic — available staging filesystems ─────────────────
