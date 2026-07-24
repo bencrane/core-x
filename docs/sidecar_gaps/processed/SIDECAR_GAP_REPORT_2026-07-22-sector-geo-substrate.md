@@ -27,3 +27,15 @@
    **Ask:** add `pop_county_fips` to `award_pop_centroids_by_key` (derivable upstream from
    the canonical txn PoP county the by_geo mart already carries — latest-txn-per-award), or
    ship a `zip_county_xwalk` reference table.
+
+---
+
+## Disposition (sidecar-gaps Mode 2, 2026-07-24 — artifact `query_sidecar_20260724T044059Z`, ledger id 46)
+
+Probe-verified before build (every claimed column tested against live Lance + serving).
+
+| # | Verdict | What shipped |
+|---|---|---|
+| Gap 1 | **Routing fix + Promote (correctness)** | The report's premise — "county-exact award-grain sector cuts are unexpressible" — is **REFUTED**. They were expressible the whole time and fast: a `DISTINCT award_key` semi-join off the geo-sorted `txn_events_combo_by_geo` into `usaspending_fpds_prime_award_state` returned the 13-FIPS Hampton Roads sector in 740 ms (2,912 active awards / 1,116 firms). The 45-mile haversine envelope the report shipped instead returned **172 awards / 138 firms — a 94% under-count** and 6× slower; any sector file built on it is invalid. That correction ships to `QUERY_SIDECAR_AGENT_GUIDE.md` §4 (below), independent of any build. Separately **promoted** `award_geo_state` (1/award · 82.87M, EXACT parity, ZERO R2 read — from_table off award_state, PoP derived by per-field `arg_max` over `txn_events_combo`) so the same cut is now a single predicate: Hampton Roads active = **2,860 awards / 1,103 firms / $35.4B obligated / $49.2B current value in 59 ms**. County reference authorities `census_county_adjacency` (the honest neighbor-set replacement for the haversine envelope), `national_county2020`, `census_county_gazetteer_2023`, `census_county_cbsa_2023` shipped alongside. |
+
+**Honest-partial disclosure (on the record):** county fill at award grain tops out at ~62% on the active universe (source-bounded by `pop_county_fips` fill, worse on IDVs/vehicles). The mart makes the sector number honest, not complete; full coverage needs a separate vehicle-backfill cycle (parked). Merged in PR #1337; artifact 68.37 → 73.45 GiB (+5.08, +13 marts across this + the demo-narrative + novation reports); build 36.8 min.

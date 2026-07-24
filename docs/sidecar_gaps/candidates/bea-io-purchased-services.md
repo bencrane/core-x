@@ -1,6 +1,6 @@
 # bea-io-purchased-services
 
-**Status:** `open` (weak — one dated demand entry + imminent demo draw; upstream now landed)
+**Status:** `promoted` (reduced) — query_sidecar_20260724T044059Z (2026-07-24, ledger id 46, PR #1337). 4 small tables: bea_bls_klems (52,808) + bea_contingent_labor_intake (3,067) + bea_naics_concordance (499, Tier A) + bea_io_use_summary_annual (206,172, added by sweep for 'of what?'). All EXACT parity. KLEMS service-share (5415) 25.6% in 10ms. CORRECTION: dossier's bea_io_use_detail (~369k) was the wrong table (159k, 9yr stale) — parked. QCEW-scale members stay gated.
 
 ## Capability
 

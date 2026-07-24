@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — 1,714,347,196 rows across 113 sorted tables as of 2026-07-22; live truth is always
+substrate — 1,798,697,203 rows across 126 sorted tables as of 2026-07-24; live truth is always
 `GET /healthz` (stamp + table count) and `SELECT * FROM _sidecar_manifest` (per-table rows) —
 in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
@@ -79,14 +79,17 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `subaward_canonical_slim_by_sub` | same rows | subawardee_uei | second copy, sub-side clustering |
 | `gtm_open_awards` | 1/open award · 163k | recipient_uei | active-PoP/open-IDV universe, centroid geo pre-joined |
 | `txn_rows` | 1/FPDS action · 108M | action_date | The wire-contract row serving with CANONICAL names (recipient_name, award_id_piid, action_type_description, subcontracting_plan_desc, federal_action_obligation, base_and_all_options_value, awarding_agency_name…) + `type_of_contract_pricing_code`/`type_of_contract_pric_desc` (2026-07-15) — use when you need names/descriptions per action; `gtm_txn_events_slim` for uei-first aggregation |
-| `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id |
+| `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id. ⚠ **PoP coverage is only ~31% of active awards (topology-biased: vehicles 11%)** — for award-grain geo use `award_geo_state` (below), not this |
+| `award_geo_state` | 1/contract_award_unique_key · 82.87M | pop_state, pop_county_fips, current_end_date | **THE award-grain geography mart** (2026-07-24 geo cycle). PoP derived by **per-field `arg_max` over `txn_events_combo`** — each geo field independently pins the latest txn CARRYING it (coverage-maximizing, NOT strict latest-txn-per-award), giving 100% award-key coverage and ~62% county fill on the active set (1.5× the centroid route). Columns: `pop_state`/`pop_county_fips`/`pop_county_name`/`pop_zip5`/`pop_city_name`/`pop_congressional_code`/`pop_country_code`, `recipient_state_latest`, `hq_state` (SAM `physical_state`), `is_nonlocal` (`pop_state<>hq_state`), `obligated` (life-to-date) + `obligated_snapshot`, `current_value`, `remaining_ceiling_headroom`, `award_topology`, naics/psc, agency+sub-agency, set_aside/award_type/idv_type, dates, `days_to_expiry`, `is_terminated`. County-exact sector cuts + non-local share are single-predicate here. ⚠ county fill is honest-**partial** (~62% active; worse on IDVs) — the number is honest, not complete |
+| `pop_place_fy` | 1/(fy, pop_state, county_fips, zip5) · 486k | fy, pop_state, pop_county_fips, pop_zip5 | Place × FY rollup (2026-07-24). `count(DISTINCT pop_zip5) WHERE fy BETWEEN 2021 AND 2025 AND pop_zip5 IS NOT NULL` = distinct-places-of-work (23,296 zips / 3,101 counties FY21-25, 16 ms — was a serving OOM). Also `n_actions`, `obligation_sum`, first/last_action_date |
+| `gtm_award_novation_events` | 1/(J/S/T action) · 88k | action_date, to_uei | **Change-of-hands events** (2026-07-24 novation cycle). The predecessor→successor identity FPDS carries in no column, derived via a `lag()` window over `txn_rows_by_award`: `action_type_code` (J=novation, S=change PIID, T=transfer), `from_uei`/`from_name` → `to_uei`/`to_name`, `is_uei_change` (true change-of-hands vs same-UEI re-paper), `prev_action_date`, award $ context. Use for M&A/novation GTM triggers — the accurate complement to the `sam_master_profile_deltas` proxy |
 
 ### The combo-portrait layer (industry × work × time × geo × agency × sub-out, zoomable)
 
 | Table | Grain · rows | Sorted | Semantics |
 |---|---|---|---|
 | `txn_events_combo` | 1/FPDS action · 108M | naics_code, psc_code, action_date | **THE portrait fact.** Every dial as a column: `fy` (federal FY precomputed), `action_type_code`, `subcontracting_plan`, `award_topology` (task orders = 'vehicle_order'), `award_type_code`, `pop_state`, `pop_county_fips`, `pop_county_name`, **`pop_country_code`** (ISO3 — splits the no-US-state bucket into overseas vs unstated; names via `country_vocab`), **`type_of_set_aside_code`** (the set-aside dial), `awarding_agency_code`, `awarding_sub_agency_code`, **`funding_agency_code`, `funding_sub_agency_code`** (who pays vs who signs — `funding_agency_code <> awarding_agency_code` is the split; names via `agency_vocab`/`agency_sub_vocab`), **the pricing-terms dials (2026-07-15 cycle): `pricing_code`** (type of contract pricing — J=FFP, U=CPFF, Y=T&M…; the cash-flow-shape signal), **`financing_code`** (progress/performance-based payments), **`pba_code`**, **`co_business_size`** (CO size determination S/O — the effective net-15 tier), **`labor_standards_code`** (SCA/DBA applies) — names for all five via `fpds_code_vocab`, `obligation`, `uei`, `award_key`. Zoom = `substr()`: NAICS3/4/6 via `substr(naics_code,1,n)`, PSC letter via `substr(psc_code,1,1)`, family = `substr(naics_code,1,4)||'x'||substr(psc_code,1,1)` |
-| `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here |
+| `txn_events_combo_by_geo` | same rows | pop_state, pop_county_fips, action_date | Second copy — **state/county-anchored** questions prune here. Since 2026-07-24 also carries `pop_zip5` (guarded 5-digit), `pop_congressional_code` (as-acted district), `pop_city_name`, `recipient_state` (holder state as of action) — the same 4 columns added to `txn_events_combo`/`_by_award` |
 | `txn_events_combo_by_award` | same rows | **award_key_pfx**, award_key, action_date | **Award-key point-read copy** (2026-07-21 award-key cycle): per-award FY/ledger reads. See the award-key-pfx note below — probe `WHERE award_key_pfx = substr('<key>',10,12) AND award_key = '<key>'` |
 | `txn_rows_by_award` | same rows as `txn_rows` · 108M | **award_key_pfx**, contract_award_unique_key, action_date | Award-key copy of the wire-row serving — per-award "recent actions". Same pfx probe shape |
 | `award_subout_rollup` | 1/prime award with subs · ~197k | prime_award_unique_key | `sub_ct`, `distinct_subs`, `sub_amount_total`, first/last sub date. Join on `award_key` → "is this work getting subbed out". GROUP-BY aggregate (197k rows, not the 6.3M raw subawards) — a bare `WHERE prime_award_unique_key = '<key>'` scan is already cheap; no award-key-pfx copy needed |
@@ -202,6 +205,12 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `naics_labor_share` | 1/6-digit naics · 1.1k | naics_code | **The award-dollar pricing scalar** (labor-pricing cycle 2026-07-14): `loaded_labor_share = payroll_share × burden_multiplier` (SUSB × ECEC burden; BEA `bea_comp_share_of_output` cross-check) + provenance dials `payroll_share_level` (0 = sector-92 economy fallback) / `burden_match_level`. Closes `expected labor $ = award_$ × loaded_labor_share × pct_of_industry/100` — ⚠ `pct_of_industry` is PERCENT; prefer `v_role_priced_combos.category_award_share`, which bakes the /100 |
 | `occupation_alias_lookup` | 1/(alias_norm, code_type, code) · 66.9k | alias_norm, code | **The role-name entry hop**: free text → normalized `alias_norm` probe → SOC/SCA. O*NET primary/reported/alternate + SCA titles, parenthetical variants split ("Travel RN" and "Travel Registered Nurse" both resolve); SCA rows carry `bridged_soc_code`/`bridge_tier` inline; `in_combo_layer` = reachable through the ranked combo profiles. Ambiguous aliases (~8k map to >1 code): rank by `source_priority` then `in_combo_layer` |
 | `v_role_priced_combos` | view | — | The pre-call composite in one SELECT: alias → (soc leg ∪ sca leg) → `naics_psc_labor_profile_categories` ⋈ `naics_labor_share`. Probe `alias_norm` (prunes the sorted alias table); carries combo rank, soc/sca titles, cast `a_median`, growth, labor-share provenance, and precomputed `category_award_share = loaded_labor_share × pct_of_industry/100` |
+| `bls_ecec_costs` | CM series universe · 627k | ownership, industry_group, occupation_group, subcell, area, datatype, year, period, estimate_code | **ECEC compensation-component decomposition** (2026-07-24). Series key already decoded into columns (`ownership`/`component`/`industry_group`/`occupation_group`/`subcell`/`area`/`datatype` + their `*_code` pairs), `value` + `value_raw` (5,257 suppressed cells). ⚠ **MANDATORY predicates or the number is silently wrong: pin `area` (31 levels — national+regions+divisions+metro), `datatype` (8, mixes percent and $/hr), `(year, period)` explicit (a discontinued component last seen 2006 Q03 else contaminates a 2026 ladder), and the industry hierarchy level (`industry_group` nests).** Health insurance (estimate 15) exists only at supersector level (59% of NAICS) — below it degrade to `component='Insurance'` (estimate 13) |
+| `bls_ecec_burden` | national grid · 321 | ownership, industry_group, occupation_group, subcell, quarter | Provenance behind `naics_labor_share.burden_multiplier` + raw `total_comp`/`wages_salaries` dollars. Single-quarter snapshot; `area` cardinality 1 (National only — no geo cut) |
+| `bea_naics_concordance` | 1/naics · 499 (Tier A) | naics_code_clean | NAICS↔BEA code bridge (2026-07-24). Sole warm path to `bea_detail_code`; full 73-code BEA summary vocabulary (`bea_summary_code`/`_desc`, `bea_sector_code`, `bea_detail_code`). ⚠ `naics_code_clean` NOT unique (`naics_multi_io` flag; '23' fans 12×) — dedupe at detail grain |
+| `bea_bls_klems` | 1/(production_code, sheet, year) · 52.8k | production_code, sheet, year | **Industry cost recipe**: Service/Materials/Energy/Capital-IT Compensation ÷ Gross Output, 59 BEA summary industries × 1997-2024, `value_num`. Pivot on `sheet` (30 sheets). ⚠ TFP/TFP% sheets carry NULL `production_code` — route TFP questions to the `Integrated TFP Index` sheet |
+| `bea_contingent_labor_intake` | 1/(industry_code, grain, year) · 3.1k | industry_code, grain, year | Contingent-labor intake share, both grains, both denominators. ⚠ **summary grain is a FLAGGED PROXY** (BEA dissolves NAICS 5613 into all of 561 — upper bound); the detail grain is unproxied. Grains occupy disjoint code spaces (detail→`bea_detail_code`, summary→`bea_summary_code`) — pin `grain` |
+| `bea_io_use_summary_annual` | 1/(industry_code, commodity_code, year) · 206k | industry_code, commodity_code, year | "Purchased services — **of what?**" — the IO use matrix. ⚠ 40.8% suppressed on `value_musd`; the share **denominators** (T005/T018/V001/V003/VABAS/VAPRO) are clean |
 
 ### People / identity / reference
 | Table | Grain · rows | Sorted |
@@ -216,6 +225,7 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `federal_sites_lance` | 1/federal site · 300k | state_code, zip5 |
 | `military_installations` | 1/DoD MIRTA site point · 831 (792 USA-active) | state_code | Installation overlay: `site_name`, `feature_name`/`feature_description`, `component` (usa/usn/usaf/…), `operational_status` (`act` = active), `is_joint_base`, `latitude`/`longitude`. Filter `country='USA' AND operational_status='act'` for the serving overlay; join territory cuts via state or lat/lon distance |
 | `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` · `country_vocab` | code refs · 2.1k/6.1k/321k/75/~250 | code | ⚠ vintages: both reference tables carry multiple `source_vintage` rows per code; `psc_reference WHERE is_active` returns NULL names for retired-vintage codes that still carry award dollars. **Display names: join `v_psc_names` / `v_naics_names`** (active-else-latest-vintage, one row per code) |
+| `national_county2020` · `census_county_gazetteer_2023` · `census_county_cbsa_2023` · `census_county_adjacency` | county refs · 3.2k/3.2k/1.9k/22.2k | county_fips | County authorities (2026-07-24 geo cycle), all keyed `county_fips`. `national_county2020` + gazetteer = county name/state authority + centroid geometry (ship both — CT dual FIPS vintage). `census_county_cbsa_2023` = county→metro (CBSA/CSA) rollup for zoom-out. **`census_county_adjacency` (`county_fips`→`neighbor_fips`) = the honest county-neighbors sector envelope** that replaces the deprecated 45-mile haversine radius |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
 
 ### VA veteran demand-side cluster (county-grain, FIPS-keyed)
@@ -677,6 +687,80 @@ WHERE g.n_teaming_primes >= 3 AND g.poc_available
 -- (add u.country='United States' to force US-only).
 ```
 
+### Award-grain geography & sector membership (2026-07-24 geo cycle)
+
+**Sector = a county_fips SET, never a radius.** The old 45-mile haversine envelope under-counted
+a real sector by **94%** (172 vs 2,912 awards) — it is deprecated. Two correct forms:
+
+```sql
+-- county-exact sector, single predicate on the award-grain mart (59 ms):
+SELECT count(*), count(DISTINCT uei), sum(obligated), sum(current_value)
+FROM award_geo_state
+WHERE pop_state = 'VA'
+  AND pop_county_fips IN ('51550','51650','51700','51710','51735','51740',
+                          '51800','51810','51830','51093','51095','51199','51073')
+  AND current_end_date >= current_date AND is_terminated = FALSE;
+-- sector = a county PLUS its neighbors: JOIN census_county_adjacency ON county_fips.
+
+-- non-local share of the active universe (100%-keyed; NOT the ~31%-covered centroid route):
+SELECT pop_state, sum(current_value) AS work_value,
+       sum(current_value) FILTER (WHERE is_nonlocal) AS imported_value
+FROM award_geo_state
+WHERE current_end_date >= current_date AND is_terminated = FALSE AND pop_country_code='USA'
+GROUP BY 1;   -- national: $561B of $2.76T = 20.3% non-local, 1.6 s
+
+-- distinct places of work over a FY window (was a serving OOM; now 16 ms):
+SELECT count(DISTINCT pop_zip5) FROM pop_place_fy
+WHERE fy BETWEEN 2021 AND 2025 AND pop_zip5 IS NOT NULL;
+```
+⚠ county fill tops out ~62% on the active universe (source-bounded, worse on IDVs) — the number
+is honest-**partial**, not complete. Per-field `arg_max` means each geo field pins the latest txn
+that CARRIES it (coverage-maximizing), not one single latest transaction.
+
+### Novation / change-of-hands — `action_type_code`, NOT `reason_for_modification`
+
+**There is no `reason_for_modification` column** anywhere (USAspending renames the FPDS element to
+`action_type_code`). The change-of-hands codes ship warm on 11 tables and are glossed in
+`action_type_vocab`: **`J`=NOVATION AGREEMENT, `S`=CHANGE PIID, `T`=TRANSFER ACTION** (`M`=OTHER
+ADMINISTRATIVE = the ordinary admin mod; `V`=UEI/legal-name change NON-novation = exclude benign
+renames). Do NOT proxy novation from `sam_master_profile_deltas` (over-counts ~2×).
+
+```sql
+-- who changed hands since a date (0.9 s; fastest carrier, uei-sorted, carries the description):
+SELECT count(DISTINCT uei), count(DISTINCT award_key), count(*)
+FROM gtm_prime_demand_events
+WHERE action_type_code IN ('J','S','T') AND action_date >= DATE '2024-07-01';
+
+-- with predecessor→successor identity + true-change flag (the leg FPDS carries in no column):
+SELECT to_uei, to_name, from_uei, from_name, action_date, is_uei_change, obligation
+FROM gtm_award_novation_events
+WHERE action_date >= DATE '2024-07-01' AND is_uei_change;   -- 9 ms
+
+-- novation share by dimension: FILTER over txn_events_combo (1.8 s, no new column needed).
+```
+
+### Industry cost structure — ECEC compensation split & BEA purchased-services (2026-07-24)
+
+```sql
+-- ECEC component split of total comp (pin area+datatype+year/period+level or it's WRONG):
+SELECT component, value AS pct_of_total_comp
+FROM bls_ecec_costs
+WHERE ownership='Private industry workers' AND industry_group='All industries'
+  AND occupation_group='All occupations' AND subcell='All workers'
+  AND area='United States (National)' AND datatype='Percent of total compensation'
+  AND year=2026 AND period='Q01' ORDER BY estimate_code;   -- Health insurance = 7.3%, 19 ms
+
+-- BEA purchased-services / M/E/S cost recipe for an FPDS NAICS (join carries bea_summary_code):
+WITH k AS (
+  SELECT production_code,
+         max(CASE WHEN sheet='Service Compensation'   THEN value_num END) AS services,
+         max(CASE WHEN sheet='Gross Output'           THEN value_num END) AS gross_output
+  FROM bea_bls_klems WHERE year=2024 GROUP BY 1)
+SELECT l.naics_code, k.services / k.gross_output AS purchased_services_share
+FROM naics_labor_share l JOIN k ON k.production_code = l.bea_summary_code;   -- 5415 = 25.6%
+-- "purchased services of WHAT?" -> bea_io_use_summary_annual (pin denominators; 40.8% suppressed).
+```
+
 ## 5. Performance model
 
 Tables are physically clustered by their sort key — filter on it and DuckDB reads only matching
@@ -700,7 +784,9 @@ tight; you have `elapsed_ms` in every response.
    silently falling back to a spine scan — absence is signal for the next manifest revision.
 4. SQL parse quirk: a bare column alias immediately after a closing `)` fails — write
    `) AS alias`. Sub-PoP county codes are 3-digit-in-state; prime PoP county fips are
-   5-digit — stitch with the state FIPS before joining the two.
+   5-digit — stitch with the state FIPS before joining the two. **The 45-mile haversine
+   sector envelope is DEPRECATED** (under-counted a real sector by 94%) — use
+   `award_geo_state` county-FIPS-set membership or `census_county_adjacency` (§4).
 5. `gtm_txn_events_slim` renames: `obligation` (not federal_action_obligation), `psc_code`
    (not product_or_service_code), `uei` (not recipient_uei).
 
