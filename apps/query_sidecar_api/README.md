@@ -25,7 +25,8 @@ interrupts queries at `QUERY_TIMEOUT_S`.
 1. `QUERY_SIDECAR_TOKEN` unset → refuse to boot.
 2. Read `s3://data-sink/query-sidecar/LATEST.json` → download the versioned artifact to
    `DATA_DIR` (skip if already on disk with matching size) → open read-only.
-3. After a rebuild (`modal run pipelines/query_sidecar/build_query_sidecar.py::run`),
+3. After a rebuild (spawn `build` on the deployed `query-sidecar` app per the
+   `/sidecar-build` skill — never a client-tethered `modal run`),
    `POST /api/v1/refresh` picks up the new artifact without a redeploy.
 
 ## Deploy (Render Web Service, native Python — the gtm_mcp shape)
