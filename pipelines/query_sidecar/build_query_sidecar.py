@@ -32,7 +32,11 @@ Build-correctness doctrine (each rule bought with a wasted build, 2026-07-09/10)
   falls through to the generic copy (108M-row "aggregate").
 - Fixture-test new special-case SQL through the DISPATCH path, not by calling
   the SQL constant directly — and EXPLAIN the plan at fixture time; a 4-row
-  fixture executes a pathological plan instantly.
+  fixture executes a pathological plan instantly. THE fixture is
+  pipelines/query_sidecar/test_fixture_explain.py (python3 -m pytest, local,
+  no network) — it drives every manifest spec through _build_one and asserts
+  no NESTED_LOOP/CROSS_PRODUCT node in any CREATE TABLE plan. Run it green
+  before every builder merge.
 - Self-join inputs materialize locally (stream -> plain CTAS temp) before
   joining — hygiene that keeps join/sort independent of Arrow-stream pacing.
 - Launch ONLY by spawning on the deployed app:
@@ -77,6 +81,8 @@ image = (
         "pyarrow>=17",
         "psycopg[binary]>=3.2",
         "boto3>=1.35",
+        "requests>=2.32",   # _post_callback + _prev_artifact_counts (was an unguarded
+                            # import inside build()'s finally — recon §2.2)
     )
 )
 
@@ -131,7 +137,8 @@ MANIFEST: list[dict] = [
     # Local from_table build off code_lanes — MUST follow it in the manifest.
     {"ds": "gtm_prime_code_signature", "tier": "A",
      "sort": ["uei", "code_type", "rank_lifetime"],
-     "from_table": "gtm_entity_code_lanes", "signature": True, "aggregate": True},
+     "from_table": "gtm_entity_code_lanes", "after": ["gtm_entity_code_lanes"],
+     "signature": True, "aggregate": True},
     # audience-spec cycle (2026-07-15, gap E1/E2/E4): the entity-grain audience
     # spine — geo (physical + primary PoP state/county), $ windows (sub/prime
     # 12/24/60mo/lifetime + bands), designation flags, people-coverage counts —
@@ -172,7 +179,8 @@ MANIFEST: list[dict] = [
     # 2.0s unpruned on serving). Local re-sort, no R2 read; must follow base.
     {"ds": "gtm_txn_recipient_month_rollup", "tier": "B",
      "dest": "txn_recipient_month_by_type", "sort": ["action_type_code", "month"],
-     "from_table": "gtm_txn_recipient_month_rollup"},
+     "from_table": "gtm_txn_recipient_month_rollup",
+     "after": ["gtm_txn_recipient_month_rollup"]},
     # growth-lane cycle (2026-07-19, operator-directed): firm × construction
     # work-lane × month — the surety Growth card's substrate. The month rollups
     # above carry no naics/psc, so lane-scoped growth windows were scanning the
@@ -186,8 +194,8 @@ MANIFEST: list[dict] = [
     # bakes GRAIN, never windows. Must follow gtm_txn_events_slim (local).
     {"ds": "gtm_txn_events_slim", "tier": "B", "dest": "gtm_construction_lane_months",
      "sort": ["lane", "uei", "month"],
-     "from_table": "gtm_txn_events_slim", "construction_lane_months": True,
-     "aggregate": True},
+     "from_table": "gtm_txn_events_slim", "after": ["gtm_txn_events_slim"],
+     "construction_lane_months": True, "aggregate": True},
     {"ds": "gtm_award_recipient_rollup", "tier": "B", "sort": ["uei"]},
     {"ds": "gtm_award_expiry_months", "tier": "B", "sort": ["uei", "end_month"]},
     {"ds": "gtm_prime_pop_lanes", "tier": "B", "sort": ["uei"]},
@@ -213,11 +221,12 @@ MANIFEST: list[dict] = [
     # gap-pass-2 E2: parent_window build widens it with own + resolved-parent
     # ordering/end-window columns (see _PARENT_WINDOW_SQL).
     {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "sort": ["current_end_date"],
-     "parent_window": True},
+     "parent_window": True, "after": ["award_ordering_windows", "award_plan_state"]},
     # gap-pass-3 E1 residual: open-window position substrate (see
     # _POSITION_ORDERS_SQL) — local build off award_state, must follow it.
     {"ds": "gtm_position_orders", "tier": "C", "sort": ["contract_award_unique_key"],
-     "from_table": "usaspending_fpds_prime_award_state", "position_orders": True,
+     "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state"], "position_orders": True,
      "aggregate": True},
     # equipment-needs cycle (2026-07-11): combo-grain award-lifecycle-state mart —
     # active/terminated/expired splits aggregated at (naics, psc) off the 82.8M
@@ -228,7 +237,8 @@ MANIFEST: list[dict] = [
     # cycle. Aggregate -> non-empty parity. Sorted (naics, psc) for the demand join.
     {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "dest": "combo_award_active_state",
      "sort": ["naics_code", "psc_code"],
-     "from_table": "usaspending_fpds_prime_award_state", "combo_active": True,
+     "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state"], "combo_active": True,
      "aggregate": True},
     # award-key companion: the profile's anchor row keyed by the award (was a
     # 4.8s zone-map crawl on the current_end_date-sorted spine). Full-width —
@@ -238,7 +248,8 @@ MANIFEST: list[dict] = [
      "dest": "prime_award_state_by_key",
      "extra_select": "substr(contract_award_unique_key, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "contract_award_unique_key"],
-     "from_table": "usaspending_fpds_prime_award_state"},
+     "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state"]},
     # inferred-code semi-join legs: sorted by (code_type, code) so a code
     # predicate prunes to a handful of row groups instead of a 263M/160M scan.
     {"ds": "gtm_entity_inferred_primeable_codes", "tier": "C", "sort": ["code_type", "code"]},
@@ -267,7 +278,7 @@ MANIFEST: list[dict] = [
     {"ds": "txn_rows", "tier": "C", "dest": "txn_rows_by_award",
      "extra_select": "substr(contract_award_unique_key, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "contract_award_unique_key", "action_date"],
-     "from_table": "txn_rows"},
+     "from_table": "txn_rows", "after": ["txn_rows"]},
     # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
@@ -278,7 +289,8 @@ MANIFEST: list[dict] = [
      "dest": "award_pop_centroids_by_key",
      "extra_select": "substr(generated_unique_award_id, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "generated_unique_award_id"],
-     "from_table": "usaspending_award_pop_centroids"},
+     "from_table": "usaspending_award_pop_centroids",
+     "after": ["usaspending_award_pop_centroids"]},
     # ── combo-portrait layer ──────────────────────────────────────────────────
     # ONE fact, every dial: combo (substr rollups), time (action_date + fy),
     # action codes, subk plan, topology (award_state join at build), geo
@@ -288,14 +300,14 @@ MANIFEST: list[dict] = [
      "sort": ["naics_code", "psc_code", "action_date"], "combo_fact": True},
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_geo",
      "sort": ["pop_state", "pop_county_fips", "action_date"],
-     "from_table": "txn_events_combo"},
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"]},
     # award-key companion: the drawer's FY-ledger leg keyed by the award —
     # turns the per-award combo probe (0.65s uei-pruned, 11.6s raw) ms-class.
     # Prefix-led sort — see txn_rows_by_award note.
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_events_combo_by_award",
      "extra_select": "substr(award_key, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "award_key", "action_date"],
-     "from_table": "txn_events_combo"},
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"]},
     # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
     # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
     # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
@@ -305,7 +317,8 @@ MANIFEST: list[dict] = [
     # parity. Local build, must follow txn_events_combo.
     {"ds": "txn_events_combo", "tier": "C", "dest": "txn_recipient_month_pop",
      "sort": ["action_type_code", "pop_state", "pop_county_fips", "month"],
-     "from_table": "txn_events_combo", "month_pop_rollup": True, "aggregate": True},
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"],
+     "month_pop_rollup": True, "aggregate": True},
     # market-composition cycle (2026-07-17, operator-directed — gc-hq platform
     # users compose markets in arbitrary slicings; SIDECAR_MARKET_COMPOSITION_
     # SUBSTRATE.md §3): entity × federal-FY won mart — the collections
@@ -318,7 +331,8 @@ MANIFEST: list[dict] = [
     # set_aside + award_key). Aggregate parity.
     {"ds": "txn_events_combo", "tier": "C", "dest": "gtm_entity_fy_won",
      "sort": ["uei", "fy"],
-     "from_table": "txn_events_combo", "entity_fy_won": True, "aggregate": True},
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"],
+     "entity_fy_won": True, "aggregate": True},
     # capitalization-triggers cycle (2026-07-21, sidecar-gaps Mode 2 —
     # SIDECAR_GAP_REPORT_2026-07-21-capitalization-triggers.md entries 2+3):
     # entity-grain trailing-window FLOW — the velocity/transition complement to
@@ -330,7 +344,8 @@ MANIFEST: list[dict] = [
     # txn_events_combo (pure GROUP BY, no join). Aggregate parity.
     {"ds": "txn_events_combo", "tier": "C", "dest": "gtm_entity_pricing_flow",
      "sort": ["uei"],
-     "from_table": "txn_events_combo", "pricing_flow": True, "aggregate": True},
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"],
+     "pricing_flow": True, "aggregate": True},
     # award-grain sub-out rollup: joins the fact/award_state on award key —
     # "is this combo/geo/agency getting subbed out more or less".
     {"ds": "usaspending_subaward_canonical", "tier": "C", "dest": "award_subout_rollup",
@@ -365,6 +380,7 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
      "dest": "gtm_entity_pricing_mix", "sort": ["uei"],
      "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state"],
      "entity_pricing_mix": True, "aggregate": True},
     # market-composition cycle (2026-07-17): entity-grain award book — the
     # ontology's active_committed_book / vehicle_capacity / headroom as named
@@ -376,6 +392,7 @@ MANIFEST: list[dict] = [
     {"ds": "usaspending_fpds_prime_award_state", "tier": "C",
      "dest": "gtm_entity_award_book", "sort": ["uei"],
      "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state"],
      "entity_award_book": True, "aggregate": True},
     # pricing-terms cycle (2026-07-15, gap E1): action-type vocabulary — the
     # empirical majority description per code (source pairs are messy: 102
@@ -411,7 +428,7 @@ MANIFEST: list[dict] = [
     # sides, pure-equality keys; manifest order guarantees combo_lanes is
     # already built). Exact-parity gate still applies.
     {"ds": "gtm_prime_farmout_combo_lanes", "tier": "D", "sort": ["uei"],
-     "farmout_share": True},
+     "farmout_share": True, "after": ["gtm_prime_combo_lanes"]},
     {"ds": "gtm_prime_vehicle_lanes", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_open_awards", "tier": "D", "sort": ["recipient_uei"]},
     {"ds": "gtm_prime_demand_events", "tier": "D", "sort": ["uei"]},
@@ -423,7 +440,8 @@ MANIFEST: list[dict] = [
     # (uei, code_type, code) — probe-verified 2026-07-15). Exact parity kept.
     # Manifest order guarantees gtm_entity_code_lanes (Tier A) builds first.
     {"ds": "gtm_prime_subout_by_recipient_code", "tier": "D",
-     "sort": ["prime_awardee_uei"], "subout_rate": True},
+     "sort": ["prime_awardee_uei"], "subout_rate": True,
+     "after": ["gtm_entity_code_lanes"]},
     # recipient-shape-anchored sort copy: every read filters ONE evidence lens
     # (the four recipient_code_source lenses overlap — summing across them
     # double-counts), then the recipient code. "Primes that route ≥N% of
@@ -432,7 +450,8 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_prime_subout_by_recipient_code", "tier": "D",
      "dest": "gtm_prime_subout_by_code",
      "sort": ["recipient_code_source", "recipient_code_type", "recipient_code"],
-     "from_table": "gtm_prime_subout_by_recipient_code"},
+     "from_table": "gtm_prime_subout_by_recipient_code",
+     "after": ["gtm_prime_subout_by_recipient_code"]},
     {"ds": "gtm_subbed_under_to_primed_in_cooccurrence", "tier": "D", "sort": ["subbed_under_code"]},
     {"ds": "gtm_sub_profiles", "tier": "D", "sort": ["uei"]},
     {"ds": "govcon_subawardee_profiles", "tier": "D", "sort": ["sub_uei"]},
@@ -464,7 +483,8 @@ MANIFEST: list[dict] = [
     # (secured_parties, collateral_text) stay one equality join behind.
     {"ds": "ucc_filings_all", "tier": "D", "dest": "ucc_lender_filings",
      "sort": ["lender_key", "uei"],
-     "from_table": "ucc_filings_all", "ucc_lender_filings": True, "aggregate": True},
+     "from_table": "ucc_filings_all", "after": ["ucc_filings_all"],
+     "ucc_lender_filings": True, "aggregate": True},
     {"ds": "fdic_institutions", "tier": "D", "sort": ["name"],
      "cols": ["name", "cert", "active", "city", "stalp", "stname", "zip",
               "webaddr", "asset", "charter"]},
@@ -522,9 +542,14 @@ MANIFEST: list[dict] = [
     # unsorted linkedin_slug probe on the 35.4M base measured 18.4s (saturation
     # class); this narrow copy prunes to ms. Grain 1/(slug, pdl_company_id);
     # reducing projection -> aggregate parity. Local off the base table.
+    # aggregate mis-flag fixed (recon §2.2 / directive §5.2): today the lookup is
+    # measured 1:1 with the base (every pdl row carries a non-empty slug), so it
+    # gets the EXACT parity gate. If upstream ever lands null/empty slugs the
+    # build fails loudly here — flip the flag back deliberately, with eyes on it.
     {"ds": "pdl_normalized_companies", "tier": "D", "dest": "pdl_slug_lookup",
      "sort": ["linkedin_slug"],
-     "from_table": "pdl_normalized_companies", "slug_lookup": True, "aggregate": True},
+     "from_table": "pdl_normalized_companies", "after": ["pdl_normalized_companies"],
+     "slug_lookup": True},
     # market-composition cycle rider (parked 2026-07-17, ships this build):
     # SAM ultimate-parent hierarchy — the family disambiguator for shared-domain
     # /shared-slug resolution candidates (akima.com -> NANA family) and the
@@ -539,7 +564,9 @@ MANIFEST: list[dict] = [
     # tables, single pure-equality key. Aggregate parity (reduces to 1/uei).
     {"ds": "bridge_sam_pdl", "tier": "D", "dest": "gtm_entity_firmographics",
      "sort": ["uei"],
-     "from_table": "bridge_sam_pdl", "entity_firmographics": True, "aggregate": True},
+     "from_table": "bridge_sam_pdl",
+     "after": ["bridge_sam_pdl", "pdl_normalized_companies"],
+     "entity_firmographics": True, "aggregate": True},
     {"ds": "icypeas_company_scrapes", "tier": "D", "sort": ["uei"],
      "cols": ["uei", "company_linkedin_url", "name", "domain", "li_source",
               "source_class", "money24_usd", "in_dsbs", "status", "linkedin_url",
@@ -590,7 +617,9 @@ MANIFEST: list[dict] = [
     # directed): people ⋈ contactability pre-joined at uei grain so the firm
     # drawer's people section is one ms-class point-read with email/phone/li.
     {"ds": "gtm_sam_people", "tier": "D", "dest": "gtm_person_channels",
-     "sort": ["uei"], "from_table": "gtm_sam_people", "person_channels": True},
+     "sort": ["uei"], "from_table": "gtm_sam_people",
+     "after": ["gtm_sam_people", "gtm_sam_person_contactability"],
+     "person_channels": True},
     {"ds": "sam_pocs", "tier": "D", "sort": ["uei"]},
     {"ds": "sam_master_entities", "tier": "D", "sort": ["uei"]},
     {"ds": "people_canonical", "tier": "D", "sort": ["canonical_person_id"]},
@@ -1874,13 +1903,22 @@ ALTER TABLE ops.query_sidecar_runs ADD COLUMN IF NOT EXISTS function_call_id tex
 
 
 _SPEC_STRUCTURAL_KEYS = {"ds", "tier", "sort", "cols", "dest", "extra_select",
-                         "aggregate", "from_table"}
+                         "aggregate", "from_table", "after"}
 
 
-def _preflight() -> None:
-    """Assert every special-case manifest flag has a dispatch branch in
-    _build_one. An unwired flag falls through to the generic CTAS silently —
-    caught live 2026-07-09 (award_ordering_windows built as a 108M-row copy)."""
+def _preflight(wanted: set[str] | None = None) -> None:
+    """Build-start gate, three assertions (directive 2026-07-23 §5.1 added 2+3):
+
+    1. Every special-case manifest flag has a dispatch branch in _build_one.
+       An unwired flag falls through to the generic CTAS silently — caught
+       live 2026-07-09 (award_ordering_windows built as a 108M-row copy).
+    2. Declared ordering: every `after` target is built EARLIER in MANIFEST,
+       and every `from_table` source is declared in its spec's `after` list
+       (the two must stay in lockstep — `after` is the machine-checked truth).
+    3. Tier closure (only when `wanted` is passed): a partial-tier selection
+       that drops a dependency fails HERE with a clear message instead of
+       building garbage (e.g. Tier-D subout_rate reads Tier-A code_lanes).
+    """
     import inspect
 
     src = inspect.getsource(_build_one)
@@ -1892,6 +1930,33 @@ def _preflight() -> None:
     })
     if unwired:
         raise RuntimeError(f"manifest flags without a _build_one branch: {unwired}")
+
+    errs: list[str] = []
+    seen: set[str] = set()
+    for spec in MANIFEST:
+        dest = spec.get("dest", spec["ds"])
+        ft = spec.get("from_table")
+        if ft and ft not in spec.get("after", []):
+            errs.append(f"{dest}: from_table {ft!r} missing from its after list")
+        for dep in spec.get("after", []):
+            if dep not in seen:
+                errs.append(f"{dest}: after-target {dep!r} is not built earlier in MANIFEST")
+        seen.add(dest)
+    if errs:
+        raise RuntimeError(f"manifest ordering violations: {errs}")
+
+    if wanted is not None:
+        sel = [s for s in MANIFEST if s["tier"] in wanted]
+        dests = {s.get("dest", s["ds"]) for s in sel}
+        closure = [
+            f'{s.get("dest", s["ds"])} (tier {s["tier"]}) requires {dep!r}, '
+            f'which the tier selection {sorted(wanted)} does not build'
+            for s in sel for dep in s.get("after", []) if dep not in dests
+        ]
+        if closure:
+            raise RuntimeError(
+                "partial-tier selection drops dependencies — widen the tier set "
+                f"or build full-manifest: {closure}")
 
 
 def _r2_storage_options() -> dict[str, str]:
@@ -1928,6 +1993,162 @@ def _s3_client():
     )
 
 
+# ── transient-retry layer (directive 2026-07-23 §5.4): one network blip must
+# not cost a 30-minute build. Retries ONLY transient transport classes around
+# the per-mart Lance open/scan and the artifact upload; SQL errors (binder,
+# parser, constraint, parity) surface immediately.
+_TRANSIENT_MARKERS = (
+    "timeout", "timed out", "connection", "reset", "broken pipe", "eof",
+    "temporarily", "unavailable", "throttl", "slow down", "429", "500", "502",
+    "503", "504",
+)
+_SQL_ERROR_TYPES = {
+    "ParserException", "BinderException", "CatalogException",
+    "ConstraintException", "ConversionException", "InvalidInputException",
+    "OutOfRangeException", "SyntaxException", "NotImplementedException",
+}
+
+
+def _is_transient(exc: Exception) -> bool:
+    name = type(exc).__name__
+    if name in _SQL_ERROR_TYPES or isinstance(exc, RuntimeError):
+        return False  # parity/preflight/SQL failures are never retried
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    return any(m in str(exc).lower() for m in _TRANSIENT_MARKERS)
+
+
+def _with_retry(label: str, fn, attempts: int = 3, base_sleep: float = 2.0):
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — classified below
+            if i == attempts - 1 or not _is_transient(exc):
+                raise
+            print(f"[retry] {label}: transient {type(exc).__name__}: "
+                  f"{str(exc)[:200]} — retrying ({i + 2}/{attempts})")
+            time.sleep(base_sleep * (2 ** i))
+
+
+# Cleanup targets between per-mart retry attempts: the dest table plus every
+# temp a special-case branch may have left behind mid-flight.
+_RETRY_TEMP_TABLES = ("parent_attrs", "award_state_base", "subout_base",
+                      "prime_lanes", "farmout_base")
+
+
+def _build_one_with_retry(con, so: dict[str, str], spec: dict,
+                          prev_counts: dict[str, int] | None) -> dict:
+    dest = spec.get("dest", spec["ds"])
+
+    def attempt():
+        return _build_one(con, so, spec, prev_counts)
+
+    def attempt_clean():
+        for t in (dest, *_RETRY_TEMP_TABLES):
+            con.execute(f'DROP TABLE IF EXISTS "{t}"')
+        try:
+            con.unregister("src")
+        except Exception:  # noqa: BLE001 — nothing registered
+            pass
+        return attempt()
+
+    try:
+        return attempt()
+    except Exception as exc:  # noqa: BLE001 — classified by _is_transient
+        if not _is_transient(exc):
+            raise
+        print(f"[retry] {dest}: transient {type(exc).__name__}: "
+              f"{str(exc)[:200]} — rebuilding mart (2/3)")
+        time.sleep(2.0)
+        try:
+            return attempt_clean()
+        except Exception as exc2:  # noqa: BLE001
+            if not _is_transient(exc2):
+                raise
+            print(f"[retry] {dest}: transient {type(exc2).__name__}: "
+                  f"{str(exc2)[:200]} — rebuilding mart (3/3)")
+            time.sleep(4.0)
+            return attempt_clean()
+
+
+def _prev_artifact_counts() -> dict[str, int]:
+    """Per-table duck_rows of the SERVING artifact, for the aggregate-parity
+    floor (directive §5.2). Best-effort: unreachable serving -> {} -> the
+    aggregate gate falls back to the legacy >0 check with a warning."""
+    url = os.environ.get("QUERY_SIDECAR_URL")
+    token = os.environ.get("QUERY_SIDECAR_TOKEN")
+    if not (url and token):
+        print("[parity] QUERY_SIDECAR_URL/TOKEN unset; aggregate floor falls back to >0")
+        return {}
+    try:
+        import requests
+
+        resp = requests.post(
+            url.rstrip("/") + "/api/v1/sql",
+            json={"sql": "SELECT table_name, duck_rows FROM _sidecar_manifest"},
+            headers={"authorization": f"Bearer {token}"}, timeout=30)
+        resp.raise_for_status()
+        rows = resp.json()["rows"]
+        print(f"[parity] previous-artifact counts loaded for {len(rows)} tables")
+        return {r[0]: int(r[1]) for r in rows}
+    except Exception as exc:  # noqa: BLE001 — floor is best-effort by design
+        print(f"[parity] WARNING: previous-artifact counts unavailable "
+              f"({type(exc).__name__}: {str(exc)[:200]}); aggregate floor falls back to >0")
+        return {}
+
+
+def _reap_artifacts(s3, keep_recent: int = 3) -> None:
+    """Post-publish R2 reap (directive §4). Retain: the artifact LATEST.json
+    points at, its immediate predecessor, and the keep_recent most recent
+    beyond those; the smoke/ prefix's most recent is never touched. Deletes
+    print a manifest. Best-effort — called inside try/except, never fatal."""
+    latest_key = json.loads(
+        s3.get_object(Bucket=R2_BUCKET, Key=f"{R2_PREFIX}/LATEST.json")["Body"].read()
+    )["key"]
+    objs, tok = [], None
+    while True:
+        kw = dict(Bucket=R2_BUCKET, Prefix=f"{R2_PREFIX}/")
+        if tok:
+            kw["ContinuationToken"] = tok
+        r = s3.list_objects_v2(**kw)
+        objs.extend(r.get("Contents", []))
+        if not r.get("IsTruncated"):
+            break
+        tok = r["NextContinuationToken"]
+    smoke_prefix = f"{R2_PREFIX}/smoke/"
+    arts = sorted(o["Key"] for o in objs
+                  if o["Key"].endswith(".duckdb") and not o["Key"].startswith(smoke_prefix))
+    smoke = sorted(o["Key"] for o in objs if o["Key"].startswith(smoke_prefix))
+    if latest_key not in arts:
+        print(f"[reap] LATEST target {latest_key} not in listing; skipping reap")
+        return
+    li = arts.index(latest_key)
+    retain = {latest_key, f"{R2_PREFIX}/LATEST.json"}
+    if li > 0:
+        retain.add(arts[li - 1])
+    for k in reversed(arts):
+        if len(retain) >= keep_recent + 3:  # latest + predecessor + keep_recent (+pointer)
+            break
+        retain.add(k)
+    if smoke:
+        retain.add(smoke[-1])
+    # Reap ONLY .duckdb artifacts — the prefix also carries LATEST.json and
+    # non-artifact records (e.g. bench/ run records) that are never candidates.
+    doomed = [o for o in objs
+              if o["Key"].endswith(".duckdb") and o["Key"] not in retain]
+    if not doomed:
+        print("[reap] nothing to reap")
+        return
+    total = sum(o["Size"] for o in doomed)
+    for o in doomed:
+        print(f"[reap] deleting {o['Key']} ({o['Size'] / 2**30:.2f} GiB)")
+    for i in range(0, len(doomed), 1000):
+        s3.delete_objects(Bucket=R2_BUCKET, Delete={
+            "Objects": [{"Key": o["Key"]} for o in doomed[i:i + 1000]], "Quiet": True})
+    print(f"[reap] reclaimed {total / 2**30:.2f} GiB ({len(doomed)} objects); "
+          f"retained {sorted(retain)}")
+
+
 _PERSON_CHANNELS_SQL = """
 CREATE TABLE gtm_person_channels AS
 SELECT p.uei, p.sam_person_id, p.display_name, p.first_name, p.last_name,
@@ -1949,28 +2170,47 @@ def _current_call_id() -> str | None:
         return None
 
 
-def _record_run(**fields) -> None:
-    """Terminal-state ledger row. WARN-and-return on any failure — audit must not mask the build."""
+def _record_run(run_id: int | None = None, **fields) -> int | None:
+    """Ledger row, WARN-and-return on any failure — audit must not mask the build.
+
+    Two-phase (watchdog rider, directive §2.2/§5): build() INSERTs a
+    status='running' row at start (returning its id) and UPDATEs it to the
+    terminal state in the finally. A build that dies without reaching the
+    finally (OOM SIGKILL, preemption before restart, pre-try failure) leaves
+    the 'running' row behind — exactly what the ops-watchdog's hung-build
+    check (started_at set, completed_at NULL, >90 min) alerts on.
+    """
     try:
         import psycopg
 
         dsn = os.environ.get("HQX_DB_URL_POOLED")
         if not dsn:
             print("[warn] HQX_DB_URL_POOLED unset; skipping ops ledger row")
-            return
-        cols = ", ".join(fields)
-        ph = ", ".join(["%s"] * len(fields))
+            return None
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO ops.query_sidecar_runs ({cols}) VALUES ({ph})",
-                tuple(fields.values()),
-            )
+            if run_id is not None:
+                sets = ", ".join(f"{c} = %s" for c in fields)
+                cur.execute(
+                    f"UPDATE ops.query_sidecar_runs SET {sets} WHERE id = %s",
+                    (*fields.values(), run_id),
+                )
+            else:
+                cols = ", ".join(fields)
+                ph = ", ".join(["%s"] * len(fields))
+                cur.execute(
+                    f"INSERT INTO ops.query_sidecar_runs ({cols}) VALUES ({ph}) RETURNING id",
+                    tuple(fields.values()),
+                )
+                run_id = cur.fetchone()[0]
             conn.commit()
+            return run_id
     except Exception as exc:  # noqa: BLE001
         print(f"[warn] ops ledger write failed (non-fatal): {exc}")
+        return None
 
 
-def _build_one(con, so: dict[str, str], spec: dict) -> dict:
+def _build_one(con, so: dict[str, str], spec: dict,
+               prev_counts: dict[str, int] | None = None) -> dict:
     """Stream one Lance mart into a sorted native DuckDB table. Returns the parity row."""
     import lance
 
@@ -2107,19 +2347,33 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
 
     duck_rows = con.execute(f'SELECT count(*) FROM "{dest}"').fetchone()[0]
     elapsed = round(time.monotonic() - t0, 1)
-    # Aggregate tables REDUCE the source — their row count can never equal the
-    # source count; parity there is non-emptiness.
+    # Aggregate tables REDUCE (or explode) the source — their row count cannot
+    # equal the source count. Gate (directive §5.2): count must be >= 50% of the
+    # SAME table's count in the previous (serving) artifact; when that count is
+    # unavailable (first build of a mart, serving unreachable) fall back to >0.
     aggregate = bool(spec.get("agency_vocab") or spec.get("aggregate"))
+    if aggregate:
+        prev = (prev_counts or {}).get(dest)
+        if prev:
+            parity_ok = duck_rows >= 0.5 * prev
+            parity_note = f"floor 50% of prev {prev:,}"
+        else:
+            parity_ok = duck_rows > 0
+            parity_note = "floor >0 (no prev count)"
+    else:
+        parity_ok = duck_rows == lance_rows
+        parity_note = "exact"
     row = {
         "table": dest, "dataset": name, "tier": spec["tier"],
         "sort": ",".join(spec.get("sort", [])) or None,
         "lance_version": pinned_version, "lance_rows": lance_rows,
         "duck_rows": duck_rows,
-        "parity_ok": (duck_rows > 0) if aggregate else (duck_rows == lance_rows),
+        "parity_ok": parity_ok,
         "seconds": elapsed,
     }
     print(f"[mart] {dest}: {duck_rows:,} rows in {elapsed}s "
-          f"(lance v{pinned_version}={lance_rows:,}) parity={'OK' if row['parity_ok'] else 'MISMATCH'}")
+          f"(lance v{pinned_version}={lance_rows:,}) "
+          f"parity={'OK' if parity_ok else 'MISMATCH'} [{parity_note}]")
     return row
 
 
@@ -2138,10 +2392,10 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
     """Build the query-sidecar .duckdb for the requested tiers; publish blue-green to R2."""
     import duckdb
 
-    _preflight()
     started_at = dt.datetime.now(dt.timezone.utc)
     stamp = started_at.strftime("%Y%m%dT%H%M%SZ")
     wanted = {t.strip().upper() for t in tiers.split(",") if t.strip()}
+    _preflight(wanted)  # flag dispatch + declared ordering + tier closure
     specs = [s for s in MANIFEST if s["tier"] in wanted]
     # agency vocab rides with Tier D (its consumers are the market/phrase lanes)
     if "D" in wanted:
@@ -2156,6 +2410,13 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
     status, error_message, r2_key, latest_updated = "success", None, None, False
     parity: list[dict] = []
     file_bytes = 0
+    # Start-row: makes a silent death (OOM SIGKILL, preemption, pre-try crash)
+    # visible as a stuck 'running' row — the ops-watchdog hung-build check.
+    run_id = _record_run(
+        tiers=",".join(sorted(wanted)), status="running", started_at=started_at,
+        launch_mode=launch_mode, function_call_id=_current_call_id(),
+    )
+    prev_counts = _prev_artifact_counts()  # aggregate-parity floor (best-effort)
     try:
         con = duckdb.connect(db_path)
         try:
@@ -2171,7 +2432,7 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
                 SET preserve_insertion_order=true;
             """)
             for spec in specs:
-                parity.append(_build_one(con, so, spec))
+                parity.append(_build_one_with_retry(con, so, spec, prev_counts))
 
             mismatches = [p["table"] for p in parity if not p["parity_ok"]]
             if mismatches:
@@ -2203,23 +2464,29 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
             s3 = _s3_client()
             prefix = f"{R2_PREFIX}/smoke" if smoke else R2_PREFIX
             r2_key = f"{prefix}/query_sidecar_{stamp}.duckdb"
-            s3.upload_file(db_path, R2_BUCKET, r2_key)   # boto3 multipart handles the size
+            _with_retry("upload", lambda: s3.upload_file(db_path, R2_BUCKET, r2_key))
             print(f"[publish] s3://{R2_BUCKET}/{r2_key}")
             if not smoke:
                 pointer = {"key": r2_key, "built_at": started_at.isoformat(),
                            "file_bytes": file_bytes, "tiers": sorted(wanted),
                            "tables": [p["table"] for p in parity]}
-                s3.put_object(Bucket=R2_BUCKET, Key=f"{R2_PREFIX}/LATEST.json",
-                              Body=json.dumps(pointer, indent=1).encode(),
-                              ContentType="application/json")
+                _with_retry("pointer-swap", lambda: s3.put_object(
+                    Bucket=R2_BUCKET, Key=f"{R2_PREFIX}/LATEST.json",
+                    Body=json.dumps(pointer, indent=1).encode(),
+                    ContentType="application/json"))
                 latest_updated = True
                 print(f"[publish] LATEST.json -> {r2_key}")
                 _notify_refresh()
+                try:
+                    _reap_artifacts(s3)  # §4: best-effort, like _notify_refresh
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[reap] non-fatal: {exc}")
     except Exception as exc:  # noqa: BLE001
         status, error_message = "error", str(exc)[:2000]
         raise
     finally:
         _record_run(
+            run_id=run_id,
             tiers=",".join(sorted(wanted)), marts=len(parity),
             rows_total=sum(p["duck_rows"] for p in parity),
             file_bytes=file_bytes, r2_key=r2_key, latest_updated=latest_updated,
