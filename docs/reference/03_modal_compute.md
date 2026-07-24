@@ -493,4 +493,26 @@ An ephemeral-app `.spawn()` from inside an entrypoint dies when the app stops at
 return unless `--detach` is passed; prefer the deployed-app form, which has no client
 lifetime to lose.
 
+The canonical helper is `pipelines/_shared/launch.spawn_deployed(app, fn, deploy_file=…,
+**kwargs)` — deploy-freshness gate (`modal app history --json` head commit vs
+`git rev-parse --short HEAD`), spawn, print the fc-id + follow commands. Every converted
+entrypoint in the business-critical fleet uses it (PR #1333).
+
+**Retention + autopsy windows (measured 2026-07-24, `retention-probe` deployed no-op app):**
+
+- **Result retention:** a spawned call's result is retrievable via
+  `FunctionCall.from_id(fc).get(timeout=0)` for **7 days after completion**
+  (Modal-documented; in-session probes green at +25 min / +67 min / +81 min, scheduled
+  probes at +6 h and +24 h corroborating). Collect within 24 h as the conservative habit;
+  after the window, the ops ledger row is the only record of the run.
+- **Log retention on a DEPLOYED app:** `modal app logs <name>` retains output ACROSS runs
+  (two probe runs both fully present) but is **volume-bounded**, not run-bounded: at ~46 h
+  the `query-sidecar` app served only the last ~68 lines of its most recent 113-mart build
+  (the tail: publish + refresh lines). Autopsy doctrine: the fc result dict and the
+  `ops.*_runs` row are durable; the log stream is a courtesy tail.
+- **Ephemeral `modal run` apps** disappear from `modal app list` after stopping — runs
+  launched that way are effectively unauditable after the fact (43 of 45 historical
+  sidecar builds; the recon's finding). One more reason spawn-on-deployed is the only
+  sanctioned launch for anything that matters.
+
 **Adding a feed** (mirrors [`ARCHITECTURE.md`](../../ARCHITECTURE.md)): a domain-grouped worker under `pipelines/<domain>/`, `modal deploy`-ed; a one-line `src/trigger/<feed>.ts` task ([`04_trigger_orchestration.md`](04_trigger_orchestration.md)); and an `ops.*` runs table for terminal state. It is then wired through the same dispatcher **by name** — zero new endpoints, zero new secrets.

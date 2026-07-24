@@ -4,6 +4,22 @@
 interaction that launched it MUST be decoupled from that session and tracked by a durable
 sentinel — never by a held process.
 
+> **⚠ 2026-07-24 SUPERSESSION (modal-durability-closure directive).** The launch mechanism
+> this document originally prescribed — `modal run --detach <file>::<entrypoint>` — is
+> measured-invalid for `local_entrypoint` targets: the entrypoint's `.remote()` issues a
+> SYNC input the server cancels ~74–131 s after the client stops heartbeating, **detached
+> or not** (`--detach` detaches the app, never the input; survival matrix in
+> `~/Desktop/hq/sessions/2026-07-23-sidecar-rebuild-recon.md` §1.2, fleet doctrine in
+> `03_modal_compute.md` §6.1). The fleet fix shipped in PR #1333: every long/non-idempotent
+> entrypoint now **spawns on the DEPLOYED app** via `pipelines/_shared/launch.spawn_deployed`
+> (deploy-if-stale → spawn → print the `fc-…` id) and returns. The `--detach` command blocks
+> below are retained as history; where they conflict with spawn-on-deployed, spawn-on-deployed
+> wins. `modal run --detach …::<direct-Function-ref>` (NOT an entrypoint) does survive
+> (matrix row D1) and remains a legacy fallback only. Result collection: a spawned call's
+> result is retrievable by fc-id for **7 days** (Modal-documented); a deployed app's
+> `modal app logs` retains output across runs but volume-bounded — the fc result dict and
+> the ops ledger row are the durable record, not the log stream.
+
 ---
 
 ## 1. The incident (2026-06-28)
@@ -68,12 +84,16 @@ Modal-documented**, and is **moot** because the 512 GiB default suffices without
 
 ## 5. The fix — how we run the canonical giant from now on
 
-### 5a. Immediate, zero new code — detached + two-source-tracked
+### 5a. Immediate — spawn-on-deployed + two-source-tracked (SUPERSEDES the --detach form)
 
 Drive via the **local entrypoints** (`::smoke`/`::build`/`::index`/`::verify`), never the bare
 `::*_fn` function targets — the entrypoints coerce `--since ""` → `None` (a bare `::build_fn` with
-`--since ""` would inject `action_date >= DATE ''` → SQL error). Run the three `--detach` phases
-**sequentially**, gating each on the prior's two-source completion (§5b).
+`--since ""` would inject `action_date >= DATE ''` → SQL error). Since PR #1333 the mutating
+entrypoints are SPAWN-AND-RETURN: they deploy-if-stale, spawn their `*_fn` on the DEPLOYED app,
+print `FUNCTION_CALL_ID: fc-…`, and exit — capture the **fc-id** (not an app-id; there is no
+ephemeral app anymore). Run the phases **sequentially**, gating each on the prior's two-source
+completion (§5b). The `--detach` incantations in the block below are the superseded originals —
+the current per-file recipes live in each module's docstring.
 
 ```bash
 cd <worktree>
@@ -199,16 +219,22 @@ Keep the individual `build_fn`/`index_fn`/`verify_fn` for blast-radius re-runs o
 
 ### 5d. Recurring rebuild (after each FRESH advance) — deploy + schedule
 
-For the durable cadence, do not `modal run` at all — **deploy** and let Modal's scheduler invoke it:
+For the durable cadence, do not `modal run` at all — **deploy** and let the control plane
+invoke it:
 
 ```bash
-modal deploy pipelines/usaspending/usaspending_fpds_canonical_modal.py
+modal deploy pipelines/usaspending/usaspending_fpds_canonical.py   # deploy owner for this app —
+# NOT the _modal wrapper; both declare app `usaspending-fpds-canonical` and the wrapper carries
+# the pre-392-col (ENOSPC) sizing. See the app-name-collision note in both files.
 ```
 
-Attach a `modal.Cron`/schedule to a chain orchestrator (the `.remote()` `run_all` from §5c, once
-added — it does not exist today) (e.g. weekly, lagging the BULK snapshot + FRESH daily append). A
-deployed scheduled function has **no client dependency at all** — it cannot be reaped by any
-session. Full overwrite per run (the canonical is a reconciled read-model; never incremental).
+**CORRECTION (2026-07-24): `modal.Cron` is BANNED in core-x** (`03_modal_compute.md` §1 —
+cadence is owned exclusively by Trigger.dev v4). The durable cadence is a Trigger schedule
+task → universal dispatcher → `spawn()` of the chain orchestrator (the `.remote()` `run_all`
+from §5c, once added — it does not exist today), e.g. weekly, lagging the BULK snapshot +
+FRESH daily append. A dispatcher-spawned function has **no client dependency at all** — it
+cannot be reaped by any session. Full overwrite per run (the canonical is a reconciled
+read-model; never incremental).
 
 **Mutual exclusion:** the schedule and any manual `--detach` run must NEVER both be armed —
 `max_containers=1` guards within the app, but a cron firing while a manual run is in flight is two
@@ -233,12 +259,17 @@ Delta vs the original checklist (corrections applied this pass):
 
 Corrected checklist:
 
-- [ ] Job is overwrite/idempotent and `retries=0` → detach is safe (else fix idempotency first).
+- [ ] Job is overwrite/idempotent and `retries=0` → decoupling is safe (else fix idempotency first).
 - [ ] `init_ops` applied once via doppler (MANDATORY pre-step) — never rely on the self-bootstrap under concurrency.
 - [ ] `::smoke` run and `status: ok` (MANDATORY) before committing the giant box.
-- [ ] Launch with `modal run --detach` (or a deployed/scheduled function) — **never** a session-bound `modal run` or a long background local-CLI process. Capture the `ap-…` id (`tee` + `grep`).
-- [ ] Completion decided by **Modal app state AND a fresh `status='success'` ledger row** (§5b table) — never the ledger alone (OOM/reap writes no row). Return dict is log-only under `--detach`.
-- [ ] Kill switch known (`modal app stop <id>`); logs reachable (`modal app logs <id>` / dashboard).
+- [ ] Launch by **spawn-on-deployed** (the converted entrypoints /
+      `pipelines/_shared/launch.spawn_deployed`) — **never** a session-bound `modal run`, a
+      long background local-CLI process, or `modal run --detach` of a `local_entrypoint`
+      (the SYNC input dies ~74–131 s after client loss, detached or not). Capture the
+      **`fc-…` id** the entrypoint prints — the durable handle; results collectible by
+      fc-id for 7 days.
+- [ ] Completion decided by **fc/app state AND a fresh `status='success'` ledger row** (§5b table) — never the ledger alone (OOM/reap writes no row). The return dict is retrievable via `FunctionCall.from_id(fc).get(timeout=0)`.
+- [ ] Kill switch known (`modal.FunctionCall.from_id("fc-…").cancel()`); logs reachable (`modal app logs <app-name>` / dashboard).
 - [ ] Sized for the work — spill + stage on the **standard 512 GiB local disk** (no Volume, no `ephemeral_disk`); `FPDS_CANONICAL_DUCKDB_MEM=96GB` on the 128 GiB box.
 - [ ] Double-launch guarded: `max_containers=1` on `build_fn`/`index_fn`; §5d schedule paused before any manual run; `modal app list` checked for a live app first.
 - [ ] Phases gated on each other's success (build → verify → index → verify); "index launched" is NON-TERMINAL until the post-index verify passes (HIGH-2). Run the three `--detach` phases sequentially for the first prod run (skip `run_all`).
