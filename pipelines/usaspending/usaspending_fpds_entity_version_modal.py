@@ -1,9 +1,18 @@
 """Modal orchestrator for the FPDS entity-version dimension (usaspending_fpds_entity_version.py).
 
 RUN SEQUENCE
-  0) modal run …::smoke      — packaging + secrets + spine-column gate (run BEFORE the giant)
-  1) modal run …::build      — the uei-partitioned window pass → entity_version (indices folded)
-  2) modal run …::verify
+  0) modal run …::smoke      — packaging + secrets + spine-column gate (run BEFORE the giant;
+                               short + read-only → stays a sync .remote())
+  0b) modal deploy pipelines/usaspending/usaspending_fpds_entity_version_modal.py
+      — mandatory before the first spawn; thereafter ::build deploy-if-stales automatically
+  1) modal run …::build      — SPAWNS build_fn on the DEPLOYED app (ASYNC input — survives
+     client loss; a tethered .remote() dies ~74–131 s after client loss, --detach or not),
+     prints the fc-… id, and returns. The metrics dict is no longer printed here — terminal
+     truth is the worker's own ops.usaspending_fpds_entity_version_runs row.
+     Follow:  modal app logs usaspending-fpds-entity-version
+     Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
+  2) modal run …::verify     — short read-back (1 h box); run AFTER the build's ledger row
+     shows status='success'; stays a sync .remote()
 
 SIZING — one 13-col projection of the 108M spine windowed once per UEI: ~1/3 of the L2 pass's
 width. 64 GiB container / 48GB DuckDB / 512 GiB local /tmp spill; no modal.Volume.
@@ -122,9 +131,13 @@ def init_ops_main() -> None:
 
 @app.local_entrypoint()
 def build(since: str = "", uri: str = "", build_date: str = "") -> None:
-    import json
-    print(json.dumps(build_fn.remote(since=since or None, uri=uri or None,
-                                     build_date=build_date or None), indent=2, default=str))
+    """Spawns build_fn on the DEPLOYED app (deploy-if-stale) and returns the fc-… id.
+    The ''→None coercions are load-bearing (an empty --since would inject
+    action_date >= DATE '' inside the build)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-fpds-entity-version", "build_fn", deploy_file=__file__,
+                   since=since or None, uri=uri or None, build_date=build_date or None)
 
 
 @app.local_entrypoint()

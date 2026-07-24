@@ -47,9 +47,15 @@ committed — else the dataset is ``restore()``-d to its pre-patch version and t
 Terminal state lands in ``ops.schema_patch_runs`` (the shared additive-patch ledger).
 
     modal run    pipelines/resolution/ucc_debtor_normalize_index.py::probe                       # read-only ground truth
-    modal run    pipelines/resolution/ucc_debtor_normalize_index.py::run   [--only ca_ucc_debtors|ucc_co_debtors]
-    modal run    pipelines/resolution/ucc_debtor_normalize_index.py::verify [--only ...]          # ScalarIndexQuery proof
     modal deploy pipelines/resolution/ucc_debtor_normalize_index.py                               # dispatcher-resolvable
+    modal run    pipelines/resolution/ucc_debtor_normalize_index.py::run   [--only ca_ucc_debtors|ucc_co_debtors] [--recompute]
+        # spawn-on-deployed: deploys if stale, then SPAWNS patch_dataset on the DEPLOYED app
+        # (one fc-… id per dataset) and returns immediately — no client tether. The patch
+        # result JSON is no longer printed inline; the worker's ops.schema_patch_runs terminal
+        # row and `modal app logs ucc-debtor-normalize-index` are the record. Poll a result:
+        #   python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+        # Wait for BOTH fc-ids to reach terminal ledger rows, then prove the indices:
+    modal run    pipelines/resolution/ucc_debtor_normalize_index.py::verify [--only ...]          # ScalarIndexQuery proof
 """
 
 from __future__ import annotations
@@ -321,6 +327,8 @@ def probe() -> None:
     memory=32768,    # holds the DuckDB transform/gate tables for the ~5.86M-row CA debtor
                      # column AND the in-RAM BTREE sort (LANCE_BYPASS_SPILLING).
     cpu=8.0,
+    max_containers=1,  # double-fire hazard: restore() targets a stale v_before; --recompute
+                       # drop+re-add races hardest. Concurrent spawns queue instead.
 )
 def patch_dataset(name: str, trigger_callback_url: str | None = None,
                   recompute: bool = False) -> dict:
@@ -476,8 +484,10 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
 def run(only: str = "", recompute: bool = False) -> None:
     """Materialize + BTREE-index the canonical keys in place on each UCC debtor dataset.
     --only <name>   restrict to one of: ca_ucc_debtors | ucc_co_debtors (substring match).
-    --recompute     drop + re-materialize the name-derived keys under the CURRENT macro."""
-    import json
+    --recompute     drop + re-materialize the name-derived keys under the CURRENT macro.
+    Spawns patch_dataset on the DEPLOYED app (one fc-id per dataset) and returns immediately;
+    the worker's ops.schema_patch_runs terminal row + app logs are the record."""
+    from pipelines._shared.launch import spawn_deployed
 
     targets = [n for n in DATASETS if (only in n if only else True)]
     if not targets:
@@ -485,8 +495,8 @@ def run(only: str = "", recompute: bool = False) -> None:
         return
     for name in targets:
         print(f"\n=== {name}{' (recompute)' if recompute else ''} ===")
-        print(json.dumps(patch_dataset.remote(name, trigger_callback_url=None, recompute=recompute),
-                         indent=2, default=str))
+        spawn_deployed("ucc-debtor-normalize-index", "patch_dataset", deploy_file=__file__,
+                       name=name, trigger_callback_url=None, recompute=recompute)
 
 
 # ───────────────────────── Verify — the deliverable ─────────────────────────

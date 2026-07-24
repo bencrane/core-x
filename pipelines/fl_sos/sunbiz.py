@@ -47,12 +47,28 @@ Control plane (Trigger v4 durable callback): each function accepts
 ``ops.fl_sos_runs`` via psycopg and (2) POSTs a FLAT JSON body to that url. No
 ``{"data": ...}`` envelope.
 
+Launch — run_all/explode/ingest are SPAWN-AND-RETURN (durable ASYNC inputs on the
+DEPLOYED app via pipelines/_shared/launch.py: deploy-if-stale, spawn, print the
+FUNCTION_CALL_ID, exit). They no longer print worker results locally — the record is
+the worker's ops.fl_sos_runs row and the app logs:
+
     modal deploy pipelines/fl_sos/sunbiz.py
     modal run    pipelines/fl_sos/sunbiz.py::init_state            # create ops.fl_sos_runs
-    modal run    pipelines/fl_sos/sunbiz.py::run_all               # explode + parallel ingest
-    modal run    pipelines/fl_sos/sunbiz.py::explode               # Phase 1 only
-    modal run    pipelines/fl_sos/sunbiz.py::ingest --target master|events
+    modal run    pipelines/fl_sos/sunbiz.py::run_all               # spawns run_all_remote (explode,
+                                                                   #   then ingest master ‖ events)
+    modal run    pipelines/fl_sos/sunbiz.py::explode               # spawns explode_zip (Phase 1)
+    modal run    pipelines/fl_sos/sunbiz.py::ingest --target master|events  # spawns ingest_target
     modal run    pipelines/fl_sos/sunbiz.py::reindex --target events
+
+    Follow:  modal app logs fl-sos-corporations
+    Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-...').get(timeout=0))"
+    Ledger:  SELECT phase, target, status, rows_processed, rejected_rows, error
+             FROM ops.fl_sos_runs ORDER BY recorded_at DESC LIMIT 5;
+
+Never launch the workers with a blocking ``.remote()`` from a local client — a SYNC
+input dies ~74-131 s after client loss, and ``--detach`` does not fix that. Content
+coupling: ingest reads the currently-landed .zst, so spawning ingest without a
+completed explode ingests the PRIOR snapshot (stale-but-valid, not corrupt).
 """
 
 from __future__ import annotations
@@ -521,6 +537,20 @@ def reindex_target(target: str) -> dict:
             "indexes": built, "index_count": len(built)}
 
 
+@app.function(timeout=60 * 170)
+def run_all_remote(as_of: str = AS_OF_DEFAULT) -> dict:
+    """Server-side orchestrator — runs in its own durable container on the deployed app
+    (no client tether). explode_zip to completion, then ingest master ‖ events in
+    PARALLEL (distinct datasets → no shared-writer conflict). Timeout 170 min exceeds
+    explode (60) + ingest (90) so the coordinator outlives both phases. No secrets:
+    it touches no R2/PG itself — each phase worker carries its own and writes its own
+    terminal ops.fl_sos_runs row."""
+    explode_result = explode_zip.remote(as_of, trigger_callback_url=None)
+    calls = {t: ingest_target.spawn(t, as_of=as_of, trigger_callback_url=None) for t in SOURCES}
+    results = {t: call.get() for t, call in calls.items()}
+    return {"explode": explode_result, "ingest": results}
+
+
 @app.local_entrypoint()
 def init_state() -> None:
     """Create ops.fl_sos_runs (idempotent)."""
@@ -529,39 +559,34 @@ def init_state() -> None:
 
 @app.local_entrypoint()
 def explode(as_of: str = AS_OF_DEFAULT) -> None:
-    """Phase 1 — explode both source zips into per-member .zst landing artifacts."""
-    print(explode_zip.remote(as_of, trigger_callback_url=None))
+    """Phase 1 — explode both source zips into per-member .zst landing artifacts.
+    Spawn-and-return: prints the fc-id; the worker writes its own ops.fl_sos_runs row."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("fl-sos-corporations", "explode_zip", deploy_file=__file__,
+                   as_of=as_of, trigger_callback_url=None)
 
 
 @app.local_entrypoint()
 def ingest(target: str, as_of: str = AS_OF_DEFAULT) -> None:
-    """Phase 2 — ingest a single target (master|events) into its Lance dataset."""
-    print(ingest_target.remote(target, as_of=as_of, trigger_callback_url=None))
+    """Phase 2 — ingest a single target (master|events) into its Lance dataset.
+    Spawn-and-return: target validation lives in the worker; counts land in the
+    ops.fl_sos_runs row."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("fl-sos-corporations", "ingest_target", deploy_file=__file__,
+                   target=target, as_of=as_of, trigger_callback_url=None)
 
 
 @app.local_entrypoint()
 def run_all(as_of: str = AS_OF_DEFAULT) -> None:
-    """End-to-end manual run: explode, then ingest master ‖ events in PARALLEL (distinct
-    datasets → no shared-writer conflict). Prints final row counts."""
-    import json
+    """End-to-end run via the server-side orchestrator run_all_remote (explode, then
+    ingest master ‖ events in PARALLEL). Spawn-and-return: prints one fc-id; final row
+    counts live in ops.fl_sos_runs and in the orchestrator's result dict."""
+    from pipelines._shared.launch import spawn_deployed
 
-    print("=== Phase 1 — explode ===")
-    print(json.dumps(explode_zip.remote(as_of, trigger_callback_url=None), indent=2, default=str))
-
-    print("\n=== Phase 2 — parallel ingest ===")
-    calls = {t: ingest_target.spawn(t, as_of=as_of, trigger_callback_url=None) for t in SOURCES}
-    results: dict[str, dict] = {}
-    for t, call in calls.items():
-        results[t] = call.get()
-        print(json.dumps(results[t], default=str))
-
-    print("\n=== FINAL ROW COUNTS ===")
-    total = 0
-    for t, r in results.items():
-        n = r.get("rows_processed", 0)
-        total += n
-        print(f"  {t:10s} rows={n:>12,}  rejected={r.get('rejected_rows'):>6,}  -> {r.get('dataset_uri')}")
-    print(f"  {'TOTAL':10s} rows={total:>12,}")
+    spawn_deployed("fl-sos-corporations", "run_all_remote", deploy_file=__file__,
+                   as_of=as_of)
 
 
 @app.local_entrypoint()

@@ -4,7 +4,9 @@ A forensic, NON-MUTATING audit run on Modal (compute adjacent to R2, so the
 ~9M-row CA SoS slice × ~6M-row UCC debtor join never egresses to a laptop). It
 writes NOTHING: no Lance datasets, no scalar indexes, no ops.* rows, no R2 puts.
 Every operation is lance.dataset(...).scanner()/to_table() + DuckDB SELECT. The
-function returns one nested JSON report; the local entrypoint prints it.
+function returns one nested JSON report and prints it worker-side — the Modal app
+logs are the durable copy (the local entrypoint spawns and returns; it no longer
+prints the report).
 
 What it answers (the directive, point by point):
   · Schema + null-density profile of the CA SoS registry and the CA UCC tables.
@@ -24,8 +26,15 @@ What it answers (the directive, point by point):
   · Index performance — committed indices + timed point lookups on indexed vs
     non-indexed columns (the sub-second proof).
 
-    modal run pipelines/resolution/recon_ca_ucc_sos.py::run
-    modal run pipelines/resolution/recon_ca_ucc_sos.py::run --as-of-ref 2026-06-01
+Launch (spawn-on-deployed; run from repo root so core.name_norm resolves):
+
+    modal deploy pipelines/resolution/recon_ca_ucc_sos.py   # entrypoints also deploy-if-stale
+    modal run pipelines/resolution/recon_ca_ucc_sos.py::run [--as-of-ref 2026-06-01]
+    modal run pipelines/resolution/recon_ca_ucc_sos.py::run2  # corrected sections 7/8 re-run
+
+Each entrypoint spawn-fires on the DEPLOYED app, prints the fc-id, and returns in
+seconds — record the fc-id. Follow with `modal app logs recon-ca-ucc-sos`; retrieve
+the report dict via modal.FunctionCall.from_id('fc-...').get(timeout=0).
 """
 
 from __future__ import annotations
@@ -635,9 +644,10 @@ def recon(as_of_ref: str = AS_OF_REF_DEFAULT) -> dict:
 
 @app.local_entrypoint()
 def run(as_of_ref: str = AS_OF_REF_DEFAULT) -> None:
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
-    print(json.dumps(recon.remote(as_of_ref=as_of_ref), indent=2, default=str))
+    spawn_deployed("recon-ca-ucc-sos", "recon", deploy_file=__file__,
+                   as_of_ref=as_of_ref)
 
 
 # ── Corrected re-run of sections 7 (cardinality; the bare `rows` alias collided with
@@ -809,6 +819,7 @@ def recon2(as_of_ref: str = AS_OF_REF_DEFAULT) -> dict:
 
 @app.local_entrypoint()
 def run2(as_of_ref: str = AS_OF_REF_DEFAULT) -> None:
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
-    print(json.dumps(recon2.remote(as_of_ref=as_of_ref), indent=2, default=str))
+    spawn_deployed("recon-ca-ucc-sos", "recon2", deploy_file=__file__,
+                   as_of_ref=as_of_ref)

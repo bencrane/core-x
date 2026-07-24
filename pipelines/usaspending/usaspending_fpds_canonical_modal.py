@@ -23,24 +23,48 @@ RUN SEQUENCE (run as separate invocations — blast-radius split, design §6)
 ═══════════════════════════════════════════════════════════════════════════════════════
 Drive via the LOCAL ENTRYPOINTS (``::smoke``/``::build``/``::index``/``::verify``), NOT the bare
 ``::*_fn`` function targets — the entrypoints coerce ``--since ""`` → ``None`` (a bare ``::build_fn``
-with ``--since ""`` would inject ``action_date >= DATE ''`` → SQL error). The full detached
-prod procedure with two-source completion detection lives in MODAL_GIANT_EXECUTION_DURABILITY.md §5.
+with ``--since ""`` would inject ``action_date >= DATE ''`` → SQL error). ``::build``/``::index``/
+``::verify`` are SPAWN-AND-RETURN: each deploy-if-stale gates (pipelines/_shared/launch.py),
+spawns its ``*_fn`` on the DEPLOYED app (ASYNC input — survives client loss; a tethered
+``.remote()`` is a SYNC input the server cancels ~74–131 s after the client stops heartbeating,
+``--detach`` or not), prints the ``fc-…`` id, and exits. Two-source completion doctrine lives in
+MODAL_GIANT_EXECUTION_DURABILITY.md §5.
 
-  # 0a) CHEAP smoke — validates packaging + secrets + import for pennies BEFORE the giant. MANDATORY.
+  # 0a) CHEAP smoke — validates packaging + secrets + import for pennies BEFORE the giant.
+  #     MANDATORY. Short + read-only → stays a sync .remote().
   modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::smoke
 
   # 0b) one-time ops DDL via doppler — MANDATORY pre-step (do NOT rely on _record_run's
   #     self-bootstrap: two concurrent first-run CREATEs can deadlock; pre-create the table once):
   doppler run -p core-x -c prd -- python3 -m pipelines.usaspending.usaspending_fpds_canonical init_ops
 
+  # 0c) DEPLOY — mandatory before the first spawn.
+  #     ⚠ APP-NAME COLLISION: usaspending_fpds_canonical.py's embedded app declares the SAME
+  #     name `usaspending-fpds-canonical` with the CURRENT post-ENOSPC sizing (192 GiB +
+  #     1.5 TiB ephemeral_disk — the run-id-9 lesson). THIS wrapper still carries the
+  #     pre-392-col sizing, so deploys happen ONLY from the shipped module file — deploying
+  #     THIS file would silently re-route every spawn to the ENOSPC config. The entrypoints
+  #     below therefore spawn BY NAME ONLY (no deploy-if-stale) and run whatever the shipped
+  #     module last deployed.
+  modal deploy pipelines/usaspending/usaspending_fpds_canonical.py
+
   # 1) BUILD — full 107M merge → local Lance on /tmp → boto3 uniform-part publish.
   #    Prod build passes NO --since (full universe; --since is sample/debug ONLY).
+  #    Prints FUNCTION_CALL_ID and returns; the worker writes its own terminal
+  #    ops.usaspending_fpds_canonical_runs row.
   modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::build
+  #    Follow:  modal app logs usaspending-fpds-canonical
+  #    Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
+  #    Completion = two-source AND (§5b): fc/app state AND a fresh status='success' ledger row.
 
-  # 2) INDEX — /tmp-staged append-only BTREE/BITMAP. Runs AFTER build verifies clean.
+  # 2) INDEX — /tmp-staged append-only BTREE/BITMAP. Spawn ONLY after build's two-source
+  #    completion passes (a stale prior success row must never arm index against an unpublished
+  #    dataset). index_fn writes NO ledger row — its fc result dict (status='ok',
+  #    n_indices_built, n_new_manifests ≥ 1) is the ONLY completion artifact.
   modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::index
 
-  # 3) VERIFY — read-back §5 assertions.
+  # 3) VERIFY — read-back §5 assertions; spawn after index completes. The pass/fail verdict is
+  #    the fc result dict — FETCH AND READ IT (spawned-without-error ≠ verified).
   modal run pipelines/usaspending/usaspending_fpds_canonical_modal.py::verify
 
 (Args: ``modal run …::build --since 2025-10-01`` or ``--target-uri s3://…`` pass through Modal's
@@ -554,26 +578,38 @@ def smoke() -> None:
 
 @app.local_entrypoint()
 def build(since: str = "", target_uri: str = "") -> None:
-    """Full 107M merge → local Lance on /tmp → boto3 publish. Prod build passes NO --since."""
-    import json
+    """Full 107M merge → local Lance on /tmp → boto3 publish. Prod build passes NO --since.
 
-    print(json.dumps(
-        build_fn.remote(since=since or None, target_uri=target_uri or None),
-        indent=2, default=str,
-    ))
+    Spawns build_fn on the DEPLOYED app and returns the fc-… id — no client tether.
+    NO deploy_file here by design: the deploy owner for this app name is
+    usaspending_fpds_canonical.py (see the app-name-collision note in the docstring).
+    Metrics live in the worker's terminal ledger row
+    (ops.usaspending_fpds_canonical_runs) and via FunctionCall.from_id(fc).get(timeout=0)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-fpds-canonical", "build_fn",
+                   since=since or None, target_uri=target_uri or None)
 
 
 @app.local_entrypoint()
 def index(target_uri: str = "") -> None:
-    """/tmp-staged append-only BTREE/BITMAP index. Runs AFTER build verifies clean."""
-    import json
+    """/tmp-staged append-only BTREE/BITMAP index. Spawn ONLY after build's two-source
+    completion passes. index_fn writes NO ledger row — the fc result dict is the ONLY
+    completion signal for this phase. No deploy_file — the deploy owner is
+    usaspending_fpds_canonical.py (app-name-collision note)."""
+    from pipelines._shared.launch import spawn_deployed
 
-    print(json.dumps(index_fn.remote(target_uri=target_uri or None), indent=2, default=str))
+    spawn_deployed("usaspending-fpds-canonical", "index_fn",
+                   target_uri=target_uri or None)
 
 
 @app.local_entrypoint()
 def verify(target_uri: str = "") -> None:
-    """Read-back §5 assertions."""
-    import json
+    """Read-back §5 assertions. The verdict dict is the fc result — fetch it via
+    FunctionCall.from_id(fc).get(timeout=0) and READ pass/failures; a spawned verify
+    that finds violations raises there, not here. No deploy_file — the deploy owner is
+    usaspending_fpds_canonical.py (app-name-collision note)."""
+    from pipelines._shared.launch import spawn_deployed
 
-    print(json.dumps(verify_fn.remote(target_uri=target_uri or None), indent=2, default=str))
+    spawn_deployed("usaspending-fpds-canonical", "verify_fn",
+                   target_uri=target_uri or None)

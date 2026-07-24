@@ -46,7 +46,14 @@ via psycopg and (2) POSTs a FLAT JSON body to that url to wake the suspended Tri
 No ``{"data": ...}`` envelope.
 
     modal run    pipelines/ca_ucc/ingest.py::setup           # create ops.ca_ucc_runs
-    modal run    pipelines/ca_ucc/ingest.py::run             # execute the ingest (manual)
+    modal run    pipelines/ca_ucc/ingest.py::run             # manual ingest — deploys if stale, then
+                                                             # SPAWNS ingest_ca_ucc on the DEPLOYED app
+                                                             # and exits; prints FUNCTION_CALL_ID (fc-…).
+                                                             # No result printed — the worker's
+                                                             # ops.ca_ucc_runs row + app logs are the
+                                                             # record. Follow:
+                                                             #   modal app logs ca-ucc-filings
+                                                             #   modal.FunctionCall.from_id('fc-…').get(timeout=0)
     modal run    pipelines/ca_ucc/ingest.py::reindex         # rebuild scalar indexes only
     modal deploy pipelines/ca_ucc/ingest.py                  # publish for dispatcher
 """
@@ -652,11 +659,19 @@ def setup() -> None:
 
 @app.local_entrypoint()
 def run(zip_key: str = "", as_of: str = AS_OF_DEFAULT) -> None:
-    """Execute the ingest (manual; no Trigger callback)."""
-    import json
+    """Spawn the ingest on the deployed app (manual; no Trigger callback).
 
-    print(json.dumps(ingest_ca_ucc.remote(zip_key=zip_key, as_of=as_of, trigger_callback_url=None),
-                     indent=2, default=str))
+    Prints the fc-id and returns immediately — no result summary here; the
+    worker's ops.ca_ucc_runs row and ``modal app logs ca-ucc-filings`` are
+    the record of the run."""
+    import re
+
+    from pipelines._shared.launch import spawn_deployed
+
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of or ""):
+        raise ValueError(f"as_of must be YYYY-MM-DD, got {as_of!r}")
+    spawn_deployed("ca-ucc-filings", "ingest_ca_ucc", deploy_file=__file__,
+                   zip_key=zip_key, as_of=as_of, trigger_callback_url=None)
 
 
 @app.local_entrypoint()

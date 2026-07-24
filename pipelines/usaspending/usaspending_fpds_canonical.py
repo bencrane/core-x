@@ -1520,9 +1520,10 @@ def verify(target_uri: str = CANONICAL_URI) -> dict:
 # sort (LANCE_BYPASS_SPILLING ⇒ RAM-bound, flagged ≥96 GiB), and carries dedicated ephemeral NVMe
 # for DuckDB spill + the local Lance stage. Zero new secrets/endpoints: existing named secrets
 # only. The local CLI below remains the dev/smoke path — both wrap the same build()/index()/verify().
-#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py                      # build
-#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd index
-#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd verify
+#   modal deploy pipelines/usaspending/usaspending_fpds_canonical.py   # THIS file owns the app deploy
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py                      # spawn build → fc-id
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd index          # spawn index → fc-id
+#   modal run    pipelines/usaspending/usaspending_fpds_canonical.py --cmd verify         # spawn verify → fc-id
 # =========================================================================================== #
 if modal is not None:
     _image = (
@@ -1566,31 +1567,37 @@ if modal is not None:
 
     @modal_app.local_entrypoint()
     def modal_main(cmd: str = "build", since: str = "", target_uri: str = CANONICAL_URI):
+        """Durable launcher — every phase SPAWNS on the DEPLOYED app (ASYNC input; survives
+        client loss) and prints the fc-… id. The old build_spawn/index_spawn ephemeral-app
+        variants are gone: an ephemeral-app spawn still dies with the app unless --detach,
+        and a tethered .remote() is cancelled ~74–131 s after client loss, --detach or not.
+
+        THIS file is the deploy owner for app `usaspending-fpds-canonical` (192 GiB +
+        1.5 TiB ephemeral_disk — the run-id-9 ENOSPC sizing). Never `modal deploy`
+        usaspending_fpds_canonical_modal.py — its same-named app carries the pre-392-col
+        sizing and would silently re-route every spawn onto the doomed config.
+
+        Phases are operator-gated (build → index → verify), each spawned separately;
+        completion per phase = the two-source AND of MODAL_GIANT_EXECUTION_DURABILITY.md §5b
+        (fc/app state AND a fresh ops.usaspending_fpds_canonical_runs success row for build;
+        the fc result dict alone for index/verify, which write no ledger rows).
+        Follow:  modal app logs usaspending-fpds-canonical
+        Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
+        """
+        from pipelines._shared.launch import spawn_deployed
+
         s = since or None
         if cmd == "build":
-            print(json.dumps(build_fn.remote(since=s, target_uri=target_uri), indent=2, default=str))
-        elif cmd == "build_spawn":
-            # Fire-and-forget: submit build_fn + return immediately (client exits in seconds, so a
-            # long-lived streaming client can't be killed mid-run). Pair with `modal run --detach` so
-            # the app + spawned call survive the client exit. Poll R2/logs for the DONE state.
-            call = build_fn.spawn(since=s, target_uri=target_uri)
-            print(json.dumps({"spawned": "build_fn", "call_id": call.object_id,
-                              "target_uri": target_uri, "since": s}, default=str))
+            spawn_deployed("usaspending-fpds-canonical", "build_fn", deploy_file=__file__,
+                           since=s, target_uri=target_uri)
         elif cmd == "index":
-            print(json.dumps(index_fn.remote(target_uri=target_uri), indent=2, default=str))
-        elif cmd == "index_spawn":
-            # Fire-and-forget index (mirrors build_spawn): submit index_fn + return the call_id in
-            # seconds, so a client capped well under the multi-hour index runtime cannot be killed
-            # mid-build (the append-only publish lands only at the very end — a mid-run client death
-            # would waste the whole sort). Pair with `modal run --detach` so the app + spawned call
-            # survive the client exit; poll R2 list_indices() (or `modal app logs`) for the new index.
-            call = index_fn.spawn(target_uri=target_uri)
-            print(json.dumps({"spawned": "index_fn", "call_id": call.object_id,
-                              "target_uri": target_uri}, default=str))
+            spawn_deployed("usaspending-fpds-canonical", "index_fn", deploy_file=__file__,
+                           target_uri=target_uri)
         elif cmd == "verify":
-            print(json.dumps(verify_fn.remote(target_uri=target_uri), indent=2, default=str))
+            spawn_deployed("usaspending-fpds-canonical", "verify_fn", deploy_file=__file__,
+                           target_uri=target_uri)
         else:
-            raise SystemExit(f"unknown --cmd: {cmd} (build|build_spawn|index|index_spawn|verify)")
+            raise SystemExit(f"unknown --cmd: {cmd} (build|index|verify)")
 
 
 # =========================================================================================== #

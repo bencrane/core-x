@@ -28,14 +28,23 @@ Column names are the EXACT SAM dictionary field names (faithful slug); the only 
 ``pipelines/sam_gov/reference/sam_v2_public_field_map.py`` — the worker hardcodes no positions.
 
 Dispatcher-ready: the field map + sam_labels are MOUNTED into the image, so when ``sql`` is
-omitted (the dispatcher path) the function generates its own SQL in-container. The local
-entrypoint still passes ``sql=`` (harmless). Fail-safe: pre-write gates abort before any of
+omitted (the dispatcher path) the function generates its own SQL in-container. Both local
+entrypoints spawn with ``sql=None`` (the dispatcher path). Fail-safe: pre-write gates abort before any of
 the three writes; write + indexing + post-write gates run under one rollback guard that
 restores all three datasets to their pre-write versions (net-new partial failures raise loud).
 
-    modal run    pipelines/sam_gov/sam_master.py --dry-run   # gates + counts, no write
-    modal run    pipelines/sam_gov/sam_master.py             # build + publish (prod)
-    modal deploy pipelines/sam_gov/sam_master.py             # dispatcher-resolvable
+Launch (spawn-on-deployed — the entrypoints deploy-if-stale, spawn on the DEPLOYED app,
+print FUNCTION_CALL_ID, and exit; the result dict is no longer printed locally):
+
+    modal run pipelines/sam_gov/sam_master.py::build --dry-run   # gates + counts, no write
+    modal run pipelines/sam_gov/sam_master.py::build             # build + publish (prod)
+    modal run pipelines/sam_gov/sam_master.py::build_dispatched  # force rebuild (skip_if_current=False)
+
+Follow with ``modal app logs sam-gov-master-pipelines``; collect the result (including the
+dry-run gate report — it is the spawn's return value) via
+``modal.FunctionCall.from_id('fc-...').get(timeout=0)`` (raises TimeoutError while running,
+returns the result dict when done). The worker writes its own terminal row to
+ops.sam_master_runs in ``finally`` — the ledger + app logs are the record of the run.
 """
 from __future__ import annotations
 
@@ -568,6 +577,7 @@ def _post_callback(url, payload, attempts: int = 3) -> None:
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
              modal.Secret.from_name("ops-alerts")],
     timeout=2 * 60 * 60, memory=131072, cpu=8.0,
+    max_containers=1,
 )
 def build_sam_master(sql: dict | None = None, dry_run: bool = False,
                      dest_prefix: str | None = None, skip_if_current: bool = True,
@@ -777,24 +787,25 @@ def build_sam_master(sql: dict | None = None, dry_run: bool = False,
 
 @app.local_entrypoint()
 def build(dry_run: bool = False):
-    import sys
-    from pathlib import Path
+    """Spawn the build on the DEPLOYED app (durable ASYNC input): sql=None → the container
+    self-generates identical SQL from the mounted field map. skip_if_current stays default
+    True. dest_prefix via SAM_MASTER_DEST_PREFIX (None → prod). Prints the fc- id and exits;
+    the worker's ops.sam_master_runs row + app logs are the record."""
+    from pipelines._shared.launch import spawn_deployed
 
-    # Local-only: make the frozen field map importable regardless of CWD. (The container path
-    # uses the mounted module via sql=None; here we pre-build to keep the manual run cheap.)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from pipelines.sam_gov.reference.sam_v2_public_field_map import DATE_POSITIONS, PUBLIC_FIELD_MAP
-
-    sql = build_sql(PUBLIC_FIELD_MAP, DATE_POSITIONS)
     dest_prefix = os.environ.get("SAM_MASTER_DEST_PREFIX")  # None → prod
-    print(build_sam_master.remote(sql=sql, dry_run=dry_run, dest_prefix=dest_prefix))
+    spawn_deployed("sam-gov-master-pipelines", "build_sam_master", deploy_file=__file__,
+                   sql=None, dry_run=dry_run, dest_prefix=dest_prefix)
 
 
 @app.local_entrypoint()
 def build_dispatched(dry_run: bool = False):
-    """Simulate the dispatcher path locally: sql=None → the container self-generates SQL from
-    the mounted field map (validates dispatcher-readiness, the same call fn.spawn makes).
+    """Force-rebuild form: same spawn-on-deployed call as `build` but skip_if_current=False —
+    the repair path after any mid-flight kill (self-heals a mixed-vintage family).
     dest_prefix via SAM_MASTER_DEST_PREFIX (None → prod)."""
+    from pipelines._shared.launch import spawn_deployed
+
     dest_prefix = os.environ.get("SAM_MASTER_DEST_PREFIX")
-    print(build_sam_master.remote(sql=None, dry_run=dry_run, dest_prefix=dest_prefix,
-                                  skip_if_current=False))
+    spawn_deployed("sam-gov-master-pipelines", "build_sam_master", deploy_file=__file__,
+                   sql=None, dry_run=dry_run, dest_prefix=dest_prefix,
+                   skip_if_current=False)

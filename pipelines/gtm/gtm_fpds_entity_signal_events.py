@@ -22,9 +22,15 @@ recipient_uei, cage_code, action_date day-grain, federal_action_obligation, the 
 Rebuild: full snapshot, Lance overwrite (new version), rollback guard. Ledger:
 ops.gtm_profile_delta_runs (shared feed table; feed='gtm_fpds_entity_signal_events').
 
-Run:
-    modal run --detach pipelines/gtm/gtm_fpds_entity_signal_events.py    # full build
-    modal run pipelines/gtm/gtm_fpds_entity_signal_events.py --smoke     # bounded smoke
+Run (spawn-on-deployed — NEVER `modal run --detach`; the SYNC input dies with the client):
+    modal deploy pipelines/gtm/gtm_fpds_entity_signal_events.py       # first run / after edits
+    modal run pipelines/gtm/gtm_fpds_entity_signal_events.py          # full build → prints fc-id
+    modal run pipelines/gtm/gtm_fpds_entity_signal_events.py --smoke  # bounded smoke → prints fc-id
+The entrypoint deploy-if-stales, spawns build_signal_events on the DEPLOYED app, prints the
+fc-id, and returns — it does not print the result dict. Follow: modal app logs
+gtm-fpds-entity-signal-events; result via modal.FunctionCall.from_id('fc-...').get(timeout=0).
+Full builds land a terminal row in ops.gtm_profile_delta_runs; SMOKE writes no ledger row
+by design — fc get / app logs are its only terminal signal.
 """
 
 from __future__ import annotations
@@ -278,7 +284,10 @@ try:
 
     @app.local_entrypoint()
     def main(smoke: bool = False):
-        print(build_signal_events.remote(smoke))
+        from pipelines._shared.launch import spawn_deployed
+
+        spawn_deployed("gtm-fpds-entity-signal-events", "build_signal_events",
+                       deploy_file=__file__, smoke=smoke)
 except ImportError:  # local run without modal installed
     modal = None
 

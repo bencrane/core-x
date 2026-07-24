@@ -55,8 +55,14 @@ row count is unchanged, and both indices are committed — else the dataset is
 in ``ops.schema_patch_runs`` (the same ledger ``sba_foia`` / ``crosswalk_*`` use).
 
     modal run …::probe                       # read-only ground truth (schema / source cols / indices / rows)
-    modal run …::run   [--only ppp|sba_7a|sba_504]   # additive normalize + BTREE, in place, gated
-    modal run …::verify [--only …]            # DELIVERABLE: explain_plan proves ScalarIndexQuery + <50ms
+    modal run …::run   [--only ppp|sba_7a|sba_504] [--recompute]
+        # SPAWNS patch_dataset per dataset on the DEPLOYED app (deploy-if-stale is
+        # automatic) and exits in seconds — the printed fc-… id per dataset is the
+        # durable handle. The per-dataset result JSON no longer prints inline:
+        # terminal state is the ops.schema_patch_runs ledger row + the app logs.
+        # Follow: modal app logs credit-spine-normalize-index
+        #         python3 -c "import modal; print(modal.FunctionCall.from_id('<fc-id>').get(timeout=0))"
+    modal run …::verify [--only …]            # DELIVERABLE (run AFTER the ledger shows success): explain_plan proves ScalarIndexQuery + <50ms
 """
 
 from __future__ import annotations
@@ -360,6 +366,9 @@ def probe() -> None:
                      # 11.47M-row PPP column AND the in-RAM BTREE sort (LANCE_BYPASS_SPILLING).
                      # Over-provisions 7(a)/504 harmlessly; memory does NOT force spot capacity.
     cpu=8.0,
+    max_containers=1,  # same-dataset double-fire races Lance R2 commits and restore() targets;
+                       # serializing ALL patches reproduces the old sequential sweep (distinct-
+                       # dataset spawns queue instead of running in parallel — deliberate).
     # NO ephemeral_disk: direct-R2 create_scalar_index reads only the target column via
     # columnar range GETs and writes index files back in place. add_columns appends new
     # fragments straight to R2. No local dataset staging → no scratch disk needed (all
@@ -533,21 +542,23 @@ def patch_dataset(name: str, trigger_callback_url: str | None = None,
 
 @app.local_entrypoint()
 def run(only: str = "", recompute: bool = False) -> None:
-    """Materialize + BTREE-index the normalized keys in place on each credit dataset.
+    """Materialize + BTREE-index the normalized keys in place on each credit dataset —
+    SPAWNED per dataset on the DEPLOYED app (durable; no client tether). Prints one
+    fc-… id per dataset and returns; terminal state lands in ops.schema_patch_runs.
     --only <name>   restrict to one of: ppp | sba_7a | sba_504 (substring match).
     --recompute     drop + re-materialize normalized_legal_name under the CURRENT macro
                     (use after the canonical rule changes; no-op when the key is absent)."""
-    import json
+    from pipelines._shared.launch import spawn_deployed
 
     targets = [n for n in DATASETS if (only in n if only else True)]
     if not targets:
         print(f"No datasets matched only={only!r}; known: {sorted(DATASETS)}")
         return
-    for name in targets:
+    for i, name in enumerate(targets):
         print(f"\n=== {name}{' (recompute)' if recompute else ''} ===")
-        print(json.dumps(patch_dataset.remote(name, trigger_callback_url=None,
-                                              recompute=recompute),
-                         indent=2, default=str))
+        spawn_deployed("credit-spine-normalize-index", "patch_dataset",
+                       deploy_file=__file__ if i == 0 else None,
+                       name=name, trigger_callback_url=None, recompute=recompute)
 
 
 # ───────────────────────── Verify — the deliverable ─────────────────────────

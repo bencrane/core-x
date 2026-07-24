@@ -6,11 +6,23 @@ folded in, boto3 uniform-part published). ``index_fn`` / ``verify_fn`` are per-t
 state|delta) repair / read-back paths that call the shipped ``index()`` / ``verify()`` verbatim.
 
 RUN SEQUENCE
-  0a) modal run …::smoke        — CHEAP packaging + secrets + import gate (run BEFORE the giant).
+  0a) modal run …::smoke        — CHEAP packaging + secrets + import gate (run BEFORE the giant;
+                                  short + read-only → stays a sync .remote()).
   0b) modal run …::init_ops     — one-time ops DDL (or apply locally via doppler).
-  1)  modal run …::build        — the shared pass → both tables (indices folded, published).
+  0c) modal deploy pipelines/usaspending/usaspending_fpds_l2_modal.py — mandatory before the
+      first spawn; thereafter the entrypoints deploy-if-stale automatically.
+  1)  modal run …::build        — SPAWNS build_fn on the DEPLOYED app (ASYNC input — survives
+      client loss; a tethered .remote() dies ~74–131 s after client loss, --detach or not),
+      prints the fc-… id, and returns. Terminal truth = the worker's own
+      ops.usaspending_fpds_l2_runs rows (both tables).
+      Follow:  modal app logs usaspending-fpds-l2
+      Result:  python3 -c "import modal; print(modal.FunctionCall.from_id('fc-…').get(timeout=0))"
   2)  modal run …::verify --table state   ;  …::verify --table delta
-  (repair only) modal run …::index --table {state|delta}
+      — spawns per table; the verdict dict (pass + failures) exists ONLY behind the fc-id .get():
+      FETCH AND READ IT — spawned-without-error ≠ verified. verify writes no ledger row.
+  (repair only) modal run …::index --table {state|delta} — spawn ONLY after a clean
+      build+verify; index writes NO ledger row, so the fc result dict (indices_built,
+      files_published, orphans_pruned) is its only durable success record — collect it.
 
 SIZING — the L2 pass is a single ~37-col-narrow projection windowed once over the 108M spine, lighter
 than the spine's 392-col 3-wide merge. Spill + stage on the container's standard 512 GiB local disk
@@ -195,22 +207,31 @@ def init_ops_main() -> None:
 
 @app.local_entrypoint()
 def build(since: str = "", state_uri: str = "", delta_uri: str = "", build_date: str = "") -> None:
-    """The shared pass → both L2 tables (indices folded, published). Prod build passes NO --since."""
-    import json
-    print(json.dumps(
-        build_fn.remote(since=since or None, state_uri=state_uri or None,
-                        delta_uri=delta_uri or None, build_date=build_date or None),
-        indent=2, default=str))
+    """The shared pass → both L2 tables (indices folded, published). Prod build passes NO --since.
+    Spawns build_fn on the DEPLOYED app and returns the fc-… id; metrics live in the worker's
+    ops.usaspending_fpds_l2_runs rows and behind FunctionCall.from_id(fc).get(timeout=0)."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-fpds-l2", "build_fn", deploy_file=__file__,
+                   since=since or None, state_uri=state_uri or None,
+                   delta_uri=delta_uri or None, build_date=build_date or None)
 
 
 @app.local_entrypoint()
 def index(table: str = "state", target_uri: str = "") -> None:
-    """Repair-path append-only index for ONE table. Runs AFTER build verifies clean."""
-    import json
-    print(json.dumps(index_fn.remote(table=table, target_uri=target_uri or None), indent=2, default=str))
+    """Repair-path append-only index for ONE table. Spawn ONLY after a clean build+verify.
+    index writes NO ledger row — collect the fc result dict; it is the only success record."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-fpds-l2", "index_fn", deploy_file=__file__,
+                   table=table, target_uri=target_uri or None)
 
 
 @app.local_entrypoint()
 def verify(table: str = "state", target_uri: str = "") -> None:
-    import json
-    print(json.dumps(verify_fn.remote(table=table, target_uri=target_uri or None), indent=2, default=str))
+    """Spawns verify_fn; the verdict dict exists ONLY behind FunctionCall.from_id(fc).get() —
+    fetch and read pass/failures. Spawned-without-error is not verified."""
+    from pipelines._shared.launch import spawn_deployed
+
+    spawn_deployed("usaspending-fpds-l2", "verify_fn", deploy_file=__file__,
+                   table=table, target_uri=target_uri or None)
