@@ -1,6 +1,6 @@
 # ecec-labor-cost-components
 
-**Status:** `open` (parked 2026-07-14 with no demand; demand landed 2026-07-23 — flipped)
+**Status:** `promoted` — query_sidecar_20260724T044059Z (2026-07-24, ledger id 46, PR #1337). bls_ecec_costs (627,050, EXACT) + bls_ecec_burden (321, EXACT), plain copies. Health-insurance share 7.3% now 18.6ms warm (was ~6min credentialed Lance-direct). Series key already decoded; sweep added nothing (SELECT * is maximal). bls_oews_2025 stays parked (no staffing demand). Mandatory consumer predicates (area/datatype/year+period/hierarchy level) documented in AGENT_GUIDE §3.
 
 ## Capability
 

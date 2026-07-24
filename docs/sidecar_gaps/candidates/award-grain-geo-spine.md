@@ -1,6 +1,6 @@
 # award-grain-geo-spine
 
-**Status:** `open`
+**Status:** `promoted` (reduced) — query_sidecar_20260724T044059Z (2026-07-24, ledger id 46, PR #1337). Probe overturned the dossier's headline: Gap 1 ('county unexpressible') was REFUTED (county cuts served at 740ms; the shipped 45-mile haversine under-counted a sector by 94%) -> a ROUTING FIX in AGENT_GUIDE §4, not the blocker. What built: award_geo_state (82.87M, EXACT parity, ZERO R2 read - per-field arg_max over txn_events_combo, 100% award-key coverage vs the centroid route's 40.6% biased sample) + pop_place_fy (486k, Entry 1's OOM -> 16ms) + a 4-column combo rider (pop_zip5/pop_congressional_code/pop_city_name/recipient_state) + 4 county reference authorities. NOT the dossier's ~30M mart or the zip_county_xwalk (refuted at +0.2%). Correctness disclosure: the mart moves the demo's published import ratios (were on a 40% sample).
 
 ## Capability
 

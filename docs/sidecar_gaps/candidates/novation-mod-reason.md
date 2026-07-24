@@ -1,6 +1,6 @@
 # novation-mod-reason
 
-**Status:** `open`
+**Status:** `routing-fix` + `promoted` (rider) — query_sidecar_20260724T044059Z (2026-07-24, ledger id 46, PR #1337). Probe overturned the premise: reason_for_modification DOES NOT EXIST - the dimension is action_type_code (J=novation, S=change PIID, T=transfer), already on 11 serving tables + glossed in action_type_vocab; the capability served at 0.94s the whole time -> ROUTING FIX in AGENT_GUIDE §4. The one genuinely-missing leg (predecessor->successor identity) built as gtm_award_novation_events (88,092, aggregate, local lag() window - 9ms; the SAM-delta proxy over-counted ~2x). The dossier's 108M-row column add was rejected (already projected + ~660MiB for zero new info).
 
 ## Capability
 

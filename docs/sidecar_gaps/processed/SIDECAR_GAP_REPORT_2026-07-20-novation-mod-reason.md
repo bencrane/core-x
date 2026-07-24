@@ -46,3 +46,13 @@ agency/NAICS/PSC in the same pass.
 _Footer — rank by recurrence × cost:_ Gap 1 is recurring × low-wall-cost-but-high-accuracy-cost.
 The demand is real (M&A/novation is a named segment in the Legora/Harvey recon); the fix is a
 cheap projection, not a structural build. Report is demand-only; promotion cycle gates disposition.
+
+---
+
+## Disposition (sidecar-gaps Mode 2, 2026-07-24 — artifact `query_sidecar_20260724T044059Z`, ledger id 46)
+
+| # | Verdict | What shipped |
+|---|---|---|
+| Gap 1 | **Routing fix + Promote (rider)** | The report's load-bearing premise is **factually wrong on two counts**, verified against the 392-col Lance source (v19): (1) there is **no `reason_for_modification` column anywhere** — USAspending renames the FPDS `reasonForModification` element to **`action_type_code`**, which is already on 11 serving tables incl. all four the report named as omitting it; (2) "the A–Y codes do not distinguish a novation" is false — the sidecar's own `action_type_vocab` already ships `J`='NOVATION AGREEMENT', `S`='CHANGE PIID', `T`='TRANSFER ACTION' (`M`='OTHER ADMINISTRATIVE ACTION' is the admin mod they separate from). The capability **serves today at 0.94 s** — that's a routing-guide fix, not a build. The one genuinely unserved leg is predecessor→successor identity, which FPDS carries in no column; **promoted** as a rider `gtm_award_novation_events` (1/(J/S/T action) · 88,092, aggregate, local off `txn_rows_by_award` via a `lag()` window — NOT a self-join). After: change-of-hands since 2024-07-01 = **3,948 events / 1,508 firms / 1,439 with `is_uei_change` in 9.4 ms** (was ~10 s predecessor-linkage at query time; the SAM-delta proxy the session used over-counted at ~2,936 firms — exactly the accuracy failure the report predicted). |
+
+The `reason_for_modification` → `action_type_code` correction and the J/S/T gloss ship to `QUERY_SIDECAR_AGENT_GUIDE.md` §4. Rider merged in PR #1337; the routing capability needed no build. Artifact 68.37 → 73.45 GiB; build 36.8 min.

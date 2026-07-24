@@ -88,3 +88,18 @@ BDS pending) and the BEA IO Use family (detail, summary-annual, SUT concordance,
 contingent-labor intake). The demo's remaining slices (M/E/S, equipment spend rate, IT,
 contingent labor) will draw on these; where those questions get asked and answered off-sidecar,
 they'll appear in the next report.
+
+---
+
+## Disposition (sidecar-gaps Mode 2, 2026-07-24 — artifact `query_sidecar_20260724T044059Z`, ledger id 46)
+
+Probe-verified before build. Serving after-numbers measured on the new artifact.
+
+| Entry | Verdict | What shipped · before → after |
+|---|---|---|
+| 1 — distinct places of work FY21-25 | **Promoted** | `pop_place_fy` (1/(fy,pop_state,county_fips,zip5) · 485,766 rows, aggregate, local off `txn_events_combo`). `count(DISTINCT pop_zip5) WHERE fy 2021-25` = **23,296 zips / 3,101 counties** — the exact number the report could only bound as "20,000+". **Before: two serving OOMs → after: 15.8 ms.** |
+| 2 — non-local share (award ⋈ PoP ⋈ HQ) | **Promoted (correctness, not speed)** | `award_geo_state` (82.87M, EXACT parity, zero R2 read). The report's 20.8 s did not reproduce (1.7 s warm) — but the query-time centroid route silently sampled **40.6%** of the active universe (topology-biased: vehicles 11% covered), so the published import ratios (MD 38% / PA 62% / DC 76%) were computed on a non-random 40% sample. The mart derives PoP from `txn_events_combo` at **100% award-key coverage** (62.4% county fill, 1.5× the centroid route). After: **160,971 active awards, $2.76T work value, $561B imported (20.3% non-local) in 1.63 s, single-table on full coverage.** ⚠ **The mart moves the published ratios — the demo owner must treat the prior MD/PA/DC figures as provisional.** |
+| 3 — ECEC compensation-component decomposition | **Promoted** | `bls_ecec_costs` (627,050, EXACT) + `bls_ecec_burden` (321, EXACT), plain copies. Series key already decoded into columns. **Before: ~6 min credentialed Lance-direct + client-side pull → after: Health insurance = 7.3% of total comp in 18.6 ms.** Mandatory consumer predicates (pin area / datatype / year+period / hierarchy level) documented in `QUERY_SIDECAR_AGENT_GUIDE.md`. |
+| context note — BEA family | **Promoted (reduced)** | The 14-dataset industry-cost-structure batch's demanded slices ship as 4 small tables (`bea_bls_klems`, `bea_contingent_labor_intake`, `bea_io_use_summary_annual`, `bea_naics_concordance`) — see the `bea-io-purchased-services` dossier and PR #1337. KLEMS service-share of gross output (NAICS 5415) = 25.6% in 10 ms. QCEW-scale members stay gated. |
+
+**Correctness disclosures owed (from the probe, on the record):** (1) the import ratios above; (2) per-field `arg_max` is deliberate — each geo field pins the latest txn CARRYING it (coverage-maximizing), NOT strict latest-txn-per-award. Both documented in the manifest comment and the agent guide. Merged in PR #1337; artifact 68.37 → 73.45 GiB; build 36.8 min; 126 tables, zero parity mismatches.
