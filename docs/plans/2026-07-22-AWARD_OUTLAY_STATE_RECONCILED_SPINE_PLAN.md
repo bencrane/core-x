@@ -269,7 +269,7 @@ add the active-key anchor, replace the enrich block with the §6-hardened unific
 | **P5** Full active build | `modal run --detach` the full build (bulk leg semi-joins ~30.4M CONT rows to the 255k anchor; fresh leg cheap) | **Tier-1 fail-closed:** `rows_out == active_key_count` AND `count(*) == count(distinct cauk)` AND 0 null keys AND the bulk-linkage assertion — raise before publish |
 | **P6** Index + verify | Fold BTREE/BITMAP into the local dataset; independent read-back `verify()` | All indices present; `verify()` passes; addressable at the R2 URI |
 | **P7** Residual-tail loop | Compute uncovered active keys; run append-only `usaspending_api_award_fresh.py` (mode=`append`, 1-day chunks, ~7.5 min/chunk); rebuild; re-measure coverage; repeat **until coverage plateaus** (not 100%) | Coverage delta recorded each rebuild; residual reported as honest "outlay-unknown"; Tier-1 holds every rebuild; **never upsert the bulk** |
-| **P8** Sidecar promotion | Add one Tier-C manifest entry `{ds:'usaspending_award_outlay_state', tier:'C', sort:['contract_award_unique_key']}` (SELECT * exact-parity copy); adjacency sweep; `_preflight()`; **`modal run --detach` spawn-deployed** (NOT client-tethered — that caused the run-40/42/43 "Query interrupted" failures) | Blue-green publish only on exact-parity pass; `/healthz` new stamp + table count 114; sub-second pruned point-reads |
+| **P8** Sidecar promotion | Add one Tier-C manifest entry `{ds:'usaspending_award_outlay_state', tier:'C', sort:['contract_award_unique_key']}` (SELECT * exact-parity copy); adjacency sweep; `_preflight()`; **spawn on the deployed app** — `modal deploy` then `modal.Function.from_name("query-sidecar","build").spawn(...)` per `/sidecar-build` (NOT `modal run` in any form, `--detach` included — client-tethered SYNC input caused the run-40/42/43 "Query interrupted" failures) | Blue-green publish only on exact-parity pass; `/healthz` new stamp + table count 114; sub-second pruned point-reads |
 | **P9** Git + doc | Update `QUERY_SIDECAR_AGENT_GUIDE.md` catalog+pattern; `git mv` the capital-video gap report to `processed/`; branch → commit (add by path) → push → PR → squash-merge → **pull `~/core-x`** → `git log -1` | Merged **and** operator checkout reflects it on disk |
 
 ### 8.1 The reconcile SQL (corrected, DuckDB)
@@ -404,8 +404,10 @@ The 2026-07-21 report's ledger is stale; live status (sidecar run 45):
 | 7 | Award-key probes (origin) | superseded by #2 | resolved |
 
 **Build-reliability note for P8:** the run-40/42/43 "Query interrupted" failures were **client-tethered
-`modal run`** teardown, not preemption/OOM. Launch the sidecar build **spawn-deployed** (`modal run --detach`);
-runs 44/45 both succeeded that way.
+`modal run`** teardown (SYNC input cancelled after client loss), not preemption/OOM. Launch the sidecar
+build **spawn-deployed**: `modal deploy`, then
+`modal.Function.from_name("query-sidecar","build").spawn(...)` — NOT `modal run --detach`, which does not
+change the input's invocation type through a local_entrypoint. See `/sidecar-build`.
 
 **Doc hygiene (surface, don't self-assign):** the pricing_flow/companion/person_channels gap reports +
 `PRICING_FLOW_MART_HANDOFF.md` are unarchived; `QUERY_SIDECAR_AGENT_GUIDE.md` lacks catalog rows for the 3 new

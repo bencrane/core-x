@@ -459,4 +459,38 @@ modal run pipelines/sam_gov/sam_opps_bulk.py --mode overwrite
 
 A worker reachable in production MUST be `modal deploy`-ed — `modal run` alone leaves it ephemeral and unresolvable, and the dispatcher's `from_name` will fail. `modal serve` gives a hot-reloading ephemeral dev deployment (its label gets a `-dev` suffix); it is a dev convenience, never the production path.
 
+### 6.1 Launch durability — SYNC vs ASYNC inputs (fleet doctrine)
+
+Whether a long-running function survives the launching client is decided by the **input's
+invocation type**, not by app lifetime or `--detach`:
+
+- `.remote()` issues a **SYNC** input — the server assumes a client is blocked on the result.
+  When that client stops heartbeating (client `AppHeartbeat` interval 15 s), **the server
+  cancels the input ~74–131 s later**, detached app or not. Session end, laptop sleep, and
+  network loss all present as heartbeat cessation.
+- `.spawn()` issues an **ASYNC** input — no waiter is assumed; the call runs to completion
+  with no client at all. The returned `fc-…` id is a durable handle:
+  `modal.FunctionCall.from_id(fc).get(timeout=0)` raises `TimeoutError` while running and
+  returns the result when done. Logs by app name: `modal app logs <app-name>`.
+
+**The `local_entrypoint` trap:** `modal run --detach <file>::<entrypoint>` upgrades
+`.remote()` → `.spawn()` **only when the target resolves to a Function**. A
+`@app.local_entrypoint()` target gets NO such upgrade — the entrypoint's `.remote()` calls
+stay SYNC, so `--detach` buys app survival while the build input is still cancelled out from
+under it. This exact path produced 8 `Query interrupted` failures in `ops.query_sidecar_runs`
+(measured survival matrix: `~/Desktop/hq/sessions/2026-07-23-sidecar-rebuild-recon.md`).
+
+**Fleet doctrine — spawn-on-deployed:** any run that must survive its launching session is
+fired by spawning on the deployed app, then recording the fc-id:
+
+```python
+import modal
+fc = modal.Function.from_name("<app-name>", "<function>").spawn(**kwargs)
+print("FUNCTION_CALL_ID:", fc.object_id)
+```
+
+An ephemeral-app `.spawn()` from inside an entrypoint dies when the app stops at entrypoint
+return unless `--detach` is passed; prefer the deployed-app form, which has no client
+lifetime to lose.
+
 **Adding a feed** (mirrors [`ARCHITECTURE.md`](../../ARCHITECTURE.md)): a domain-grouped worker under `pipelines/<domain>/`, `modal deploy`-ed; a one-line `src/trigger/<feed>.ts` task ([`04_trigger_orchestration.md`](04_trigger_orchestration.md)); and an `ops.*` runs table for terminal state. It is then wired through the same dispatcher **by name** — zero new endpoints, zero new secrets.

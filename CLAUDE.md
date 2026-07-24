@@ -22,7 +22,8 @@ Modal extraction → ephemeral Parquet/CSV → DuckDB compute → **LanceDB SoR 
 
 GTM analytical questions (entities, awards, transactions-by-recipient, expiring, teaming,
 lookalikes, people/POCs) are served warm by the query-sidecar — milliseconds-to-seconds over
-~1.37B rows across 100+ sorted tables. Do NOT scan Lance spines for questions it answers.
+1.7B+ rows across 113 sorted tables (live truth: `/healthz` + `_sidecar_manifest`). Do NOT
+scan Lance spines for questions it answers.
 The map is `docs/reference/QUERY_SIDECAR_AGENT_GUIDE.md` — read it before composing SQL.
 Lance remains the write-side SoR and the home of non-GTM domains and live-freshness reads.
 
@@ -51,7 +52,11 @@ Gateways read the committed plane; pipelines materialize it. A gateway never wri
 - **Sidecar-gaps promotion cycle** — non-sidecar fallbacks are logged to `docs/sidecar_gaps/`
   and promoted via the `sidecar-gaps` skill (gate → adjacency sweep → parity-gated rebuild).
   Structural growth needs demand evidence; column adds ride any rebuild for free.
-- Launch detached: `modal run --detach`. Ledger: `ops.query_sidecar_runs`.
+- Launch by SPAWNING on the deployed app (`modal deploy` first, then
+  `modal.Function.from_name("query-sidecar","build").spawn(...)` — record the fc-id).
+  NEVER `modal run …::run`, with or without `--detach`: the SYNC input dies ~90 s after
+  client loss (8 ledger failures). Median ~32 min, observed 22–42, growing ~1.5 min/day.
+  Full runbook: the `/sidecar-build` skill. Ledger: `ops.query_sidecar_runs`.
 
 ## harness/ — global Claude Code hooks
 
