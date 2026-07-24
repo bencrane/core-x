@@ -49,8 +49,8 @@ this was assembled from are session-ephemeral and may be gone).
 | Demand origin (gap report) | `docs/sidecar_gaps/SIDECAR_GAP_REPORT_2026-07-21-capitalization-triggers.md` (entries 2+3; entry 1 = win-then-borrow, DEFERRED) |
 | Strategy context (why the mart exists) | `docs/reference/CAPITALIZATION_TRIGGERS_RECON_2026-07-20.md` (§8.3 originally proposed it) |
 | Guide (where the catalog row goes, once served) | `docs/reference/QUERY_SIDECAR_AGENT_GUIDE.md` (insert after the `gtm_entity_pricing_mix` row) |
-| Build entrypoint | `modal run --detach pipelines/query_sidecar/build_query_sidecar.py::run` |
-| Build fn config | `@app.function(memory=131_072 (128 GiB), cpu=8.0, timeout=12h)`, `SET memory_limit='96GB'`, spill NVMe. **No `retries=`.** |
+| Build entrypoint | ~~`modal run --detach …::run`~~ SUPERSEDED (client-tethered; killed 8 builds) — spawn on the deployed app per the `/sidecar-build` skill |
+| Build fn config | `@app.function(memory=131_072 (128 GiB), cpu=8.0, timeout=2h, max_containers=1)`, `SET memory_limit='96GB'`, spill NVMe. **No `retries=`.** |
 | Run ledger | Postgres `ops.query_sidecar_runs` (terminal state per run, success AND failure) |
 
 ---

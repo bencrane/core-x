@@ -11,8 +11,10 @@ Naming note: "sidecar" elsewhere in this repo means a derived LANCE dataset
 (e.g. pdl_normalized_companies). THIS artifact is different — a DuckDB-native
 read-only query file for the warm serving process. Hence "query-sidecar".
 
-Doctrine (docs/reference/03_modal_compute.md):
-- standalone Modal app, `modal run` invoked; NO dispatcher, NO Trigger schedule;
+Doctrine (docs/reference/03_modal_compute.md, §6.1 launch durability):
+- standalone Modal app, `modal deploy`-ed; builds are fired by SPAWNING `build` on
+  the DEPLOYED app (`modal.Function.from_name("query-sidecar","build").spawn(...)`)
+  — an ASYNC input with no client tether. NO Trigger schedule (parked);
 - NO modal.Volume — all scratch on the container's ephemeral NVMe at /tmp;
 - Python is I/O only; DuckDB performs 100% of transform; Arrow is the only
   interchange (Lance scanner reader -> DuckDB register -> CTAS);
@@ -33,8 +35,13 @@ Build-correctness doctrine (each rule bought with a wasted build, 2026-07-09/10)
   fixture executes a pathological plan instantly.
 - Self-join inputs materialize locally (stream -> plain CTAS temp) before
   joining — hygiene that keeps join/sort independent of Arrow-stream pacing.
-- Launch with `modal run --detach`: a non-detached app dies with its local
-  client (one DNS blip killed a healthy build).
+- Launch ONLY by spawning on the deployed app:
+  `modal.Function.from_name("query-sidecar","build").spawn(...)` — record the
+  fc-id. A `modal run …::run` launch (with or without --detach) issued a SYNC
+  input through the local_entrypoint; the server cancels a SYNC input ~90 s
+  after the client stops heartbeating (session end, sleep, DNS blip) — this
+  killed 8 builds as `Query interrupted`. --detach detaches the APP, not the
+  INPUT. Receipts: ~/Desktop/hq/sessions/2026-07-23-sidecar-rebuild-recon.md.
 
 Promotion doctrine (operator-directed, 2026-07-09): the demand-evidence gate
 applies to STRUCTURAL growth (new tables/grains/sort copies — recurring cost).
@@ -47,9 +54,10 @@ Parity: every mart's DuckDB count must equal ds.count_rows() at the PINNED Lance
 version read at build start. Any mismatch fails the run before publish.
 
 Entrypoints:
+  modal deploy pipelines/query_sidecar/build_query_sidecar.py            # REQUIRED first — spawn runs the deployed snapshot
   modal run pipelines/query_sidecar/build_query_sidecar.py::initdb
-  modal run pipelines/query_sidecar/build_query_sidecar.py::run          # full A,B,D + publish
-  modal run pipelines/query_sidecar/build_query_sidecar.py::smoke       # Tier A only, smoke/ prefix, no LATEST
+  modal run pipelines/query_sidecar/build_query_sidecar.py::run          # spawn-fires build on the DEPLOYED app, prints fc-id, returns
+  modal run pipelines/query_sidecar/build_query_sidecar.py::smoke       # Tier A only, smoke/ prefix, no LATEST (client-tethered; short)
 """
 
 from __future__ import annotations
@@ -2121,7 +2129,8 @@ def _build_one(con, so: dict[str, str], spec: dict) -> dict:
     memory=131_072,          # 128 GiB — the >100M-row sort precedent (cms_medicare giant)
     cpu=8.0,
     ephemeral_disk=524_288,  # 512 GiB local NVMe: DuckDB spill + the output file
-    timeout=60 * 60 * 12,
+    max_containers=1,        # "fire exactly ONE build" is structural, not aspirational
+    timeout=60 * 60 * 2,     # ~3x the trend-projected 60-min worst case; re-raise as duration grows
 )
 def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
           trigger_callback_url: str | None = None,
@@ -2279,8 +2288,15 @@ def initdb():
 
 @app.local_entrypoint()
 def run(tiers: str = "A,B,C,D"):
-    result = build.remote(tiers=tiers, publish=True, smoke=False, trigger_callback_url=None)
-    print(json.dumps({k: v for k, v in result.items() if k != "parity"}, indent=1))
+    # Spawns on the DEPLOYED app (ASYNC input, no client tether) and returns.
+    # build.remote() here would issue a SYNC input the server cancels ~90 s after
+    # client loss — the launch mode behind 8 "Query interrupted" ledger failures.
+    fn = modal.Function.from_name("query-sidecar", "build")
+    fc = fn.spawn(tiers=tiers, publish=True, smoke=False,
+                  trigger_callback_url=None, launch_mode="spawn-deployed")
+    print(f"FUNCTION_CALL_ID: {fc.object_id}")
+    print("Follow: modal app logs query-sidecar   |   result: "
+          f"modal.FunctionCall.from_id('{fc.object_id}').get(timeout=0)")
 
 
 @app.local_entrypoint()

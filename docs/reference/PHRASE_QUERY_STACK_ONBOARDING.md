@@ -115,7 +115,7 @@ Silent fallbacks are lost demand.
 
 | Thing | Where |
 |---|---|
-| Rebuild artifact (~35 min, zero-downtime) | `modal run --detach pipelines/query_sidecar/build_query_sidecar.py::run` |
+| Rebuild artifact (median ~32 min, observed 22–42, zero-downtime) | `/sidecar-build` skill — `modal deploy` then `modal.Function.from_name("query-sidecar","build").spawn(...)`; NEVER `modal run …::run` (client-tethered) |
 | Serving health / current stamp | `GET https://query-sidecar-api.onrender.com/healthz` (no auth) |
 | Build ledger | `ops.query_sidecar_runs` (HQX Postgres) |
 | Phrase endpoint auth | Doppler `core-x/prd`: `CATALYST_API_BASE_URL`, `CATALYST_API_TOKEN` |

@@ -72,6 +72,12 @@ agency_vocab: 75 rows in 1.0s (lance v24=30,697,295) parity=OK
 
 ## Rebuild
 
+> **2026-07-23 SUPERSEDED:** launch via the `/sidecar-build` skill — `modal deploy`, then
+> spawn on the deployed app (`modal.Function.from_name("query-sidecar","build").spawn(...)`).
+> A client-tethered `modal run …::run` (with or without `--detach`) issues a SYNC input the
+> server cancels ~90 s after client loss; it killed 8 builds. `::run` now spawn-fires and
+> returns. Historical commands below preserved as the Phase-1 record:
+
 ```
 modal run pipelines/query_sidecar/build_query_sidecar.py::run          # full A,B,D + LATEST swap
 modal run pipelines/query_sidecar/build_query_sidecar.py::smoke        # Tier A → smoke/ prefix, no pointer

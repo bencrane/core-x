@@ -1,7 +1,8 @@
 """sidecar — arbitrary read-only SQL over the query-sidecar artifact (bundle cycle).
 
 The query-sidecar is a warm DuckDB endpoint serving the GTM analytical substrate
-(~708M rows, 42 sorted tables) in milliseconds-to-seconds. These tools are the
+(1.7B+ rows, 113 sorted tables — live truth: /healthz stamp + `sidecar_tables()`)
+in milliseconds-to-seconds. These tools are the
 console agent's FAST lane for analytical questions — entities, awards,
 transactions-by-recipient, expiring contracts, teaming, capability lookalikes —
 and should be preferred over `execute_audience_query` (DuckDB-over-registered-
@@ -59,8 +60,9 @@ def register(mcp) -> None:  # noqa: ANN001 — FastMCP instance
     @mcp.tool()
     def sidecar_sql(sql: str, limit: int = 1000) -> dict:
         """Run ONE read-only SQL statement (SELECT/WITH/DESCRIBE/SHOW) against the
-        query-sidecar — the FAST lane for GTM analytical questions (~708M rows,
-        sorted DuckDB tables, ms-class when filtering on each table's sort key).
+        query-sidecar — the FAST lane for GTM analytical questions (1.7B+ rows
+        across 113 sorted DuckDB tables; live catalog via sidecar_tables();
+        ms-class when filtering on each table's sort key).
 
         PREFER THIS over execute_audience_query / Lance scans for: entities,
         awards, transactions-by-recipient, expiring contracts, teaming,

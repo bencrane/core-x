@@ -1,7 +1,9 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — ~1.37B rows across 113 sorted tables — in milliseconds-to-seconds per SQL statement.
+substrate — 1,714,347,196 rows across 113 sorted tables as of 2026-07-22; live truth is always
+`GET /healthz` (stamp + table count) and `SELECT * FROM _sidecar_manifest` (per-table rows) —
+in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
 not register Lance into DuckDB, do not scan `usaspending_fpds_canonical_txn` (392 cols, 108M
 rows) for a question `gtm_txn_events_slim` answers in 50 ms.
@@ -686,8 +688,10 @@ tight; you have `elapsed_ms` in every response.
 ## 6. Caveats
 
 1. **Snapshot, not live.** `/healthz` → `artifact` stamp; `_sidecar_meta`/`_sidecar_manifest`
-   carry the build time and per-table pinned Lance versions. Rebuild:
-   `modal run pipelines/query_sidecar/build_query_sidecar.py::run` (auto-refreshes serving).
+   carry the build time and per-table pinned Lance versions. Rebuild via the `/sidecar-build`
+   skill — spawn `build` on the deployed `query-sidecar` app
+   (`modal.Function.from_name("query-sidecar","build").spawn(...)`; never
+   `modal run …::run`, which is client-tethered). Auto-refreshes serving on publish.
    Serving instances converge on the newest artifact within ~60 s of a publish (LATEST
    poll); across that window, cross-statement totals can mix states — pin
    `require_artifact` (§1) when numbers must reconcile.
