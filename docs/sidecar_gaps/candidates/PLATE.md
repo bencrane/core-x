@@ -1,8 +1,8 @@
 # PLATE — query-sidecar demand, reconciled
 
-**Generated:** 2026-07-23 by `/sidecar-priority` · sources: 5 top-level gap reports +
+**Generated:** 2026-07-24 by `/sidecar-priority` · sources: 5 top-level gap reports +
 parked-structural sweep of all 25 `processed/` dispositions · serving artifact at generation:
-`query_sidecar_20260722T032457Z` (113 tables · 1,714,347,196 rows · 68.37 GiB)
+`query_sidecar_20260722T032457Z` (113 tables · 1,714,347,196 rows · 68.37 GiB, /healthz-verified)
 
 Regenerated wholesale each run — do not hand-edit; edit dossiers.
 
@@ -56,8 +56,12 @@ materially moves the disk math if ever promoted) ·
 - Top-level `SIDECAR_GAP_REPORT_2026-07-17-lender-book-bridge.md` is a strict stale subset
   of the processed copy (verified by diff) — archive/delete via the next `/sidecar-gaps`
   disposition PR.
-- Builder-infra parks from the pricing-flow handoff (add `retries=1–2`; incremental-publish
-  design note) remain open infra ideas — not sidecar tables, not in this plate's scope.
+- Builder-infra parks from the pricing-flow handoff: the retry idea SHIPPED 2026-07-24
+  (PR #1334 — bounded transient-only retry on per-mart Lance reads + artifact upload;
+  same PR added `after:` ordering closure, the 50%-of-previous aggregate-parity floor,
+  the runnable EXPLAIN fixture, and post-publish R2 reaping). The incremental-publish
+  design note remains the one open infra idea — not a sidecar table, not in this
+  plate's scope.
 
 ## Recommendation (operator can overrule)
 
