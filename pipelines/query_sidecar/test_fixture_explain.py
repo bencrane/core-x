@@ -38,6 +38,42 @@ import build_query_sidecar as b
 # references. Types converged by driving the real dispatch path to green.
 FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
 {
+ "bea_bls_klems": {
+  "production_code": "VARCHAR",
+  "sheet": "VARCHAR",
+  "year": "BIGINT"
+ },
+ "bea_contingent_labor_intake": {
+  "grain": "VARCHAR",
+  "industry_code": "VARCHAR",
+  "year": "BIGINT"
+ },
+ "bea_io_use_summary_annual": {
+  "commodity_code": "VARCHAR",
+  "industry_code": "VARCHAR",
+  "year": "BIGINT"
+ },
+ "bea_naics_concordance": {
+  "naics_code_clean": "VARCHAR"
+ },
+ "bls_ecec_burden": {
+  "industry_group": "VARCHAR",
+  "occupation_group": "VARCHAR",
+  "ownership": "VARCHAR",
+  "quarter": "VARCHAR",
+  "subcell": "VARCHAR"
+ },
+ "bls_ecec_costs": {
+  "area": "VARCHAR",
+  "datatype": "VARCHAR",
+  "estimate_code": "VARCHAR",
+  "industry_group": "VARCHAR",
+  "occupation_group": "VARCHAR",
+  "ownership": "VARCHAR",
+  "period": "VARCHAR",
+  "subcell": "VARCHAR",
+  "year": "BIGINT"
+ },
  "bridge_dsbs_pdl_linkedin": {
   "uei": "VARCHAR"
  },
@@ -52,6 +88,16 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "region": "VARCHAR",
   "uei": "VARCHAR",
   "year_founded": "BIGINT"
+ },
+ "census_county_adjacency": {
+  "county_fips": "BIGINT",
+  "neighbor_fips": "VARCHAR"
+ },
+ "census_county_cbsa_2023": {
+  "county_fips": "BIGINT"
+ },
+ "census_county_gazetteer_2023": {
+  "county_fips": "BIGINT"
  },
  "dol_sca_occupations": {
   "occupation_code": "VARCHAR"
@@ -255,6 +301,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "recipient_code": "VARCHAR"
  },
  "gtm_sam_entities": {
+  "physical_state": "VARCHAR",
   "uei": "VARCHAR"
  },
  "gtm_sam_people": {
@@ -431,6 +478,9 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "naics_title": "VARCHAR",
   "source_vintage": "VARCHAR"
  },
+ "national_county2020": {
+  "county_fips": "BIGINT"
+ },
  "ncua_credit_unions": {
   "charter_number": "VARCHAR",
   "city_mailing_address": "VARCHAR",
@@ -596,6 +646,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "action_type_code": "VARCHAR",
   "action_type_description": "VARCHAR",
   "award_id_piid": "VARCHAR",
+  "award_topology": "VARCHAR",
   "award_type_code": "VARCHAR",
   "awarding_agency_code": "VARCHAR",
   "awarding_agency_name": "VARCHAR",
@@ -613,20 +664,26 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "funding_sub_agency_code": "VARCHAR",
   "labor_standards_code": "VARCHAR",
   "labor_standards_descrip": "VARCHAR",
+  "life_to_date_obligated": "DATE",
   "naics_code": "VARCHAR",
   "ordering_period_end_date": "DATE",
   "parent_award_key_resolved": "VARCHAR",
   "parent_match_flag": "VARCHAR",
   "performance_based_se_desc": "VARCHAR",
   "performance_based_service_acquisition_code": "VARCHAR",
+  "physical_state": "VARCHAR",
+  "pop_city_name": "VARCHAR",
+  "pop_congressional_code": "VARCHAR",
   "pop_country_name": "VARCHAR",
   "pop_county_fips": "BIGINT",
   "pop_county_name": "BIGINT",
   "primary_place_of_performance_country_code": "VARCHAR",
   "primary_place_of_performance_state_code": "VARCHAR",
+  "primary_place_of_performance_zip_4": "VARCHAR",
   "product_or_service_code": "VARCHAR",
   "psc_code": "VARCHAR",
   "recipient_name": "VARCHAR",
+  "recipient_state_code": "VARCHAR",
   "recipient_uei": "VARCHAR",
   "subcontracting_plan": "VARCHAR",
   "subcontracting_plan_desc": "VARCHAR",
@@ -652,6 +709,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "naics_code": "VARCHAR",
   "parent_award_key_resolved": "VARCHAR",
   "parent_match_flag": "VARCHAR",
+  "physical_state": "VARCHAR",
   "potential_ceiling": "BIGINT",
   "potential_end_date": "DATE",
   "product_or_service_code": "VARCHAR",
@@ -661,7 +719,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "type_of_set_aside_code": "VARCHAR"
  },
  "usaspending_subaward_canonical": {
-  "_": "BIGINT",
+  "_": "VARCHAR",
   "prime_award_awarding_agency_code": "VARCHAR",
   "prime_award_awarding_agency_name": "VARCHAR",
   "prime_award_awarding_sub_agency_code": "VARCHAR",

@@ -154,6 +154,15 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_entity_geo", "tier": "A", "sort": ["uei"]},
     {"ds": "gtm_naics_psc_pairs", "tier": "A", "sort": ["naics_code", "psc_code"]},
     {"ds": "naics_reference", "tier": "A", "sort": ["naics_code"]},
+    # BEA cost-structure cycle (2026-07-24, sidecar-gaps Mode 2 — the code-space
+    # bridge for bea-io-purchased-services). 499 rows: the sole warm path to
+    # bea_detail_code (unlocks the intake's 389-industry detail grain that
+    # naics_labor_share structurally cannot reach) and the only complete 73-code BEA
+    # summary vocabulary. naics_code_clean is NOT unique (471 distinct of 483 non-null;
+    # '23' appears 12x, all flagged naics_multi_io=True) — collapses at summary level,
+    # fans out at detail; a naive equality join must dedupe. Sorted naics_code_clean
+    # so the FPDS-side prefix walk prunes.
+    {"ds": "bea_naics_concordance", "tier": "A", "sort": ["naics_code_clean"]},
     # ── combo-grain language layers (gap-pass-5: two independent sessions hit
     # the same gap — plain-language rendering joins these onto sidecar code
     # sets). vertical_map rides the sweep (equipment_intensity dial, 279 rows);
@@ -279,6 +288,25 @@ MANIFEST: list[dict] = [
      "extra_select": "substr(contract_award_unique_key, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "contract_award_unique_key", "action_date"],
      "from_table": "txn_rows", "after": ["txn_rows"]},
+    # novation cycle (2026-07-24, sidecar-gaps Mode 2 — SIDECAR_GAP_REPORT
+    # 2026-07-20-novation-mod-reason Gap 1, REDUCED to a rider). The report's premise
+    # was wrong: the mod-reason was never missing — FPDS action_type_code J/S/T =
+    # NOVATION AGREEMENT / CHANGE PIID / TRANSFER ACTION (already on 11 serving tables;
+    # action_type_vocab already glosses them), so the capability serves TODAY at ~0.94s
+    # (that is a routing-guide fix, not a build). The ONE genuinely unserved leg is
+    # predecessor→successor identity — FPDS carries it in no column; it must be read off
+    # the award's transaction ladder (measured 10.0s at query time). lag() over
+    # txn_rows_by_award, ALREADY sorted (award_key_pfx, contract_award_unique_key,
+    # action_date), so the window streams with no re-sort — NOT a self-join, so the
+    # nested-loop trap cannot fire. ~88K rows all-time. is_uei_change splits true
+    # change-of-hands from same-UEI re-papering (the class the SAM-delta proxy missed).
+    # Award-$ context denormalized via a two-pure-equality LEFT JOIN to
+    # prime_award_state_by_key. Reducing (108M→88K) -> aggregate floor parity.
+    {"ds": "txn_rows_by_award", "tier": "C", "dest": "gtm_award_novation_events",
+     "sort": ["action_date", "to_uei"],
+     "from_table": "txn_rows_by_award",
+     "after": ["txn_rows_by_award", "prime_award_state_by_key"],
+     "novation_events": True, "aggregate": True},
     # award place-of-performance centroids (bundle cycle): enables ad-hoc geo SQL
     # (bounding-box + haversine) and PoP-grain geometry; sorted state/zip5 so
     # spatial predicates prune row groups.
@@ -308,6 +336,35 @@ MANIFEST: list[dict] = [
      "extra_select": "substr(award_key, 10, 12) AS award_key_pfx",
      "sort": ["award_key_pfx", "award_key", "action_date"],
      "from_table": "txn_events_combo", "after": ["txn_events_combo"]},
+    # geo-spine cycle (2026-07-24, sidecar-gaps Mode 2 — SIDECAR_GAP_REPORT
+    # 2026-07-22 Gap 1 (award-grain county) + 2026-07-23 Entry 2 (non-local share,
+    # award ⋈ PoP ⋈ HQ)): award-grain geography state. The promote is CORRECTNESS,
+    # not speed — the query-time centroid route silently sampled 40.6% of the active
+    # universe (topology-biased: vehicles 11%), so the published import ratios were
+    # computed on a non-random 40% sample. This mart derives PoP from txn_events_combo
+    # instead: 100% award-key coverage, 62.4% county fill on the active set (1.5x the
+    # centroid route). PER-FIELD arg_max is deliberate — each geo field independently
+    # pins the LATEST TXN THAT CARRIES IT (coverage-maximizing), so it is NOT strict
+    # latest-txn-per-award; a future reader must not "fix" this to a single-struct
+    # arg_max, which would repropagate the latest row's NULLs. Local (from_table +
+    # reads the already-built txn_events_combo + gtm_sam_entities) — ZERO R2 read.
+    # Row-preserving LEFT-JOIN chain (all three legs 1:1) -> EXACT parity 82,868,654.
+    # Sort mirrors txn_events_combo_by_geo so award- and txn-grain sector pages cluster
+    # on the same membership key; current_end_date trails for "expiring in sector".
+    {"ds": "usaspending_fpds_prime_award_state", "tier": "C", "dest": "award_geo_state",
+     "sort": ["pop_state", "pop_county_fips", "current_end_date"],
+     "from_table": "usaspending_fpds_prime_award_state",
+     "after": ["usaspending_fpds_prime_award_state", "txn_events_combo", "gtm_sam_entities"],
+     "award_geo_state": True},
+    # geo-spine cycle (2026-07-24, Entry 1): place × FY rollup — the distinct-
+    # places-of-work count over a FY window that twice OOMed the serving box and
+    # shipped only as a bound ("20,000+"). count(DISTINCT pop_zip5) over this rollup
+    # is ms-class and exact. Pure GROUP BY over the local fact (no join, no
+    # count(DISTINCT) at build). Aggregate -> floor parity. Must follow txn_events_combo.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "pop_place_fy",
+     "sort": ["fy", "pop_state", "pop_county_fips", "pop_zip5"],
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"],
+     "pop_place_fy": True, "aggregate": True},
     # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
     # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
     # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
@@ -611,6 +668,49 @@ MANIFEST: list[dict] = [
     # composite (alias → combos → priced) ships as v_role_priced_combos.
     {"ds": "naics_labor_share", "tier": "D", "sort": ["naics_code"]},
     {"ds": "occupation_alias_lookup", "tier": "D", "sort": ["alias_norm", "code"]},
+    # ── ECEC compensation-component decomposition (demo-narrative cycle 2026-07-24,
+    # sidecar-gaps Mode 2 — SIDECAR_GAP_REPORT_2026-07-23 Entry 3; flips the 2026-07-14
+    # structural park on its second dated demand point). bls_ecec_costs is the full CM
+    # series universe with the series key ALREADY decoded into 7 code/label pairs, so the
+    # CMU2__0000000000P flagship is pure column equality — no consumer parses a series id.
+    # CONSUMER MUST pin area (31 levels), datatype (8, mixes percent+dollars), and
+    # (year, period) explicitly, or the numbers are silently wrong — documented in the
+    # guide. Health-insurance detail (estimate 15) exists only at supersector level (59.2%
+    # of NAICS); degrade to component 'Insurance' (estimate 13) below it. bls_ecec_burden
+    # is the 321-row national provenance grid behind naics_labor_share.burden_multiplier.
+    # Both SELECT *, row-preserving → EXACT parity (pin v15=627,050 / v8=321).
+    {"ds": "bls_ecec_costs", "tier": "D",
+     "sort": ["ownership", "industry_group", "occupation_group", "subcell",
+              "area", "datatype", "year", "period", "estimate_code"]},
+    {"ds": "bls_ecec_burden", "tier": "D",
+     "sort": ["ownership", "industry_group", "occupation_group", "subcell", "quarter"]},
+    # ── BEA industry cost-structure family (2026-07-24, sidecar-gaps Mode 2 —
+    # bea-io-purchased-services: 2026-07-15 Entry 5 + demo draw; upstream landed 07-23
+    # #1324/#1325/#1326). All plain SELECT * copies, EXACT parity, no join at build.
+    # bea_bls_klems (the literal ask): Service/Materials/Energy Compensation ÷ Gross
+    # Output, 59 BEA summary industries × 1997-2024 (value_num 100% non-null; the 6,552
+    # NULL production_code rows are BEA aggregate labels, sort last, parity-neutral).
+    # bea_contingent_labor_intake: the staffing slice, both grains, both denominators —
+    # NOTE summary-grain shares are a FLAGGED PROXY (BEA dissolves NAICS 5613 into all of
+    # 561), an upper bound; the detail grain is the unproxied number. bea_io_use_summary_
+    # annual answers "purchased services — of what?" and is the source the intake was
+    # derived from (40.8% suppressed on value_musd; denominators T005/T018/V001/… clean).
+    {"ds": "bea_bls_klems", "tier": "D", "sort": ["production_code", "sheet", "year"]},
+    {"ds": "bea_contingent_labor_intake", "tier": "D",
+     "sort": ["industry_code", "grain", "year"]},
+    {"ds": "bea_io_use_summary_annual", "tier": "D",
+     "sort": ["industry_code", "commodity_code", "year"]},
+    # ── county reference authorities (geo-spine cycle 2026-07-24) — all tiny, plain
+    # copies, EXACT parity. national_county2020 + census_county_gazetteer_2023: county
+    # name/state authority (canonical join for pop_county_name source variants) + county
+    # centroid geometry — ship BOTH; neither alone covers CT's dual FIPS vintage.
+    # census_county_cbsa_2023: county→metro (CBSA/CSA) rollup, the "zoom out" leg.
+    # census_county_adjacency: the honest county-neighbors sector set that replaces the
+    # 94%-under-counting 45-mile haversine envelope.
+    {"ds": "national_county2020", "tier": "D", "sort": ["county_fips"]},
+    {"ds": "census_county_gazetteer_2023", "tier": "D", "sort": ["county_fips"]},
+    {"ds": "census_county_cbsa_2023", "tier": "D", "sort": ["county_fips"]},
+    {"ds": "census_county_adjacency", "tier": "D", "sort": ["county_fips", "neighbor_fips"]},
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
     # person contact channels (gap 2026-07-21-firm-contact-channels, operator-
@@ -692,6 +792,16 @@ _COMBO_SRC_COLS = [
     "performance_based_service_acquisition_code",
     "contracting_officers_determination_of_business_size",
     "labor_standards_code",
+    # geo-spine cycle (2026-07-24, sidecar-gaps Mode 2 — SIDECAR_GAP_REPORT
+    # 2026-07-22 Gap 1 + 2026-07-23 Entry 1/2): finer PoP geo rides the canonical
+    # scan already in flight. zip5 (probe-verified 84.00% fill, 100% first-5-numeric
+    # among non-null — the try_cast guard below is belt-and-suspenders), the as-acted
+    # congressional district (87.47%, best-filled PoP geo), the city (82.28% — the
+    # sub-county "name it" next-question), and the award-contemporaneous holder state
+    # (97.02%). Row count unchanged -> txn_events_combo keeps EXACT parity; columns
+    # propagate free into txn_events_combo_by_geo / _by_award.
+    "primary_place_of_performance_zip_4", "pop_congressional_code",
+    "pop_city_name", "recipient_state_code",
     "federal_action_obligation",
 ]
 
@@ -718,6 +828,15 @@ SELECT
     t.pop_county_fips,
     t.pop_county_name,
     t.primary_place_of_performance_country_code       AS pop_country_code,
+    -- geo-spine cycle (2026-07-24): zip5 with a numeric guard (fails closed to
+    -- NULL, never corrupts), the as-acted district, city, and the holder state as
+    -- of the action. NO regex on the 108M row set — a bounded substr + try_cast.
+    CASE WHEN try_cast(substr(t.primary_place_of_performance_zip_4, 1, 5) AS INTEGER)
+                  IS NOT NULL
+         THEN substr(t.primary_place_of_performance_zip_4, 1, 5) END AS pop_zip5,
+    t.pop_congressional_code,
+    t.pop_city_name,
+    t.recipient_state_code                            AS recipient_state,
     t.type_of_set_aside_code,
     t.type_of_contract_pricing_code                   AS pricing_code,
     t.contract_financing                              AS financing_code,
@@ -728,6 +847,123 @@ SELECT
 FROM src t
 LEFT JOIN src_aw a ON a.contract_award_unique_key = t.contract_award_unique_key
 ORDER BY t.naics_code, t.product_or_service_code, t.action_date
+"""
+
+# geo-spine cycle (2026-07-24): award-grain geography state. Every ON clause is a
+# PURE EQUALITY key; the only probe-side gate (award_key IS NOT NULL) lives inside
+# the CTE, never in an ON — no nested-loop exposure. PER-FIELD arg_max: DuckDB's
+# arg_max skips rows where either argument is NULL, so each geo field independently
+# pins the latest transaction that ACTUALLY CARRIES it (coverage-maximizing; this is
+# why this route beats the 40.6%-coverage centroid route). Row-preserving off the
+# 82.87M award_state -> EXACT parity.
+_AWARD_GEO_STATE_SQL = """
+CREATE TABLE award_geo_state AS
+WITH geo AS (
+    SELECT award_key,
+           arg_max(pop_state,              action_date) AS pop_state,
+           arg_max(pop_county_fips,        action_date) AS pop_county_fips,
+           arg_max(pop_county_name,        action_date) AS pop_county_name,
+           arg_max(pop_zip5,               action_date) AS pop_zip5,
+           arg_max(pop_city_name,          action_date) AS pop_city_name,
+           arg_max(pop_congressional_code, action_date) AS pop_congressional_code,
+           arg_max(pop_country_code,       action_date) AS pop_country_code,
+           arg_max(recipient_state,        action_date) AS recipient_state_latest,
+           max(action_date)                             AS geo_as_of
+    FROM txn_events_combo
+    WHERE award_key IS NOT NULL
+    GROUP BY 1
+),
+hq AS (
+    SELECT uei, physical_state AS hq_state FROM gtm_sam_entities
+)
+SELECT s.contract_award_unique_key                       AS award_key,
+       s.recipient_uei                                   AS uei,
+       g.pop_state, g.pop_county_fips, g.pop_county_name,
+       g.pop_zip5, g.pop_city_name, g.pop_congressional_code, g.pop_country_code,
+       g.recipient_state_latest, g.geo_as_of,
+       h.hq_state,
+       CASE WHEN g.pop_state IS NOT NULL AND h.hq_state IS NOT NULL
+            THEN (g.pop_state <> h.hq_state) END         AS is_nonlocal,
+       s.life_to_date_obligated                          AS obligated,
+       s.total_dollars_obligated_snapshot                AS obligated_snapshot,
+       s.current_total_value_of_award                    AS current_value,
+       s.remaining_ceiling_headroom,
+       s.award_topology, s.naics_code,
+       s.product_or_service_code                         AS psc_code,
+       s.awarding_agency_code, s.awarding_sub_agency_code,
+       s.type_of_set_aside_code, s.award_type_code, s.idv_type_code,
+       s.first_action_date, s.last_action_date,
+       s.current_end_date, s.days_to_expiry, s.is_terminated
+FROM usaspending_fpds_prime_award_state s
+LEFT JOIN geo g ON g.award_key = s.contract_award_unique_key
+LEFT JOIN hq  h ON h.uei       = s.recipient_uei
+ORDER BY g.pop_state, g.pop_county_fips, s.current_end_date
+"""
+
+# geo-spine cycle (2026-07-24, Entry 1): place × FY rollup. Pure GROUP BY, no join,
+# NO count(DISTINCT) at build (the distinct-places answer is count(*) over this
+# rollup's distinct rows, exact without a per-group hash). Reducing -> aggregate floor.
+_POP_PLACE_FY_SQL = """
+CREATE TABLE pop_place_fy AS
+SELECT fy, pop_state, pop_county_fips, pop_zip5,
+       count(*)         AS n_actions,
+       sum(obligation)  AS obligation_sum,
+       min(action_date) AS first_action_date,
+       max(action_date) AS last_action_date
+FROM txn_events_combo
+GROUP BY 1, 2, 3, 4
+ORDER BY fy, pop_state, pop_county_fips, pop_zip5
+"""
+
+# novation cycle (2026-07-24): predecessor→successor identity off the award's txn
+# ladder. lag() OVER a window is NOT a self-join (no inequality ON clause), so the
+# nested-loop trap cannot fire; txn_rows_by_award is already physically ordered by
+# (award_key_pfx, contract_award_unique_key, action_date) so the window streams with
+# no re-sort. The one join carries award_key_pfx through the CTE so both legs are bare
+# column equalities. Reducing 108M -> ~88K -> aggregate floor.
+_NOVATION_EVENTS_SQL = """
+CREATE TABLE gtm_award_novation_events AS
+WITH ladder AS (
+    SELECT contract_award_unique_key                AS award_key,
+           award_key_pfx,
+           action_date,
+           award_id_piid,
+           action_type_code,
+           action_type_description,
+           recipient_uei                            AS to_uei,
+           recipient_name                           AS to_name,
+           federal_action_obligation                AS obligation,
+           base_and_all_options_value,
+           naics_code,
+           product_or_service_code                  AS psc_code,
+           awarding_agency_code,
+           awarding_agency_name,
+           lag(recipient_uei)  OVER w               AS from_uei,
+           lag(recipient_name) OVER w               AS from_name,
+           lag(action_date)    OVER w               AS prev_action_date
+    FROM txn_rows_by_award
+    WINDOW w AS (PARTITION BY contract_award_unique_key
+                 ORDER BY action_date, contract_transaction_unique_key)
+),
+ev AS (
+    SELECT *,
+           (from_uei IS NOT NULL AND from_uei <> to_uei) AS is_uei_change
+    FROM ladder
+    WHERE action_type_code IN ('J', 'S', 'T')   -- NOVATION / CHANGE PIID / TRANSFER
+)
+SELECT e.award_key, e.award_id_piid, e.action_date, e.action_type_code,
+       e.action_type_description, e.from_uei, e.from_name, e.to_uei, e.to_name,
+       e.is_uei_change, e.prev_action_date, e.obligation,
+       e.base_and_all_options_value, e.naics_code, e.psc_code,
+       e.awarding_agency_code, e.awarding_agency_name,
+       s.award_topology, s.life_to_date_obligated,
+       s.current_total_value_of_award, s.current_end_date,
+       s.days_to_expiry, s.is_terminated
+FROM ev e
+LEFT JOIN prime_award_state_by_key s
+       ON s.award_key_pfx              = e.award_key_pfx
+      AND s.contract_award_unique_key  = e.award_key
+ORDER BY e.action_date, e.to_uei
 """
 
 _SUBOUT_ROLLUP_SQL = """
@@ -2258,6 +2494,12 @@ def _build_one(con, so: dict[str, str], spec: dict,
             con.execute(_SLUG_LOOKUP_SQL)
         elif spec.get("person_channels"):
             con.execute(_PERSON_CHANNELS_SQL)
+        elif spec.get("award_geo_state"):
+            con.execute(_AWARD_GEO_STATE_SQL)
+        elif spec.get("pop_place_fy"):
+            con.execute(_POP_PLACE_FY_SQL)
+        elif spec.get("novation_events"):
+            con.execute(_NOVATION_EVENTS_SQL)
         else:
             order = ", ".join(spec["sort"])
             extra = spec.get("extra_select")
