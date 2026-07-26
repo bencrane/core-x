@@ -19,6 +19,11 @@ exploded grain; (d) filing-key sort copy of `ucc_filings_all`.
   demonstrated recurrence of 'against what' at lender grain"); filing-key copy ("not worth
   a third copy of the corpus"); debtor-key bridge copy ("only if competitor-overlap becomes
   a page section").
+- 2026-07-26 — reconciliation note: a second, pre-disposition copy of the 2026-07-17
+  lender-book report sits unprocessed at top level
+  ([SIDECAR_GAP_REPORT_2026-07-17-lender-book-bridge.md](../SIDECAR_GAP_REPORT_2026-07-17-lender-book-bridge.md));
+  diffed against processed/ — body identical, no entries beyond the processed copy, only the
+  Disposition section absent. Carries NO new demand; do not double-count.
 
 ## Proposed shape
 
