@@ -99,6 +99,11 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
  "census_county_gazetteer_2023": {
   "county_fips": "BIGINT"
  },
+ "demo_region_catalog": {
+  "county_fips": "VARCHAR",
+  "demo_region": "VARCHAR",
+  "state_usps": "VARCHAR"
+ },
  "dol_sca_occupations": {
   "occupation_code": "VARCHAR"
  },
@@ -107,6 +112,9 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
  },
  "entity_hierarchy": {
   "uei": "VARCHAR"
+ },
+ "equipment_flowdown_factors": {
+  "production_code": "VARCHAR"
  },
  "equipment_finance_candidates": {
   "company_domain": "VARCHAR",
@@ -596,6 +604,10 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "prim_state": "VARCHAR",
   "soc_code": "VARCHAR"
  },
+ "state_region_county_map": {
+  "county_fips": "VARCHAR",
+  "state_region": "VARCHAR"
+ },
  "ucc_filings_all": {
   "debtor_city": "VARCHAR",
   "debtor_key": "VARCHAR",
@@ -664,7 +676,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "funding_sub_agency_code": "VARCHAR",
   "labor_standards_code": "VARCHAR",
   "labor_standards_descrip": "VARCHAR",
-  "life_to_date_obligated": "DATE",
+  "life_to_date_obligated": "DOUBLE",
   "naics_code": "VARCHAR",
   "ordering_period_end_date": "DATE",
   "parent_award_key_resolved": "VARCHAR",
@@ -705,7 +717,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "is_expired_no_followon": "BOOLEAN",
   "is_terminated": "BOOLEAN",
   "last_action_date": "DATE",
-  "life_to_date_obligated": "DATE",
+  "life_to_date_obligated": "DOUBLE",
   "naics_code": "VARCHAR",
   "parent_award_key_resolved": "VARCHAR",
   "parent_match_flag": "VARCHAR",
