@@ -19,7 +19,8 @@ All scripts: `doppler run -p core-x -c prd -- python3 scripts/demo_bakes/<script
 | `bake_drill_demo.py` | drillDemo.ts (reads reference/equipment_flowdown_factors + demo_region_catalog) | 2026-07-26 (reproduced CO $64B/~$2.7B) |
 | `bake_cost_structure.py` | reference/cost_structure_vectors, cost_structure_weighted, ecec_comp_components, equipment_flowdown_factors (Lance) | 2026-07-26 |
 | `bake_industry_shape.py` | INDUSTRY_SHAPE block in rehearsal.ts (rewrites in place) | 2026-07-26 (parity-gated) |
+| `bake_equipment_prone.py` | EQUIPMENT_PRONE block in rehearsal.ts (six-bucket narrowing page) | 2026-07-26 (post mapping-audit) |
 
-Order when rebuilding everything: cost_structure → industry_shape → macro_region_econ →
-company_regions → drill_demo. Sidecar snapshot staleness moves numbers slightly between
+Order when rebuilding everything: cost_structure → industry_shape → equipment_prone →
+macro_region_econ → company_regions → drill_demo. Sidecar snapshot staleness moves numbers slightly between
 rebuilds — that is expected; the artifact stamp rides every sidecar response.
