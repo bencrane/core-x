@@ -365,6 +365,30 @@ MANIFEST: list[dict] = [
      "sort": ["fy", "pop_state", "pop_county_fips", "pop_zip5"],
      "from_table": "txn_events_combo", "after": ["txn_events_combo"],
      "pop_place_fy": True, "aggregate": True},
+    # demo-region-grain cycle (2026-07-26) — the three place-grain atoms every
+    # region rollup composes from. See the _POP_COMBO_FY_SQL block for why these are
+    # atoms and not the 21 baked region rows the gap report's demand implies.
+    # All three are local off txn_events_combo (zero R2 read); reducing -> aggregate
+    # floor parity. Sorted place-first so a region's state/county predicate prunes.
+    {"ds": "txn_events_combo", "tier": "C", "dest": "pop_combo_fy",
+     "sort": ["pop_state", "pop_county_fips", "naics_code", "psc_code", "fy"],
+     "from_table": "txn_events_combo", "after": ["txn_events_combo"],
+     "pop_combo_fy": True, "aggregate": True},
+    {"ds": "txn_events_combo", "tier": "C", "dest": "pop_entity_fy",
+     "sort": ["pop_state", "pop_county_fips", "uei", "fy"],
+     "from_table": "txn_events_combo",
+     "after": ["txn_events_combo", "gtm_sam_entities"],
+     "pop_entity_fy": True, "aggregate": True},
+    {"ds": "txn_events_combo", "tier": "C", "dest": "pop_award_fy",
+     "sort": ["pop_state", "pop_county_fips", "naics_code", "psc_code", "award_key"],
+     "from_table": "txn_events_combo",
+     "after": ["txn_events_combo", "award_geo_state"],
+     "pop_award_fy": True, "aggregate": True},
+    # the live book, award-grain, place-sorted (entry 2) — 263k rows off the 82.87M spine.
+    {"ds": "award_geo_state", "tier": "C", "dest": "award_geo_active",
+     "sort": ["pop_state", "pop_county_fips", "naics_code", "psc_code"],
+     "from_table": "award_geo_state", "after": ["award_geo_state"],
+     "award_geo_active": True, "aggregate": True},
     # pricing-terms cycle (2026-07-15, operator-directed): entity-event-GEO
     # month rollup — the phrase layer's disclosed refusal ("in <state> (PoP)
     # on event verbs": gtm_txn_recipient_month_rollup carries no PoP). Grain
@@ -711,6 +735,19 @@ MANIFEST: list[dict] = [
     {"ds": "census_county_gazetteer_2023", "tier": "D", "sort": ["county_fips"]},
     {"ds": "census_county_cbsa_2023", "tier": "D", "sort": ["county_fips"]},
     {"ds": "census_county_adjacency", "tier": "D", "sort": ["county_fips", "neighbor_fips"]},
+    # demo-region-grain cycle (2026-07-26): the region-MEMBERSHIP authorities, so a
+    # region rollup is one in-sidecar join instead of a Lance round-trip plus a
+    # client-assembled 300-county IN-list. demo_region_catalog (3,222 rows) = the drill
+    # regions the bakes key on; state_region_county_map (1,398) = the intra-state
+    # directional regions ("western TX") the company-region derivation resolves against;
+    # equipment_flowdown_factors (60) = the per-industry equipment share the bakes weight
+    # every flow-down number with. Slashed Lance paths -> explicit dest.
+    {"ds": "reference/demo_region_catalog", "tier": "D", "dest": "demo_region_catalog",
+     "sort": ["demo_region", "county_fips"]},
+    {"ds": "reference/state_region_county_map", "tier": "D", "dest": "state_region_county_map",
+     "sort": ["state_region", "county_fips"]},
+    {"ds": "reference/equipment_flowdown_factors", "tier": "D",
+     "dest": "equipment_flowdown_factors", "sort": ["production_code"]},
     {"ds": "gtm_sam_people", "tier": "D", "sort": ["uei"]},
     {"ds": "gtm_sam_person_contactability", "tier": "D", "sort": ["sam_person_id"]},
     # person contact channels (gap 2026-07-21-firm-contact-channels, operator-
@@ -913,6 +950,133 @@ SELECT fy, pop_state, pop_county_fips, pop_zip5,
 FROM txn_events_combo
 GROUP BY 1, 2, 3, 4
 ORDER BY fy, pop_state, pop_county_fips, pop_zip5
+"""
+
+# ── demo-region-grain cycle (2026-07-26, sidecar-gaps Mode 2 — SIDECAR_GAP_REPORT
+# 2026-07-26-demo-region-grain, 5 entries + operator directive "too much computing /
+# lag on the actual demo"). The demo bakes recompute region aggregates by scanning the
+# full 108M fact once per region (21 regions/bake, 1-3 min each; the firms shape 408'd
+# outright on large macros and killed a bake run after ~25 min).
+#
+# The promote is deliberately NOT the 21 baked region rows the demand implies. Regions
+# here are UNIONS OF PLACES — macro regions are state unions (14, hardcoded in the bake
+# scripts), drill regions are county-FIPS sets from reference/demo_region_catalog — and
+# a new deal adds a new region. Baking region rows would mean a rebuild per region; the
+# ATOM below composes ANY region (macro, drill, state, county, CBSA, a region invented
+# on a call) by summing the places it contains, with no rebuild. Grain carries
+# pop_state AND pop_county_fips because ~17% of actions have no county: a state-scoped
+# region must keep those rows, so county alone would silently drop them.
+#
+# Three atoms, split by what is composable at which grain:
+#   pop_combo_fy  — region $ by industry×work×FY (entries 3+4). PSC in the grain is an
+#                   operator-directed rider (2026-07-26): work categories/archetypes are
+#                   NAICS×PSC-defined, so category-scoped cuts must answer post-build.
+#   pop_entity_fy — the firm metrics (entry 1). Firm counts/medians/growth are NOT
+#                   additive across places, so the atom is per-firm: "firms winning
+#                   >=$500K in-region" = GROUP BY uei over the region's places.
+#                   first_action_date carries the first-time-winner metric (min over the
+#                   region's places); hq_state carries local-vs-non-local.
+#   pop_award_fy  — award-grain, floored (entries 1-median + 5-archetypes). Unfloored
+#                   this grain is 100.2M rows (probe-measured) — no compression at all.
+#                   The >=$100K award floor (probe: 16.9M of 108M actions survive ->
+#                   10.5M cells) sits an order below the metrics that read it (median
+#                   over awards >=$250K; archetype picks >=$5M), so both are EXACT.
+_POP_COMBO_FY_SQL = """
+CREATE TABLE pop_combo_fy AS
+SELECT pop_state, pop_county_fips, naics_code, psc_code, fy,
+       sum(obligation)                                                    AS obligation_sum,
+       count(*)                                                           AS n_actions,
+       count(DISTINCT award_key)                                          AS award_ct,
+       sum(obligation) FILTER (WHERE type_of_set_aside_code IS NOT NULL
+                                 AND type_of_set_aside_code NOT IN ('NONE','None',''))
+                                                                          AS obl_set_aside,
+       min(action_date)                                                   AS first_action_date,
+       max(action_date)                                                   AS last_action_date
+FROM txn_events_combo
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY pop_state, pop_county_fips, naics_code, psc_code, fy
+"""
+
+# hq join is the same 1:1 uei leg _AWARD_GEO_STATE_SQL uses (gtm_sam_entities is
+# 1 row/uei) — pure column equality, applied AFTER the aggregation so the join
+# runs 7.4M x 2.0M instead of over the 108M fact.
+_POP_ENTITY_FY_SQL = """
+CREATE TABLE pop_entity_fy AS
+WITH agg AS (
+    SELECT pop_state, pop_county_fips, uei, fy,
+           sum(obligation)                                                AS obligation_sum,
+           count(*)                                                       AS n_actions,
+           count(DISTINCT award_key)                                      AS award_ct,
+           sum(obligation) FILTER (WHERE type_of_set_aside_code IS NOT NULL
+                                     AND type_of_set_aside_code NOT IN ('NONE','None',''))
+                                                                          AS obl_set_aside,
+           min(action_date)                                               AS first_action_date,
+           max(action_date)                                               AS last_action_date
+    FROM txn_events_combo
+    WHERE uei IS NOT NULL AND uei <> ''
+    GROUP BY 1, 2, 3, 4
+),
+hq AS (
+    SELECT uei, physical_state AS hq_state FROM gtm_sam_entities
+)
+SELECT a.pop_state, a.pop_county_fips, a.uei, a.fy,
+       a.obligation_sum, a.n_actions, a.award_ct, a.obl_set_aside,
+       a.first_action_date, a.last_action_date,
+       h.hq_state,
+       CASE WHEN a.pop_state IS NOT NULL AND h.hq_state IS NOT NULL
+            THEN (a.pop_state <> h.hq_state) END                          AS is_nonlocal
+FROM agg a
+LEFT JOIN hq h ON h.uei = a.uei
+ORDER BY a.pop_state, a.pop_county_fips, a.uei, a.fy
+"""
+
+# The $ floor is a probe-side gate on the BUILD side of the semi-join, never in the ON
+# clause (that shape planned as PhysicalBlockwiseNLJoin and cost three builds).
+# award_pop_state/_county ride along so ONE mart answers under BOTH place-of-performance
+# semantics the bakes use: transaction-level PoP (pop_state/pop_county_fips — each action
+# where it happened) and award-level PoP (award_pop_* — award_geo_state's per-field
+# arg_max, one place per award, which is what the firms/econ bakes key on today).
+_POP_AWARD_FY_SQL = """
+CREATE TABLE pop_award_fy AS
+WITH keys AS (
+    SELECT award_key,
+           pop_state       AS award_pop_state,
+           pop_county_fips AS award_pop_county_fips
+    FROM award_geo_state
+    WHERE obligated >= 100000 OR current_value >= 100000
+)
+SELECT c.pop_state, c.pop_county_fips, c.naics_code, c.psc_code, c.award_key, c.fy,
+       k.award_pop_state, k.award_pop_county_fips,
+       sum(c.obligation)                    AS obligation_sum,
+       count(*)                             AS n_actions,
+       min(c.action_date)                   AS first_action_date,
+       max(c.action_date)                   AS last_action_date,
+       arg_max(c.uei,             c.action_date) AS uei,
+       arg_max(c.pop_city_name,   c.action_date) AS pop_city_name,
+       arg_max(c.recipient_state, c.action_date) AS recipient_state,
+       arg_max(c.award_topology,  c.action_date) AS award_topology,
+       arg_max(c.awarding_agency_code,     c.action_date) AS awarding_agency_code,
+       arg_max(c.type_of_set_aside_code,   c.action_date) AS type_of_set_aside_code
+FROM txn_events_combo c
+JOIN keys k ON c.award_key = k.award_key
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+ORDER BY c.pop_state, c.pop_county_fips, c.naics_code, c.psc_code, c.award_key
+"""
+
+# Entry 2's active-book rollup. award_geo_state already carries every column, but it is
+# 82.87M rows sorted (pop_state, pop_county_fips, current_end_date) — a region cut is
+# tens of seconds, x21 regions x2 passes per bake. The ACTIVE set is only 263k awards
+# (probe-measured), so the whole live book fits in a mart that reads ms-class and stays
+# award-grain, i.e. count(DISTINCT uei) / per-NAICS-PSC sums / expiry / set-aside /
+# agency cuts are all exact for any region. Snapshot semantics as of the award_state
+# build date, same as combo_award_active_state; current_end_date rides so a consumer can
+# re-apply its own as-of date. Reducing -> aggregate floor parity.
+_AWARD_GEO_ACTIVE_SQL = """
+CREATE TABLE award_geo_active AS
+SELECT *
+FROM award_geo_state
+WHERE is_terminated = FALSE AND days_to_expiry > 0
+ORDER BY pop_state, pop_county_fips, naics_code, psc_code
 """
 
 # novation cycle (2026-07-24): predecessor→successor identity off the award's txn
@@ -2498,6 +2662,14 @@ def _build_one(con, so: dict[str, str], spec: dict,
             con.execute(_AWARD_GEO_STATE_SQL)
         elif spec.get("pop_place_fy"):
             con.execute(_POP_PLACE_FY_SQL)
+        elif spec.get("pop_combo_fy"):
+            con.execute(_POP_COMBO_FY_SQL)
+        elif spec.get("pop_entity_fy"):
+            con.execute(_POP_ENTITY_FY_SQL)
+        elif spec.get("pop_award_fy"):
+            con.execute(_POP_AWARD_FY_SQL)
+        elif spec.get("award_geo_active"):
+            con.execute(_AWARD_GEO_ACTIVE_SQL)
         elif spec.get("novation_events"):
             con.execute(_NOVATION_EVENTS_SQL)
         else:
