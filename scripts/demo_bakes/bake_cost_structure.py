@@ -98,11 +98,19 @@ def main():
     assert sum(mapped.values())/total>=0.99, "mapping coverage regression"
 
     # FA equipment share of investment / IO rental share / VA comp share
+    # FA industry codes carry letter suffixes for split industries (336M motor vehicles,
+    # 336O other transport equip incl aerospace/ships, 5220 etc.) — map letters explicitly;
+    # numeric codes map by prefix. Missing this dropped the equipment-purchase component
+    # for exactly the transport-equipment industries (bug found 2026-07-26).
+    FA_LETTER={"336M":"3361MV","336O":"3364OT","313T":"313TT","315A":"315AL","311A":"311FT","337A":"337","339A":"339"}
     fa=defaultdict(lambda:[0,0])
     for code,eq,tot in con.sql("""SELECT industry_code,
         sum(CASE WHEN asset_code LIKE 'E%' THEN value_musd ELSE 0 END), sum(value_musd)
         FROM bea_fixed_assets_detail WHERE measure='investment' AND year=2024 GROUP BY 1""").fetchall():
-        pc=to_pc(code[:4].rstrip("0") or code[:2]) or to_pc(code[:3]) or to_pc(code[:2])
+        pc=FA_LETTER.get(code)
+        if not pc:
+            digits=code[:4].rstrip("0")
+            pc=to_pc(digits or code[:2]) or to_pc(code[:3]) or to_pc(code[:2])
         if pc: fa[pc][0]+=eq or 0; fa[pc][1]+=tot or 0
     fa_share={pc:(e/t if t else None) for pc,(e,t) in fa.items()}
     d2s={d:s for d,s in con.sql("SELECT bea_detail_code, bea_summary_code FROM bea_naics_concordance GROUP BY 1,2").fetchall() if d}
