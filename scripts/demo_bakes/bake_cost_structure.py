@@ -102,7 +102,8 @@ def main():
     # 336O other transport equip incl aerospace/ships, 5220 etc.) — map letters explicitly;
     # numeric codes map by prefix. Missing this dropped the equipment-purchase component
     # for exactly the transport-equipment industries (bug found 2026-07-26).
-    FA_LETTER={"336M":"3361MV","336O":"3364OT","313T":"313TT","315A":"315AL","311A":"311FT","337A":"337","339A":"339"}
+    FA_LETTER={"336M":"3361MV","336O":"3364OT","313T":"313TT","315A":"315AL","311A":"311FT","337A":"337","339A":"339",
+               "5140":"513","5130":"513","5110":"PUB","110C":"111CA","3380":"339"}
     fa=defaultdict(lambda:[0,0])
     for code,eq,tot in con.sql("""SELECT industry_code,
         sum(CASE WHEN asset_code LIKE 'E%' THEN value_musd ELSE 0 END), sum(value_musd)
@@ -123,8 +124,10 @@ def main():
         va AS (SELECT industry_code, sum(value_musd) va FROM bea_io_use_detail
           WHERE year=2017 AND col_kind='industry' AND row_kind='total_or_va' GROUP BY 1)
         SELECT i.industry_code, i.rent, i.allin+coalesce(v.va,0) FROM inputs i LEFT JOIN va v USING(industry_code)""").fetchall():
-        s=d2s.get(code) or code
-        pc=to_pc(re.sub(r'[^0-9]','',s or "")[:4] or "x")
+        # summary code may be non-numeric (HS/ORE/GSLG*) — fall back to the detail
+        # code's own digits before giving up (531ORE -> 531, 517110 -> 517).
+        s2=d2s.get(code) or code
+        pc=to_pc(re.sub(r'[^0-9]','',s2 or "")[:4] or "x") or to_pc(re.sub(r'[^0-9]','',code or "")[:4] or "x")
         if pc: iob[pc][0]+=rent or 0; iob[pc][1]+=outp or 0
     io_share={pc:(r/o if o else None) for pc,(r,o) in iob.items()}
     name2pc={(d or "").lower():pc for pc,d in desc.items()}
