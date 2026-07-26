@@ -153,14 +153,17 @@ def _schema():
 def _sql(where: str = "") -> str:
     """Straight 1:1 projection + the canonical linkedin_slug bridge key. jsonb → VARCHAR (lossless
     JSON text). The slug builder is interpolated from core.web_norm — NEVER re-inlined."""
-    base = ",\n        ".join(
-        f"CAST({c} AS VARCHAR) AS {c}" if c in _JSONB else c for c in _PASSTHROUGH
-    )
+    def _expr(c: str) -> str:
+        if c == "linkedin_slug":
+            return f"{linkedin_slug('company_linkedin_url')} AS linkedin_slug"
+        if c == "materialized_at":
+            return "now() AS materialized_at"
+        return f"CAST({c} AS VARCHAR) AS {c}" if c in _JSONB else c
+
+    base = ",\n        ".join(_expr(c) for c in _COLS)
     return f"""
     SELECT
-        {base},
-        {linkedin_slug("company_linkedin_url")}  AS linkedin_slug,
-        now()                                    AS materialized_at
+        {base}
     FROM hqx.gtm.clay_enrich_companies
     {where}
     """
