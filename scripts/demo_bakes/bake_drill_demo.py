@@ -2,7 +2,9 @@
 
 Grain: the DRILLS dict below (state-tier = state list; region-tier = county FIPS
 resolved live from reference/demo_region_catalog). Extend DRILLS when new deals'
-demo regions appear.
+demo regions appear. PLUS every macro region from reference/macro_region_catalog
+(state-tier via its composed states) — keyed by macro label, so region-scoped
+flows (video posture) read the same DRILL_DEMO record shape at macro grain.
 
 Methods (authority: docs/reference/DEMO_NARRATIVE_BAKES.md):
   firms:   >=$500K FY23-25 firms; median over awards >=$250K; growth FY25/FY23-1;
@@ -48,34 +50,59 @@ def where_clause(kind, spec):
 
 def tc(s): return " ".join(w.capitalize() for w in (s or "").split())
 
+def macro_states():
+    t=lance.dataset("s3://data-sink/active/reference/macro_region_catalog", storage_options=so())\
+        .to_table(columns=["macro_region","state_usps"]).to_pydict()
+    out={}
+    for m,s in zip(t["macro_region"],t["state_usps"]):
+        out.setdefault(m,[]).append(s)
+    return out
+
 def main():
     to_pc=klems_mapping(); factors=flowdown_factors()
+    runs=dict(DRILLS)
+    for m,sts in macro_states().items():
+        runs[m]=("state",sts)
     def factor(n6):
         return factors.get(to_pc(n6), 0.039)
     national=q("SELECT sum(obligation) FROM gtm_txn_events_slim WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30'")[0][0]
     demo={}; sel_ueis=set(); picks_by={}
     states_of={k:(v[1] if v[0]=="state" else {"southern california":["CA"],"northeast ohio":["OH"],
-               "western TX":["TX"],"central california":["CA"]}[v[1]]) for k,v in DRILLS.items()}
-    for label,(kind,spec) in DRILLS.items():
+               "western TX":["TX"],"central california":["CA"]}[v[1]]) for k,v in runs.items()}
+    def qr(sql, **kw):
+        import urllib.error, time
+        for att in range(3):
+            try: return q(sql, **kw)
+            except urllib.error.HTTPError as e:
+                if e.code!=408 or att==2: raise
+                time.sleep(5)
+    for label,(kind,spec) in runs.items():
         W=where_clause(kind,spec)
-        base=f"""WITH aw AS (SELECT award_key FROM award_geo_state WHERE {W} GROUP BY award_key),
+        # Drills keep the award-level join (numbers must regenerate identically);
+        # macros filter txn_events_combo directly (transaction-level PoP — the
+        # join form 408s on the big multi-state macros).
+        if label in DRILLS:
+            base=f"""WITH aw AS (SELECT award_key FROM award_geo_state WHERE {W} GROUP BY award_key),
 tx AS (SELECT t.uei, t.award_key, t.obligation, t.action_date
   FROM gtm_txn_events_slim t JOIN aw ON t.award_key=aw.award_key)"""
-        f_=q(base+"""
+        else:
+            base=f"""WITH tx AS (SELECT uei, award_key, obligation, action_date
+  FROM txn_events_combo WHERE {W})"""
+        f_=qr(base+"""
 SELECT
  (SELECT count(*) FROM (SELECT uei FROM tx WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY uei HAVING sum(obligation)>=500000)),
  (SELECT median(t) FROM (SELECT sum(obligation) t FROM tx WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY award_key HAVING sum(obligation)>=250000)),
  (SELECT sum(CASE WHEN action_date BETWEEN DATE '2024-10-01' AND DATE '2025-09-30' THEN obligation END)/nullif(sum(CASE WHEN action_date BETWEEN DATE '2022-10-01' AND DATE '2023-09-30' THEN obligation END),0)-1 FROM tx),
  (SELECT count(*) FROM (SELECT uei, min(action_date) m FROM tx GROUP BY uei HAVING m >= DATE '2024-10-01'))""")[0]
-        act=q(f"""WITH act AS (SELECT award_key, any_value(uei) uei, any_value(naics_code) n, any_value(obligated) ob
+        act=qr(f"""WITH act AS (SELECT award_key, any_value(uei) uei, any_value(naics_code) n, any_value(obligated) ob
   FROM award_geo_state WHERE {W} AND is_terminated=false AND current_end_date >= DATE '{TODAY}' GROUP BY award_key)
 SELECT n, sum(ob), count(DISTINCT uei) FROM act GROUP BY n""")
         a_obl=sum(r[1] or 0 for r in act)
         a_firms=len({None})  # placeholder replaced below
-        a_firms=q(f"""SELECT count(DISTINCT uei) FROM award_geo_state
+        a_firms=qr(f"""SELECT count(DISTINCT uei) FROM award_geo_state
   WHERE {W} AND is_terminated=false AND current_end_date >= DATE '{TODAY}'""")[0][0]
         a_flow=sum((r[1] or 0)*factor(r[0]) for r in act)
-        w_=q(f"""SELECT naics_code, sum(obligation) FROM txn_events_combo
+        w_=qr(f"""SELECT naics_code, sum(obligation) FROM txn_events_combo
   WHERE {W} AND action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY 1""")
         obl=sum(v or 0 for _,v in w_)
         ratio=(sum((v or 0)*factor(n) for n,v in w_)/obl) if obl else 0.039
@@ -123,7 +150,7 @@ GROUP BY award_key HAVING sum(obligation) >= 5000000 ORDER BY tot DESC""", limit
                         "note":f"{n} active federal awards · {'local' if r[5] in st else 'non-local'}"}})
         orders.sort(key=lambda o: float(o["value"].replace("$","").replace("B","000").replace("M","")))
         demo[label]["orders"]=orders
-    ts=("/** GENERATED "+TODAY+" — drill-region demo stats + archetype work orders (bake_drill_demo.py).\n"
+    ts=("/** GENERATED "+TODAY+" — drill-region + macro-region demo stats + archetype work orders (bake_drill_demo.py).\n"
         " * Methods: docs/reference/DEMO_NARRATIVE_BAKES.md. flow = per-industry equipment_flowdown_factors v1. Do not hand-edit. */\n"
         "export type DrillOrder = { summary: string; value: string; place: string; firm: { name: string; hq: string; note: string } };\n"
         "export type DrillDemo = { firms: { f500k: string; median: string; growth: string; firstFy25: string }; active: { obl: string; firms: string; flow: string }; outlook: { sharePct: string; uplift: string }; window: { active: string; uplift: string; total: string; equip: string }; orders: DrillOrder[] };\n"
