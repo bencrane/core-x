@@ -1,6 +1,6 @@
 # demo-region-grain
 
-**Status:** `open`
+**Status:** `promoted` — built 2026-07-26, artifact `query_sidecar_20260726T231318Z` (133 tables)
 
 ## Capability
 
@@ -71,4 +71,24 @@ Replaces per-region full-mart scans in the bake scripts with warm keyed lookups.
 
 ## Status
 
-`open`
+`promoted` — shipped 2026-07-26 as four place-grain ATOMS, not the pre-baked region rows
+this dossier originally proposed. Regions here are unions of places and every deal adds one,
+so baked rows would have bought a rebuild per region; the atoms compose any region for free.
+
+- `pop_combo_fy` (9,145,055) — place x naics x **psc** x fy. PSC in the grain is an
+  operator-directed rider (2026-07-26): work categories are NAICS x PSC-defined.
+- `pop_entity_fy` (8,995,497) — place x uei x fy, unfloored, + hq_state/is_nonlocal.
+- `pop_award_fy` (8,911,133) — place x combo x award x fy, awards >=$100K, carrying BOTH
+  transaction-level and award-level PoP.
+- `award_geo_active` (263,488) — the live book, place-sorted.
+- Tier D riders: `demo_region_catalog`, `state_region_county_map`,
+  `equipment_flowdown_factors`.
+
+Delta +0.72 GiB; the four marts cost 45.7 s of a 64.8-min build.
+
+Outcome: the demo-bake region loops went **584.5 s -> 6.8 s of server time (86x)**; the two
+bakes now run end-to-end in 42.5 s and 11.7 s. Disposition + measured per-metric deltas:
+[processed/SIDECAR_GAP_REPORT_2026-07-26-demo-region-grain.md](../processed/SIDECAR_GAP_REPORT_2026-07-26-demo-region-grain.md).
+
+Adjacency candidates NOT taken (still open): agency dimension on the NAICS rollup (x3-5 row
+multiplier), NAICS->KLEMS collapse as a materialized join table, award grain below $100K.

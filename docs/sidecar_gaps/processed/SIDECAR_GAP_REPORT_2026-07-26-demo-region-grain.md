@@ -186,3 +186,80 @@ over awards ≥$250K; archetype picks ≥$5M), so both stay **exact**.
   mart compared that column numerically.
 - Parity: all four are reducing → `aggregate: True` (≥50% floor of the previous artifact's
   count, `>0` on first build).
+
+## Build (measured)
+
+Artifact `query_sidecar_20260726T231318Z` — **133 tables, 1,825,731,902 rows, 74.17 GiB**,
+ledger row 47 `success`, `latest_updated=true`, launch `spawn-deployed`
+(`fc-01KYGB8EY1AAJ00RF264KWGWD2`), **64.8 min**.
+
+⚠ Duration is well outside the documented 22–42 min envelope. The four new marts account for
+**45.7 s** of it (below); the run also logged a Modal *"waiting to be scheduled on a CPU
+worker"* capacity wait early in Tier B. Treat 64.8 min as a scheduling outlier, not a new
+baseline, but re-derive from `ops.query_sidecar_runs` next cycle rather than assuming.
+
+| Mart | Rows built | Probe estimate | Seconds |
+|---|---|---|---|
+| `pop_combo_fy` | 9,145,055 | 10.83M | 14.9 |
+| `pop_entity_fy` | 8,995,497 | 7.36M | 15.9 |
+| `pop_award_fy` | 8,911,133 | 10.49M | 12.9 |
+| `award_geo_active` | 263,488 | 0.26M | 1.0 |
+
+Artifact delta 73.45 → 74.17 GiB (**+0.72 GiB**), against ~110 GiB of runway.
+
+## Disposition
+
+| Entry | Verdict | What shipped | Measured |
+|---|---|---|---|
+| E1 firm stats | **Promoted** | `pop_entity_fy` (counts/growth/first-time) + `pop_award_fy` (median) | 99.9 s/region → ms; the cold first run had 502'd the serving instance outright |
+| E2 active-book rollup | **Promoted** | `award_geo_active` | exact to the cent, 0.00% delta |
+| E3 region × NAICS × FY | **Promoted** | `pop_combo_fy` | exact, 0.00% |
+| E4 national × NAICS × FY | **Promoted** | `pop_combo_fy`, no geo predicate | exact, 0.00% |
+| E5 archetype picks | **Promoted** | `pop_award_fy` | exact; all 21 picks identical (one tie exposed, see below) |
+
+**Serving deltas, old query path vs new, same artifact:**
+
+| Bake | Old | New | Speedup |
+|---|---|---|---|
+| Drill regions (7) | 349.4 s | 3.4 s | **103×** |
+| Macro firms block (14) | 235.1 s | 3.4 s | **69×** |
+| `macro_region_econ` (14) | 432.2 s | 2.9 s | **150×** |
+| **Total region loops** | **584.5 s** | **6.8 s** | **86×** |
+
+End-to-end, including Lance reference reads: `bake_drill_demo.py` **42.5 s** for 21 regions,
+`bake_macro_region_econ.py` **11.7 s**.
+
+**Correctness gate.** Every non-firms number is byte-identical across all 21 regions: active $,
+active firms, flow $, region $, equipment ratio, national share, and all 21 archetype picks.
+The 14 macros are exact on firms/growth/first-time (±0.000%) because they *already* used
+transaction-level PoP. The 7 drills moved to the same semantic (+0.5–0.9% firm counts,
++0.0–2.3% first-time, 0.2–1.7 pp growth), which removes a real defect: drills and macros in
+the same table were previously computed by different rules. `median` moves +0.0–0.5% on all
+21 (the `pop_award_fy` $100K floor).
+
+Two apparent diffs in the regenerated `drillDemo.ts` were **proven not to be this change** —
+`active.firms` (old query shape and new mart return identical values on the same date; the
+prior file was baked a day earlier) and firm-name strings (`bridge_sam_pdl` content moved
+with the artifact; the name lookup was untouched).
+
+**Bugs found and fixed in passing:**
+- Archetype `ORDER BY tot DESC` had no tiebreaker. Two Central California newbuild awards tie
+  at exactly $19.00M, so the displayed pick could flip between runs. Now `ORDER BY tot DESC,
+  award_key`. Same for `macro_region_econ`'s top-3 outside-HQ states.
+- `FIXTURE_SCHEMAS` typed `life_to_date_obligated` as `DATE` (2 occurrences); it is `DOUBLE`.
+  Never exercised before because no mart compared that column numerically.
+- `bake_macro_region_econ.py` did not write `equip_flowdown_est` / `flowdown_factor`, which
+  exist on the landed mart — running the committed version would have silently dropped both
+  columns. Now written, at the shipped flat 0.30.
+
+**Open decision left with the operator (not taken):** `macro_region_econ` is the only card
+using a flat 0.30 flow-down factor instead of per-industry `equipment_flowdown_factors`. Its
+own docstring has called that wrong since it was written. The per-industry value is measured
+(0.044 New England → 0.129 Hawaii) and would drop displayed flow 60–85%. Headline change →
+operator's call; `FLOW_MODE = "per_industry"` takes it.
+
+**Parked, with reason:** `sbir-phase-ladder`. PLATE listed it ready-on-trigger "if the build
+touches `txn_events_combo`" — true of every build — but it is not adjacent to the region-grain
+thought and this build was demo-blocking. Next cycle's lead candidate; spec is written.
+Also parked: agency dimension on `pop_combo_fy` (×3–5 rows), NAICS→KLEMS as a join table,
+award-grain below the $100K floor.

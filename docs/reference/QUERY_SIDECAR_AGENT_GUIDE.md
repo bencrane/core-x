@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — 1,798,697,203 rows across 126 sorted tables as of 2026-07-24; live truth is always
+substrate — 1,825,731,902 rows across 133 sorted tables as of 2026-07-26; live truth is always
 `GET /healthz` (stamp + table count) and `SELECT * FROM _sidecar_manifest` (per-table rows) —
 in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
@@ -82,6 +82,10 @@ curl -s -X POST https://query-sidecar-api.onrender.com/api/v1/sql \
 | `usaspending_award_pop_centroids` | 1/award PoP centroid · 30.7M | state_code, zip5 | Place-of-performance lat/lon per award (zip5→ZCTA). Ad-hoc geo: bounding-box prefilter on state/zip5 (the sort), then haversine; joins awards on generated_unique_award_id. ⚠ **PoP coverage is only ~31% of active awards (topology-biased: vehicles 11%)** — for award-grain geo use `award_geo_state` (below), not this |
 | `award_geo_state` | 1/contract_award_unique_key · 82.87M | pop_state, pop_county_fips, current_end_date | **THE award-grain geography mart** (2026-07-24 geo cycle). PoP derived by **per-field `arg_max` over `txn_events_combo`** — each geo field independently pins the latest txn CARRYING it (coverage-maximizing, NOT strict latest-txn-per-award), giving 100% award-key coverage and ~62% county fill on the active set (1.5× the centroid route). Columns: `pop_state`/`pop_county_fips`/`pop_county_name`/`pop_zip5`/`pop_city_name`/`pop_congressional_code`/`pop_country_code`, `recipient_state_latest`, `hq_state` (SAM `physical_state`), `is_nonlocal` (`pop_state<>hq_state`), `obligated` (life-to-date) + `obligated_snapshot`, `current_value`, `remaining_ceiling_headroom`, `award_topology`, naics/psc, agency+sub-agency, set_aside/award_type/idv_type, dates, `days_to_expiry`, `is_terminated`. County-exact sector cuts + non-local share are single-predicate here. ⚠ county fill is honest-**partial** (~62% active; worse on IDVs) — the number is honest, not complete |
 | `pop_place_fy` | 1/(fy, pop_state, county_fips, zip5) · 486k | fy, pop_state, pop_county_fips, pop_zip5 | Place × FY rollup (2026-07-24). `count(DISTINCT pop_zip5) WHERE fy BETWEEN 2021 AND 2025 AND pop_zip5 IS NOT NULL` = distinct-places-of-work (23,296 zips / 3,101 counties FY21-25, 16 ms — was a serving OOM). Also `n_actions`, `obligation_sum`, first/last_action_date |
+| `pop_combo_fy` | 1/(pop_state, pop_county_fips, naics, psc, fy) · 9.15M | pop_state, pop_county_fips, naics_code, psc_code, fy | **Region $ by industry × work × FY** (2026-07-26 region-grain cycle). `obligation_sum`, `n_actions`, `award_ct`, `obl_set_aside`, first/last_action_date. PSC is IN THE GRAIN, so archetype/work-category cuts answer here. National = drop the geo predicate |
+| `pop_entity_fy` | 1/(pop_state, pop_county_fips, uei, fy) · 9.00M | pop_state, pop_county_fips, uei, fy | **The region FIRM atom.** Same measures + `first_action_date` (first-time-winner metric), `hq_state` + `is_nonlocal` (local vs imported). Unfloored — every firm, every award size. Firm counts/medians/growth are NOT additive across places: `GROUP BY uei` over the region's places FIRST, then apply the threshold |
+| `pop_award_fy` | 1/(pop_state, pop_county_fips, naics, psc, award_key, fy), awards ≥$100K · 8.91M | pop_state, pop_county_fips, naics_code, psc_code, award_key | **Award-grain, floored.** `obligation_sum` + uei, pop_city_name, recipient_state, award_topology, awarding_agency_code, type_of_set_aside_code, and **`award_pop_state`/`award_pop_county_fips`** (award-level PoP alongside transaction-level — one mart, both semantics). Median-award and top-N archetype picks. ⚠ the ≥$100K floor is why this is 8.9M and not **100.2M** (probe-measured unfloored — zero compression vs the fact); it is exact for anything flooring above $100K and WRONG for firm counts (−49…−55%) or first-time winners (−53…−57%) — use `pop_entity_fy` for those |
+| `award_geo_active` | 1/active award · 263k | pop_state, pop_county_fips, naics_code, psc_code | **The live book, place-sorted** (2026-07-26). `award_geo_state` filtered to `is_terminated=FALSE AND days_to_expiry>0`, full width. Region active $ / distinct firms / per-NAICS-PSC / expiry / set-aside / agency cuts are exact and ms-class. Award-level PoP (inherited), snapshot as of the build |
 | `gtm_award_novation_events` | 1/(J/S/T action) · 88k | action_date, to_uei | **Change-of-hands events** (2026-07-24 novation cycle). The predecessor→successor identity FPDS carries in no column, derived via a `lag()` window over `txn_rows_by_award`: `action_type_code` (J=novation, S=change PIID, T=transfer), `from_uei`/`from_name` → `to_uei`/`to_name`, `is_uei_change` (true change-of-hands vs same-UEI re-paper), `prev_action_date`, award $ context. Use for M&A/novation GTM triggers — the accurate complement to the `sam_master_profile_deltas` proxy |
 
 ### The combo-portrait layer (industry × work × time × geo × agency × sub-out, zoomable)
@@ -226,6 +230,8 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `military_installations` | 1/DoD MIRTA site point · 831 (792 USA-active) | state_code | Installation overlay: `site_name`, `feature_name`/`feature_description`, `component` (usa/usn/usaf/…), `operational_status` (`act` = active), `is_joint_base`, `latitude`/`longitude`. Filter `country='USA' AND operational_status='act'` for the serving overlay; join territory cuts via state or lat/lon distance |
 | `naics_reference` · `psc_reference` · `gtm_naics_psc_pairs` · `agency_vocab` · `country_vocab` | code refs · 2.1k/6.1k/321k/75/~250 | code | ⚠ vintages: both reference tables carry multiple `source_vintage` rows per code; `psc_reference WHERE is_active` returns NULL names for retired-vintage codes that still carry award dollars. **Display names: join `v_psc_names` / `v_naics_names`** (active-else-latest-vintage, one row per code) |
 | `national_county2020` · `census_county_gazetteer_2023` · `census_county_cbsa_2023` · `census_county_adjacency` | county refs · 3.2k/3.2k/1.9k/22.2k | county_fips | County authorities (2026-07-24 geo cycle), all keyed `county_fips`. `national_county2020` + gazetteer = county name/state authority + centroid geometry (ship both — CT dual FIPS vintage). `census_county_cbsa_2023` = county→metro (CBSA/CSA) rollup for zoom-out. **`census_county_adjacency` (`county_fips`→`neighbor_fips`) = the honest county-neighbors sector envelope** that replaces the deprecated 45-mile haversine radius |
+| `demo_region_catalog` · `state_region_county_map` | region membership · 3,222 / 1,398 | demo_region, county_fips / state_region, county_fips | **Region-membership authorities** (2026-07-26). `demo_region_catalog` = the named drill regions ("southern california"); `state_region_county_map` = intra-state directional regions ("western TX"). JOIN these instead of shipping a 300-county `IN`-list from the client. ⚠ the 14 MACRO regions are NOT here — they live in `reference/macro_region_catalog` on Lance and are state unions, so `pop_state IN (…)` covers them |
+| `equipment_flowdown_factors` | 1/production_code · 60 | production_code | Per-industry equipment share (`equipment_related_share` = purchase + bare rental + operated-rental est) keyed by KLEMS `production_code` — the flow-down weight the demo cards apply per NAICS. Map NAICS6→production_code via `bea_bls_klems` |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
 
 ### VA veteran demand-side cluster (county-grain, FIPS-keyed)
@@ -716,6 +722,84 @@ WHERE fy BETWEEN 2021 AND 2025 AND pop_zip5 IS NOT NULL;
 ⚠ county fill tops out ~62% on the active universe (source-bounded, worse on IDVs) — the number
 is honest-**partial**, not complete. Per-field `arg_max` means each geo field pins the latest txn
 that CARRIES it (coverage-maximizing), not one single latest transaction.
+
+### Region-grain rollups — compose regions from places (2026-07-26 demo-region-grain cycle)
+
+**A region is a set of places, never a baked row.** Macro regions are state unions, drill regions
+are county-FIPS sets (`demo_region_catalog`), and a new deal invents new ones. The four marts
+below are keyed by place, so any region — including one named on a call — is a `WHERE` clause.
+Never scan `txn_events_combo` per region for these shapes again.
+
+Grain carries `pop_state` **and** `pop_county_fips`: 16.8% of actions have no county, so a
+state-scoped region MUST filter on `pop_state`, not on a county list, or it silently drops them.
+
+```sql
+-- region $ by industry x work x FY (was: 2.7-3.4 s/region full-mart GROUP BY):
+SELECT naics_code, sum(obligation_sum) AS obl
+FROM pop_combo_fy
+WHERE pop_state IN ('OH','MI','IN','IL','WI','MN') AND fy BETWEEN 2023 AND 2025
+GROUP BY 1;
+-- national = drop the geo predicate. Work-category cut = add psc_code (or the
+-- (naics_code, psc_code) IN (...) archetype pair-list) — PSC is in the grain.
+
+-- drill region by county, membership joined in-sidecar (no client IN-list):
+SELECT sum(f.obligation_sum)
+FROM pop_combo_fy f JOIN demo_region_catalog r ON f.pop_county_fips = r.county_fips
+WHERE r.demo_region = 'southern california' AND f.fy BETWEEN 2023 AND 2025;
+
+-- the firm metrics (was: 99.9 s/region, and it 502'd the serving instance cold):
+WITH r AS (SELECT * FROM pop_entity_fy WHERE pop_state IN ('OH','MI','IN','IL','WI','MN'))
+SELECT
+  count(*) FILTER (WHERE won_23_25 >= 500000)                    AS firms_500k,
+  count(*) FILTER (WHERE first_action >= DATE '2024-10-01')      AS first_time_fy25,
+  sum(won_25) / nullif(sum(won_23), 0) - 1                       AS book_growth
+FROM (SELECT uei,
+             sum(obligation_sum) FILTER (WHERE fy BETWEEN 2023 AND 2025) AS won_23_25,
+             sum(obligation_sum) FILTER (WHERE fy = 2023)                AS won_23,
+             sum(obligation_sum) FILTER (WHERE fy = 2025)                AS won_25,
+             min(first_action_date)                                      AS first_action
+      FROM r GROUP BY uei);
+-- firm counts / medians / growth are NOT additive across places — that is exactly why the
+-- atom is per-firm. GROUP BY uei over the region's places first, THEN apply the threshold.
+
+-- median award + archetype picks, off the >=$100K award atom:
+SELECT median(t) FROM (
+  SELECT award_key, sum(obligation_sum) t FROM pop_award_fy
+  WHERE pop_state IN ('OH','MI','IN','IL','WI','MN') AND fy BETWEEN 2023 AND 2025
+  GROUP BY award_key HAVING sum(obligation_sum) >= 250000);
+
+SELECT award_key, sum(obligation_sum) tot, any_value(uei), any_value(pop_city_name),
+       any_value(pop_state), any_value(recipient_state)
+FROM pop_award_fy
+WHERE (naics_code, psc_code) IN (('237310','Y1LB'),('237990','Y1KA'),('237990','Y1KB'),
+                                 ('237990','Y1PZ'),('237310','Z2LB'))
+  AND pop_state IN ('OH','MI','IN','IL','WI','MN') AND fy BETWEEN 2023 AND 2025
+GROUP BY award_key HAVING sum(obligation_sum) BETWEEN 25000000 AND 250000000
+ORDER BY tot DESC;                                  -- was 8.1-8.3 s per archetype x region
+
+-- the live book in a region (active $, distinct firms, per-NAICS flow-down input):
+SELECT naics_code, sum(obligated) AS active_obl, count(DISTINCT uei) AS firms
+FROM award_geo_active
+WHERE pop_state IN ('OH','MI','IN','IL','WI','MN')
+GROUP BY 1;   -- flow-down: JOIN equipment_flowdown_factors on the KLEMS production_code
+```
+
+**Two place-of-performance semantics, one mart.** `pop_combo_fy` / `pop_entity_fy` /
+`pop_award_fy`'s `pop_state`/`pop_county_fips` are **transaction-level** — where each action
+happened. `pop_award_fy` additionally carries `award_pop_state`/`award_pop_county_fips`, the
+**award-level** PoP from `award_geo_state`'s per-field `arg_max` (one place per award, all its
+money counted there) — the semantics the demo bakes key on today. Filter whichever the question
+means; do not mix them in one aggregate.
+
+⚠ `pop_award_fy` holds only awards with life-to-date obligated **or** current value ≥ $100K
+(unfloored the grain is 100.2M rows — no compression at all vs the 108M fact). Both metrics it
+serves floor higher ($250K median, $5M archetypes), so they are exact; a question about awards
+below $100K must go back to `txn_events_combo`.
+
+⚠ `award_ct` in `pop_combo_fy`/`pop_entity_fy` is a per-cell `count(DISTINCT award_key)`. Summing
+it across places double-counts awards that span places — `sum(obligation_sum)` is additive,
+`sum(award_ct)` is not. For an exact regional award count, `count(DISTINCT award_key)` over
+`pop_award_fy`.
 
 ### Novation / change-of-hands — `action_type_code`, NOT `reason_for_modification`
 

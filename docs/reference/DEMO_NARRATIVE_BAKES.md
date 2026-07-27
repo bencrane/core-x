@@ -20,23 +20,51 @@ GENERATED header naming its source mart.
 
 ## The dollars (sidecar-derived, FY window = FY23–25 = 2022-10-01..2025-09-30)
 
+**Substrate (2026-07-26 region-grain cycle).** Every region number below reads a
+precomputed place-grain mart — `pop_entity_fy` (firm × place × FY), `pop_combo_fy`
+(NAICS × PSC × place × FY), `pop_award_fy` (award × place × FY, awards ≥$100K),
+`award_geo_active` (the live book) — instead of scanning the 108M-row transaction fact
+once per region. Measured across all 21 regions: **584.5 s → 6.8 s of server time (86×)**;
+the two bakes now run end-to-end in 42.5 s and 11.7 s. The marts are keyed by place, so a
+new region is a dict entry, never a sidecar rebuild. Query shapes:
+`docs/reference/QUERY_SIDECAR_AGENT_GUIDE.md` §4.
+
+**Place-of-performance is TRANSACTION-level** for every region firm/dollar number: each
+action counts where it happened. It is *not* award-level (one place per award, its whole
+history counted there). Before 2026-07-26 the 14 macros already worked this way — the
+award-level join 408'd on them — while the 7 drills did not, so two regions in the same
+table were computed by different rules; they are now one rule. Measured at the switch:
+macros exact (±0.000% on firms/growth/first-time), drills +0.5–0.9% on firm counts,
++0.0–2.3% on first-time, and 0.2–1.7 percentage points on growth. Active-book numbers are
+unaffected — `award_geo_active` inherits award-level PoP, as before.
+
 - **Macro econ card** (`reference/macro_region_econ`, 14 rows): per macro region —
-  obligated = sum(gtm_txn_events_slim.obligation) over awards with PoP state in the region
-  (award_geo_state join on award_key); firms = distinct UEI; outside % = share of dollars
-  won by hq_state outside the region; top-3 outside HQ states by dollars.
-- **Drill cards** (drillDemo.ts, 7 seeded drill regions): same query family filtered by
-  state(s) or region county FIPS. Firms stats: firms ≥$500K FY23–25; median award over
-  awards ≥$250K (the $250K floor is a positioning choice — medians are ~3× any floor in
-  this power-law book); growth = FY25/FY23 obligations − 1; first-time = UEIs whose first
-  region action ≥ 2024-10-01. Active card: award_geo_state, is_terminated=false AND
-  current_end_date ≥ today, sum(obligated).
+  obligated = sum of in-region transaction obligations (`pop_entity_fy`); firms = distinct
+  UEI; outside % = share of dollars won by hq_state outside the region; top-3 outside HQ
+  states by dollars (ties broken by state code so the ordering is stable run to run);
+  equipment-scope obligations = `pop_combo_fy` ⋈ `naics_psc_equipment_needs` (in_scope).
+  `flowdown_factor` is a **flat 0.30** (v1), which is what macroEcon.ts documents and
+  displays. ⚠ This is the one card that does NOT use per-industry
+  `equipment_flowdown_factors` like every other flow-down number here. The per-industry
+  value is available and measured — 0.044 (New England) to 0.129 (Hawaii) — and adopting
+  it drops displayed flow 60–85% (Great Lakes ~$18B → ~$3.7B). Open decision; flip
+  `FLOW_MODE = "per_industry"` in the bake to take it.
+- **Drill cards** (drillDemo.ts, 7 seeded drill regions + all 14 macros): same query family
+  filtered by state(s) or region county FIPS. Firms stats: firms ≥$500K FY23–25; median
+  award over awards ≥$250K (the $250K floor is a positioning choice — medians are ~3× any
+  floor in this power-law book); growth = FY25/FY23 obligations − 1; first-time = UEIs whose
+  first region action ≥ 2024-10-01. All four thresholds are named constants at the top of
+  the bake, applied at query time — no mart is baked at these values. Active card:
+  `award_geo_active`, current_end_date ≥ today, sum(obligated).
 - **Outlook/window**: region share = region FY23–25 obligations / national ($2,309.9B);
   OBBA uplift = $785B × share × 0.40 ramp (v1 assumption); window total = active + uplift.
 - **Work-order cards**: 3 fixed archetypes — roads (237310×Y1LB + 237990×Y1K*/Y1PZ),
   newbuild (236220×Y1JZ/Y1PZ/Y1AA/Y1AZ/Y1DA), repair (236220×Z2JZ/Z2AA/Z1JZ/Z2AZ) —
   real awards $25–250M in-region ($5M fallback floor for thin regions) via
-  txn_events_combo; firm names via bridge_sam_pdl → entity_profile_gold; active counts
-  via contractor_award_summary.
+  `pop_award_fy`; firm names via bridge_sam_pdl → entity_profile_gold; active counts
+  via contractor_award_summary. Ordering carries `award_key` as a tiebreaker — ties on
+  the dollar total are real (two Central California newbuild awards sit at exactly
+  $19.00M) and without it the displayed pick flips between runs.
 
 ## The industry shape + cost structure
 
