@@ -1,0 +1,1850 @@
+{
+   "@context": "https://project-open-data.cio.gov/v1.1/schema/catalog.jsonld",
+   "@type": "dcat:Catalog",
+   "conformsTo": "https://resources.data.gov/resources/dcat-us/",
+   "describedBy": "https://project-open-data.cio.gov/v1.1/schema/catalog.json",
+   "dataset": [
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://www.usaspending.gov/download_center/award_data_archive",
+         "title": "Award Data Archive",
+         "description": "The Award Data Archive features major agencies award transaction data for full fiscal years.",
+         "keyword": [
+            "award",
+            "agency",
+            "transactions",
+            "fiscal",
+            "government",
+            "financial",
+            "contracts",
+            "payments",
+            "grants",
+            "IDV",
+            "loans",
+            "assistance",
+            "download",
+            "recipient",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P1M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://www.usaspending.gov/download_center/award_data_archive",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://www.usaspending.gov/download_center/award_data_archive",
+               "format": "Zipped CSV",
+               "downloadURL": "",
+               "mediaType": "application/zip",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P1M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://www.usaspending.gov/download_center/custom_award_data",
+         "title": "Custom Award Data",
+         "description": "Custom Award Data provides GUI-selectable composition of award data retrieval. Selections available are: award level (Prime Awards, Sub-Awards), award types (Contracts, Direct Payments, Grants, IDVs, Loans and Other Financial Assistance), awarding agency and sub-agency, recipient location, date type and date range. Downloading this data gives you access to every attribute of any particular award, including data that may not be surfaced on this site.",
+         "keyword": [
+            "custom",
+            "award",
+            "agency",
+            "transactions",
+            "fiscal",
+            "government",
+            "financial",
+            "contracts",
+            "payments",
+            "grants",
+            "IDV",
+            "loans",
+            "assistance",
+            "download",
+            "recipient",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P1M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://www.usaspending.gov/download_center/custom_award_data",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://www.usaspending.gov/download_center/custom_award_data",
+               "format": "Zipped CSV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P1M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://www.usaspending.gov/download_center/custom_account_data",
+         "title": "Custom Account Data",
+         "description": "Account data provides GUI-selectable filtering which covers all spending data, including non-award spending. The data is available on two different levels, federal account and treasury account. Federal account data is essentially a roll-up of multiple treasury account data. The files available are categorized by type, according to the scope of spending they cover. More information on the different file types can be found in our Custom Account Data Dictionary. The Account data contains the most encompassing amounts of spending throughout U.S. government agencies. Unlike award data, account data include spending that is not tied to awards, such as operational costs and employee salaries.",
+         "keyword": [
+            "custom",
+            "account",
+            "agency",
+            "award",
+            "spending",
+            "budget function",
+            "federal",
+            "treasury",
+            "fiscal",
+            "government",
+            "download",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P3M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://www.usaspending.gov/download_center/custom_account_data",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://www.usaspending.gov/download_center/custom_account_data",
+               "format": "Zipped CSV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P3M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://files.usaspending.gov/agency_submissions/",
+         "title": "Agency USAspending DABS Submissions",
+         "description": "Provides access to original source data files submitted by agencies to the DATA act. Files are accessed by a GUI hierarchy of year and agency.",
+         "keyword": [
+            "agency",
+            "raw",
+            "data",
+            "spending",
+            "financial",
+            "assistance",
+            "department",
+            "submission",
+            "download",
+            "DABS",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P3M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://files.usaspending.gov/agency_submissions/",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://files.usaspending.gov/agency_submissions/",
+               "format": "TXT",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P3M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://files.usaspending.gov/agency_submissions/",
+         "title": "Agency USAspending FABS Submissions",
+         "description": "Provides access to original source data files submitted by agencies to the DATA act. Files are accessed by a GUI hierarchy of year and agency.",
+         "keyword": [
+            "agency",
+            "raw",
+            "data",
+            "spending",
+            "financial",
+            "assistance",
+            "department",
+            "submission",
+            "download",
+            "FABS",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P1M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://files.usaspending.gov/agency_submissions/",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://files.usaspending.gov/agency_submissions/",
+               "format": "CSV",
+               "description": "GUI-filtered selection of download files by agency, award type, and fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P1M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://files.usaspending.gov/database_download/",
+         "title": "USAspending Database Downloads",
+         "description": "Provides the entire data set used by USAspending.gov as a PostgreSQL archive, which includes DATA Act data from Fiscal Year 2001 to present. Additionally a much smaller subset of data is available for developers or testers as PostgreSQL archive with enough data flor locally testinga random sampling of awards, submission, and reference data. Database download archives are generated on a monthly basis.",
+         "keyword": [
+            "agency",
+            "spending",
+            "financial",
+            "assistance",
+            "award",
+            "database",
+            "SQL",
+            "download",
+            "PostgreSQL",
+            "submission",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P1M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://files.usaspending.gov/database_download/",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://files.usaspending.gov/database_download/",
+               "format": "Zipped PostgreSQL",
+               "description": "Web browser selectable complete and reduce PostgreSQL download links",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "varies according to GUI filter selections"
+            }
+         ],
+         "accrualPeriodicity": "R/P1M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      },
+      {
+         "type": "dcat:Dataset",
+         "identifier": "https://api.usaspending.gov",
+         "title": "API",
+         "description": "The USAspending API (Application Programming Interface) allows the public to access comprehensive U.S. government spending data.The data include spending on awards (e.g., who received federal contracts or grants, geographic breakdowns, agency breakdowns, and much more). The data also include account-level, non-award spending such as federal employee compensation. You can learn more about the data and the federal law that requires it to be publicly accessible (the DATA Act) at http://fedspendingtransparency.github.io.",
+         "keyword": [
+            "API",
+            "spending",
+            "financial",
+            "assistance",
+            "award",
+            "contracts",
+            "grants",
+            "account",
+            "agency",
+            "transactions",
+            "fiscal",
+            "government",
+            "spending",
+            "Governmentwide Data Standards",
+            "Department of the Treasury",
+            "Fiscal Service Data Transparency Site",
+            "Data Architecture",
+            "Federal Spending",
+            "Federal Transparency",
+            "Federal Spending Transparency",
+            "Federal Contract",
+            "Federal Funding",
+            "DATA Act",
+            "Data Broker",
+            "Governmentwide Spending Data Model",
+            "GSDM",
+            "GSDM Data Standards",
+            "GSDM Architecture",
+            "GSDM Schema Releases",
+            "USA Spending",
+            "FFATA",
+            "Financial Assistance Data",
+            "Award Financial Data"
+         ],
+         "modified": "R/P1M",
+         "publisher": {
+            "@type": "org:Organization",
+            "name": "Bureau of the Fiscal Service",
+            "subOrganizationOf": {
+               "@type": "org:Organization",
+               "name": "U.S. Treasury"
+            }
+         },
+         "contactPoint": {
+            "@type": "vcard:Contact",
+            "fn": "Lee Burke",
+            "hasEmail": "mailto:lee.burke@fiscal.treasury.gov"
+         },
+         "accessLevel": "public",
+         "bureauCode": [
+            "015:12"
+         ],
+         "programCode": [
+            "015:031"
+         ],
+         "license": "",
+         "rights": "",
+         "landingPage": "https://api.usaspending.gov",
+         "describedBy": "https://fiscal.treasury.gov/data-transparency/GSDM-current.html",
+         "distribution": [
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/",
+               "format": "JSON",
+               "description": "Returns agency overview information for USAspending.gov's Agency Details page for agencies that have ever awarded",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/budget_function/",
+               "format": "JSON",
+               "description": "Returns a list of Budget Functions and Budget Subfunctions for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> budget_function"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/budget_function/count/",
+               "format": "JSON",
+               "description": "Returns the count of Budget Functions for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> budget_function count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/budgetary_resources/",
+               "format": "JSON",
+               "description": "Returns budgetary resources and obligations for the agency and fiscal year requested",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> budgetary_resources"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/federal_account/",
+               "format": "JSON",
+               "description": "Returns a list of Federal Accounts and Treasury Accounts for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> federal_account"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/federal_account/count/",
+               "format": "JSON",
+               "description": "Returns the count of Federal Accounts and Treasury Accounts for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> federal_account count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/object_class/",
+               "format": "JSON",
+               "description": "Returns a list of Object Classes for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> object_class"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/object_class/count/",
+               "format": "JSON",
+               "description": "Returns the count of Object Classes for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> object_class count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/program_activity/",
+               "format": "JSON",
+               "description": "Returns a list of Program Activity categories for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> program_activity"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/agency/<TOPTIER_AGENCY_CODE>/program_activity/count/",
+               "format": "JSON",
+               "description": "Returns the count of Program Activity categories for the agency in a single fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "agency <TOPTIER_AGENCY_CODE> program_activity count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/a/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol Availability Type Code (A) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts a"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/aid/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol/Federal Account Agency Identifier (AID) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts aid"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/ata/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol Allocation Transfer Agency Identifier (ATA) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts ata"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/bpoa/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol Beginning Period of Availability (BPOA) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts bpoa"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/epoa/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol Ending Period of Availability (EPOA) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts epoa"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/main/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol/Federal Account Main Account Code (MAIN) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts main"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/accounts/sub/",
+               "format": "JSON",
+               "description": "Returns Treasury Account Symbol Sub-Account Code (SUB) filtered by other components provided in the request filter",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete accounts sub"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/awarding_agency/",
+               "format": "JSON",
+               "description": "Returns awarding agencies matching the specified search text",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete awarding_agency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/cfda/",
+               "format": "JSON",
+               "description": "Returns CFDA programs matching the specified search text",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete cfda"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/city/",
+               "format": "JSON",
+               "description": "Returns city names matching the search text, sorted by relevance",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete city"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/funding_agency/",
+               "format": "JSON",
+               "description": "Returns funding agencies matching the specified search text",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete funding_agency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/glossary/",
+               "format": "JSON",
+               "description": "Returns glossary terms matching provided search text",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete glossary"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/naics/",
+               "format": "JSON",
+               "description": "Returns NAICS objects matching the specified search text",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete naics"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/autocomplete/psc/",
+               "format": "JSON",
+               "description": "Returns product or service (PSC) codes and their descriptions based on a search string. This may be the 4-character PSC code or a description string.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "autocomplete psc"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/award_spending/recipient/",
+               "format": "JSON",
+               "description": "Returns all award spending by recipient for a given fiscal year and agency id",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "award_spending recipient"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns details about specific award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/accounts/",
+               "format": "JSON",
+               "description": "Returns a list of federal accounts for the indicated award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards accounts"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/count/federal_account/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the number of federal accounts associated with the award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards count federal_account <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/count/subaward/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the number of subawards associated with the award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards count subaward <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/count/subaward/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the number of subawards associated with the award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards count subaward <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/count/transaction/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the number of transactions associated with the award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards count transaction <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/funding",
+               "format": "JSON",
+               "description": "Returns federal account, awarding agencies, funding agencies, and transaction obligated amount information for a requested award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards funding"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/funding_rollup",
+               "format": "JSON",
+               "description": "Returns aggregated count of awarding agencies, federal accounts, and total transaction obligated amount for an award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards funding_rollup"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/awards/last_updated/",
+               "format": "JSON",
+               "description": "Returns date of last update",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "awards last_updated"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/budget_functions/list_budget_functions/",
+               "format": "JSON",
+               "description": "Returns all Budget Functions associated with a TAS, ordered by Budget Function code",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "budget_functions list_budget_functions"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/budget_functions/list_budget_subfunctions/",
+               "format": "JSON",
+               "description": "Returns all Budget Functions associated with a TAS, ordered by Budget Function code",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "budget_functions list_budget_subfunctions"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/bulk_download/awards/",
+               "format": "JSON",
+               "description": "Generates zip file for download of award data in CSV format",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "bulk_download awards"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/bulk_download/list_agencies/",
+               "format": "JSON",
+               "description": "Lists all the agencies and the subagencies or federal accounts associated under specific agencies",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "bulk_download list_agencies"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/bulk_download/list_monthly_files/",
+               "format": "JSON",
+               "description": "Lists the monthly files associated with the requested params",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "bulk_download list_monthly_files"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/bulk_download/status/",
+               "format": "JSON",
+               "description": "Returns the current status of a download job that that has been requested with the v2/bulk_download/awards/ or v2/bulk_download/transaction/ endpoint that same day.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "bulk_download status"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/agency/count/",
+               "format": "JSON",
+               "description": "Returns the count of Agencies which received disaster/emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster agency count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/agency/loans/",
+               "format": "JSON",
+               "description": "Returns insights on the Agencies awarding loans from disaster/emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster agency loans"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/agency/spending/",
+               "format": "JSON",
+               "description": "Returns insights on the Agencies which received disaster/emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster agency spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/award/amount/",
+               "format": "JSON",
+               "description": "Returns account data obligation and outlay spending aggregations of all (File D) Awards which received disaster/emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster award amount"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/award/count/",
+               "format": "JSON",
+               "description": "Returns the count of account data obligation and outlay spending aggregations of all (File D) Awards which received disaster/emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster award count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/cfda/count/",
+               "format": "JSON",
+               "description": "Dimension Count of Disaster/Emergency funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster cfda count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/cfda/loans/",
+               "format": "JSON",
+               "description": "Records of loan Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster cfda loans"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/cfda/spending/",
+               "format": "JSON",
+               "description": "Records of spending Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster cfda spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/def_code/count/",
+               "format": "JSON",
+               "description": "Dimension Count of Disaster/Emergency funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster def_code count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/federal_account/count/",
+               "format": "JSON",
+               "description": "Dimension Count of Disaster/Emergency funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster federal_account count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/federal_account/loans/",
+               "format": "JSON",
+               "description": "Records of loan Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster federal_account loans"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/federal_account/spending/",
+               "format": "JSON",
+               "description": "Records of spending Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster federal_account spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/object_class/count/",
+               "format": "JSON",
+               "description": "Dimension Count of Disaster/Emergency funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster object_class count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/object_class/loans/",
+               "format": "JSON",
+               "description": "Records of loan Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster object_class loans"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/object_class/spending/",
+               "format": "JSON",
+               "description": "Records of spending Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster object_class spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/overview/",
+               "format": "JSON",
+               "description": "Overview of Disaster/Emergency funding and spending",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster overview"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/recipient/count/",
+               "format": "JSON",
+               "description": "Dimension Count of Disaster/Emergency funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster recipient count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/recipient/loans/",
+               "format": "JSON",
+               "description": "Records of loan Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster recipient loans"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/recipient/spending/",
+               "format": "JSON",
+               "description": "Records of spending Disaster/Emergency funding data by dimension",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster recipient spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/disaster/spending_by_geography/",
+               "format": "JSON",
+               "description": "Geographic award spending of Disaster/Emergency funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "disaster spending_by_geography"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/accounts/",
+               "format": "JSON",
+               "description": "Generates zip file for download of account data in CSV format",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download accounts"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/assistance/",
+               "format": "JSON",
+               "description": "Returns a zipped file containing Assistance data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download assistance"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/awards/",
+               "format": "JSON",
+               "description": "Generates zip file for download of award data in CSV format",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download awards"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/contract/",
+               "format": "JSON",
+               "description": "Returns a zipped file containing Contract data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download contract"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/count/",
+               "format": "JSON",
+               "description": "Returns the number of transactions that would be included in a download request for the given filter set",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/disaster/",
+               "format": "JSON",
+               "description": "Returns a zipped file containing Account and Award data for the Disaster Funding",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download disaster"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/disaster/recipients/",
+               "format": "JSON",
+               "description": "Returns a zipped file containing Disaster Recipient Funding data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download disaster recipients"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/idv/",
+               "format": "JSON",
+               "description": "Returns a zipped file containing IDV data",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download idv"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/status/",
+               "format": "JSON",
+               "description": "gets the current status of a download job that that has been requested with the v2/download/awards/ or v2/download/transaction/ endpoint that same day",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download status"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/download/transactions/",
+               "format": "JSON",
+               "description": "Generates zip file for download of award data in CSV format",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "download transactions"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_accounts/<ACCOUNT_CODE>/",
+               "format": "JSON",
+               "description": "Returns a federal account based on its federal account code",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_accounts <ACCOUNT_CODE>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_accounts/<ACCOUNT_CODE>/available_object_classes/",
+               "format": "JSON",
+               "description": "Returns financial spending data by object class based on account's internal ID",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_accounts <ACCOUNT_CODE> available_object_classes"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_accounts/<ACCOUNT_CODE>/fiscal_year_snapshot/<YEAR>/",
+               "format": "JSON",
+               "description": "Returns budget information for a federal account for the year provided based on account's internal ID",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_accounts <ACCOUNT_CODE> fiscal_year_snapshot <YEAR>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_accounts/<ACCOUNT_CODE>/fiscal_year_snapshot/",
+               "format": "JSON",
+               "description": "Returns budget information for a federal account for the most recent year based on account's internal ID",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_accounts <ACCOUNT_CODE> fiscal_year_snapshot"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_accounts/",
+               "format": "JSON",
+               "description": "Returns financial spending data by object class",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_accounts"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/federal_obligations/",
+               "format": "JSON",
+               "description": "Returns a paginated list of obligations for the provided agency for the provided year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "federal_obligations"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/financial_balances/agencies/",
+               "format": "JSON",
+               "description": "Returns financial balances by agency and the latest quarter for the given fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "financial_balances agencies"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/financial_spending/major_object_class/",
+               "format": "JSON",
+               "description": "Returns financial spending data by object class for the latest quarter based on the given fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "financial_spending major_object_class"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/financial_spending/object_class/",
+               "format": "JSON",
+               "description": "Returns financial spending data by object class for the latest quarter based on the given fiscal year",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "financial_spending object_class"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/accounts/",
+               "format": "JSON",
+               "description": "Returns a list of federal accounts for the indicated IDV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs accounts"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/activity/",
+               "format": "JSON",
+               "description": "Returns information about child awards and grandchild awards for a given IDV (Indefinite Delivery Vehicle).",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs activity"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/amounts/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the direct children of an IDV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs amounts <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/awards/",
+               "format": "JSON",
+               "description": "Returns IDVs or contracts related to the requested Indefinite Delivery Vehicle award (IDV)",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs awards"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/count/federal_account/<AWARD_ID>/",
+               "format": "JSON",
+               "description": "Returns the number of federal accounts associated with children and grandchild awards of an IDV.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs count federal_account <AWARD_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/funding/",
+               "format": "JSON",
+               "description": "Returns File C funding records associated with an IDV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs funding"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/idvs/funding_rollup/",
+               "format": "JSON",
+               "description": "Returns aggregated count of awarding agencies, federal accounts, and total transaction obligated amount for all contracts under an IDV",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "idvs funding_rollup"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/children/<DUNS>/",
+               "format": "JSON",
+               "description": "Returns recipient details based on DUNS number",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient children <DUNS>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/duns/<HASH_VALUE>/",
+               "format": "JSON",
+               "description": "Returns a high-level overview of a specific recipient, given its id",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient duns <HASH_VALUE>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/duns/",
+               "format": "JSON",
+               "description": "Returns a list of recipients in USAspending DB",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient duns"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/state/<FIPS>/",
+               "format": "JSON",
+               "description": "Returns basic information about the specified state",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient state <FIPS>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/state/",
+               "format": "JSON",
+               "description": "Returns basic information about the specified state",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient state"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/recipient/state/awards/<FIPS>/",
+               "format": "JSON",
+               "description": "Returns award breakdown based on FIPS",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "recipient state awards <FIPS>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/<TOPTIER_CODE>/differences/",
+               "format": "JSON",
+               "description": "Returns About the Data information about differences in account balance and spending obligations for a specific agency/year/period",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies <TOPTIER_CODE> differences"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/<TOPTIER_CODE>/discrepancies/",
+               "format": "JSON",
+               "description": "Returns TAS discrepancies of the specified agency's submission data for a specific FY/FP",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies <TOPTIER_CODE> discrepancies"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/agency/<AGENCY_ID>/",
+               "format": "JSON",
+               "description": "Returns basic information about a federal agency",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references agency <AGENCY_ID>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/award_types/",
+               "format": "JSON",
+               "description": "Returns a map of award types by award grouping.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references award_types"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/cfda/totals//",
+               "format": "JSON",
+               "description": "Provides total values for provided CFDA",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references cfda totals"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/cfda/totals/",
+               "format": "JSON",
+               "description": "Provides total values for all CFDAs",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references cfda totals"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/data_dictionary/",
+               "format": "JSON",
+               "description": "Returns a JSON structure of the Schema team's Rosetta Crosswalk Data Dictionary",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references data_dictionary"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/def_codes/",
+               "format": "JSON",
+               "description": "Returns an object of Disaster Emergency Fund (DEF) Codes (DEFC) and titles",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references def_codes"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter/",
+               "format": "JSON",
+               "description": "Accepts an Advanced Search filter object and returns a hash which can be used as a lookup key by /api/v2/references/hash/",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/psc/<GROUP>/<PSC>/<PSC>/",
+               "format": "JSON",
+               "description": "Returns a list of PSC under the provided path",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree psc <GROUP> <PSC> <PSC>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/psc/<GROUP>/<PSC>/",
+               "format": "JSON",
+               "description": "Returns a list of PSC under the provided path",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree psc <GROUP> <PSC>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/psc/<GROUP>/",
+               "format": "JSON",
+               "description": "Returns a list of PSC under the provided path",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree psc <GROUP>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/psc/",
+               "format": "JSON",
+               "description": "Returns a list of PSC groupings",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree psc"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/tas/<AGENCY>/<FEDERAL_ACCOUNT>/",
+               "format": "JSON",
+               "description": "Returns a list of Treasury Account Symbols associated with the specified federal account",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree tas <AGENCY> <FEDERAL_ACCOUNT>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/tas/<AGENCY>/",
+               "format": "JSON",
+               "description": "Returns a list of federal accounts associated with the specified agency",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree tas <AGENCY>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/filter_tree/tas/",
+               "format": "JSON",
+               "description": "Returns a list of toptier agencies that have at least one TAS affiliated with them",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references filter_tree tas"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/glossary/",
+               "format": "JSON",
+               "description": "Returns a list of glossary terms and definitions",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references glossary"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/hash/",
+               "format": "JSON",
+               "description": "Accepts a hash generated by /api/v2/references/filter/ and returns an Advanced Search filter object",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references hash"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/naics/<NAICS_CODE>/",
+               "format": "JSON",
+               "description": "Returns the requested NAICS and immediate children, as well as related, relevant data.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references naics <NAICS_CODE>"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/naics/",
+               "format": "JSON",
+               "description": "Returns all Tier 1 (2-digit) NAICS and related, relevant data.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references naics"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/submission_periods/",
+               "format": "JSON",
+               "description": "Returns a list of all available submission periods with essential information about start and end dates.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references submission_periods"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/toptier_agencies/",
+               "format": "JSON",
+               "description": "Returns all toptier agencies and related, relevant data.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references toptier_agencies"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/references/total_budgetary_resources/",
+               "format": "JSON",
+               "description": "Returns a list of total budgetary resources totalled by fiscal year and period.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "references total_budgetary_resources"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/<TOPTIER_CODE>/overview/",
+               "format": "JSON",
+               "description": "Returns a list of submission data for the provided agency.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies <TOPTIER_CODE> overview"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/overview/",
+               "format": "JSON",
+               "description": "Returns About the Data information about all agencies with submissions in a provided fiscal year and period",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies overview"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/publish_dates/",
+               "format": "JSON",
+               "description": "Returns submission publication and certification information about all agencies with submissions in a provided fiscal year and period",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies publish_dates"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/reporting/agencies/<TOPTIER_CODE>/<FISCAL_YEAR>/<FISCAL_PERIOD>/submission_history/",
+               "format": "JSON",
+               "description": "Returns a list of submission publication dates and certified dates for the provided agency for the provided fiscal year and period.",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "reporting agencies <TOPTIER_CODE> <FISCAL_YEAR> <FISCAL_PERIOD> submission_history"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/new_awards_over_time/",
+               "format": "JSON",
+               "description": "Returns a list of time periods with the new awards in the appropriate period within the provided time range",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search new_awards_over_time"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_award/",
+               "format": "JSON",
+               "description": "Returns the fields of the filtered awards",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_award"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_award_count/",
+               "format": "JSON",
+               "description": "Returns the number of awards in each award type (Contracts, IDV, Loans, Direct Payments, Grants, and Other)",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_award_count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the various data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/awarding_agency/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Awarding Agency data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category awarding_agency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/awarding_subagency/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Awarding Subgency data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category awarding_subagency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/cfda/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by CFDA data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category cfda"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/country/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Country data visualizations on USAspending.gov's Recipient Profile page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category country"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/county/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by County data visualizations on USAspending.gov's State Profile page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category county"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/district/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Congressional District data visualizations on USAspending.gov's State Profile page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category district"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/federal_account/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Federal Account data visualizations on USAspending.gov's Recipient Profile page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category federal_account"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/funding_agency/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Funding Agency data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category funding_agency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/funding_subagency/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Funding Subgency data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category funding_subagency"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/naics/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by NAICS data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category naics"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/psc/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by PSC data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category psc"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/recipient_duns/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by Recipient DUNS data visualizations on USAspending.gov's Advanced Search page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category recipient_duns"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_category/state_territory/",
+               "format": "JSON",
+               "description": "Returns data that is grouped in preset units to support the Spending by State Territory data visualizations on USAspending.gov's Recipient Profile page",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_category state_territory"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_geography/",
+               "format": "JSON",
+               "description": "Returns Spending by state code, county code, or congressional district code",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_geography"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
+               "format": "JSON",
+               "description": "Returns awards where a certain subset of fields match against search term",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_transaction"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_by_transaction_count/",
+               "format": "JSON",
+               "description": "Returns awards where a certain subset of fields match against search term",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_by_transaction_count"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/spending_over_time/",
+               "format": "JSON",
+               "description": "Returns transaction aggregated amounts for Spending Over Time data visualizations on USAspending.gov",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search spending_over_time"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/search/transaction_spending_summary/",
+               "format": "JSON",
+               "description": "Returns the number of transactions and the sum of federal action obligations for prime awards given a set of award of filters",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "search transaction_spending_summary"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/spending/",
+               "format": "JSON",
+               "description": "Returns spending data information through various types and filters",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "spending"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/subawards/",
+               "format": "JSON",
+               "description": "Returns subawards either related, optionally, to a specific parent award, or for all parent awards if desired",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "subawards"
+            },
+            {
+               "@type": "dcat:Distribution",
+               "accessURL": "https://api.usaspending.gov/api/v2/transactions/",
+               "format": "JSON",
+               "description": "Returns transactions related to a specific parent award",
+               "downloadURL": "",
+               "mediaType": "",
+               "title": "transactions"
+            }
+         ],
+         "accrualPeriodicity": "R/P1M",
+         "primaryITInvestmentUII": "",
+         "references": "",
+         "issued": ""
+      }
+   ]
+}
