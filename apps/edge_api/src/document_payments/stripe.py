@@ -70,23 +70,34 @@ async def create_payment_intent(
     document_id: str,
     idempotency_key: str,
     mode: str,
+    rails: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Dual-rail PaymentIntent (card + us_bank_account) for the document fee in the resolved Stripe
-    ``mode``. Idempotent on ``idempotency_key`` (``pay_document_{document_id}``) so a retried mint
-    returns the same intent. ``card`` is listed first so the instant rail leads the Element's tabs.
-    ``setup_future_usage='off_session'`` applies to both rails (both support it) — it stores the
-    instrument for the later quarterly debit. ``metadata`` carries the routing pair (``kind=
-    'document'``, ``opportunity_id``, ``document_id``) for the webhook."""
+    """PaymentIntent for the document fee in the resolved Stripe ``mode``, on the operator-permitted
+    ``rails``. Idempotent on ``idempotency_key`` (``pay_document_{document_id}``) so a retried mint
+    returns the same intent. ``setup_future_usage='off_session'`` applies to every supported rail —
+    it stores the instrument for the later quarterly debit. ``metadata`` carries the routing pair
+    (``kind='document'``, ``opportunity_id``, ``document_id``) for the webhook.
+
+    ``rails`` is the operator's agreement-payment selection (see ``src/agreement_payment_mode.py``);
+    it defaults to both rails, which is the shipped dual-rail behavior. The permitted set is enforced
+    HERE, at mint, so a rail the operator disabled is not merely hidden in the browser but absent from
+    the intent and therefore unusable. ``payment_method_options`` is filtered to the minted rails —
+    Stripe rejects options for a method the intent does not carry.
+    """
     _require_secret(mode)
+    rail_list = list(rails) if rails else ["card", "us_bank_account"]
+    pm_options: dict[str, Any] = {}
+    if "us_bank_account" in rail_list:
+        pm_options["us_bank_account"] = {"verification_method": "automatic"}
     try:
         intent = await asyncio.to_thread(
             lambda: stripe.PaymentIntent.create(
                 amount=int(amount_cents),
                 currency=_CURRENCY,
                 customer=customer_id,
-                payment_method_types=["card", "us_bank_account"],
+                payment_method_types=rail_list,
                 setup_future_usage="off_session",
-                payment_method_options={"us_bank_account": {"verification_method": "automatic"}},
+                payment_method_options=pm_options,
                 description=f"Rare Structure engagement — document {opportunity_id}/{document_id}",
                 metadata={
                     "kind": "document",
