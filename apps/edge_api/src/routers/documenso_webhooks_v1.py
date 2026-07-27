@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 
-from .. import config
+from .. import agreement_payment_mode, config
 from ..db import get_db_connection
 from ..documenso_projection import project_envelope_event
 from ..documenso_webhooks import queries
@@ -143,12 +143,19 @@ async def read_sign_state(
         state = await queries.read_sign_state(
             conn, opportunity_id=opportunity_id, document_id=document_id, signer=signer
         )
+        # The operator's agreement-payment selection rides along on the poll the signing page is
+        # ALREADY running, so the post-signature screen knows whether to offer a payment handoff or
+        # present remittance terms — with no extra request and no second source of truth. It is not a
+        # secret (the prospect is about to be shown its consequence either way) and it is read here
+        # rather than at bootstrap so a mid-session change is picked up on the next 4s tick.
+        payment_mode = await agreement_payment_mode.get_agreement_payment_mode(conn)
     return {
         "opportunity_id": opportunity_id,
         "document_id": document_id,
         "signed": state["signed"],
         "latest_event": state["latest_event"],
         "status": state["status"],
+        "payment_mode": payment_mode,
     }
 
 

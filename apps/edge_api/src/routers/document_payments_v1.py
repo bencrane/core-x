@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 import psycopg
 from fastapi import APIRouter, HTTPException
 
-from .. import config
+from .. import agreement_payment_mode, config
 from ..db import get_db_connection
 from ..deals import originate
 from ..documenso_webhooks import queries as sign_queries
@@ -65,9 +65,12 @@ async def _payments_db():
 
 
 def _mint_idempotency_key(
-    document_id: str, existing_status: str, existing_intent: str | None
+    document_id: str,
+    existing_status: str,
+    existing_intent: str | None,
+    rails: list[str] | None = None,
 ) -> str:
-    """Idempotency key for the dual-rail mint.
+    """Idempotency key for the mint.
 
     A pristine pair (or a reuse-block fall-through on an open intent) keys off the document id alone. A
     retry after a HARD FAILURE (``failed``/``canceled``) must NOT: the spent intent already burned
@@ -76,10 +79,18 @@ def _mint_idempotency_key(
     TTL). Namespacing the key by the prior intent id makes it fresh across the fee change yet still
     idempotent within a single retry burst — a double-submit keys off the same persisted failed intent,
     so Stripe returns the SAME new intent rather than minting a duplicate charge surface.
+
+    RAILS ARE PART OF THE NAMESPACE for exactly the same reason. When the operator changes the
+    agreement-payment mode, the rail-staleness branch cancels the old intent and falls through to a
+    fresh mint — but that mint would replay the fixed key with DIFFERENT ``payment_method_types``,
+    which Stripe rejects as an idempotency_error the same way a changed amount does, wedging the
+    surface for the full key TTL. Suffixing the sorted rail set makes the key change with the
+    selection while staying stable for every mint under that selection.
     """
+    rail_suffix = "_" + "-".join(sorted(rails)) if rails else ""
     if existing_status in ("failed", "canceled") and existing_intent:
-        return f"pay_document_{document_id}_retry_{existing_intent}"
-    return f"pay_document_{document_id}"
+        return f"pay_document_{document_id}_retry_{existing_intent}{rail_suffix}"
+    return f"pay_document_{document_id}{rail_suffix}"
 
 
 @router.post(
@@ -90,6 +101,16 @@ async def create_document_payment_intent(
     opportunity_id: str, document_id: str
 ) -> DocumentPaymentInitPublic:
     async with _payments_db() as conn:
+        # GATE: the operator's agreement-payment selection. `remittance` means there is NO payable
+        # surface — collection happens out-of-band (ACH/wire instructions delivered by email), so the
+        # mint REFUSES here rather than the browser merely hiding the page. 409 (not 404) so the SPA
+        # can distinguish "payment is not part of this flow" from a bad link, and short-circuit before
+        # any Stripe key resolution or fee lookup.
+        payment_mode = await agreement_payment_mode.get_agreement_payment_mode(conn)
+        if not agreement_payment_mode.collects_by_stripe(payment_mode):
+            raise HTTPException(status_code=409, detail="payment collected by remittance")
+        rails = agreement_payment_mode.rails_for_mode(payment_mode)
+
         # Resolve the operator-selected Stripe mode (operator_settings.stripe_mode, augmenting the env
         # STRIPE_MODE) and its key set. Single-operator platform: this is the global selection (the
         # prospect mint has no operator session). Keys are mode-specific so the toggle takes effect
@@ -141,17 +162,22 @@ async def create_document_payment_intent(
         existing_status = existing.get("payment_status") or "none"
 
         # Reuse an open intent (idempotent across refresh/retry); only re-mint after a hard failure.
-        # RECREATE a stale single-rail intent (minted before the card rail) — cancel it, then fall
-        # through to the fresh dual-rail mint below — but ONLY when no funds are in flight
-        # (amount-mutable status). An intent already mid-ACH (``processing``) is left alone so the
-        # in-flight debit is never disrupted, even though it lacks the card tab.
+        # RECREATE an intent whose rails no longer match the operator's selection — cancel it, then
+        # fall through to the fresh mint below — but ONLY when no funds are in flight (amount-mutable
+        # status). An intent already mid-ACH (``processing``) is left alone so the in-flight debit is
+        # never disrupted, even though its rail set is stale.
+        #
+        # The comparison is against the CURRENTLY CONFIGURED ``rails``, not a hardcoded "card". A
+        # hardcoded card check would treat every intent minted under `ach-only` as stale on each load
+        # — cancel, re-mint, cancel, re-mint — because the operator's own selection can never satisfy
+        # it. Set comparison (order-insensitive) since Stripe does not promise list order back.
         if existing_intent and existing_status not in ("failed", "canceled"):
             try:
                 intent = await stripe_client.retrieve_payment_intent(existing_intent, mode)
-                stale_single_rail = "card" not in (intent.get("payment_method_types") or [])
-                if stale_single_rail and intent.get("status") in _AMOUNT_MUTABLE:
+                stale_rails = set(intent.get("payment_method_types") or []) != set(rails)
+                if stale_rails and intent.get("status") in _AMOUNT_MUTABLE:
                     await stripe_client.cancel_payment_intent(existing_intent, mode)
-                    # fall through to a fresh dual-rail mint (new idempotency-key namespace)
+                    # fall through to a fresh mint on the configured rails (new key namespace)
                 else:
                     if intent.get("amount") != charge_cents and intent.get("status") in _AMOUNT_MUTABLE:
                         await stripe_client.update_payment_intent_amount(
@@ -210,9 +236,10 @@ async def create_document_payment_intent(
                 opportunity_id=opportunity_id,
                 document_id=document_id,
                 idempotency_key=_mint_idempotency_key(
-                    document_id, existing_status, existing_intent
+                    document_id, existing_status, existing_intent, rails
                 ),
                 mode=mode,
+                rails=rails,
             )
         except stripe_client.StripeError as exc:
             logger.error(
