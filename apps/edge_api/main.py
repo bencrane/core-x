@@ -46,6 +46,7 @@ from .src.routers.bookings_v1 import router as bookings_router
 from .src.routers.deals_v1 import router as deals_router
 from .src.routers.agreements_v1 import router as agreements_router
 from .src.routers.internal_deals_v1 import router as internal_deals_router
+from .src.routers.internal_equipment_outreach_v1 import router as internal_equipment_outreach_router
 from .src.routers.documenso_template_fields_v1 import router as documenso_template_fields_router
 from .src.routers.documenso_envelopes_v1 import router as documenso_envelopes_router
 from .src.routers.archetype_versions_v1 import router as archetype_versions_router
@@ -349,6 +350,11 @@ app.include_router(agreements_router)
 # deal_contacts signatory link. Trigger-secret gated, same /internal contract as the gtm pipeline
 # run-step. Replaces the retired booking→opportunity producer; the seam DocRaptor render layers onto.
 app.include_router(internal_deals_router, prefix="/internal")
+
+# equipment-outreach (internal): the Clay-push suppression ledger writer —
+# the equipment-outreach-push Trigger.dev task records delivered rows here;
+# catalyst_api /equipment-audience/select anti-joins the same table. 2026-07-26.
+app.include_router(internal_equipment_outreach_router, prefix="/internal")
 
 # cal booking (internal): the OUTBOUND create PRODUCER. The cal-book Trigger.dev task (fired by the
 # Close custom-activity webhook) calls /internal/cal/book to mint a cal.com booking from the activity
