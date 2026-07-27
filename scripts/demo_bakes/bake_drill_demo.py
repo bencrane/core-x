@@ -1,7 +1,7 @@
 """Bake — drillDemo.ts: drill-region stats + archetype work orders. ONE BUTTON.
 
 Grain: the DRILLS dict below (state-tier = state list; region-tier = county FIPS
-resolved live from reference/demo_region_catalog). Extend DRILLS when new deals'
+resolved live from demo_region_catalog). Extend DRILLS when new deals'
 demo regions appear. PLUS every macro region from reference/macro_region_catalog
 (state-tier via its composed states) — keyed by macro label, so region-scoped
 flows (video posture) read the same DRILL_DEMO record shape at macro grain.
@@ -9,13 +9,33 @@ flows (video posture) read the same DRILL_DEMO record shape at macro grain.
 Methods (authority: docs/reference/DEMO_NARRATIVE_BAKES.md):
   firms:   >=$500K FY23-25 firms; median over awards >=$250K; growth FY25/FY23-1;
            first-time = first in-region action >= 2024-10-01
-  active:  award_geo_state active (not terminated, end >= today); flow-down via
-           reference/equipment_flowdown_factors per award NAICS (v1) — never flat
+  active:  award_geo_active (not terminated, end >= today); flow-down via
+           equipment_flowdown_factors per award NAICS (v1) — never flat
   outlook: share = region FY23-25 / national obligations; uplift = $785B x share x 0.40
   window:  active + uplift; equipment = total x region factor-weighted FY23-25 ratio
   orders:  3 fixed archetypes, real awards $25-250M (>=$5M fallback), names via
            bridge_sam_pdl -> entity_hierarchy? -> entity_profile_gold, active counts
            via contractor_award_summary
+
+SUBSTRATE (2026-07-26 region-grain cycle): every region aggregate reads a precomputed
+place-grain mart instead of scanning the 108M-row transaction fact once per region.
+Measured over all 21 regions: 584.5 s -> 6.8 s of server time (86x). The marts are
+keyed by place, so adding a region costs nothing — no rebuild, just a DRILLS entry.
+
+METHOD, unified (encapsulation rule — recorded here and in DEMO_NARRATIVE_BAKES.md):
+the firms block now attributes dollars by TRANSACTION place-of-performance for ALL 21
+regions. Previously the 14 macros already did this (the award-level join 408'd on them)
+while the 7 drills used AWARD-level PoP — so two regions in the same table were computed
+by different rules and were not comparable. They are now one rule. Measured against the
+prior output:
+  - 14 macros: f500k, growth, firstFy25 all EXACT (+-0.000%); median +0.1..+0.4%
+  - 7 drills:  f500k +0.5..+0.9%, median +0.0..+0.5%, firstFy25 +0.0..+2.3%,
+               growth +0.2..+1.7 percentage points (4 of 7 displayed strings move 1-2 pts)
+Everything outside the firms block — active $, active firms, flow $, region $, equipment
+ratio, national share, and every archetype pick — is byte-identical for all 21 regions.
+To put the drills back on award-level PoP, read pop_award_fy filtered on
+award_pop_state/award_pop_county_fips instead of pop_entity_fy; note that mart carries
+only awards >= $100K, which breaks first-time-winners badly (-53..-57%, measured).
 
 Run: doppler run -p core-x -c prd -- python3 scripts/demo_bakes/bake_drill_demo.py
 """
@@ -25,6 +45,16 @@ import lance
 from _shared import q, so, klems_mapping, flowdown_factors, fb
 
 TODAY=dt.date.today().isoformat()
+# Thresholds are the CARD's definitions, applied at query time — no mart is baked at
+# these values. Change one here and re-run; no sidecar rebuild involved.
+FY_LO, FY_HI       = 2023, 2025     # FY23-25 == action_date 2022-10-01..2025-09-30
+FIRM_WIN_FLOOR     = 500_000        # "firms that won >=$X in-region"
+MEDIAN_AWARD_FLOOR = 250_000        # median taken over awards >= this
+ORDER_BAND         = (25_000_000, 250_000_000)  # archetype pick: the real-work band
+ORDER_FALLBACK     = 5_000_000      # ...and the floor when that band is empty
+FIRST_TIME_FROM    = "2024-10-01"   # first in-region action on/after = first-time winner
+FY=f"fy BETWEEN {FY_LO} AND {FY_HI}"
+
 DRILLS={"TX":("state",["TX"]),"CO":("state",["CO"]),"IN + MI":("state",["IN","MI"]),
  "Southern California":("region","southern california"),"Northeast Ohio":("region","northeast ohio"),
  "Western TX":("region","western TX"),"Central California":("region","central california")}
@@ -39,9 +69,8 @@ FACE={"roads":"Highway, road and bridge construction — earthmoving, grading, s
 OBBA=785e9; RAMP=0.40
 
 def region_counties(name):
-    t=lance.dataset("s3://data-sink/active/reference/demo_region_catalog", storage_options=so())\
-        .to_table(columns=["demo_region","county_fips"]).to_pydict()
-    return [f for r,f in zip(t["demo_region"],t["county_fips"]) if r==name]
+    # demo_region_catalog rides the sidecar since 2026-07-26 — no Lance round-trip.
+    return [r[0] for r in q(f"SELECT county_fips FROM demo_region_catalog WHERE demo_region = '{name}'")]
 
 def where_clause(kind, spec):
     if kind=="state":
@@ -65,62 +94,53 @@ def main():
         runs[m]=("state",sts)
     def factor(n6):
         return factors.get(to_pc(n6), 0.039)
-    national=q("SELECT sum(obligation) FROM gtm_txn_events_slim WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30'")[0][0]
+    national=q(f"SELECT sum(obligation_sum) FROM pop_combo_fy WHERE {FY}")[0][0]
     demo={}; sel_ueis=set(); picks_by={}
     states_of={k:(v[1] if v[0]=="state" else {"southern california":["CA"],"northeast ohio":["OH"],
                "western TX":["TX"],"central california":["CA"]}[v[1]]) for k,v in runs.items()}
-    def qr(sql, **kw):
-        import urllib.error, time
-        for att in range(3):
-            try: return q(sql, **kw)
-            except urllib.error.HTTPError as e:
-                if e.code!=408 or att==2: raise
-                time.sleep(5)
     for label,(kind,spec) in runs.items():
         W=where_clause(kind,spec)
-        # Drills keep the award-level join (numbers must regenerate identically);
-        # macros filter txn_events_combo directly (transaction-level PoP — the
-        # join form 408s on the big multi-state macros).
-        if label in DRILLS:
-            base=f"""WITH aw AS (SELECT award_key FROM award_geo_state WHERE {W} GROUP BY award_key),
-tx AS (SELECT t.uei, t.award_key, t.obligation, t.action_date
-  FROM gtm_txn_events_slim t JOIN aw ON t.award_key=aw.award_key)"""
-        else:
-            base=f"""WITH tx AS (SELECT uei, award_key, obligation, action_date
-  FROM txn_events_combo WHERE {W})"""
-        f_=qr(base+"""
+        # firms — one pass over the firm x place x FY atom. Firm counts, medians and
+        # growth are NOT additive across places, so the region is rolled up per-uei
+        # FIRST and the thresholds applied to the rolled-up firm.
+        f_=q(f"""WITH g AS (
+  SELECT uei,
+         sum(obligation_sum) FILTER (WHERE {FY})       AS won,
+         sum(obligation_sum) FILTER (WHERE fy={FY_LO}) AS won_lo,
+         sum(obligation_sum) FILTER (WHERE fy={FY_HI}) AS won_hi,
+         min(first_action_date)                        AS first_seen
+  FROM pop_entity_fy WHERE {W} GROUP BY uei)
 SELECT
- (SELECT count(*) FROM (SELECT uei FROM tx WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY uei HAVING sum(obligation)>=500000)),
- (SELECT median(t) FROM (SELECT sum(obligation) t FROM tx WHERE action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY award_key HAVING sum(obligation)>=250000)),
- (SELECT sum(CASE WHEN action_date BETWEEN DATE '2024-10-01' AND DATE '2025-09-30' THEN obligation END)/nullif(sum(CASE WHEN action_date BETWEEN DATE '2022-10-01' AND DATE '2023-09-30' THEN obligation END),0)-1 FROM tx),
- (SELECT count(*) FROM (SELECT uei, min(action_date) m FROM tx GROUP BY uei HAVING m >= DATE '2024-10-01'))""")[0]
-        act=qr(f"""WITH act AS (SELECT award_key, any_value(uei) uei, any_value(naics_code) n, any_value(obligated) ob
-  FROM award_geo_state WHERE {W} AND is_terminated=false AND current_end_date >= DATE '{TODAY}' GROUP BY award_key)
-SELECT n, sum(ob), count(DISTINCT uei) FROM act GROUP BY n""")
+ (SELECT count(*) FROM g WHERE won >= {FIRM_WIN_FLOOR}),
+ (SELECT median(t) FROM (SELECT sum(obligation_sum) t FROM pop_award_fy
+    WHERE {W} AND {FY} GROUP BY award_key HAVING sum(obligation_sum) >= {MEDIAN_AWARD_FLOOR})),
+ (SELECT sum(won_hi)/nullif(sum(won_lo),0)-1 FROM g),
+ (SELECT count(*) FROM g WHERE first_seen >= DATE '{FIRST_TIME_FROM}')""")[0]
+        # active book — award_geo_active is the live book only (263k rows), already
+        # 1 row/award, so the per-award collapse the old path needed is gone. Same
+        # award-level PoP the old path used: award_geo_active inherits award_geo_state's.
+        act=q(f"""SELECT naics_code, sum(obligated), count(DISTINCT uei) FROM award_geo_active
+  WHERE {W} AND current_end_date >= DATE '{TODAY}' GROUP BY 1""")
         a_obl=sum(r[1] or 0 for r in act)
-        a_firms=len({None})  # placeholder replaced below
-        a_firms=qr(f"""SELECT count(DISTINCT uei) FROM award_geo_state
-  WHERE {W} AND is_terminated=false AND current_end_date >= DATE '{TODAY}'""")[0][0]
+        a_firms=q(f"""SELECT count(DISTINCT uei) FROM award_geo_active
+  WHERE {W} AND current_end_date >= DATE '{TODAY}'""")[0][0]
         a_flow=sum((r[1] or 0)*factor(r[0]) for r in act)
-        w_=qr(f"""SELECT naics_code, sum(obligation) FROM txn_events_combo
-  WHERE {W} AND action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30' GROUP BY 1""")
+        w_=q(f"SELECT naics_code, sum(obligation_sum) FROM pop_combo_fy WHERE {W} AND {FY} GROUP BY 1")
         obl=sum(v or 0 for _,v in w_)
         ratio=(sum((v or 0)*factor(n) for n,v in w_)/obl) if obl else 0.039
         share=obl/national; uplift=OBBA*share*RAMP; z=a_obl+uplift
         picks={}
         for arch,pairs in ARCH.items():
             inp=",".join(f"('{n}','{p}')" for n,p in pairs)
-            rows=q(f"""SELECT award_key, sum(obligation) tot, any_value(uei), any_value(pop_city_name),
+            # award_key is a real tiebreaker, not decoration: two Central California
+            # newbuild awards tie at exactly $19.00M, and without it the pick flips
+            # between runs. Deterministic ordering is part of the method.
+            for having in (f"BETWEEN {ORDER_BAND[0]} AND {ORDER_BAND[1]}", f">= {ORDER_FALLBACK}"):
+                rows=q(f"""SELECT award_key, sum(obligation_sum) tot, any_value(uei), any_value(pop_city_name),
   any_value(pop_state), any_value(recipient_state)
-FROM txn_events_combo WHERE (naics_code, psc_code) IN ({inp}) AND {W}
-  AND action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30'
-GROUP BY award_key HAVING sum(obligation) BETWEEN 25000000 AND 250000000 ORDER BY tot DESC""", limit=50)
-            if not rows:
-                rows=q(f"""SELECT award_key, sum(obligation) tot, any_value(uei), any_value(pop_city_name),
-  any_value(pop_state), any_value(recipient_state)
-FROM txn_events_combo WHERE (naics_code, psc_code) IN ({inp}) AND {W}
-  AND action_date BETWEEN DATE '2022-10-01' AND DATE '2025-09-30'
-GROUP BY award_key HAVING sum(obligation) >= 5000000 ORDER BY tot DESC""", limit=50)
+FROM pop_award_fy WHERE (naics_code, psc_code) IN ({inp}) AND {W} AND {FY}
+GROUP BY award_key HAVING sum(obligation_sum) {having} ORDER BY tot DESC, award_key""", limit=50)
+                if rows: break
             if rows: picks[arch]=rows[0]; sel_ueis.add(rows[0][2])
         picks_by[label]=picks
         demo[label]={"firms":{"f500k":f"{int(f_[0] or 0):,}","median":(f"${(f_[1] or 0)/1e6:.1f}M" if (f_[1] or 0)>=1e6 else f"${(f_[1] or 0)/1e3:.0f}K"),
