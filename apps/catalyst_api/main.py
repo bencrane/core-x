@@ -59,6 +59,7 @@ from .src.routers.growth_market_slice_v1 import router as growth_market_slice_ro
 from .src.routers.market_spec_v1 import router as market_spec_router
 from .src.routers.market_query_v1 import router as market_query_router
 from .src.routers.sub_dossier_v1 import router as sub_dossier_router
+from .src.routers.equipment_audience_v1 import router as equipment_audience_router
 from .src.card_html import render_card, render_not_found
 from .src.models import (
     ActiveContract,
@@ -223,6 +224,11 @@ app.include_router(sub_market_slice_router)
 # gtm_construction_lane_months (2026-07-20 cycle) — full market at rest,
 # growth multiple/window/band as cut-rail dials, watermark-anchored.
 app.include_router(growth_market_slice_router)
+
+# equipment-audience: person/select reads over the equipment_audience_people
+# mart for the GTM outreach loop (Clay HTTP column + trigger.dev selector);
+# ledger anti-join reads ops.equipment_outreach_pushes. 2026-07-26.
+app.include_router(equipment_audience_router)
 
 
 # ── Operator service-token gate (BFF → catalyst_api) ─────────────────────────
