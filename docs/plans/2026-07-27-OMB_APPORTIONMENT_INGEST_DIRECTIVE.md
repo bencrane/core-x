@@ -230,41 +230,49 @@ One 19.6 MB index fetch, ~30.4K small JSON GETs (~250 MB total) at ≤3 workers 
 
 ## Definition of done
 
-- [ ] Source(s) registered in `ops.data_source_catalog` (L60, `ON CONFLICT DO NOTHING`).
-- [ ] Migration applied (`ops.omb_apportionment_ingest_runs`, `IF NOT EXISTS`).
-- [ ] `--smoke` passed end-to-end (50 files, throwaway URIs).
-- [ ] §2.4 key-union discovery run (≥50 files / ≥3 agencies / ≥3 FYs); union + fill rates in the run record.
-- [ ] Full crawl completed; `files_failed / files_total ≤ 2%`; failed paths listed.
-- [ ] All 3 datasets landed; every §8 gate passed; `ds.count_rows()` recorded.
-- [ ] BTREE indexes built on every §4 key.
-- [ ] R2 listing verified for all 3 prefixes.
-- [ ] Ledger rows present, `status='ok'`.
-- [ ] **`FundsProvidedBy` full distinct-value distribution written to the run record, with an explicit statement on whether any value references P.L. 119-21.**
-- [ ] PR opened and self-merged per L39.
-- [ ] `git -C /Users/benjamincrane/core-x pull` && `git log -1 --oneline` confirms the merge on disk.
-- [ ] Cycle report written.
+- [x] Source(s) registered in `ops.data_source_catalog` (L60, `ON CONFLICT DO NOTHING`; catalog table bootstrapped in HQX Gen-3 plane).
+- [x] Migration applied (`ops.omb_apportionment_ingest_runs`, `IF NOT EXISTS`; L4 status enum verified).
+- [x] `--smoke` passed end-to-end (50 files, throwaway URIs).
+- [x] §2.4 key-union discovery run (30,372 files / 104 agencies / 5 FYs); union + fill rates in the run record.
+- [x] Full crawl completed; `files_failed / files_total = 0/30,372 ≤ 2%`; 0 failed paths.
+- [x] All 3 datasets landed; every §8 gate passed (line-count gate recalibrated — see deviation note); `ds.count_rows()` recorded.
+- [x] BTREE indexes built on every §4 key (files/lines/footnotes, incl. `line_number`).
+- [x] R2 listing verified for all 3 prefixes.
+- [x] Ledger rows present, `status='completed'` (canonical L4 enum; `'ok'` in the DoD shorthand == `'completed'`).
+- [x] **`FundsProvidedBy` full distinct-value distribution written to the run record; P.L. 119-21 (OBBA) = YES (explicit statement + full 119-21 list).**
+- [x] PR opened and self-merged per L39.
+- [x] `git -C /Users/benjamincrane/core-x pull` && `git log -1 --oneline` confirms the merge on disk.
+- [x] Cycle report written.
 
 ## Execution log (executor fills in)
 
-- [ ] Branch created
-- [ ] Index fetched, link count recorded
-- [ ] Key-union discovery run
-- [ ] Module written
-- [ ] Migration applied
-- [ ] Smoke passed
-- [ ] Crawl completed
-- [ ] files / lines / footnotes landed
-- [ ] Gates passed
-- [ ] PR merged
-- [ ] Operator checkout pulled + verified
+- [x] Branch created (`claude/omb-apportionment-ingest-325f9b`)
+- [x] Index fetched, link count recorded (30,372; probe 30,443 → crawl 30,368 → re-run 30,372 — tree not strictly monotonic)
+- [x] Key-union discovery run (30,372 docs / 104 agencies / 5 FYs; 17 ScheduleData keys, union+fill in run record)
+- [x] Module written (`pipelines/reference/omb_apportionment_ingest.py`) + shared `pipelines/_lib/rate_governor.py` (12 unit tests green)
+- [x] Migration applied (`ops.omb_apportionment_ingest_runs` + `ops.data_source_catalog` bootstrap in HQX)
+- [x] Smoke passed (50 files → throwaway smoke/ URIs, all gates)
+- [x] Crawl completed (30,368 → 30,372 fetched, 0 failed, 0 breaker trips, ~1.97 files/s aggregate)
+- [x] files / lines / footnotes landed (30,372 / 515,841 / 68,719)
+- [x] Gates passed (identity 30,372/30,372 within $1; completeness lines_written==sd_rows; iteration 28,789/28,789)
+- [x] PR merged
+- [x] Operator checkout pulled + verified
 
 ## Final result (executor fills in)
 
-- Index link count observed (vs 30,443 baseline) + per-FY:
-- Files fetched / failed:
-- Per-dataset row counts:
-- ScheduleData key union + fill rates:
-- `FundsProvidedBy` distribution (top 30) + P.L. 119-21 present? :
-- Wall-clock:
-- PR:
-- Cycle report path:
+- **Index link count observed (vs 30,443 baseline) + per-FY:** 30,372 (baseline 30,443; live tree drifts ±). per-FY {2022: 6006, 2023: 6287, 2024: 6539, 2025: 6160, 2026: 5380}. All five required FYs present.
+- **Files fetched / failed:** 30,372 fetched / 0 failed (0.00% ≤ 2% gate). 0 circuit-breaker trips; no 403/429; governor never throttled.
+- **Per-dataset row counts:** files=30,372 · lines=515,841 · footnotes=68,719. `ds.count_rows()` verified from R2. `lines_written == sd_rows` exactly (no dropped rows).
+- **ScheduleData key union + fill rates:** 17 keys — approved_amount (100%, the sole amount col → F64; 18,897 negatives preserved), cgac_agency/cgac_acct/schedule_iteration/tafs_iteration_id (100%), line_number (100%), begin_poa/end_poa (52.7%), availability_type_code (47.3%), line_split (41.2%), allocation_agency_code (3.6%), allocation_subacct (0.5% — unseen in the 60-file probe, discovered at scale + backfilled). Full table in the run record.
+- **`FundsProvidedBy` distribution (top 30) + P.L. 119-21 present?:** 4,241 distinct values. **P.L. 119-21 (OBBA) = YES** — 404 docs cite it as sole/primary + ~65 distinct value-strings citing it in combination (incl. `"119-21 (OB3)"`, `"Section 100015 of P.L. 119-21"`). First OBBA-tagged feed in the program. Top-30 + full 119-21 list in the run record. No OBBA total asserted (§2.5 / out-of-scope).
+- **Wall-clock:** crawl ~6.2 h wall (≈4.3 h active at ~1.97 files/s + intermittent system-sleep suspensions; no host impact during suspension). Re-parse (gate recalibration) ~4 min.
+- **PR:** see below / commit on `main`.
+- **Cycle report path:** `~/Desktop/hq/sessions/2026-07-28-omb-apportionment-ingest-cycle-report.md`
+
+### Deviation logged: schedule-lines gate recalibrated
+Directive estimated 50–130 lines/file (~1.5–4M, 1M floor); confirmed in-run ~17 lines/file →
+515,841 total. Parse is provably complete (`lines_written == sd_rows`; identity holds for all
+30,372 docs; every doc has n_lines>0). The 1M floor was mis-calibrated to a high estimate and
+was replaced by the exact completeness equality (the directive's stated intent, "implies a
+parse that dropped rows") + a 400k coarse sanity floor. Sanctioned by the directive's explicit
+"the executor confirms in-run" clause. Full detail in the run record's executor-notes section.
