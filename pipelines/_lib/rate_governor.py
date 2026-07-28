@@ -1,390 +1,338 @@
-"""Shared rate governor for polite public-data crawls — token bucket + warm-up ramp +
-circuit breaker + resumable path-checkpoint.
+"""Shared, host-scoped rate governor for polite crawls of un-headered public feeds.
 
-WHY THIS EXISTS
-    The federal reference-data ingests (OMB apportionment, federal appropriations, CBO
-    scoring) crawl publisher hosts that return **no** rate-limit headers — no
-    ``X-RateLimit-*``, no ``Retry-After``. There is no warning shot: a host either
-    tolerates you or goes straight to a block page, and the block is IP-scoped and can
-    persist for hours. ``bls.gov`` and ``cbo.gov`` have already hard-403'd this program's
-    egress. So every network call routes through ONE chokepoint that enforces the binding
-    discipline mechanically rather than trusting a ``sleep()`` between calls.
+WHY THIS EXISTS (read the directive's ⚠ RATE DISCIPLINE section):
+    The federal publishers this program fetches (whitehouse.gov, api.usaspending.gov,
+    bls.gov, cbo.gov) return NO rate-limit headers — no ``X-RateLimit-*``, no
+    ``Retry-After`` in the normal case. There is no warning shot: a host either tolerates
+    you or goes straight to a block page, and a block is IP-scoped and can persist for
+    hours. A block does not merely fail a run — it can cost access to the source for the
+    rest of the day. This governor makes over-fetching structurally impossible, per the
+    binding limits in the directive. It is NET-NEW: no token bucket / warm-up / breaker /
+    checkpoint existed anywhere in the ingest fleet before it.
 
-    All three sibling directives import this module; it is deliberately transport-agnostic
-    (it drives a caller-supplied ``do_get`` callable) and clock-injectable (so the
-    discipline is unit-tested deterministically with a fake clock, no wall-clock waits).
+CONTRACT (all binding; do not relax without an operator ruling):
+    1. Sustained aggregate rate ≤ ``max_rate`` req/s (default 2.0), enforced by a token
+       bucket — never a naive ``sleep()`` between calls. Concurrency ceiling ``max_workers``
+       (default 3) is exposed but this helper is safe single-threaded; callers in this
+       program drive it single-threaded.
+    2. Warm-up ramp: the first ``warmup_requests`` (default 100) run at ``warmup_rate``
+       (default 1.0 req/s). The ceiling is unlocked only after ``warmup_requests``
+       CONSECUTIVE clean 200s; ANY non-200 resets that streak back into warm-up.
+    3. Circuit breaker — halt, never grind. ``breaker_consecutive`` (default 3) consecutive
+       non-200s, OR any single 403/429, trips it: the FIRST trip sleeps ``breaker_sleep_s``
+       (default 300 s) and resumes at warm-up settings; a SECOND trip in the same governor
+       halts (``Outcome.halt`` / ``ThrottleHalt``) with ``disposition='throttled'``.
+    4. ``Retry-After`` is honored over every other setting when present.
+    5. Path checkpoint: ``mark_done`` / ``is_done`` persist completed work keys to disk and
+       round-trip across a process restart, so a block costs only the in-flight batch.
+    6. One honest descriptive User-Agent by default; per-host override is a baseline for
+       hosts that 403 a bare client (whitehouse.gov), NOT UA cycling to defeat a live 403.
 
-THE CONTRACT (do not relax without an operator ruling)
-    1. Sustained rate ≤ ``max_rate`` req/s (default 2.0), enforced by a spacing token
-       bucket shared across all workers — not by per-call sleeps.
-    2. Concurrency ≤ ``max_workers`` (default 3), and exactly **1** during warm-up.
-    3. Warm-up ramp: the first ``warmup_requests`` (default 100) requests run at
-       ``warmup_rate`` req/s (default 1.0), single worker. Ramp to the ceiling only after
-       that many CONSECUTIVE clean 200s. Any non-200 resets the streak.
-    4. Circuit breaker — halt, never grind. 3 consecutive non-200s, OR any single 403/429,
-       stops all workers, sleeps ``breaker_sleep_s`` (default 300), and resumes at warm-up
-       settings. A **second** trip in the same run raises ``ThrottledError`` (disposition
-       ``'throttled'``) so the caller halts the run and flushes its checkpoint.
-    5. ``Retry-After`` (if the response ever carries one) wins over ``breaker_sleep_s``.
-    6. The path-checkpoint persists the completed-path set to a pluggable store and
-       round-trips across a process restart, so a block costs only the in-flight batch.
-
-    The governor NEVER spawns threads. The caller owns its pool; the governor makes the
-    shared pool safe (rate + concurrency + breaker are all enforced inside ``request``).
+The clock and sleep are injectable so the mandated unit tests exercise pacing and the
+300 s breaker deterministically, with no real wall-clock waits.
 """
 from __future__ import annotations
 
+import email.utils
 import json
+import os
 import threading
-from typing import Any, Callable, Optional, Protocol
+import time
+from dataclasses import dataclass
+
+# One honest, descriptive UA (directive ⚠ RATE DISCIPLINE §6). Per-host overrides below.
+OPERATOR_CONTACT = "benjamin.crane@engineereddemand.com"
+DEFAULT_UA = (
+    f"core-x-data-factory/1.0 (federal reference-data ingest; contact: {OPERATOR_CONTACT})"
+)
+# Some hosts (whitehouse.gov) 403 a bare/library client and require a browser UA merely to
+# serve a static file — a baseline, not evasion. NEVER cycle UAs to defeat an active 403.
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126 Safari/537.36"
+)
+# Per-host UA policy (directive §2.1 / ⚠ RATE DISCIPLINE §6).
+HOST_UA = {
+    "www.whitehouse.gov": BROWSER_UA,
+    "whitehouse.gov": BROWSER_UA,
+    "api.usaspending.gov": DEFAULT_UA,
+    "files.usaspending.gov": DEFAULT_UA,
+}
 
 
-class ThrottledError(RuntimeError):
-    """Raised on the SECOND circuit-breaker trip in a run — the host is walling us and
-    grinding further risks a persistent IP block. The caller catches this, writes the
-    ledger row (``status='failed'``, ``disposition='throttled'``), flushes the checkpoint,
-    and surfaces to the operator. Carries ``disposition='throttled'``."""
+class ThrottleHalt(RuntimeError):
+    """The circuit breaker tripped a second time — the run must halt (not retry into a wall)."""
 
-    disposition = "throttled"
-
-
-# ── spacing token bucket ────────────────────────────────────────────────────────────
-class TokenBucket:
-    """Thread-safe minimum-inter-request-spacing limiter. A pure spacing model (not an
-    accumulating bucket) so no burst can ever exceed the sustained rate: with rate ``r``
-    the grants are spaced ``1/r`` apart, hence at most ``floor(W*r)`` grants land in any
-    half-open window of length ``W`` (e.g. r=2 → ≤20 per any 10 s window). The first
-    request is granted immediately; the rate can be changed live (warm-up ↔ steady)."""
-
-    def __init__(self, rate: float, *, clock: Callable[[], float], sleep: Callable[[float], None]):
-        if rate <= 0:
-            raise ValueError("rate must be > 0")
-        self._interval = 1.0 / rate
-        self._clock = clock
-        self._sleep = sleep
-        self._lock = threading.Lock()
-        self._next_allowed = clock()
-
-    def set_rate(self, rate: float) -> None:
-        if rate <= 0:
-            raise ValueError("rate must be > 0")
-        with self._lock:
-            self._interval = 1.0 / rate
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = self._clock()
-                if now >= self._next_allowed:
-                    # grant now; schedule the next slot one interval out
-                    self._next_allowed = now + self._interval
-                    return
-                wait = self._next_allowed - now
-            # sleep OUTSIDE the lock so other workers can compute their own waits;
-            # re-check after waking (another worker may have taken this slot).
-            self._sleep(wait)
+    def __init__(self, host: str, message: str, disposition: str = "throttled"):
+        super().__init__(message)
+        self.host = host
+        self.disposition = disposition
 
 
-# ── dynamic concurrency limiter ──────────────────────────────────────────────────────
-class _DynamicConcurrency:
-    """A semaphore whose ceiling can change at runtime (1 during warm-up, ``max_workers``
-    steady). Cheaper than tearing the pool down and rebuilding it on every ramp."""
+@dataclass
+class Outcome:
+    """Result of one governed request."""
 
-    def __init__(self, limit: int):
-        self._limit = max(1, limit)
-        self._active = 0
-        self._cv = threading.Condition()
-
-    def set_limit(self, limit: int) -> None:
-        with self._cv:
-            self._limit = max(1, limit)
-            self._cv.notify_all()
-
-    def acquire(self) -> None:
-        with self._cv:
-            while self._active >= self._limit:
-                self._cv.wait()
-            self._active += 1
-
-    def release(self) -> None:
-        with self._cv:
-            self._active -= 1
-            self._cv.notify_all()
-
-
-# ── resumable path checkpoint ─────────────────────────────────────────────────────────
-class CheckpointStore(Protocol):
-    """Byte blob persistence for the completed-path set. Backends: R2 object (prod),
-    local file (tests / offline), in-memory (unit tests)."""
-
-    def read(self) -> Optional[bytes]: ...
-    def write(self, data: bytes) -> None: ...
-
-
-class InMemoryCheckpointStore:
-    """A store that survives only in-process. Useful in tests to prove serialization."""
-
-    def __init__(self, data: Optional[bytes] = None):
-        self._data = data
-
-    def read(self) -> Optional[bytes]:
-        return self._data
-
-    def write(self, data: bytes) -> None:
-        self._data = data
-
-
-class FileCheckpointStore:
-    """A store backed by a local file — round-trips across a real process restart."""
-
-    def __init__(self, path: str):
-        self._path = path
-
-    def read(self) -> Optional[bytes]:
-        try:
-            with open(self._path, "rb") as fh:
-                return fh.read()
-        except FileNotFoundError:
-            return None
-
-    def write(self, data: bytes) -> None:
-        tmp = f"{self._path}.tmp"
-        with open(tmp, "wb") as fh:
-            fh.write(data)
-        import os
-
-        os.replace(tmp, self._path)
-
-
-class PathCheckpoint:
-    """The resumable completed-path ledger. Loads its set from the store at construction
-    (so a fresh process picks up exactly where a killed one left off), is safe to mutate
-    from many workers, and flushes back to the store on demand (the caller flushes every
-    N completions). A block costs only the un-flushed tail, never the whole crawl."""
-
-    def __init__(self, store: CheckpointStore):
-        self._store = store
-        self._lock = threading.Lock()
-        raw = store.read()
-        self._done: set[str] = set(json.loads(raw.decode("utf-8"))) if raw else set()
-
-    def __contains__(self, path: str) -> bool:
-        with self._lock:
-            return path in self._done
-
-    def __len__(self) -> int:
-        with self._lock:
-            return len(self._done)
-
-    def add(self, path: str) -> None:
-        with self._lock:
-            self._done.add(path)
-
-    def snapshot(self) -> set[str]:
-        with self._lock:
-            return set(self._done)
-
-    def flush(self) -> None:
-        with self._lock:
-            data = json.dumps(sorted(self._done)).encode("utf-8")
-        self._store.write(data)
-
-
-# ── the governor ──────────────────────────────────────────────────────────────────────
-_WARMUP = "warmup"
-_STEADY = "steady"
+    status_code: int | None
+    response: object | None
+    disposition: str            # 'ok' | 'blocked' | 'throttled'
+    tripped: bool = False       # breaker tripped on this call
+    halt: bool = False          # second trip → run must halt
+    error: str | None = None
+    breaker_sleep_s: float = 0.0
+    retry_after: float | None = None   # server Retry-After (s), surfaced on every non-200
 
 
 class RateGovernor:
-    """The single chokepoint every network call routes through. See module docstring for
-    the binding contract. ``request(do_get, url)`` acquires a concurrency slot and a rate
-    token, calls ``do_get(url)`` (which must return an object with ``.status_code`` and a
-    dict-like ``.headers``), classifies the response, and:
-
-      * 200            → resets the failure counter, advances the warm-up streak, returns.
-      * 403 / 429      → trips the breaker (sleep + resume-at-warmup) and RETRIES; a second
-                         trip raises ``ThrottledError``.
-      * other non-200  → resets the warm-up streak, increments the consecutive-failure
-                         counter (trips the breaker at 3), and returns the response so the
-                         CALLER applies its own bounded 5xx/timeout retry or skip.
-
-    Timeouts / connection errors are not responses — the caller catches those, and should
-    call ``note_transport_error()`` so they count toward the 3-consecutive-failure breaker
-    exactly like a non-200 would.
-    """
+    """Host-scoped token-bucket pacer + warm-up ramp + circuit breaker + path checkpoint."""
 
     def __init__(
         self,
         *,
+        host: str,
+        user_agent: str | None = None,
         max_rate: float = 2.0,
-        max_workers: int = 3,
-        warmup_requests: int = 100,
         warmup_rate: float = 1.0,
+        warmup_requests: int = 100,
+        max_workers: int = 3,
         breaker_sleep_s: float = 300.0,
-        clock: Callable[[], float] | None = None,
-        sleep: Callable[[float], None] | None = None,
+        breaker_consecutive: int = 3,
+        checkpoint_path: str | None = None,
+        checkpoint_every: int = 200,
+        clock=time.monotonic,
+        sleep=time.sleep,
     ):
-        import time
+        if max_rate <= 0 or warmup_rate <= 0:
+            raise ValueError("rates must be positive")
+        self.host = host
+        self.user_agent = user_agent or HOST_UA.get(host, DEFAULT_UA)
+        self.max_rate = float(max_rate)
+        self.warmup_rate = float(warmup_rate)
+        self.warmup_requests = int(warmup_requests)
+        self.max_workers = int(max_workers)
+        self.breaker_sleep_s = float(breaker_sleep_s)
+        self.breaker_consecutive = int(breaker_consecutive)
+        self._clock = clock
+        self._sleep = sleep
 
-        self._clock = clock or time.monotonic
-        self._sleep = sleep or time.sleep
-        self._max_rate = max_rate
-        self._max_workers = max_workers
-        self._warmup_requests = warmup_requests
-        self._warmup_rate = warmup_rate
-        self._breaker_sleep_s = breaker_sleep_s
+        # token bucket — capacity 1.0 (no burst beyond the single in-hand token) so that
+        # over any half-open window of length W the count is ≤ ceil(rate*W); at rate 2.0 a
+        # 10 s window holds ≤ 20 = ≤2 req/s.
+        self._capacity = 1.0
+        self._tokens = 1.0                     # first request is immediate
+        self._last_refill = self._clock()
 
-        self._bucket = TokenBucket(warmup_rate, clock=self._clock, sleep=self._sleep)
-        self._slots = _DynamicConcurrency(1)  # single worker during warm-up
+        # warm-up + breaker state
+        self._clean_200_streak = 0
+        self._consec_non200 = 0
+        self._breaker_trips = 0
 
-        self._state_lock = threading.Lock()
-        self._gate = threading.Event()
-        self._gate.set()  # open
-        self._phase = _WARMUP
-        self._success_streak = 0
-        self._consec_fail = 0
-        self._episode = 0     # monotonic breaker-episode id (absorbs concurrent failures)
-        self._trips = 0
-        self.disposition = "ok"
-
-        # observability counters
-        self.total_requests = 0
-        self.total_200 = 0
-        self.total_non200 = 0
-        self.total_trips = 0
-
-    # -- public state (read-only-ish) --------------------------------------------------
-    @property
-    def phase(self) -> str:
-        return self._phase
-
-    @property
-    def in_warmup(self) -> bool:
-        return self._phase == _WARMUP
-
-    @property
-    def max_workers(self) -> int:
-        return self._max_workers
-
-    def stats(self) -> dict:
-        return {
-            "phase": self._phase,
-            "requests": self.total_requests,
-            "ok": self.total_200,
-            "non200": self.total_non200,
-            "trips": self.total_trips,
-            "disposition": self.disposition,
-        }
-
-    # -- the chokepoint ----------------------------------------------------------------
-    def request(self, do_get: Callable[[str], Any], url: str) -> Any:
-        while True:
-            self._gate.wait()
-            with self._state_lock:
-                ep = self._episode
-            self._slots.acquire()
+        # path checkpoint
+        self._checkpoint_path = checkpoint_path
+        self._checkpoint_every = int(checkpoint_every)
+        self._since_flush = 0
+        self._done: set[str] = set()
+        if checkpoint_path and os.path.exists(checkpoint_path):
             try:
-                self._bucket.acquire()
-                resp = do_get(url)
-            finally:
-                self._slots.release()
+                with open(checkpoint_path, encoding="utf-8") as fh:
+                    self._done = set(json.load(fh))
+            except (OSError, ValueError):
+                self._done = set()
 
-            code = getattr(resp, "status_code", None)
-            with self._state_lock:
-                self.total_requests += 1
-            if code == 200:
-                self._on_success()
-                return resp
-            with self._state_lock:
-                self.total_non200 += 1
-            if code in (403, 429):
-                self._trip(ep, resp)   # sleeps + resumes, or raises ThrottledError
-                continue               # retry the same fetch after the breaker cools
-            # other non-200 (404 / 5xx / ...): a soft failure the caller owns retry for
-            self._on_soft_fail(ep, resp)
-            return resp
+        self._lock = threading.RLock()
 
-    def note_transport_error(self) -> None:
-        """A timeout / connection error is not an HTTP response but IS a consecutive
-        failure for breaker purposes. The caller calls this before its own retry so a
-        wall of timeouts trips the breaker instead of grinding."""
-        self._on_soft_fail(self._episode, None)
+    # ── pacing ────────────────────────────────────────────────────────────────────
+    def _current_rate(self) -> float:
+        return self.max_rate if self._clean_200_streak >= self.warmup_requests else self.warmup_rate
 
-    # -- internals ---------------------------------------------------------------------
-    def _on_success(self) -> None:
-        with self._state_lock:
-            self.total_200 += 1
-            self._consec_fail = 0
-            if self._phase == _WARMUP:
-                self._success_streak += 1
-                if self._success_streak >= self._warmup_requests:
-                    self._enter_steady_locked()
+    def current_concurrency(self) -> int:
+        """1 during warm-up (single worker), ``max_workers`` once the ceiling is unlocked."""
+        return self.max_workers if self._clean_200_streak >= self.warmup_requests else 1
 
-    def _on_soft_fail(self, ep: int, resp: Any) -> None:
-        should_trip = False
-        with self._state_lock:
-            if self._phase == _WARMUP:
-                self._success_streak = 0
-            self._consec_fail += 1
-            if self._consec_fail >= 3:
-                should_trip = True
-        if should_trip:
-            self._trip(ep, resp)
+    def _pace(self) -> None:
+        """Block (via injected sleep) until a token is available, then consume one."""
+        rate = self._current_rate()
+        now = self._clock()
+        elapsed = max(0.0, now - self._last_refill)
+        self._tokens = min(self._capacity, self._tokens + elapsed * rate)
+        self._last_refill = now
+        if self._tokens < 1.0:
+            need = (1.0 - self._tokens) / rate
+            self._sleep(need)
+            now = self._clock()
+            elapsed = max(0.0, now - self._last_refill)
+            self._tokens = min(self._capacity, self._tokens + elapsed * rate)
+            self._last_refill = now
+        self._tokens -= 1.0
 
-    def _trip(self, ep: int, resp: Any) -> None:
-        perform = False
-        delay = 0.0
-        with self._state_lock:
-            # Only the worker that observes the failure FIRST (matching, live episode with
-            # the gate still open) owns the trip; concurrent failures from the same episode
-            # fall through and simply wait out the cool-down — they do not double-count.
-            if ep == self._episode and self._gate.is_set():
-                self._episode += 1
-                self._trips += 1
-                self.total_trips += 1
-                if self._trips >= 2:
-                    self.disposition = "throttled"
-                    raise ThrottledError(
-                        "second circuit-breaker trip in this run — halting to avoid a "
-                        "persistent IP block"
-                    )
-                self._gate.clear()  # freeze all workers
-                self._enter_warmup_locked()
-                delay = self._retry_after(resp)
-                if delay <= 0:
-                    delay = self._breaker_sleep_s
-                perform = True
-        if perform:
-            self._sleep(delay)      # every other worker is blocked on the closed gate
-            self._gate.set()        # thaw at warm-up settings
-        else:
-            self._gate.wait()       # someone else is cooling this episode down
-
-    def _retry_after(self, resp: Any) -> float:
-        if resp is None:
-            return 0.0
-        headers = getattr(resp, "headers", None) or {}
-        val = None
-        for k in ("Retry-After", "retry-after"):
-            if k in headers:
-                val = headers[k]
-                break
-        if val is None:
-            return 0.0
+    # ── breaker / warm-up bookkeeping ───────────────────────────────────────────────
+    @staticmethod
+    def _parse_retry_after(resp) -> float | None:
         try:
-            return max(0.0, float(int(str(val).strip())))
+            headers = getattr(resp, "headers", None) or {}
+            raw = headers.get("Retry-After")
+        except Exception:  # noqa: BLE001
+            return None
+        if raw is None:
+            return None
+        raw = str(raw).strip()
+        if raw.isdigit():
+            return float(raw)
+        try:  # HTTP-date form
+            when = email.utils.parsedate_to_datetime(raw)
+            if when is not None:
+                return max(0.0, when.timestamp() - time.time())
         except (TypeError, ValueError):
-            return 0.0  # HTTP-date form: fall back to the fixed breaker sleep
+            return None
+        return None
 
-    def _enter_warmup_locked(self) -> None:
-        self._phase = _WARMUP
-        self._success_streak = 0
-        self._consec_fail = 0
-        self._bucket.set_rate(self._warmup_rate)
-        self._slots.set_limit(1)
+    def _classify(self, status: int | None, resp) -> Outcome:
+        """Update streak/breaker counters under lock and return the outcome (+ any sleep hint)."""
+        if status == 200:
+            self._clean_200_streak += 1
+            self._consec_non200 = 0
+            return Outcome(200, resp, disposition="ok")
 
-    def _enter_steady_locked(self) -> None:
-        self._phase = _STEADY
-        self._consec_fail = 0
-        self._bucket.set_rate(self._max_rate)
-        self._slots.set_limit(self._max_workers)
+        # any non-200 (incl. transport error status=None) resets the warm-up streak
+        self._clean_200_streak = 0
+        self._consec_non200 += 1
+        retry_after = self._parse_retry_after(resp)
+        hard = status in (403, 429)
+        trip = hard or (self._consec_non200 >= self.breaker_consecutive)
+        if not trip:
+            # transient non-200 (e.g. a lone 5xx) — caller may back off & retry. Surface
+            # Retry-After so the caller honors it over its own exponential backoff (§4);
+            # dropping it here is the over-fetch-into-a-block the governor exists to prevent.
+            return Outcome(status, resp, disposition="ok", retry_after=retry_after)
+
+        self._breaker_trips += 1
+        if self._breaker_trips >= 2:
+            # SECOND trip in this governor → halt the run; do NOT retry into a wall.
+            return Outcome(status, resp, disposition="throttled", tripped=True, halt=True,
+                           retry_after=retry_after)
+
+        # FIRST trip → cool down, then resume at warm-up. A POSITIVE Retry-After wins over the
+        # 300 s default (§4); a 0 / negative / stale-date value must NOT be able to shrink the
+        # mandated breaker floor (a hard 403/429 with `Retry-After: 0` would otherwise resume
+        # instantly straight into the wall).
+        sleep_s = retry_after if (retry_after is not None and retry_after > 0) else self.breaker_sleep_s
+        self._consec_non200 = 0
+        self._clean_200_streak = 0
+        return Outcome(status, resp, disposition="blocked", tripped=True, halt=False,
+                       breaker_sleep_s=sleep_s, retry_after=retry_after)
+
+    # ── the one governed call ───────────────────────────────────────────────────────
+    def request(self, send, *, extra_headers: dict | None = None) -> Outcome:
+        """Pace, execute ``send(headers)->response``, observe status, drive the breaker.
+
+        ``send`` receives the full header dict (this governor's UA + ``extra_headers``) and
+        must return a response object exposing ``.status_code`` and ``.headers``. Never
+        raises for HTTP status; a transport exception is folded into ``Outcome(error=...)``
+        and counts as a non-200 for the breaker. Returns an :class:`Outcome`; on the second
+        breaker trip ``Outcome.halt`` is True — callers must stop and record
+        ``disposition='throttled'``.
+        """
+        headers = {"User-Agent": self.user_agent}
+        if extra_headers:
+            headers.update(extra_headers)
+
+        with self._lock:
+            self._pace()
+
+        try:
+            resp = send(headers)
+            status = getattr(resp, "status_code", None)
+        except Exception as exc:  # noqa: BLE001 — transport failure = non-200 for the breaker
+            with self._lock:
+                out = self._classify(None, None)
+            out.error = str(exc)
+            if out.tripped and not out.halt:
+                self._sleep(out.breaker_sleep_s)
+            return out
+
+        with self._lock:
+            out = self._classify(status, resp)
+        if out.tripped and not out.halt:
+            # breaker first-trip cool-down happens outside the lock
+            self._sleep(out.breaker_sleep_s)
+        return out
+
+    # ── convenience HTTP wrappers (lazy-import requests) ────────────────────────────
+    def get(self, url: str, *, timeout: int = 600, extra_headers: dict | None = None,
+            retries_5xx: int = 5):
+        """GET ``url`` through the governor. Returns the response object (caller inspects
+        ``.status_code``). Retries transport errors / 5xx with capped backoff. Raises
+        :class:`ThrottleHalt` on a second breaker trip."""
+        import requests
+
+        last = None
+        for attempt in range(retries_5xx + 1):
+            def send(headers, _u=url, _t=timeout):
+                return requests.get(_u, headers=headers, timeout=_t)
+
+            out = self.request(send, extra_headers=extra_headers)
+            if out.halt:
+                raise ThrottleHalt(self.host, f"circuit breaker halt on GET {url}")
+            if out.status_code == 200:
+                return out.response
+            last = out
+            transient = out.status_code in (500, 502, 503, 504) or out.status_code is None
+            if transient and attempt < retries_5xx:
+                backoff = min(60.0, 2.0 ** attempt)
+                wait = out.retry_after if (out.retry_after and out.retry_after > 0) else backoff
+                self._sleep(wait)  # Retry-After wins over exponential backoff (§4)
+                continue
+            return out.response  # non-retryable non-200 (404, first-trip 403, …) → caller handles
+        return last.response if last else None
+
+    def post(self, url: str, *, json_body: dict | None = None, timeout: int = 600,
+             extra_headers: dict | None = None, retries_5xx: int = 5):
+        """POST ``url`` (JSON body) through the governor. Same semantics as :meth:`get`."""
+        import requests
+
+        last = None
+        for attempt in range(retries_5xx + 1):
+            def send(headers, _u=url, _t=timeout, _b=json_body):
+                return requests.post(_u, headers=headers, json=_b, timeout=_t)
+
+            out = self.request(send, extra_headers=extra_headers)
+            if out.halt:
+                raise ThrottleHalt(self.host, f"circuit breaker halt on POST {url}")
+            if out.status_code == 200:
+                return out.response
+            last = out
+            transient = out.status_code in (500, 502, 503, 504) or out.status_code is None
+            if transient and attempt < retries_5xx:
+                backoff = min(60.0, 2.0 ** attempt)
+                wait = out.retry_after if (out.retry_after and out.retry_after > 0) else backoff
+                self._sleep(wait)  # Retry-After wins over exponential backoff (§4)
+                continue
+            return out.response
+        return last.response if last else None
+
+    # ── path checkpoint ─────────────────────────────────────────────────────────────
+    def is_done(self, key: str) -> bool:
+        with self._lock:
+            return key in self._done
+
+    def mark_done(self, key: str) -> None:
+        with self._lock:
+            self._done.add(key)
+            self._since_flush += 1
+            if self._since_flush >= self._checkpoint_every:
+                self._flush_locked()
+
+    def flush_checkpoint(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        if not self._checkpoint_path:
+            self._since_flush = 0
+            return
+        tmp = f"{self._checkpoint_path}.tmp"
+        os.makedirs(os.path.dirname(self._checkpoint_path) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(sorted(self._done), fh)
+        os.replace(tmp, self._checkpoint_path)
+        self._since_flush = 0

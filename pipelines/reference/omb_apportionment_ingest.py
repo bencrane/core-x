@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import concurrent.futures as cf
 import datetime as dt
 import hashlib
 import json
@@ -70,19 +69,13 @@ from pipelines.bls.ingest import (  # noqa: E402
     _s3_client,
     _storage_options,
 )
-from pipelines._lib.rate_governor import (  # noqa: E402
-    CheckpointStore,
-    PathCheckpoint,
-    RateGovernor,
-    ThrottledError,
-)
+from pipelines._lib.rate_governor import RateGovernor, ThrottleHalt  # noqa: E402
 
 BUCKET = "data-sink"
 SOURCE_TAG = "omb_apportionment_ingest"
 SOURCE_SLUG = "omb_apportionment"
 ORIGIN = "https://apportionment-public.max.gov"
-UA = ("core-x-data-factory/1.0 (federal reference-data ingest; "
-      "contact: benjamin.crane@engineereddemand.com)")
+HOST = "apportionment-public.max.gov"  # governor sends its honest DEFAULT_UA for this host
 
 CACHE_PREFIX = "landing/omb_apportionment/cache/blobs/"      # object per URL path (sha1)
 CHECKPOINT_KEY = "landing/omb_apportionment/cache/_checkpoint.json"
@@ -238,17 +231,29 @@ def _r2_get(key: str) -> bytes | None:
         return None
 
 
-class R2CheckpointStore(CheckpointStore):
-    """Backs the completed-path checkpoint on a stable R2 object (survives sessions)."""
+class _R2Checkpoint:
+    """Resumable completed-path set persisted to a stable R2 object. The shared governor's
+    own checkpoint is a LOCAL file; the directive forbids a session-local checkpoint for this
+    30K-file crawl (a later-session resume would re-crawl the whole tree and re-expose the
+    block risk the checkpoint exists to remove), so the crawl's resume ledger lives in R2.
+    JSON-array format — compatible across runs and with the object already on R2."""
 
     def __init__(self, key: str):
         self._key = key
+        raw = _r2_get(key)
+        self._done: set[str] = set(json.loads(raw.decode("utf-8"))) if raw else set()
 
-    def read(self):
-        return _r2_get(self._key)
+    def __contains__(self, path: str) -> bool:
+        return path in self._done
 
-    def write(self, data: bytes) -> None:
-        _r2_put(self._key, data)
+    def __len__(self) -> int:
+        return len(self._done)
+
+    def add(self, path: str) -> None:
+        self._done.add(path)
+
+    def flush(self) -> None:
+        _r2_put(self._key, json.dumps(sorted(self._done)).encode("utf-8"))
 
 
 # ── ledger (ops.omb_apportionment_ingest_runs) + catalog (ops.data_source_catalog) ───
@@ -399,13 +404,10 @@ def _ledger_finish(run_id: str | None, *, status: str, disposition: str | None,
 
 
 # ── phase 1: index → work list ───────────────────────────────────────────────────────
-def fetch_index(gov: RateGovernor, sess) -> list[str]:
-    def do_get(url):
-        return sess.get(url, headers={"User-Agent": UA}, timeout=600)
-
-    resp = gov.request(do_get, ORIGIN + "/")
-    if resp.status_code != 200:
-        raise RuntimeError(f"index GET {resp.status_code}")
+def fetch_index(gov: RateGovernor) -> list[str]:
+    resp = gov.get(ORIGIN + "/", timeout=600)  # governed; ThrottleHalt on a 2nd breaker trip
+    if resp is None or getattr(resp, "status_code", None) != 200:
+        raise RuntimeError(f"index GET {getattr(resp, 'status_code', None)}")
     links = re.findall(r'href="(/Fiscal%20Year%20\d{4}/[^"]+\.json)"', resp.text)
     # de-dup preserving order
     seen = set()
@@ -439,79 +441,50 @@ def gate_index(links: list[str]) -> dict:
 
 
 # ── phase 2: governed crawl → R2 cache (+ local mirror) ──────────────────────────────
-def crawl(gov: RateGovernor, links: list[str], checkpoint: PathCheckpoint, local_dir: str,
+def crawl(gov: RateGovernor, links: list[str], checkpoint: _R2Checkpoint, local_dir: str,
           *, smoke: bool) -> dict:
-    import requests
-
-    sess = requests.Session()
-
-    def do_get(url):
-        return sess.get(url, headers={"User-Agent": UA}, timeout=120)
-
+    """Single-threaded through the shared governor: at ≤2 req/s over ~8 KB files a single
+    worker trivially saturates the rate ceiling, so no pool is needed (and the shared
+    governor is designed to be driven single-threaded). ``gov.get`` paces every call, retries
+    5xx/timeouts internally, and raises ``ThrottleHalt`` on the second breaker trip. Resume is
+    driven by the R2 checkpoint; a 403/429 first-trip cools down 300 s inside ``gov.get``."""
     todo = [p for p in links if p not in checkpoint]
     print(f"[crawl] {len(links)} links; {len(links) - len(todo)} already cached; "
           f"{len(todo)} to fetch", flush=True)
 
-    abort = threading.Event()
     failed_paths: list[str] = []
-    lock = threading.Lock()
-    counters = {"ok": 0, "failed": 0}
-
-    def fetch_one(path: str) -> str:
-        if abort.is_set():
-            return "aborted"
-        url = ORIGIN + path
-        for _ in range(3):  # 2 retries on 5xx/timeout; 403/429 handled inside the governor
-            if abort.is_set():
-                return "aborted"
+    throttled = False
+    t0 = time.monotonic()
+    done = 0
+    try:
+        for path in todo:
+            url = ORIGIN + path
             try:
-                resp = gov.request(do_get, url)
-            except requests.RequestException:
-                gov.note_transport_error()
-                continue
-            if resp.status_code == 200:
+                resp = gov.get(url, timeout=120)
+            except ThrottleHalt:
+                throttled = True
+                print("[crawl] THROTTLED — second breaker trip; halting crawl", flush=True)
+                break
+            if resp is not None and getattr(resp, "status_code", None) == 200:
                 body = resp.content
                 _r2_put(_cache_key(path), body)
                 with open(os.path.join(local_dir, _cache_key(path).rsplit("/", 1)[-1]), "wb") as fh:
                     fh.write(body)
                 checkpoint.add(path)
-                return "ok"
-            # non-200 soft failure already counted by the governor; retry
-        with lock:
-            failed_paths.append(path)
-        return "failed"
-
-    t0 = time.monotonic()
-    throttled = False
-    done = 0
-    try:
-        with cf.ThreadPoolExecutor(max_workers=gov.max_workers) as pool:
-            futs = {pool.submit(fetch_one, p): p for p in todo}
-            for fut in cf.as_completed(futs):
-                try:
-                    res = fut.result()
-                except ThrottledError:
-                    throttled = True
-                    abort.set()
-                    print("[crawl] THROTTLED — second breaker trip; halting crawl", flush=True)
-                    break
-                done += 1
-                if res == "ok":
-                    counters["ok"] += 1
-                elif res == "failed":
-                    counters["failed"] += 1
-                if done % CHECKPOINT_EVERY == 0:
-                    checkpoint.flush()
-                    rate = done / max(1e-6, time.monotonic() - t0)
-                    print(f"[crawl] {done}/{len(todo)}  ok={counters['ok']} "
-                          f"failed={counters['failed']}  {rate:.2f} files/s  gov={gov.stats()}",
-                          flush=True)
+            else:
+                failed_paths.append(path)
+            done += 1
+            if done % CHECKPOINT_EVERY == 0:
+                checkpoint.flush()
+                rate = done / max(1e-6, time.monotonic() - t0)
+                print(f"[crawl] {done}/{len(todo)}  ok={done - len(failed_paths)} "
+                      f"failed={len(failed_paths)}  {rate:.2f} files/s", flush=True)
     finally:
         checkpoint.flush()
 
     fetched = len(checkpoint)
-    print(f"[crawl] done: cached={fetched} new_ok={counters['ok']} "
-          f"failed={len(failed_paths)} throttled={throttled} gov={gov.stats()}", flush=True)
+    print(f"[crawl] done: cached={fetched} failed={len(failed_paths)} "
+          f"throttled={throttled}", flush=True)
     return {"fetched": fetched, "failed_paths": failed_paths, "throttled": throttled}
 
 
@@ -928,8 +901,6 @@ def write_run_record(union, parse_res, crawl_res, per_fy, built) -> str:
 
 
 def main() -> None:
-    import requests
-
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--stream", required=True,
                     choices=["index", "files", "schedule", "footnotes", "all"])
@@ -953,8 +924,10 @@ def main() -> None:
                     "all": {"files", "lines", "footnotes"}}
     write = stream_to_ds.get(args.stream, set())
 
-    gov = RateGovernor()  # binding defaults: ≤2 req/s, ≤3 workers, warm-up 100@1/s, breaker 300s
-    sess = requests.Session()
+    # Shared host-scoped governor: binding defaults (≤2 req/s, warm-up 100@1/s, breaker 300s).
+    # Driven single-threaded; the crawl's resume ledger is the R2 checkpoint below, not the
+    # governor's local-file checkpoint (checkpoint_path left unset).
+    gov = RateGovernor(host=HOST)
 
     status, disposition, notes = "failed", None, ""
     per_fy, crawl_res, union, parse_res, built = {}, {}, {}, {}, {}
@@ -963,7 +936,7 @@ def main() -> None:
     os.makedirs(local_dir, exist_ok=True)
 
     try:
-        links = fetch_index(gov, sess)
+        links = fetch_index(gov)
         per_fy = gate_index(links)
         _r2_put(WORKLIST_KEY, json.dumps(links).encode())
         if smoke:
@@ -974,8 +947,8 @@ def main() -> None:
             print(f"[index] stream=index complete; {sum(per_fy.values())} links", flush=True)
             return
 
-        checkpoint = PathCheckpoint(R2CheckpointStore(
-            CHECKPOINT_KEY if not smoke else CHECKPOINT_KEY.replace("/cache/", "/cache_smoke/")))
+        checkpoint = _R2Checkpoint(
+            CHECKPOINT_KEY if not smoke else CHECKPOINT_KEY.replace("/cache/", "/cache_smoke/"))
         crawl_res = crawl(gov, links, checkpoint, local_dir, smoke=smoke)
         if crawl_res["throttled"]:
             status, disposition = "failed", "throttled"
@@ -1002,9 +975,9 @@ def main() -> None:
                  f"amount_col={parse_res['primary_amount']} funds_distinct={len(parse_res['funds_dist'])} "
                  f"pl_119_21={'YES:'+str(pl) if pl else 'NO'} record={record}")
         print(f"\n=== RESULT === {notes}", flush=True)
-    except ThrottledError:
+    except ThrottleHalt:
         status, disposition = "failed", "throttled"
-        notes = "ThrottledError surfaced to main — re-run resumes from checkpoint"
+        notes = "ThrottleHalt surfaced to main — re-run resumes from R2 checkpoint"
         raise
     finally:
         datasets = {k: (parse_res.get("written", {}) or {}).get(k) for k in write}

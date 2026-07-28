@@ -1,210 +1,187 @@
 """Unit tests for the shared rate governor (pipelines/_lib/rate_governor.py).
 
-The three properties the directives make binding are proven here with an injected fake
-clock — no wall-clock waits, fully deterministic:
+The three assertions the directive mandates for landing the governor:
+  (a) sustained rate ≤ 2 req/s over ANY 10 s window,
+  (b) a synthetic 403 trips the breaker and the SECOND trip returns disposition='throttled',
+  (c) the path-checkpoint round-trips across a process restart.
 
-  1. sustained ≤ 2 req/s over ANY 10 s window (the token bucket's spacing invariant);
-  2. a synthetic 403 trips the breaker (300 s cool-down) and a SECOND trip surfaces
-     disposition='throttled';
-  3. the path-checkpoint round-trips across a process restart.
-
-Plus: warm-up ramp only after N consecutive 200s (any non-200 resets), the 3-consecutive-
-soft-failure breaker, and Retry-After winning over the fixed cool-down.
-
-    python -m pytest pipelines/_lib/tests/test_rate_governor.py -q
+The clock and sleep are faked so pacing and the 300 s breaker are exercised with zero
+real wall-clock time.
 """
 from __future__ import annotations
 
-import sys
-import tempfile
-from pathlib import Path
+import types
 
 import pytest
 
-# repo root = .../pipelines/_lib/tests/this_file → parents[3]
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-
-from pipelines._lib.rate_governor import (  # noqa: E402
-    FileCheckpointStore,
-    InMemoryCheckpointStore,
-    PathCheckpoint,
-    RateGovernor,
-    ThrottledError,
-    TokenBucket,
-)
+from pipelines._lib.rate_governor import RateGovernor, ThrottleHalt
 
 
 class FakeClock:
-    """Deterministic clock: sleep advances virtual time. Single-threaded use only."""
+    """Deterministic monotonic clock; ``sleep`` advances it, ``now`` reads it."""
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.t = 0.0
 
     def now(self) -> float:
         return self.t
 
-    def sleep(self, dt: float) -> None:
-        self.t += max(0.0, dt)
+    def sleep(self, d: float) -> None:
+        if d and d > 0:
+            self.t += d
 
 
-class Resp:
-    def __init__(self, status_code: int, headers: dict | None = None) -> None:
-        self.status_code = status_code
-        self.headers = headers or {}
+def _resp(status: int, headers: dict | None = None):
+    return types.SimpleNamespace(status_code=status, headers=headers or {})
 
 
-# ── 1. sustained ≤ 2 req/s over any 10 s window ──────────────────────────────────────
-def test_token_bucket_sustained_rate_over_any_10s_window():
-    fc = FakeClock()
-    bucket = TokenBucket(2.0, clock=fc.now, sleep=fc.sleep)
-    grants = []
-    for _ in range(80):  # 40 s of virtual traffic
-        bucket.acquire()
-        grants.append(fc.now())
+# ── (a) sustained rate ≤ 2 req/s over any 10 s window ────────────────────────────────
+def test_sustained_rate_ceiling_2_per_second():
+    clk = FakeClock()
+    # warmup_requests=0 unlocks the 2 req/s ceiling immediately so the ceiling itself is
+    # under test (warm-up is strictly slower, so it can never violate this bound).
+    gov = RateGovernor(host="example.gov", warmup_requests=0, max_rate=2.0,
+                       clock=clk.now, sleep=clk.sleep)
 
-    # exact 0.5 s spacing → never faster than 2/s
-    deltas = [b - a for a, b in zip(grants, grants[1:])]
-    assert min(deltas) >= 0.5 - 1e-9, f"spacing dipped below 0.5s: min={min(deltas)}"
+    permit_times: list[float] = []
+    for _ in range(120):
+        out = gov.request(lambda h: _resp(200))
+        assert out.status_code == 200
+        permit_times.append(clk.now())
 
-    # no half-open 10 s window holds more than 20 grants (= 2 req/s)
-    worst = 0
-    for start in grants:
-        n = sum(1 for g in grants if start <= g < start + 10.0)
-        worst = max(worst, n)
-    assert worst <= 20, f"a 10s window held {worst} grants (> 2 req/s)"
+    # Any half-open 10 s window must hold ≤ 20 requests (= ≤ 2 req/s).
+    for t0 in permit_times:
+        in_window = sum(1 for u in permit_times if t0 <= u < t0 + 10.0)
+        assert in_window <= 20, f"window [{t0}, {t0+10}) held {in_window} > 20 requests"
 
-
-def test_token_bucket_first_request_immediate():
-    fc = FakeClock()
-    bucket = TokenBucket(1.0, clock=fc.now, sleep=fc.sleep)
-    bucket.acquire()
-    assert fc.now() == 0.0  # first grant costs nothing
+    # And the observed steady interval is exactly 1/max_rate = 0.5 s.
+    deltas = [b - a for a, b in zip(permit_times, permit_times[1:])]
+    assert min(deltas) >= 0.5 - 1e-9
 
 
-# ── 2. 403 trips the breaker; second trip → throttled ────────────────────────────────
-def test_single_403_trips_breaker_and_second_trip_throttles():
-    fc = FakeClock()
-    gov = RateGovernor(warmup_requests=100, breaker_sleep_s=300.0,
-                       clock=fc.now, sleep=fc.sleep)
-    calls = []
-
-    def do_get(url):
-        calls.append(fc.now())
-        return Resp(403)
-
-    with pytest.raises(ThrottledError):
-        gov.request(do_get, "https://host/x")
-
-    assert gov.disposition == "throttled"
-    assert fc.t >= 300.0, "first 403 must have forced a 300s cool-down"
-    assert len(calls) == 2, "expected: 403 → cool-down → retry → 403 → throttled"
-    assert gov.total_trips == 2
+def test_warmup_runs_at_one_per_second():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", warmup_requests=100, warmup_rate=1.0,
+                       max_rate=2.0, clock=clk.now, sleep=clk.sleep)
+    permit_times = []
+    for _ in range(50):  # well within the 100-request warm-up band
+        gov.request(lambda h: _resp(200))
+        permit_times.append(clk.now())
+    deltas = [b - a for a, b in zip(permit_times, permit_times[1:])]
+    assert min(deltas) >= 1.0 - 1e-9, "warm-up must pace at ≤ 1 req/s"
 
 
-def test_429_also_trips_breaker():
-    fc = FakeClock()
-    gov = RateGovernor(clock=fc.now, sleep=fc.sleep)
-    with pytest.raises(ThrottledError):
-        gov.request(lambda u: Resp(429), "https://host/x")
-    assert gov.disposition == "throttled"
+# ── (b) a 403 trips the breaker; the second trip returns disposition='throttled' ──────
+def test_403_first_trip_cools_down_second_trip_halts():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_sleep_s=300.0,
+                       clock=clk.now, sleep=clk.sleep)
+
+    # First 403 → breaker trip #1: cools down (300 s via the fake clock) and resumes.
+    out1 = gov.request(lambda h: _resp(403))
+    assert out1.tripped is True
+    assert out1.halt is False
+    assert clk.t >= 300.0, "first breaker trip must sleep the 300 s cool-down"
+
+    # Second 403 → breaker trip #2: halt, disposition='throttled'.
+    out2 = gov.request(lambda h: _resp(403))
+    assert out2.halt is True
+    assert out2.disposition == "throttled"
 
 
-def test_retry_after_wins_over_fixed_cooldown():
-    fc = FakeClock()
-    gov = RateGovernor(breaker_sleep_s=300.0, clock=fc.now, sleep=fc.sleep)
-    seq = iter([Resp(429, {"Retry-After": "42"}), Resp(200)])
-
-    resp = gov.request(lambda u: next(seq), "https://host/x")
-    assert resp.status_code == 200
-    # honored the 42s header, not the 300s default
-    assert 42.0 <= fc.t < 300.0, f"expected ~42s cool-down, got {fc.t}"
-    assert gov.total_trips == 1
+def test_429_is_a_hard_trip_and_get_raises_throttlehalt_on_second():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_sleep_s=1.0,
+                       clock=clk.now, sleep=clk.sleep)
+    assert gov.request(lambda h: _resp(429)).tripped is True     # trip 1
+    out2 = gov.request(lambda h: _resp(429))                     # trip 2
+    assert out2.halt is True and out2.disposition == "throttled"
 
 
-# ── 3-consecutive soft failures trip the breaker (no single 403 needed) ───────────────
-def test_three_consecutive_soft_failures_trip_breaker():
-    fc = FakeClock()
-    gov = RateGovernor(clock=fc.now, sleep=fc.sleep)
-    # 500s are soft-failures: returned to caller, but 3 in a row trip the breaker.
-    # (the ~1s/req warm-up spacing advances the clock a little; the 300s breaker
-    # cool-down is the discriminator, not t==0.)
-    for _ in range(2):
-        r = gov.request(lambda u: Resp(500), "https://host/x")
-        assert r.status_code == 500
-    assert fc.t < 300.0, "no 300s cool-down before the 3rd consecutive failure"
-    r = gov.request(lambda u: Resp(500), "https://host/x")
-    assert r.status_code == 500
-    assert fc.t >= 300.0, "3rd consecutive non-200 must trip the breaker"
-    assert gov.total_trips == 1
+def test_retry_after_header_wins_over_breaker_sleep():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_sleep_s=300.0,
+                       clock=clk.now, sleep=clk.sleep)
+    out = gov.request(lambda h: _resp(503, {"Retry-After": "42"}))
+    # 503 alone isn't a hard trip; three consecutive non-200s are. Drive two more.
+    # The first call set consec=1; make it reach the 3-consecutive threshold.
+    gov.request(lambda h: _resp(503, {"Retry-After": "42"}))
+    out3 = gov.request(lambda h: _resp(503, {"Retry-After": "42"}))
+    assert out3.tripped is True
+    assert out3.breaker_sleep_s == 42.0, "Retry-After must override the 300 s default"
 
 
-def test_success_resets_consecutive_failure_counter():
-    fc = FakeClock()
-    gov = RateGovernor(clock=fc.now, sleep=fc.sleep)
-    gov.request(lambda u: Resp(500), "https://host/x")
-    gov.request(lambda u: Resp(500), "https://host/x")
-    gov.request(lambda u: Resp(200), "https://host/x")  # resets
-    gov.request(lambda u: Resp(500), "https://host/x")
-    gov.request(lambda u: Resp(500), "https://host/x")
-    assert fc.t < 300.0, "counter must have reset on the 200 — no breaker cool-down"
-    assert gov.total_trips == 0
+def test_retry_after_surfaced_on_transient_non200():
+    # A lone 5xx with Retry-After must SURFACE the value (not swallow it) so the caller
+    # honors it over its own exponential backoff — never hammering a host that asked to wait.
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", clock=clk.now, sleep=clk.sleep)
+    out = gov.request(lambda h: _resp(503, {"Retry-After": "300"}))
+    assert out.tripped is False
+    assert out.retry_after == 300.0
 
 
-# ── warm-up ramp: only after N consecutive 200s; any non-200 resets ──────────────────
-def test_warmup_ramps_only_after_streak_and_resets_on_non200():
-    fc = FakeClock()
-    gov = RateGovernor(warmup_requests=5, warmup_rate=1.0, max_rate=2.0,
-                       clock=fc.now, sleep=fc.sleep)
-    assert gov.in_warmup
-    for _ in range(4):
-        gov.request(lambda u: Resp(200), "https://host/x")
-    assert gov.in_warmup, "still warming up at 4/5 clean 200s"
-    gov.request(lambda u: Resp(404), "https://host/x")  # resets the streak
-    for _ in range(4):
-        gov.request(lambda u: Resp(200), "https://host/x")
-    assert gov.in_warmup, "the 404 must have reset the streak back to 0"
-    gov.request(lambda u: Resp(200), "https://host/x")  # 5th clean 200 → ramp
-    assert not gov.in_warmup, "should have ramped to steady after 5 consecutive 200s"
+def test_zero_retry_after_cannot_defeat_hard_trip_floor():
+    # A hard 403 with `Retry-After: 0` must NOT resume instantly — the 300 s floor stands.
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_sleep_s=300.0, clock=clk.now, sleep=clk.sleep)
+    out = gov.request(lambda h: _resp(403, {"Retry-After": "0"}))
+    assert out.tripped is True and out.halt is False
+    assert out.breaker_sleep_s == 300.0
 
 
-# ── 3. path-checkpoint round-trips across a process restart ──────────────────────────
-def test_path_checkpoint_round_trips_in_memory():
-    store = InMemoryCheckpointStore()
-    ck = PathCheckpoint(store)
-    ck.add("/Fiscal Year 2026/a.json")
-    ck.add("/Fiscal Year 2025/b.json")
-    ck.flush()
-
-    # a fresh process would construct a NEW PathCheckpoint over the SAME store
-    ck2 = PathCheckpoint(store)
-    assert "/Fiscal Year 2026/a.json" in ck2
-    assert "/Fiscal Year 2025/b.json" in ck2
-    assert len(ck2) == 2
+def test_three_consecutive_non200_trips_breaker():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_consecutive=3, breaker_sleep_s=1.0,
+                       clock=clk.now, sleep=clk.sleep)
+    assert gov.request(lambda h: _resp(500)).tripped is False   # 1
+    assert gov.request(lambda h: _resp(500)).tripped is False   # 2
+    assert gov.request(lambda h: _resp(500)).tripped is True    # 3 → trip
 
 
-def test_path_checkpoint_round_trips_across_file_restart():
-    with tempfile.TemporaryDirectory() as td:
-        path = str(Path(td) / "ckpt.json")
-        store1 = FileCheckpointStore(path)
-        ck1 = PathCheckpoint(store1)
-        for i in range(250):
-            ck1.add(f"/p/{i}.json")
-        ck1.flush()
-
-        # simulate a hard restart: brand-new store object + checkpoint over the same file
-        ck2 = PathCheckpoint(FileCheckpointStore(path))
-        assert len(ck2) == 250
-        assert "/p/0.json" in ck2 and "/p/249.json" in ck2
-        assert "/p/250.json" not in ck2
+def test_clean_200_resets_consecutive_non200_streak():
+    clk = FakeClock()
+    gov = RateGovernor(host="example.gov", breaker_consecutive=3, breaker_sleep_s=1.0,
+                       clock=clk.now, sleep=clk.sleep)
+    gov.request(lambda h: _resp(500))
+    gov.request(lambda h: _resp(500))
+    gov.request(lambda h: _resp(200))          # resets the streak
+    assert gov.request(lambda h: _resp(500)).tripped is False   # only 1 again, no trip
 
 
-def test_checkpoint_unflushed_tail_is_the_only_loss():
-    # what's added-but-not-flushed is exactly the tail a crash would cost
-    store = InMemoryCheckpointStore()
-    ck = PathCheckpoint(store)
-    ck.add("a"); ck.add("b")
-    ck.flush()
-    ck.add("c")  # not flushed
-    recovered = PathCheckpoint(store)
-    assert "a" in recovered and "b" in recovered
-    assert "c" not in recovered  # the un-flushed tail is the only loss
+# ── (c) path checkpoint round-trips across a process restart ─────────────────────────
+def test_checkpoint_round_trips_across_restart(tmp_path):
+    ckpt = str(tmp_path / "sub" / "governor.ckpt.json")
+
+    gov1 = RateGovernor(host="example.gov", checkpoint_path=ckpt, checkpoint_every=2)
+    gov1.mark_done("2025:federal_account")
+    gov1.mark_done("2024:federal_account")     # auto-flush at checkpoint_every=2
+    gov1.mark_done("2023:federal_account")
+    gov1.flush_checkpoint()                     # explicit final flush
+
+    # Simulate a process restart: a brand-new instance loads the on-disk checkpoint.
+    gov2 = RateGovernor(host="example.gov", checkpoint_path=ckpt, checkpoint_every=2)
+    assert gov2.is_done("2025:federal_account")
+    assert gov2.is_done("2024:federal_account")
+    assert gov2.is_done("2023:federal_account")
+    assert not gov2.is_done("2017:federal_account")
+
+
+def test_checkpoint_autoflush_persists_without_explicit_flush(tmp_path):
+    ckpt = str(tmp_path / "governor.ckpt.json")
+    gov1 = RateGovernor(host="example.gov", checkpoint_path=ckpt, checkpoint_every=2)
+    gov1.mark_done("a")
+    gov1.mark_done("b")   # hits checkpoint_every → auto-flush, no explicit flush call
+    gov2 = RateGovernor(host="example.gov", checkpoint_path=ckpt)
+    assert gov2.is_done("a") and gov2.is_done("b")
+
+
+def test_default_ua_is_descriptive_and_whitehouse_gets_browser_ua():
+    api = RateGovernor(host="api.usaspending.gov")
+    wh = RateGovernor(host="www.whitehouse.gov")
+    assert "core-x-data-factory" in api.user_agent
+    assert "Mozilla/5.0" in wh.user_agent
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

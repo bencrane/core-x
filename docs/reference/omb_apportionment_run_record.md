@@ -1,6 +1,6 @@
 # OMB Apportionment ingest — run record
 
-generated_at: 2026-07-28T04:11:12.091025+00:00
+generated_at: 2026-07-28T04:27:30.078612+00:00
 index_link_count: 30372  per_fy: {'2022': 6006, '2023': 6287, '2024': 6539, '2025': 6160, '2026': 5380}
 files_fetched: 30372  files_failed: 0
 rows: files=30372 lines=515841 footnotes=68719
@@ -85,17 +85,16 @@ cite it in combination with other public laws (e.g. `"Public Law 119-21 (OB3) an
 appropriations directive established that USAspending's DEFC does not tag OBBA; OMB
 apportionment's `FundsProvidedBy` is therefore the live public-law attribution surface. Per
 §2.5 this reports the finding and the full distinct-value distribution — it does NOT assert an
-OBBA dollar total (that is out of scope and requires the TAFS↔federal-account crosswalk).
+OBBA dollar total (out of scope; requires the TAFS↔federal-account crosswalk).
 
 ### 2. Schedule-lines gate recalibrated (1,000,000 → exact completeness + 400k floor)
 The directive estimated 50–130 lines/file (~1.5–4M total) and set a 1M floor "(implies a parse
 that dropped rows)", explicitly deferring the count to in-run confirmation. **Confirmed in-run:
 ~17 lines/file → 515,841 lines across 30,372 docs.** The parse is provably complete, not
-truncated: `lines_written == sd_rows` exactly (515,841 == 515,841), every `files` row has
-`n_lines > 0`, and the SF-132 identity Σ(budgetary)==Σ(application) holds within $1 for **all
-30,372 documents** (0 mismatches, recomputed from the persisted Lance). The 1M floor was
-calibrated to a high estimate, not to reality. It was replaced by the exact completeness
-equality (the precise encoding of the gate's stated intent) plus a 400k coarse sanity floor.
+truncated: `lines_written == sd_rows` exactly, every `files` row has `n_lines > 0`, and the
+SF-132 identity Σ(budgetary)==Σ(application) holds within $1 for **all 30,372 documents** (0
+mismatches). The 1M floor was calibrated to a high estimate; replaced by the exact completeness
+equality (the precise encoding of the gate's stated intent) + a 400k coarse sanity floor.
 
 ### 3. Filename grain is payload-first (filenames are not uniform)
 ~88% of filenames use the clean `TAFS=…_Iteration=N_…` shape; EPA files omit TAFS/Iteration and
@@ -104,7 +103,16 @@ Treasury uses `Account=…`. Canonical grain therefore comes from the payload: `
 from the dominant `(CgacAgency, availability, CgacAcct)`. The §8 iteration gate validates the
 FILENAME iteration against the payload wherever the filename encodes one: **28,789/28,789 match**.
 
-### 4. Index count is not strictly monotonic
-Baseline 30,443 (2026-07-27 probe) → 30,368 (crawl) → 30,372 (re-run). OMB adds and removes
-files continuously; the gate uses a 25,000 floor + required-FYs-present (2022–2026) rather than
-an exact baseline, which correctly tolerates this drift.
+### 4. Shared rate governor — converged on the canonical `pipelines/_lib/rate_governor.py`
+The sibling appropriations cycle (PR #1358) landed the shared governor first. This module was
+rewired onto that canonical governor (`RateGovernor(host=…)` + `gov.get()` + `ThrottleHalt`),
+driven single-threaded (at ≤2 req/s over ~8 KB files one worker saturates the ceiling). The
+crawl's resume ledger is an R2 object (`landing/omb_apportionment/cache/_checkpoint.json`) rather
+than the governor's local-file checkpoint, because the directive forbids a session-local
+checkpoint for the 30K-file crawl. The full crawl (30,372 files, 0 failed, 0 breaker trips) and a
+merged-code re-run both pass every gate.
+
+### 5. Index count is not strictly monotonic
+Baseline 30,443 (2026-07-27 probe) → 30,368 (crawl) → 30,372 (re-run). OMB adds and removes files
+continuously; the gate uses a 25,000 floor + required-FYs-present (2022–2026) rather than an exact
+baseline, which correctly tolerates this drift.
