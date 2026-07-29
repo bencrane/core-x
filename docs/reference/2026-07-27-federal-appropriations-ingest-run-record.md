@@ -21,14 +21,37 @@ returns 52 codes; a search for `beautiful` / `119-21` / `reconcil` returns ZERO 
 `P.L. 119-*` codes present are the FY2025/FY2026 appropriations/CR acts (AAL 119-4, AAM 119-74,
 AAN/AAO 119-75, AAP 119-86), none of which is OBBA.
 
-The only defensible routes to an OBBA number are (a) year-over-year deltas in OMB budget
-authority at account grain across the FY2026/FY2027 releases, or (b) the FY2027 Budget's own
-scoring tables — both **derivations, not a tagged feed.** No OBBA total was manufactured in
-this cycle.
+The defensible routes to an OBBA number are (a) year-over-year deltas in OMB budget
+authority at account grain across releases, (b) the FY2027 Budget's own scoring tables, (c) the
+CBO score of P.L. 119-21 (separate ingest), and — added below — (d) **OMB apportionment footnote
+citations**. All are **derivations, not a USAspending tag.** No OBBA total was manufactured; the
+figure below is extracted verbatim from statutory citations in data the plane already holds.
 
 **Side benefit (record it):** IIJA (DEFC `Z`, P.L. 117-58) *is* fully taggable on USAspending,
 which makes it a real, sourceable analogue for "what happens to obligations after a large
 infrastructure act passes." (`usaspending_def_codes` gate hard-fails if `Z` is absent.)
+
+### ⚠ SCOPE CORRECTION (2026-07-27, follow-up) — OBBA *is* isolable from data we hold
+
+The negative finding above is precise **only about USAspending DEFC tags**. It does NOT mean
+OBBA dollars are unisolable across the plane. `omb_apportionment_footnotes` (already ingested,
+FY2022–FY2026) cite the enacting statute per line: **570 footnote rows / 329 distinct texts /
+111 TAFS cite P.L. 119-21**, with section + paragraph granularity and explicit dollar amounts
+("P.L. 119-21 Section 20004 paragraph 3 in the amount of $490,000,000 …"). Extracted via LLM
+structured extraction → independent adversarial verification (21 multi-law footnotes were the
+risk surface) → deterministic verbatim gate (every amount must occur literally in its source;
+0 hallucinations, 0 stated-total reconciliation failures) and landed as
+`active/omb_obba_attributions/` (module `pipelines/reference/materialize_obba_attributions.py`;
+committed input artifact `docs/reference/data/obba_apportionment_extractions.json`).
+
+- **Distinct statutory lines (headline, `is_primary_citation`, net): ~$245.7B** (positive-only
+  ~$248.8B) — 619 lines across 78 accounts; FY2025 ~$72.7B / FY2026 ~$173.0B.
+- Gross over all citations: ~$441.2B — **inflated** by the same statutory line cited across
+  multiple accounts + both sides of transfer chains; `is_primary_citation` de-duplicates it.
+- This is the **apportionment-visible** OBBA subset for the first two fiscal years — NOT OBBA's
+  full multi-year budgetary effect (that is the CBO score, still pending). It is also NOT the
+  demo's authored `$785B` constant, which is a different construct. Land it, label it, do not
+  conflate the two.
 
 ---
 
