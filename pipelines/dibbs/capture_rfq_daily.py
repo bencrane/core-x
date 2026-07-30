@@ -64,8 +64,13 @@ INTER_REQUEST_DELAY_S = 1.0  # .mil politeness: single client, low and slow
 FEED = "dibbs_rfq_daily"
 SCRATCH_DIR = "/tmp/dibbs"
 
-# 13-char solicitation number: SPE + 3 alnum + 2-digit FY + type letter + serial
-SOL_RX = r"^SPE[A-Z0-9]{3}\d{2}[A-Z]\d{4}"
+# 13-char DLA PIID: SPE + 3 alnum + 2-digit FY + type letter + 4-char serial.
+# The serial is ALPHANUMERIC, not strictly digits — real data carries e.g.
+# SPE2DS26T170H (serial "170H", verified 2026-07-29), alongside the all-digit
+# SPE1C126Q0299 / SPE1C126T1560 from the probe. A digits-only serial wrongly
+# rejects legitimate indexes. This still rejects the HTML 404 masquerade, whose
+# line 1 never starts SPE + 10 alphanumerics.
+SOL_RX = r"^SPE[A-Z0-9]{3}\d{2}[A-Z][A-Z0-9]{4}"
 
 OPS_DDL = """
 CREATE SCHEMA IF NOT EXISTS ops;
@@ -202,8 +207,18 @@ def _enumerate_work(www_session) -> dict[str, dict]:
         url = f"{WWW}/Awards/AwdDates.aspx?category={cat}"
         r = _polite_get(www_session, url, timeout=120)
         r.raise_for_status()
-        # Awards-side: every dibbs2 Downloads file on these pages is awards_zip
-        # regardless of extension (naming discovered in-run per directive §4).
+        # Awards-side (live-probed 2026-07-29): the directive's §4 `awards_zip`
+        # daily-bulk-file hypothesis is FALSIFIED. AwdDates.aspx links per date
+        # to an HTML VIEW page (Awards/AwdRecs.aspx?...&Value={MM-DD-YYYY}), not
+        # to a dibbs2 Downloads bulk file — so this parser correctly yields
+        # nothing here. Each view page in turn links per-award PDFs at
+        # dibbs2.../Downloads/Awards/{DDMMMYY}/{piid}.PDF, and those PDFs are
+        # LONG-LIVED (a single day's list references 01JUN21 / 06MAY24 folders
+        # still served) — there is NO destructive rolling window on the awards
+        # side, so the Phase-1 rescue rationale does not apply. Awards PDF
+        # harvesting (per-date AwdRecs enumeration → PDF capture → per-NSN unit
+        # price parse) is materially different work deferred to its own
+        # directive; kept here only as a no-op so the RFQ path stays whole.
         work.update(_parse_dates_page(r.text, lambda f: "awards_zip"))
     return work
 
@@ -224,10 +239,14 @@ def _validate_file(path: str, stream: str, fname: str) -> tuple[bool, str]:
         except UnicodeDecodeError:
             return False, "not ASCII (404-masquerade or binary)"
         if stream == "index":
-            with open(path, "rb") as fh:
-                nlines = sum(1 for _ in fh)
-            if nlines < 200:
-                return False, f"only {nlines} lines (<200)"
+            # No line-count floor: light business days and holidays ship
+            # legitimately tiny indexes (in260704.txt = 3 lines / July 4;
+            # in260711.txt & in260718.txt = 12 lines / Saturdays DIBBS still
+            # posted — verified 2026-07-29). The real discriminator against the
+            # ~103-byte HTML 404 masquerade is the fixed-width solicitation
+            # pattern on line 1, which HTML can never satisfy; require ≥1 record.
+            if not text.strip():
+                return False, "empty index"
             if not re.match(SOL_RX, text[:13]):
                 return False, f"line 1 does not match solicitation pattern: {text[:13]!r}"
         return True, "ok"
@@ -236,8 +255,11 @@ def _validate_file(path: str, stream: str, fname: str) -> tuple[bool, str]:
     if head[:2] != b"PK":
         return False, f"missing PK magic (got {head[:8]!r}, {size} bytes)"
     if stream == "solicitation_zip":
-        if size < 50 * 1024 * 1024:
-            return False, f"solicitation zip only {size} bytes (<50MB)"
+        # No absolute size floor: holiday-adjacent and light business days ship
+        # legitimately tiny zips (ca260704.zip = 95 KB / 3 PDFs; ca260711.zip &
+        # ca260718.zip = 369 KB — verified real, testzip-clean, 2026-07-29). The
+        # failure modes that matter are the 404 masquerade and truncation, and
+        # PK magic + a readable, non-empty central directory catch both.
         try:
             with zipfile.ZipFile(path) as zf:
                 if not zf.namelist():
@@ -373,18 +395,76 @@ def _capture_file(dl_session, s3, conn, meta: dict, fname: str) -> str:
 
 
 # ── refs_help RoboHelp mirror ──────────────────────────────────────────────────────
+# The DIBBS help is a RoboHelp WebHelp 5.10 project. Its navigation is NOT plain
+# HTML links: DIBBSHelp.htm document.write()s the frameset (escaped quotes), and
+# the actual topic tree lives in XML data files — whproj.xml → whxdata/whtoc.xml
+# → whxdata/whtdata0.xml (tocdata <item url="…"/>), with index/FTS/glossary
+# chunks alongside. An href/src-only HTML crawl dead-ends at the ~9 bootstrap
+# files. So: seed the known RoboHelp entry points, and extract links from
+# .htm/.html/.xml/.js by ALL of href|src|url|root= plus any quoted *.aspx/…
+# token, after normalizing document.write's escaped quotes.
+REFS_HELP_SEEDS = (
+    "DIBBSHelp.htm",
+    "whproj.xml",
+    "whxdata/whtoc.xml",
+    "whxdata/whidx.xml",
+    "whxdata/whfts.xml",
+    "whxdata/whglo.xml",
+    "whskin_frmset01.htm",
+    "whskin_pdhtml.htm",
+    "whskin_plist.htm",
+    "whskin_tbars.htm",
+)
+_LINK_EXT = (".aspx", ".htm", ".html", ".xml", ".js", ".css")
+_PARSE_EXT = (".htm", ".html", ".xml", ".js")
+_PHANTOM_BASENAMES = frozenset({
+    "whtoc.xml", "whidx.xml", "whfts.xml", "whglo.xml",
+    "whtoc.htm", "whidx.htm", "whfts.htm", "whglo.htm",
+    "whskin_banner.htm",
+})
+
+
+def _extract_refs_help_links(text: str) -> set[str]:
+    """Clean, path-shaped links only. Rejects the JS code fragments that a loose
+    quoted-token scan would otherwise capture from the WebHelp engine .js."""
+    import re
+
+    ext_alt = "|".join(e.lstrip(".") for e in _LINK_EXT)
+    clean_rx = re.compile(rf"^[\w./%-]+\.(?:{ext_alt})$", re.I)
+    # Normalize document.write("… src=\"x\" …") escaped quotes so the same
+    # attribute regex sees them.
+    norm = text.replace('\\"', '"').replace("\\'", "'")
+    raw: set[str] = set()
+    raw.update(re.findall(r"(?:href|src|url|root)\s*=\s*[\"']([^\"'#?]+)[\"']", norm, re.I))
+    raw.update(re.findall(rf"[\"']([\w./%-]+\.(?:{ext_alt}))(?:[#?][^\"']*)?[\"']", norm, re.I))
+    links: set[str] = set()
+    for cand in raw:
+        c = cand.strip().split("#", 1)[0].split("?", 1)[0]
+        if c.lower().startswith(("http://", "https://")):
+            if c.startswith(REFS_HELP_ROOT):
+                links.add(c)
+            continue
+        if clean_rx.match(c):
+            links.add(c)
+    return links
+
+
 def _mirror_refs_help(www_session, s3, conn, ok_keys: set[str]) -> dict[str, int]:
-    """Bounded same-host path-prefix crawl of the DIBBS RoboHelp topic tree."""
+    """Bounded same-host, path-prefix-restricted crawl of the RoboHelp tree.
+
+    Every reachable file is fetched for link discovery on each run (the tree is
+    small and re-run tolerable), but uploaded + ledgered only when not already
+    landed as 'ok' — so a re-run costs a few GETs and lands nothing new.
+    """
     import datetime as dt
     import hashlib
-    import re
     import urllib.parse
     from zoneinfo import ZoneInfo
 
     capture_date = dt.datetime.now(ZoneInfo("America/New_York")).date()
-    counts = {"ok": 0, "http_error": 0, "skipped": 0}
+    counts = {"ok": 0, "http_error": 0, "already_ok": 0}
     seen: set[str] = set()
-    queue = [urllib.parse.urljoin(REFS_HELP_ROOT, REFS_HELP_START)]
+    queue = [urllib.parse.urljoin(REFS_HELP_ROOT, s) for s in REFS_HELP_SEEDS]
 
     while queue and len(seen) < REFS_HELP_MAX_FILES:
         url = queue.pop(0)
@@ -395,31 +475,55 @@ def _mirror_refs_help(www_session, s3, conn, ok_keys: set[str]) -> dict[str, int
         if not rel:
             continue
         r2_key = f"{R2_PREFIX}/refs_help/{rel}"
-        if r2_key in ok_keys:
-            counts["skipped"] += 1
-            # still crawl its links on a fresh fetch below? No — skip refetch;
-            # link discovery loss is acceptable on re-runs (re-run tolerable).
-            continue
         try:
             r = _polite_get(www_session, url, timeout=60)
             r.raise_for_status()
             body = r.content
         except Exception as exc:  # noqa: BLE001
-            _ledger_upsert(conn, capture_date, "refs_help", rel, url, r2_key,
-                           None, None, "http_error", str(exc)[:500])
-            counts["http_error"] += 1
+            if r2_key not in ok_keys:
+                _ledger_upsert(conn, capture_date, "refs_help", rel, url, r2_key,
+                               None, None, "http_error", str(exc)[:500])
+                counts["http_error"] += 1
             continue
-        s3.put_object(Bucket=BUCKET, Key=r2_key, Body=body)
-        _ledger_upsert(conn, capture_date, "refs_help", rel, url, r2_key,
-                       len(body), hashlib.sha256(body).hexdigest(), "ok", "ok")
-        counts["ok"] += 1
-        if rel.lower().endswith((".htm", ".html")):
+        # Guard against the ~103-byte HTML 404 masquerade served with 200 status.
+        if b"resource you are looking for" in body[:400].lower():
+            if r2_key not in ok_keys:
+                _ledger_upsert(conn, capture_date, "refs_help", rel, url, r2_key,
+                               len(body), None, "http_error", "404 masquerade (200 body)")
+                counts["http_error"] += 1
+            continue
+        if r2_key in ok_keys:
+            counts["already_ok"] += 1
+        else:
+            s3.put_object(Bucket=BUCKET, Key=r2_key, Body=body)
+            _ledger_upsert(conn, capture_date, "refs_help", rel, url, r2_key,
+                           len(body), hashlib.sha256(body).hexdigest(), "ok", "ok")
+            counts["ok"] += 1
+        if rel.lower().endswith(_PARSE_EXT):
             text = body.decode("utf-8", errors="replace")
-            for link in re.findall(r"(?:href|src)=[\"']([^\"'#]+)[\"']", text, re.I):
-                if link.lower().startswith(("http://", "https://", "mailto:", "javascript:")):
-                    if not link.startswith(REFS_HELP_ROOT):
+            in_datadir = "/" in rel and rel.split("/", 1)[0] in ("whxdata", "whgdata")
+            for link in _extract_refs_help_links(text):
+                if link.startswith(REFS_HELP_ROOT):
+                    nxt = link
+                else:
+                    base_name = link.rsplit("/", 1)[-1].lower()
+                    # Phantom engine files that this DHTML-skin project never
+                    # serves at the resolved location: nav-frame files
+                    # (whnvp*/whnvf*, applet/pure-HTML skins only); the
+                    # toc/idx/fts/glo data files referenced bare by whproj.xml
+                    # (they live under whxdata/, already seeded) and their .htm
+                    # frame variants; and whskin_banner.htm. Skipping them keeps
+                    # the ledger free of expected 404 rows.
+                    if base_name.startswith(("whnvp", "whnvf")) or base_name in _PHANTOM_BASENAMES:
                         continue
-                nxt = urllib.parse.urljoin(url, link)
+                    # RoboHelp data chunks under whxdata/whgdata reference TOPIC
+                    # pages relative to the PROJECT ROOT, but their own chunk
+                    # cross-refs (wh*.xml/.htm) relative to the data dir. Resolve
+                    # accordingly so topics don't land under a whxdata/ key.
+                    is_engine = link.lower().startswith("wh")
+                    base = url if (not in_datadir or is_engine) else REFS_HELP_ROOT
+                    nxt = urllib.parse.urljoin(base, link)
+                nxt = nxt.split("#", 1)[0]
                 if nxt.startswith(REFS_HELP_ROOT) and nxt not in seen:
                     queue.append(nxt)
     return counts
