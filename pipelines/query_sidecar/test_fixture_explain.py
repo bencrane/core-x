@@ -99,6 +99,147 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
  "census_county_gazetteer_2023": {
   "county_fips": "BIGINT"
  },
+ "cms_provider_enrollment": {
+  "enrlmt_id": "VARCHAR",
+  "first_name": "VARCHAR",
+  "last_name": "VARCHAR",
+  "multiple_npi_flag": "VARCHAR",
+  "npi": "VARCHAR",
+  "org_name": "VARCHAR",
+  "pecos_asct_cntl_id": "VARCHAR",
+  "provider_type_desc": "VARCHAR",
+  "state_cd": "VARCHAR"
+ },
+ "cms_provider_enrollment_practice": {
+  "city_name": "VARCHAR",
+  "enrlmt_id": "VARCHAR",
+  "state_cd": "VARCHAR",
+  "zip_cd": "VARCHAR"
+ },
+ "cms_provider_enrollment_reassignment": {
+  "rcv_bnft_enrlmt_id": "VARCHAR",
+  "reasgn_bnft_enrlmt_id": "VARCHAR"
+ },
+ "nppes_provider/snapshot=2026-07": {
+  "certification_date": "DATE",
+  "entity_type_code": "VARCHAR",
+  "is_active": "BOOLEAN",
+  "npi": "VARCHAR",
+  "practice_address_line2": "VARCHAR",
+  "practice_phone": "VARCHAR",
+  "practice_state": "VARCHAR"
+ },
+ "nppes_provider_taxonomy/snapshot=2026-07": {
+  "is_primary": "BOOLEAN",
+  "license_number": "VARCHAR",
+  "license_state": "VARCHAR",
+  "npi": "VARCHAR",
+  "taxonomy_code": "VARCHAR",
+  "taxonomy_group": "VARCHAR",
+  "taxonomy_rank": "BIGINT"
+ },
+ "nppes_taxonomy_ref": {
+  "classification": "VARCHAR",
+  "display_name": "VARCHAR",
+  "grouping": "VARCHAR",
+  "section": "VARCHAR",
+  "specialization": "VARCHAR",
+  "taxonomy_code": "VARCHAR"
+ },
+ "practice_group_360/snapshot=2026-07": {
+  "active_member_count": "BIGINT",
+  "avg_dual_share": "DOUBLE",
+  "avg_mips_score": "DOUBLE",
+  "avg_panel_risk_score": "DOUBLE",
+  "avg_pymt_cagr_3yr_pct": "DOUBLE",
+  "avg_pymt_yoy_pct": "DOUBLE",
+  "distinct_specialties": "BIGINT",
+  "group_enrlmt_id": "VARCHAR",
+  "group_state": "VARCHAR",
+  "independent_member_count": "BIGINT",
+  "member_count": "BIGINT",
+  "member_npis": "LIST_VARCHAR",
+  "n_states": "BIGINT",
+  "org_name": "VARCHAR",
+  "top_specialty": "VARCHAR",
+  "total_medicare_paid_usd": "DOUBLE",
+  "total_op_payments_usd": "DOUBLE",
+  "total_rx_cost_usd": "DOUBLE"
+ },
+ "provider_360/snapshot=2026-07": {
+  "authorized_official_first_name": "VARCHAR",
+  "authorized_official_last_name": "VARCHAR",
+  "authorized_official_phone": "VARCHAR",
+  "authorized_official_title": "VARCHAR",
+  "credential": "VARCHAR",
+  "deactivation_date": "DATE",
+  "dme_supplied_total_paid_usd": "DOUBLE",
+  "entity_type": "VARCHAR",
+  "entity_type_code": "VARCHAR",
+  "enumeration_date": "DATE",
+  "enumeration_year": "BIGINT",
+  "first_name": "VARCHAR",
+  "has_a1": "BOOLEAN",
+  "has_ffs_enrollment": "BOOLEAN",
+  "has_mips": "BOOLEAN",
+  "has_op": "BOOLEAN",
+  "has_parent_org_tin": "BOOLEAN",
+  "has_rx": "BOOLEAN",
+  "is_active": "BOOLEAN",
+  "is_dme_supplier": "BOOLEAN",
+  "is_independent_candidate": "BOOLEAN",
+  "is_organization_subpart": "VARCHAR",
+  "is_sole_proprietor": "VARCHAR",
+  "largest_practice_group_enrlmt_id": "VARCHAR",
+  "largest_practice_group_size": "BIGINT",
+  "largest_practice_org_name": "VARCHAR",
+  "last_name": "VARCHAR",
+  "last_update_date": "DATE",
+  "mailing_address_line1": "VARCHAR",
+  "mailing_address_line2": "VARCHAR",
+  "mailing_city": "VARCHAR",
+  "mailing_state": "VARCHAR",
+  "mailing_zip5": "VARCHAR",
+  "med_a1_active_latest": "BOOLEAN",
+  "med_a1_dual_share": "DOUBLE",
+  "med_a1_latest_benes": "BIGINT",
+  "med_a1_latest_mdcr_pymt": "DOUBLE",
+  "med_a1_latest_year": "BIGINT",
+  "med_a1_lifetime_mdcr_pymt": "DOUBLE",
+  "med_a1_panel_avg_risk_score": "DOUBLE",
+  "med_a1_provider_type": "VARCHAR",
+  "med_a1_pymt_cagr_3yr_pct": "DOUBLE",
+  "med_a1_pymt_growth_2019_latest_pct": "DOUBLE",
+  "med_a1_pymt_yoy_pct": "DOUBLE",
+  "mips_clinician_specialty": "VARCHAR",
+  "mips_final_score": "DOUBLE",
+  "name_prefix": "VARCHAR",
+  "name_suffix": "VARCHAR",
+  "npi": "VARCHAR",
+  "op_distinct_manufacturers": "BIGINT",
+  "op_has_ownership_interest": "BOOLEAN",
+  "op_total_payments_usd": "DOUBLE",
+  "organization_name": "VARCHAR",
+  "parent_organization_lbn": "VARCHAR",
+  "pecos_asct_cntl_id": "VARCHAR",
+  "practice_address_line1": "VARCHAR",
+  "practice_city": "VARCHAR",
+  "practice_group_count": "BIGINT",
+  "practice_state": "VARCHAR",
+  "practice_zip5": "VARCHAR",
+  "primary_license_state": "VARCHAR",
+  "primary_taxonomy_code": "VARCHAR",
+  "provider_name": "VARCHAR",
+  "reactivation_date": "DATE",
+  "replacement_npi": "VARCHAR",
+  "rx_top1_generic": "VARCHAR",
+  "rx_total_drug_cost_usd": "DOUBLE",
+  "sex_code": "VARCHAR",
+  "smallest_practice_group_enrlmt_id": "VARCHAR",
+  "smallest_practice_group_size": "BIGINT",
+  "smallest_practice_org_name": "VARCHAR",
+  "taxonomy_slot_count": "BIGINT"
+ },
  "demo_region_catalog": {
   "county_fips": "VARCHAR",
   "demo_region": "VARCHAR",
@@ -882,10 +1023,16 @@ def driven(monkeypatch):
     """Drive every spec through _build_one on fixtures; yield (plans, parity, con)."""
     import lance
 
-    monkeypatch.setattr(
-        lance, "dataset",
-        lambda uri, storage_options=None: FakeDataset(
-            _make_table(FIXTURE_SCHEMAS[uri.rstrip("/").split("/")[-1]])))
+    def _fake_dataset(uri, storage_options=None):
+        # Resolve snapshot-partitioned paths (e.g. nppes_provider/snapshot=2026-07)
+        # by the full LANCE_BASE-relative key first, then fall back to the last
+        # path segment (the historical flat-name behavior).
+        rel = uri[len(b.LANCE_BASE):].rstrip("/") if uri.startswith(b.LANCE_BASE) \
+            else uri.rstrip("/")
+        schema = FIXTURE_SCHEMAS.get(rel) or FIXTURE_SCHEMAS[rel.split("/")[-1]]
+        return FakeDataset(_make_table(schema))
+
+    monkeypatch.setattr(lance, "dataset", _fake_dataset)
 
     raw = duckdb.connect()
     con = ExplainingConnection(raw)

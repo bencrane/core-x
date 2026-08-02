@@ -784,6 +784,34 @@ MANIFEST: list[dict] = [
     # flags; sorted uei. Both 1:1 (row-preserving) → exact-parity gate.
     {"ds": "sam_master_profile_deltas", "tier": "B", "sort": ["uei", "to_date"]},
     {"ds": "gtm_fpds_entity_signal_events", "tier": "B", "sort": ["uei"]},
+    # ── healthcare GTM tier (2026-08-02, operator-directed — docs/plans/
+    # HEALTHCARE_GTM_SIDECAR_TIER_SCOPE.md; 4 structural marts, greedy columns).
+    # Source partitions PINNED to snapshot=2026-07 (uniform post-remediation;
+    # probe-verified 2026-08-02: nppes_provider/provider_360 = 9,671,888,
+    # nppes_provider_taxonomy = 12,101,810, practice_group_360 = 253,740,
+    # reassignment = 3,857,023). Probe corrections vs the scope doc: the
+    # 2026-07 NPPES bedrock DOES carry mailing_address_line1/2; provider_360
+    # lacks practice_address_line2 / practice_phone / certification_date —
+    # those three ride the NPPES join. All joins pure equality (npi,
+    # enrlmt_id, taxonomy_code); resolution legs pre-aggregated to
+    # 1/enrlmt_id BEFORE joining (fan-out control, scope §3.4) so every mart
+    # keeps the EXACT row-count parity gate against its primary source.
+    {"ds": "practice_group_360/snapshot=2026-07", "tier": "D",
+     "dest": "hc_practice_screen",
+     "sort": ["group_state", "top_specialty", "group_enrlmt_id"],
+     "hc_practice_screen": True},
+    {"ds": "provider_360/snapshot=2026-07", "tier": "D",
+     "dest": "hc_provider_screen",
+     "sort": ["practice_state", "primary_taxonomy_code", "npi"],
+     "hc_provider_screen": True},
+    {"ds": "nppes_provider_taxonomy/snapshot=2026-07", "tier": "D",
+     "dest": "hc_provider_taxonomy",
+     "sort": ["taxonomy_code", "license_state", "npi"],
+     "hc_provider_taxonomy": True},
+    {"ds": "cms_provider_enrollment_reassignment", "tier": "D",
+     "dest": "hc_practice_roster",
+     "sort": ["group_enrlmt_id", "member_npi"],
+     "hc_practice_roster": True},
 ]
 
 # agency vocab: deduped (code, name) off usaspending_award_canonical — mirrors
@@ -2302,6 +2330,156 @@ ALTER TABLE ops.query_sidecar_runs ADD COLUMN IF NOT EXISTS function_call_id tex
 """
 
 
+# ── healthcare GTM tier (2026-08-02, HEALTHCARE_GTM_SIDECAR_TIER_SCOPE.md) ────
+# provider_360 projection: ~70 of 157 cols (identity/precision, specialty,
+# mail/geo, vintage, Medicare headline, Rx/DME/OP/MIPS riders, group linkage).
+# List columns (all_taxonomy_codes, enrollment_enrlmt_ids) and the by-year JSON
+# blobs deliberately dropped; membership serves relationally via
+# hc_provider_taxonomy / hc_practice_roster.
+_HC_P360_COLS = [
+    # identity / precision
+    "npi", "entity_type_code", "entity_type", "is_active", "provider_name",
+    "organization_name", "last_name", "first_name", "name_prefix", "name_suffix",
+    "credential", "sex_code", "is_sole_proprietor", "is_organization_subpart",
+    "parent_organization_lbn", "has_parent_org_tin", "replacement_npi",
+    # specialty
+    "primary_taxonomy_code", "taxonomy_slot_count", "primary_license_state",
+    # mail / geo (practice_address_line2 + practice_phone ride the NPPES join)
+    "practice_address_line1", "practice_city", "practice_state", "practice_zip5",
+    "mailing_address_line1", "mailing_address_line2", "mailing_city",
+    "mailing_state", "mailing_zip5",
+    "authorized_official_first_name", "authorized_official_last_name",
+    "authorized_official_title", "authorized_official_phone",
+    # vintage
+    "enumeration_date", "enumeration_year", "last_update_date",
+    "deactivation_date", "reactivation_date",
+    # Medicare headline
+    "has_a1", "med_a1_latest_year", "med_a1_latest_mdcr_pymt",
+    "med_a1_latest_benes", "med_a1_lifetime_mdcr_pymt", "med_a1_active_latest",
+    "med_a1_pymt_yoy_pct", "med_a1_pymt_cagr_3yr_pct",
+    "med_a1_pymt_growth_2019_latest_pct", "med_a1_panel_avg_risk_score",
+    "med_a1_dual_share", "med_a1_provider_type",
+    # Rx / DME / Open Payments / MIPS riders
+    "has_rx", "rx_total_drug_cost_usd", "rx_top1_generic",
+    "is_dme_supplier", "dme_supplied_total_paid_usd",
+    "has_op", "op_total_payments_usd", "op_has_ownership_interest",
+    "op_distinct_manufacturers",
+    "has_mips", "mips_final_score", "mips_clinician_specialty",
+    # group linkage (consolidation)
+    "has_ffs_enrollment", "pecos_asct_cntl_id", "practice_group_count",
+    "largest_practice_group_enrlmt_id", "largest_practice_group_size",
+    "largest_practice_org_name", "smallest_practice_group_enrlmt_id",
+    "smallest_practice_group_size", "smallest_practice_org_name",
+    "is_independent_candidate",
+]
+
+# §3.1: practice screen — practice_group_360 (minus the member_npis list) +
+# PECOS location riders. Practice leg pre-aggregated to 1/enrlmt_id (any_value;
+# source is 1/enrlmt_id today — the GROUP BY is fan-out armor, not a semantic
+# change) so the LEFT JOIN is row-preserving → EXACT parity 253,740.
+_HC_PRACTICE_SCREEN_SQL = """
+CREATE TABLE hc_practice_screen AS
+WITH prac AS (
+    SELECT enrlmt_id,
+           any_value(city_name) AS city_name,
+           any_value(state_cd)  AS state_cd,
+           any_value(zip_cd)    AS zip_cd
+    FROM hc_prac
+    GROUP BY 1
+)
+SELECT g.*, p.city_name, p.state_cd, p.zip_cd
+FROM hc_pg_base g
+LEFT JOIN prac p ON p.enrlmt_id = g.group_enrlmt_id
+ORDER BY g.group_state, g.top_specialty, g.group_enrlmt_id
+"""
+
+# §3.2: provider screen — provider_360 projection + the three NPPES-only riders
+# + taxonomy-ref display names. Both joins 1:1 on unique keys (npi;
+# taxonomy_code on the 883-row ref) → row-preserving → EXACT parity 9,671,888.
+_HC_PROVIDER_SCREEN_SQL = """
+CREATE TABLE hc_provider_screen AS
+SELECT p.*,
+       n.practice_address_line2,
+       n.practice_phone,
+       n.certification_date,
+       r.display_name    AS taxonomy_display_name,
+       r.classification  AS taxonomy_classification,
+       r.grouping        AS taxonomy_grouping,
+       r.specialization  AS taxonomy_specialization,
+       r.section         AS taxonomy_section
+FROM hc_p360_base p
+LEFT JOIN hc_nppes_riders n ON n.npi = p.npi
+LEFT JOIN hc_tax_ref r ON r.taxonomy_code = p.primary_taxonomy_code
+ORDER BY p.practice_state, p.primary_taxonomy_code, p.npi
+"""
+
+# §3.3: taxonomy long mart — full multi-specialty membership, specialty-first
+# sort. Ref join 1:1; provider riders 1:1 on npi → EXACT parity 12,101,810.
+_HC_PROVIDER_TAXONOMY_SQL = """
+CREATE TABLE hc_provider_taxonomy AS
+SELECT t.npi, t.taxonomy_rank, t.taxonomy_code, t.is_primary,
+       t.license_number, t.license_state, t.taxonomy_group,
+       r.display_name, r.classification, r.grouping, r.specialization, r.section,
+       n.practice_state, n.entity_type_code, n.is_active
+FROM hc_tax_base t
+LEFT JOIN hc_tax_ref r ON r.taxonomy_code = t.taxonomy_code
+LEFT JOIN hc_prov_riders n ON n.npi = t.npi
+ORDER BY t.taxonomy_code, t.license_state, t.npi
+"""
+
+# §3.4: roster — reassignment edges with both sides resolved. FAN-OUT CONTROL:
+# cms_provider_enrollment is 1/(npi, enrlmt_id); the resolution legs are
+# pre-aggregated to 1/enrlmt_id (deterministic arg_min keyed on npi) BEFORE
+# joining, so the LEFT JOINs are row-preserving and the mart keeps the EXACT
+# edge-count parity gate (3,857,023) — stronger than the aggregate floor the
+# scope doc conservatively assumed. pecos_asct_cntl_id rides BOTH sides (the
+# platform-absorption anchor) + multiple_npi_flag (dedup confidence).
+_HC_PRACTICE_ROSTER_SQL = """
+CREATE TABLE hc_practice_roster AS
+WITH enr AS (
+    SELECT enrlmt_id,
+           arg_min(npi, npi)                AS npi,
+           arg_min(first_name, npi)         AS first_name,
+           arg_min(last_name, npi)          AS last_name,
+           arg_min(org_name, npi)           AS org_name,
+           arg_min(provider_type_desc, npi) AS provider_type_desc,
+           arg_min(state_cd, npi)           AS state_cd,
+           arg_min(pecos_asct_cntl_id, npi) AS pecos_asct_cntl_id,
+           arg_min(multiple_npi_flag, npi)  AS multiple_npi_flag
+    FROM hc_enr
+    GROUP BY 1
+),
+prac AS (
+    SELECT enrlmt_id,
+           any_value(city_name) AS city_name,
+           any_value(zip_cd)    AS zip_cd
+    FROM hc_prac
+    GROUP BY 1
+)
+SELECT r.reasgn_bnft_enrlmt_id  AS member_enrlmt_id,
+       m.npi                    AS member_npi,
+       m.first_name             AS member_first_name,
+       m.last_name              AS member_last_name,
+       m.provider_type_desc     AS member_provider_type_desc,
+       m.state_cd               AS member_state_cd,
+       m.pecos_asct_cntl_id     AS member_pecos_asct_cntl_id,
+       m.multiple_npi_flag      AS member_multiple_npi_flag,
+       r.rcv_bnft_enrlmt_id     AS group_enrlmt_id,
+       g.npi                    AS group_npi,
+       g.org_name               AS group_org_name,
+       g.state_cd               AS group_state_cd,
+       g.pecos_asct_cntl_id     AS group_pecos_asct_cntl_id,
+       g.multiple_npi_flag      AS group_multiple_npi_flag,
+       p.city_name              AS group_city_name,
+       p.zip_cd                 AS group_zip_cd
+FROM hc_reasgn r
+LEFT JOIN enr m ON m.enrlmt_id = r.reasgn_bnft_enrlmt_id
+LEFT JOIN enr g ON g.enrlmt_id = r.rcv_bnft_enrlmt_id
+LEFT JOIN prac p ON p.enrlmt_id = r.rcv_bnft_enrlmt_id
+ORDER BY r.rcv_bnft_enrlmt_id, m.npi
+"""
+
+
 _SPEC_STRUCTURAL_KEYS = {"ds", "tier", "sort", "cols", "dest", "extra_select",
                          "aggregate", "from_table", "after"}
 
@@ -2433,7 +2611,10 @@ def _with_retry(label: str, fn, attempts: int = 3, base_sleep: float = 2.0):
 # Cleanup targets between per-mart retry attempts: the dest table plus every
 # temp a special-case branch may have left behind mid-flight.
 _RETRY_TEMP_TABLES = ("parent_attrs", "award_state_base", "subout_base",
-                      "prime_lanes", "farmout_base")
+                      "prime_lanes", "farmout_base",
+                      "hc_prac", "hc_pg_base", "hc_p360_base", "hc_nppes_riders",
+                      "hc_tax_ref", "hc_tax_base", "hc_prov_riders", "hc_enr",
+                      "hc_reasgn")
 
 
 def _build_one_with_retry(con, so: dict[str, str], spec: dict,
@@ -2713,6 +2894,109 @@ def _build_one(con, so: dict[str, str], spec: dict,
             con.execute(_PARENT_WINDOW_SQL)
             con.execute("DROP TABLE parent_attrs")
             con.execute("DROP TABLE award_state_base")
+        elif spec.get("hc_practice_screen"):
+            # healthcare tier §3.1: practice_group_360 (primary, snapshot-pinned)
+            # + the PECOS practice-location riders. Streams -> local temps
+            # (hygiene rule); joins pure equality on enrlmt_id.
+            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/",
+                                 storage_options=so)
+            con.register("src_prac", prac.scanner(
+                columns=["enrlmt_id", "city_name", "state_cd", "zip_cd"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_prac AS SELECT * FROM src_prac")
+            con.unregister("src_prac")
+            con.register("src", ds.scanner(batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_pg_base AS "
+                        "SELECT * EXCLUDE (member_npis) FROM src")
+            con.unregister("src")
+            con.execute(_HC_PRACTICE_SCREEN_SQL)
+            con.execute("DROP TABLE hc_prac")
+            con.execute("DROP TABLE hc_pg_base")
+        elif spec.get("hc_provider_screen"):
+            # healthcare tier §3.2: provider_360 projection (primary) + NPPES
+            # riders + taxonomy-ref names. All legs local temps; joins pure
+            # equality on npi / taxonomy_code.
+            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot=2026-07/",
+                                storage_options=so)
+            con.register("src_npp", npp.scanner(
+                columns=["npi", "practice_address_line2", "practice_phone",
+                         "certification_date"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_nppes_riders AS SELECT * FROM src_npp")
+            con.unregister("src_npp")
+            ref = lance.dataset(f"{LANCE_BASE}nppes_taxonomy_ref/",
+                                storage_options=so)
+            con.register("src_ref", ref.scanner(
+                columns=["taxonomy_code", "display_name", "classification",
+                         "grouping", "specialization", "section"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_tax_ref AS SELECT * FROM src_ref")
+            con.unregister("src_ref")
+            con.register("src", ds.scanner(
+                columns=_HC_P360_COLS, batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_p360_base AS SELECT * FROM src")
+            con.unregister("src")
+            con.execute(_HC_PROVIDER_SCREEN_SQL)
+            con.execute("DROP TABLE hc_nppes_riders")
+            con.execute("DROP TABLE hc_tax_ref")
+            con.execute("DROP TABLE hc_p360_base")
+        elif spec.get("hc_provider_taxonomy"):
+            # healthcare tier §3.3: taxonomy long mart (primary) + ref names +
+            # the three NPPES prune riders.
+            ref = lance.dataset(f"{LANCE_BASE}nppes_taxonomy_ref/",
+                                storage_options=so)
+            con.register("src_ref", ref.scanner(
+                columns=["taxonomy_code", "display_name", "classification",
+                         "grouping", "specialization", "section"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_tax_ref AS SELECT * FROM src_ref")
+            con.unregister("src_ref")
+            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot=2026-07/",
+                                storage_options=so)
+            con.register("src_npp", npp.scanner(
+                columns=["npi", "practice_state", "entity_type_code", "is_active"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_prov_riders AS SELECT * FROM src_npp")
+            con.unregister("src_npp")
+            con.register("src", ds.scanner(
+                columns=["npi", "taxonomy_rank", "taxonomy_code", "is_primary",
+                         "license_number", "license_state", "taxonomy_group"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_tax_base AS SELECT * FROM src")
+            con.unregister("src")
+            con.execute(_HC_PROVIDER_TAXONOMY_SQL)
+            con.execute("DROP TABLE hc_tax_ref")
+            con.execute("DROP TABLE hc_prov_riders")
+            con.execute("DROP TABLE hc_tax_base")
+        elif spec.get("hc_practice_roster"):
+            # healthcare tier §3.4: reassignment edges (primary) resolved via
+            # cms_provider_enrollment pre-aggregated to 1/enrlmt_id inside the
+            # SQL (fan-out control) + group practice location.
+            enr = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment/",
+                                storage_options=so)
+            con.register("src_enr", enr.scanner(
+                columns=["enrlmt_id", "npi", "first_name", "last_name",
+                         "org_name", "provider_type_desc", "state_cd",
+                         "pecos_asct_cntl_id", "multiple_npi_flag"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_enr AS SELECT * FROM src_enr")
+            con.unregister("src_enr")
+            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/",
+                                 storage_options=so)
+            con.register("src_prac", prac.scanner(
+                columns=["enrlmt_id", "city_name", "zip_cd"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_prac AS SELECT * FROM src_prac")
+            con.unregister("src_prac")
+            con.register("src", ds.scanner(
+                columns=["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"],
+                batch_size=READ_BATCH_ROWS).to_reader())
+            con.execute("CREATE TEMP TABLE hc_reasgn AS SELECT * FROM src")
+            con.unregister("src")
+            con.execute(_HC_PRACTICE_ROSTER_SQL)
+            con.execute("DROP TABLE hc_enr")
+            con.execute("DROP TABLE hc_prac")
+            con.execute("DROP TABLE hc_reasgn")
         else:
             reader = ds.scanner(columns=spec.get("cols"),
                                 batch_size=READ_BATCH_ROWS).to_reader()  # single-pass
