@@ -1,7 +1,7 @@
 # Query-Sidecar — Agent Navigation Map
 
 **Read this before scanning Lance.** A warm, read-only DuckDB endpoint serves the GTM analytical
-substrate — 1,825,731,902 rows across 133 sorted tables as of 2026-07-26; live truth is always
+substrate — 1,851,616,363 rows across 137 sorted tables as of 2026-08-02; live truth is always
 `GET /healthz` (stamp + table count) and `SELECT * FROM _sidecar_manifest` (per-table rows) —
 in milliseconds-to-seconds per SQL statement.
 If your question is answerable from the tables below, USE THIS. Do not open Lance datasets, do
@@ -233,6 +233,15 @@ The connected subgraph: award `(naics, psc)` → the combo labor layer (`naics_p
 | `demo_region_catalog` · `state_region_county_map` | region membership · 3,222 / 1,398 | demo_region, county_fips / state_region, county_fips | **Region-membership authorities** (2026-07-26). `demo_region_catalog` = the named drill regions ("southern california"); `state_region_county_map` = intra-state directional regions ("western TX"). JOIN these instead of shipping a 300-county `IN`-list from the client. ⚠ the 14 MACRO regions are NOT here — they live in `reference/macro_region_catalog` on Lance and are state unions, so `pop_state IN (…)` covers them |
 | `equipment_flowdown_factors` | 1/production_code · 60 | production_code | Per-industry equipment share (`equipment_related_share` = purchase + bare rental + operated-rental est) keyed by KLEMS `production_code` — the flow-down weight the demo cards apply per NAICS. Map NAICS6→production_code via `bea_bls_klems` |
 | `_sidecar_manifest` · `_sidecar_meta` | provenance: per-table pinned Lance version, build stamp | — |
+
+### Healthcare provider/practice tier (NPPES · PECOS · 360 layer, snapshot 2026-07)
+The PE roll-up / practice-intelligence substrate (2026-08-02 cycle, HEALTHCARE_GTM_SIDECAR_TIER_SCOPE.md). Keys: `npi` (provider), `group_enrlmt_id`/`enrlmt_id` (PECOS practice), `taxonomy_code` (specialty), `pecos_asct_cntl_id` (owner control id — the platform-absorption anchor). Cross-mart moves are all in-tier equality joins: practice screen row → roster (members) → provider screen (each member's book). Sources pinned to `snapshot=2026-07` (NPPES bedrock + 360 layer, internally consistent).
+| Table | Grain · rows | Sorted | Semantics |
+|---|---|---|---|
+| `hc_practice_screen` | 1/group_enrlmt_id · 253,740 | group_state, top_specialty, group_enrlmt_id | **The PE-screen anchor** — practice_group_360 (all non-list cols: `org_name`, `member_count`, `active_member_count`, `independent_member_count`, `total_medicare_paid_usd`, `total_rx_cost_usd`, `avg_panel_risk_score`, `avg_dual_share`, `top_specialty`, `distinct_specialties`, `avg_mips_score`, `total_op_payments_usd`, `n_states`, `avg_pymt_yoy_pct`, `avg_pymt_cagr_3yr_pct`) + PECOS location riders `city_name`/`state_cd`/`zip_cd` (ZIP3 cuts = `substr(zip_cd,1,3)`). "Independent practices, specialty X, state Y, 2–9 providers, ranked by Medicare $" is a single-table predicate |
+| `hc_provider_screen` | 1/npi · 9,671,888 | practice_state, primary_taxonomy_code, npi | Provider grain + **the mail cut** in one: identity (`provider_name`/`organization_name`, `credential`, `name_prefix`/`suffix`), full practice + mailing address blocks (`practice_address_line1/2`, `practice_phone`, `mailing_address_line1/2`), `authorized_official_first/last_name` + title/phone, vintage (`enumeration_date`/`year` — "owner vintage 15+yr" = `enumeration_year <= 2011 AND entity_type_code='1'`), Medicare headline (`med_a1_latest_mdcr_pymt`, `med_a1_lifetime_mdcr_pymt`, growth pcts, panel risk/dual), Rx/DME/OP/MIPS riders, group linkage (`pecos_asct_cntl_id`, `practice_group_count`, `largest_practice_group_*`, `is_independent_candidate`, `parent_organization_lbn`), taxonomy-ref names (`taxonomy_display_name`/`classification`/`grouping`/`specialization`/`section`). Mail dedup key: `(organization_name, practice_address_line1, practice_zip5)` |
+| `hc_provider_taxonomy` | 1/(npi, taxonomy_rank) · 12,101,810 | taxonomy_code, license_state, npi | Full multi-specialty membership (not just primary): `taxonomy_code`, `is_primary`, `license_number`/`license_state`, `taxonomy_group` + ref names + prune riders `practice_state`/`entity_type_code`/`is_active`. "Every NPI holding taxonomy T in state S" prunes on the sort |
+| `hc_practice_roster` | 1/reassignment edge · 3,857,023 | group_enrlmt_id, member_npi | PECOS reassignment edges, both sides resolved to 1/enrlmt_id: `member_enrlmt_id`/`member_npi`/names/`member_provider_type_desc`/`member_state_cd` → `group_enrlmt_id`/`group_npi`/`group_org_name`/`group_state_cd`/`group_city_name`/`group_zip_cd`, with `pecos_asct_cntl_id` + `multiple_npi_flag` on BOTH sides. Consolidation monitoring: roster GROUP BY vs `hc_practice_screen.member_count`; platform footprint = one `group_pecos_asct_cntl_id` across many groups/states |
 
 ### VA veteran demand-side cluster (county-grain, FIPS-keyed)
 Demand denominator for the VA C&P exam lane (naics `621111` × psc `Q403`): rank where clinician-staffing demand outruns local medical-labor supply. Both key on 5-char county `fips` → join `txn_events_combo_by_geo.pop_county_fips` (the award-spine geo grain) or SAM `physical_state`. VA `state` is the full name ("Alabama"); for 2-letter joins derive via `substr(fips,1,2)` → `sam_county_fips_crosswalk`.
@@ -843,6 +852,46 @@ WITH k AS (
 SELECT l.naics_code, k.services / k.gross_output AS purchased_services_share
 FROM naics_labor_share l JOIN k ON k.production_code = l.bea_summary_code;   -- 5415 = 25.6%
 -- "purchased services of WHAT?" -> bea_io_use_summary_annual (pin denominators; 40.8% suppressed).
+```
+
+### Healthcare GTM tier (2026-08-02 cycle)
+
+```sql
+-- PE screen: independent dermatology practices in TX, 2-9 providers, ranked by Medicare $
+SELECT group_enrlmt_id, org_name, city_name, member_count, independent_member_count,
+       total_medicare_paid_usd, avg_pymt_cagr_3yr_pct
+FROM hc_practice_screen
+WHERE group_state = 'TX' AND top_specialty = 'Dermatology'
+  AND member_count BETWEEN 2 AND 9
+  AND independent_member_count >= 0.5 * member_count
+ORDER BY total_medicare_paid_usd DESC LIMIT 100;
+
+-- Mail cut: deduped mail-ready file for a specialty x ZIP3 slice (sort prunes on state)
+SELECT organization_name, provider_name, credential,
+       practice_address_line1, practice_address_line2, practice_city,
+       practice_state, practice_zip5, practice_phone,
+       authorized_official_first_name, authorized_official_last_name, authorized_official_title
+FROM hc_provider_screen
+WHERE practice_state = 'FL' AND substr(practice_zip5, 1, 3) = '331'
+  AND taxonomy_classification = 'Dermatology' AND is_active
+QUALIFY row_number() OVER (
+  PARTITION BY organization_name, practice_address_line1, practice_zip5
+  ORDER BY npi) = 1;
+
+-- Specialty membership (full, not just primary): every active MD holding taxonomy T in CA
+SELECT t.npi, t.is_primary, t.license_number, s.provider_name, s.med_a1_latest_mdcr_pymt
+FROM hc_provider_taxonomy t
+JOIN hc_provider_screen s USING (npi)
+WHERE t.taxonomy_code = '207N00000X' AND t.license_state = 'CA' AND t.is_active;
+
+-- Consolidation: platform footprint (one PACID, many groups) + roster vs screen member_count
+SELECT group_pecos_asct_cntl_id, count(DISTINCT group_enrlmt_id) AS groups,
+       count(DISTINCT group_state_cd) AS states, count(*) AS billing_members
+FROM hc_practice_roster
+GROUP BY 1 HAVING count(DISTINCT group_enrlmt_id) > 3
+ORDER BY billing_members DESC LIMIT 50;
+-- who bills through platform anchor X: WHERE group_enrlmt_id = 'O2003...' -> member_npi
+-- -> hydrate each member via hc_provider_screen (npi IN-list, all in-tier equality).
 ```
 
 ## 5. Performance model
