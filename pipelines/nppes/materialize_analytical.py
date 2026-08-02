@@ -52,6 +52,22 @@ ACCEPTANCE GATE (directive §8). ``verify`` runs G1–G12 against the published 
 Correctness gates (G1–G5, G8–G12) are ABSOLUTE build-fail gates; latency is warm-asserted
 (G3 warm < 250 ms, G6 warm < 600 ms after a per-index warm-up) with the cold figure recorded
 to the ledger, never gated (cold R2 round-trips alone exceed sub-second on a correct build).
+MONTH-AGNOSTIC EXPECTATIONS (2026-08 remediation): the G1/G3/G4/G5/G11 correctness targets
+are DERIVED from the raw month under verification (``compute_raw_expectations`` — exact count
+parity raw↔derived), never pinned to a reference month. The original gates hardcoded the
+2026-05 literals (9,551,447 / 582,200 / 9,208,126 / 3,292,670 / 343,321), which failed every
+subsequent month by construction (2026-06/07: correct builds rejected at the local gate).
+On the build path the expectations are computed once from the local ``rawstage`` and carried
+via ``build_metrics``; standalone ``verify`` recomputes them from the raw R2 snapshot, so the
+read-back proof stays independent of the build.
+
+D10 (2026-08) — mailing-address block + adjacency riders on ``nppes_provider``:
+``mailing_address_line1/2`` (join the existing mailing city/state/zip5), ``replacement_npi``
+(deactivated→successor NPI continuity), ``has_parent_org_tin`` (raw TIN is 100% redacted to
+``'<UNAVAIL>'`` — D9 — so only PRESENCE is carried), ``authorized_official_phone``, plus
+``mailing_zip5`` BTREE + ``mailing_state`` BITMAP for mail-cut pruning (mirrors the practice
+geo index pair). ``npi_deactivation_reason_code`` stays excluded (100% null — D9, reconfirmed
+@ 2026-07).
 
     modal run    pipelines/nppes/materialize_analytical.py::init_state
     modal run    pipelines/nppes/materialize_analytical.py::materialize --snapshot-month 2026-05
@@ -107,9 +123,9 @@ DUCKDB_MAX_TEMP = "128GB"
 INDEX_PLAN: dict[str, dict[str, list[str]]] = {
     "nppes_provider": {
         "btree": ["npi", "last_name", "practice_address_line1", "practice_zip5",
-                  "enumeration_date", "last_update_date"],
+                  "mailing_zip5", "enumeration_date", "last_update_date"],
         "bitmap": ["entity_type_code", "is_active", "primary_taxonomy_code",
-                   "practice_state", "enumeration_year"],
+                   "practice_state", "mailing_state", "enumeration_year"],
     },
     "nppes_provider_taxonomy": {
         # npi BTREE dropped per diagnostic §E.4 (docs/analysis/cms_nppes_relational_diagnostic.md):
@@ -135,7 +151,7 @@ SORT_BY = {
 }
 
 # Gate representatives (directive §8): highest-volume primary taxonomy code + a hot state.
-GATE_TAXONOMY_CODE = "106S00000X"     # G3 == 582,200
+GATE_TAXONOMY_CODE = "106S00000X"     # G3 expectation derived per-month from raw (582,200 @ 2026-05)
 GATE_STATE = "TX"
 TAXONOMY_SLOTS = 15
 IDENTIFIER_SLOTS = 50
@@ -249,12 +265,14 @@ def _local_stage(scratch_dir: str, name: str) -> str:
 # Source projection + SQL builders (directive §3)
 # --------------------------------------------------------------------------- #
 def projected_cols() -> list[str]:
-    """The 308 raw source columns the §2 output needs (verified to resolve against the live
-    raw schema). rawstage = SELECT these FROM raw — one R2 read (D8). Excludes the §D9 noise
-    (dead column, 3 redaction sentinels, per-row provenance) and the 19 unused secondary
-    fields not carried by §2."""
+    """The 313 raw source columns the §2 output needs (verified to resolve against the live
+    raw schema, identical across 2026-05/06/07). rawstage = SELECT these FROM raw — one R2
+    read (D8). Excludes the §D9 noise (dead column, per-row provenance; of the 3 redaction
+    sentinels only ``parent_organization_tin`` is read, reduced to a presence flag — D10) and
+    the unused secondary fields not carried by §2."""
     scalar = [
         "npi", "entity_type_code", "npi_deactivation_date", "npi_reactivation_date",
+        "replacement_npi",
         "provider_organization_name_legal_business_name", "provider_last_name_legal_name",
         "provider_first_name", "provider_middle_name", "provider_name_prefix_text",
         "provider_name_suffix_text", "provider_credential_text", "provider_sex_code",
@@ -267,12 +285,15 @@ def projected_cols() -> list[str]:
         "provider_business_practice_location_address_country_code_if_outside_us",
         "provider_business_practice_location_address_telephone_number",
         "provider_business_practice_location_address_fax_number",
+        "provider_first_line_business_mailing_address",
+        "provider_second_line_business_mailing_address",
         "provider_business_mailing_address_city_name",
         "provider_business_mailing_address_state_name",
         "provider_business_mailing_address_postal_code",
         "provider_enumeration_date", "last_update_date", "certification_date",
         "authorized_official_last_name", "authorized_official_first_name",
-        "authorized_official_title_or_position", "parent_organization_lbn", "snapshot_month",
+        "authorized_official_title_or_position", "authorized_official_telephone_number",
+        "parent_organization_lbn", "parent_organization_tin", "snapshot_month",
     ]
     tax: list[str] = []
     for i in range(1, TAXONOMY_SLOTS + 1):
@@ -351,6 +372,8 @@ SELECT
   provider_business_practice_location_address_country_code_if_outside_us AS practice_country,
   provider_business_practice_location_address_telephone_number AS practice_phone,
   provider_business_practice_location_address_fax_number AS practice_fax,
+  provider_first_line_business_mailing_address AS mailing_address_line1,
+  provider_second_line_business_mailing_address AS mailing_address_line2,
   provider_business_mailing_address_city_name AS mailing_city,
   clean_state(provider_business_mailing_address_state_name) AS mailing_state,
   zip5(provider_business_mailing_address_postal_code) AS mailing_zip5,
@@ -359,11 +382,14 @@ SELECT
   d(last_update_date) AS last_update_date,
   d(npi_deactivation_date) AS deactivation_date,
   d(npi_reactivation_date) AS reactivation_date,
+  replacement_npi,
   d(certification_date) AS certification_date,
   authorized_official_last_name,
   authorized_official_first_name,
   authorized_official_title_or_position AS authorized_official_title,
+  authorized_official_telephone_number AS authorized_official_phone,
   parent_organization_lbn,
+  (parent_organization_tin IS NOT NULL) AS has_parent_org_tin,
   snapshot_month
 FROM rawstage
 """.strip()
@@ -598,6 +624,11 @@ def build_all(snapshot_month: str, *, scratch_dir: str = SCRATCH_DIR,
         result["dirty_state_nulled"] = int(dirty)
         print(f"[build] date_parse_failures={total_fail} max_ratio={max_ratio:.8f} dirty_state_nulled={dirty:,}")
 
+        # Month-agnostic gate expectations (G1/G3/G4/G5/G11) — one local pass over rawstage,
+        # carried to run_gate via build_metrics (standalone verify recomputes from raw R2).
+        result["raw_expectations"] = compute_raw_expectations(con, rel="rawstage")
+        print(f"[build] raw_expectations = {result['raw_expectations']}")
+
         # Derive + stage + meta + index each table.
         for name in TABLE_ORDER:
             local = _local_stage(scratch_dir, name)
@@ -636,6 +667,39 @@ def _open(name: str, snapshot_month: str, *, local: dict | None, so: dict | None
     if local is not None:
         return lance.dataset(local[name])
     return lance.dataset(_month_uri(PREFIXES[name], snapshot_month), storage_options=so)
+
+
+def compute_raw_expectations(con, rel: str = "rawstage") -> dict:
+    """Derive the G1/G3/G4/G5/G11 correctness expectations from the RAW month itself — exact
+    count parity, valid for ANY month (the pinned 2026-05 literals failed every later month).
+    Semantics mirror the derived layer's own transform exactly:
+      raw_distinct_npi  → G1  provider table is 1 row per raw NPI (uniqueness itself is G2)
+      gate_tax_providers→ G3  distinct providers listing GATE_TAXONOMY_CODE in ANY of 15 slots
+                              (the diagnostic's any-of-15 baseline, reproduced per-month)
+      raw_primary_rows  → G4  slots with code populated AND switch='Y' (the taxonomy long
+                              table's NULL-filtered is_primary arm, computed from raw)
+      raw_enum_ge_2020  → G5  date32-parsed enumeration_date >= 2020-01-01 (needs d() macro)
+      raw_stub_rows     → G11 the deactivated-stub cohort (entity_type_code IS NULL — D5)
+    ``rel`` is ``rawstage`` on the build path (local, one pass) or the registered raw R2
+    dataset on the standalone verify path (keeps the read-back proof build-independent)."""
+    tax_or = " OR ".join(
+        f"healthcare_provider_taxonomy_code_{i} = '{GATE_TAXONOMY_CODE}'"
+        for i in range(1, TAXONOMY_SLOTS + 1))
+    primary_sum = " + ".join(
+        f"count(*) FILTER (WHERE healthcare_provider_taxonomy_code_{i} IS NOT NULL "
+        f"AND healthcare_provider_primary_taxonomy_switch_{i} = 'Y')"
+        for i in range(1, TAXONOMY_SLOTS + 1))
+    row = con.execute(f"""
+        SELECT count(DISTINCT npi),
+               count(DISTINCT npi) FILTER (WHERE {tax_or}),
+               {primary_sum},
+               count(*) FILTER (WHERE d(provider_enumeration_date) >= DATE '2020-01-01'),
+               count(*) FILTER (WHERE entity_type_code IS NULL)
+        FROM {rel}
+    """).fetchone()
+    return {"raw_distinct_npi": int(row[0]), "gate_tax_providers": int(row[1]),
+            "raw_primary_rows": int(row[2]), "raw_enum_ge_2020": int(row[3]),
+            "raw_stub_rows": int(row[4])}
 
 
 def _frags_scanned(ds, filt: str) -> tuple[int, int]:
@@ -685,21 +749,33 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
         gates[gid] = {"desc": desc, "pass": bool(ok), **extra}
         print(f"  {gid} {'PASS' if ok else 'FAIL'} — {desc} {extra if extra else ''}")
 
-    # G1 — provider rows == raw distinct npi (9,551,447)
+    # Month-agnostic expectations: prefer the build-carried figures (computed once from the
+    # local rawstage); standalone verify recomputes them from the raw R2 snapshot.
+    exp = (build_metrics or {}).get("raw_expectations")
+    raw_in_con = False
+    if exp is None:
+        con.register("raw", lance.dataset(raw_uri, storage_options=_r2_storage_options()))
+        con.execute(MACROS_SQL)
+        raw_in_con = True
+        exp = compute_raw_expectations(con, rel="raw")
+    print(f"  raw expectations ({snapshot_month}): {exp}")
+
+    # G1 — provider rows == raw distinct npi (exact parity with the month's raw; no loss)
     p_rows = prov.count_rows()
-    record("G1", "provider rows == 9,551,447", p_rows == 9_551_447, value=p_rows, absolute=True)
+    record("G1", "provider rows == raw distinct npi", p_rows == exp["raw_distinct_npi"],
+           value=p_rows, expected=exp["raw_distinct_npi"], absolute=True)
 
     # G2 — npi unique (PK preserved)
     n_all, n_dist = con.execute("SELECT count(*), count(DISTINCT npi) FROM prov").fetchone()
     record("G2", "count(DISTINCT npi) == rows", n_all == n_dist, rows=n_all, distinct=n_dist, absolute=True)
 
-    # G3 — taxonomy long reproduces the raw any-of-15 PROVIDER count (582,200) via
-    # count(DISTINCT npi); BITMAP filter used; WARM < 250 ms (cold recorded). Reconciliation:
-    # the long grain is (npi, populated slot), so count(*) WHERE code=X = 586,363 includes
-    # 4,163 rows from 4,068 providers who list this code in >1 slot (each slot carrying its
-    # own license/group — faithfully preserved, not deduped). The diagnostic's "any-of-15"
-    # baseline (582,200) is a distinct-PROVIDER count, so the long table reproduces it as
-    # count(DISTINCT npi) — NOT count(*). count(*) is recorded alongside for transparency.
+    # G3 — taxonomy long reproduces the raw any-of-15 PROVIDER count (recomputed per-month;
+    # 582,200 @ 2026-05) via count(DISTINCT npi); BITMAP filter used; WARM < 250 ms (cold
+    # recorded). Reconciliation: the long grain is (npi, populated slot), so count(*) exceeds
+    # the provider count where a provider lists the code in >1 slot (each slot carrying its
+    # own license/group — faithfully preserved, not deduped). The any-of-15 baseline is a
+    # distinct-PROVIDER count, so the long table reproduces it as count(DISTINCT npi) — NOT
+    # count(*). count(*) is recorded alongside for transparency.
     g3_cold0 = time.perf_counter()
     g3_filter_rows = tax.count_rows(filter=f"taxonomy_code = '{GATE_TAXONOMY_CODE}'")
     g3_cold_ms = (time.perf_counter() - g3_cold0) * 1000
@@ -711,27 +787,28 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
     tax_idx = _list_committed_indices(tax)
     bitmap_ok = any((list(i.get("fields") or []) == ["taxonomy_code"]
                      and "bitmap" in str(i.get("type", "")).lower()) for i in tax_idx)
-    g3_correct = g3_providers == 582_200 and bitmap_ok
+    g3_correct = g3_providers == exp["gate_tax_providers"] and bitmap_ok
     g3_lat_ok = g3_warm_ms < 250
-    record("G3", f"taxonomy_code='{GATE_TAXONOMY_CODE}' distinct providers == 582,200, BITMAP"
+    record("G3", f"taxonomy_code='{GATE_TAXONOMY_CODE}' distinct providers == raw any-of-15, BITMAP"
            + (", warm<250ms" if assert_latency else " (latency recorded)"),
            g3_correct and (g3_lat_ok or not assert_latency),
-           providers=g3_providers, rows=g3_filter_rows, bitmap=bitmap_ok,
-           warm_ms=round(g3_warm_ms, 1), cold_ms=round(g3_cold_ms, 1),
+           providers=g3_providers, expected=exp["gate_tax_providers"], rows=g3_filter_rows,
+           bitmap=bitmap_ok, warm_ms=round(g3_warm_ms, 1), cold_ms=round(g3_cold_ms, 1),
            latency_ok=g3_lat_ok, latency_gated=assert_latency)
 
-    # G4 — taxonomy is_primary count == 9,208,126; ≤ 1 primary per npi
+    # G4 — taxonomy is_primary count == raw count(code populated AND switch='Y'); ≤ 1 primary/npi
     g4_count, g4_max = con.execute(
         "SELECT (SELECT count(*) FILTER (WHERE is_primary) FROM tax), "
         "(SELECT max(p) FROM (SELECT npi, count(*) FILTER (WHERE is_primary) p FROM tax GROUP BY npi))"
     ).fetchone()
-    record("G4", "is_primary == 9,208,126 and ≤1 primary/npi",
-           g4_count == 9_208_126 and (g4_max or 0) <= 1,
-           primaries=g4_count, max_per_npi=g4_max, absolute=True)
+    record("G4", "is_primary == raw switch='Y' count and ≤1 primary/npi",
+           g4_count == exp["raw_primary_rows"] and (g4_max or 0) <= 1,
+           primaries=g4_count, expected=exp["raw_primary_rows"], max_per_npi=g4_max, absolute=True)
 
-    # G5 — date range via date32 == 3,292,670
+    # G5 — date range via date32 == raw try_strptime count (the naive raw string filter is 0)
     g5 = prov.count_rows(filter="enumeration_date >= date '2020-01-01'")
-    record("G5", "enumeration_date >= 2020-01-01 == 3,292,670", g5 == 3_292_670, value=g5, absolute=True)
+    record("G5", "enumeration_date >= 2020-01-01 == raw date32 count", g5 == exp["raw_enum_ge_2020"],
+           value=g5, expected=exp["raw_enum_ge_2020"], absolute=True)
 
     # G6 — specialty×geo join correct; WARM < 600 ms (cold recorded). Mechanism (M2): taxonomy
     # BITMAP push + provider dynamic-range prune (NOT a two-sided npi-BTREE take).
@@ -768,8 +845,10 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
         g8_ratio = build_metrics["date_parse_max_ratio"]
         g8_fail = build_metrics.get("date_parse_failures")
     else:
-        con.register("raw", lance.dataset(raw_uri, storage_options=_r2_storage_options()))
-        con.execute(MACROS_SQL)
+        if not raw_in_con:
+            con.register("raw", lance.dataset(raw_uri, storage_options=_r2_storage_options()))
+            con.execute(MACROS_SQL)
+            raw_in_con = True
         g8_ratio, g8_fail = 0.0, 0
         for c in DATE_COLS:
             nn, ff = con.execute(
@@ -777,7 +856,6 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
             ).fetchone()
             g8_ratio = max(g8_ratio, (ff / nn) if nn else 0.0)
             g8_fail += int(ff)
-        con.unregister("raw")
     record("G8", "max date parse-fail ratio < 0.0001", (g8_ratio or 0) < 0.0001,
            max_ratio=round(float(g8_ratio or 0), 10), failures=g8_fail, absolute=True)
 
@@ -802,13 +880,16 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
     record("G10", "shared snapshot_month; children ⊆ provider", one_month and tax_orphan == 0 and id_orphan == 0,
            one_month=one_month, tax_orphan=tax_orphan, id_orphan=id_orphan, absolute=True)
 
-    # G11 — is_active invariant: NOT is_active count == entity_type_code NULL count == 343,321
+    # G11 — is_active invariant: NOT is_active count == entity_type_code NULL count == the raw
+    # month's stub cohort (divergence between the first two ⇒ a re-deactivation edge appeared;
+    # divergence from raw ⇒ the D5 keep-the-stubs contract was violated).
     g11_inactive, g11_null_etc = con.execute(
         "SELECT count(*) FILTER (WHERE NOT is_active), count(*) FILTER (WHERE entity_type_code IS NULL) FROM prov"
     ).fetchone()
-    record("G11", "NOT is_active == entity_type_code NULL == 343,321",
-           g11_inactive == 343_321 and g11_null_etc == 343_321,
-           inactive=g11_inactive, null_entity_type=g11_null_etc, absolute=True)
+    record("G11", "NOT is_active == entity_type_code NULL == raw stub cohort",
+           g11_inactive == exp["raw_stub_rows"] and g11_null_etc == exp["raw_stub_rows"],
+           inactive=g11_inactive, null_entity_type=g11_null_etc,
+           expected=exp["raw_stub_rows"], absolute=True)
 
     # G12 — provenance round-trip: each dataset's source_snapshot_uri non-empty
     g12 = {n: bool(_meta_get(ds, "source_snapshot_uri"))
@@ -933,9 +1014,11 @@ def materialize(snapshot_month: str, publish: bool = True,
             for name in TABLE_ORDER:
                 dataset_uris[name] = publish_table(name, snapshot_month, b["local"][name])
                 datasets_published.append(PREFIXES[name])
-            # Authoritative read-back gate against R2.
+            # Authoritative read-back gate against R2 (expectations ride build_metrics — they
+            # derive from the raw month, not the build; standalone verify stays independent).
             print("[gate] published R2 layer")
-            gate_result = run_gate(snapshot_month, local=None, raw_uri=b["raw_uri"])
+            gate_result = run_gate(snapshot_month, local=None, raw_uri=b["raw_uri"],
+                                   build_metrics=b)
             if not gate_result["passed"]:
                 raise RuntimeError(f"published acceptance gate failed: "
                                    f"{[g for g, v in gate_result['gates'].items() if not v['pass']]}")
