@@ -29,11 +29,21 @@ v2 remediations baked in (all live-validated, plan §13):
 Reuses: pipelines/cms_medicare/ingest.py (_publish_full_swap, _verify_published, _create-index FATAL-btree),
 pipelines/nppes/materialize_analytical.py (ORDER BY npi clustering, per-snapshot serving layer + gates).
 
+Snapshot coupling: the NPPES base (nppes_provider + taxonomy/identifier children) follows the
+requested ``snapshot_month`` by default — one month argument moves the whole build. The
+``NPPES_SNAPSHOT`` env var remains as an EXPLICIT escape hatch to pin the NPPES base to a
+different month (set it only deliberately; the default is coupled, never pinned). The G1 gate
+compares the assembled row count against the actually-registered base count, not a constant.
+
+Failure paging: every terminal-failure path writes the ops.provider_360_runs error row and then
+pages via ``core.ops_alert.alert()`` → ``OPS_ALERT_WEBHOOK`` (Modal secret ``ops-alerts``);
+no-op when unset, never masks the original error.
+
     modal run pipelines/provider_360/materialize.py::init_state
     modal run pipelines/provider_360/materialize.py::rollup --which service   # service|drug|dme|all
-    modal run pipelines/provider_360/materialize.py::build_360 --snapshot-month 2026-06
-    modal run pipelines/provider_360/materialize.py::build_groups --snapshot-month 2026-06
-    modal run pipelines/provider_360/materialize.py::verify --dataset provider_360 --snapshot-month 2026-06
+    modal run pipelines/provider_360/materialize.py::build_360 --snapshot-month 2026-07
+    modal run pipelines/provider_360/materialize.py::build_groups --snapshot-month 2026-07
+    modal run pipelines/provider_360/materialize.py::verify --dataset provider_360 --snapshot-month 2026-07
 """
 
 from __future__ import annotations
@@ -42,11 +52,21 @@ import os
 
 import modal
 
+from core.ops_alert import alert
+
 BUCKET = "data-sink"
 ACTIVE = "active/"
 FEED = "provider_360"
-NPPES_SNAPSHOT = os.environ.get("NPPES_SNAPSHOT", "2026-05")
 DEFAULT_SNAPSHOT = os.environ.get("PROVIDER_360_SNAPSHOT", "2026-06")
+
+
+def _nppes_snapshot(snapshot_month: str) -> str:
+    """NPPES base month for a build: follows the requested snapshot_month by default.
+
+    ``NPPES_SNAPSHOT`` is an EXPLICIT escape hatch ONLY — when set it pins the NPPES base
+    to a different month. Read at call time (not import) so a Modal-secret env also works.
+    """
+    return os.environ.get("NPPES_SNAPSHOT") or snapshot_month
 
 SCRATCH = "/tmp/provider_360"
 SPILL = os.path.join(SCRATCH, "spill")
@@ -61,8 +81,7 @@ _R2_PUBLISH_ATTEMPTS = 4
 _R2_RETRY_BACKOFF_S = 8
 _R2_SINGLE_COPY_MAX = 5 * 1024**3
 
-BASE_NPPES = f"nppes_provider/snapshot={NPPES_SNAPSHOT}"
-BASE_ROWS_EXPECTED = 9_551_447
+# G1 compares assembled rows against the actually-registered base count (per-month, dynamic).
 
 # ── Tier-1 rollup catalog ──
 ROLLUPS = {
@@ -101,8 +120,8 @@ CREATE INDEX IF NOT EXISTS provider_360_runs_recorded_idx ON ops.provider_360_ru
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "duckdb>=1.5,<2", "lancedb>=0.15", "pylance>=7", "pyarrow>=17",
-    "boto3>=1.35", "psycopg[binary]>=3.2",
-).env({"LANCE_BYPASS_SPILLING": "true"})
+    "boto3>=1.35", "psycopg[binary]>=3.2", "requests>=2.32",
+).env({"LANCE_BYPASS_SPILLING": "true"}).add_local_python_source("core.ops_alert")
 
 app = modal.App("provider-360-pipelines", image=image)
 
@@ -492,7 +511,7 @@ practice AS (
 """
 
 
-def _provider_360_sql():
+def _provider_360_sql(nppes_snapshot: str):
     """Final assembly: base nppes_provider LEFT JOIN every per-NPI aggregate + Tier-1 rollups."""
     return f"""
     WITH {A1_AGG},
@@ -509,10 +528,12 @@ def _provider_360_sql():
       b.is_sole_proprietor, b.is_organization_subpart,
       b.primary_taxonomy_code, tax.all_taxonomy_codes, tax.taxonomy_slot_count, tax.primary_license_state,
       b.practice_state, b.practice_zip5, b.practice_address_line1, b.practice_city, b.practice_country,
-      b.mailing_state, b.mailing_city, b.mailing_zip5,
+      b.mailing_address_line1, b.mailing_address_line2, b.mailing_state, b.mailing_city, b.mailing_zip5,
       b.enumeration_date, b.enumeration_year, b.last_update_date, b.deactivation_date, b.reactivation_date,
+      b.replacement_npi,
       b.authorized_official_last_name, b.authorized_official_first_name, b.authorized_official_title,
-      b.parent_organization_lbn,
+      b.authorized_official_phone,
+      b.parent_organization_lbn, b.has_parent_org_tin,
       coalesce(ids.has_secondary_identifiers, false) AS has_secondary_identifiers,
       coalesce(ids.has_medicaid_id, false) AS has_medicaid_id,
       -- Medicare Part B totals + panel economics (A1)
@@ -558,7 +579,7 @@ def _provider_360_sql():
       practice.smallest_practice_group_enrlmt_id, practice.smallest_practice_group_size, sorg.org_name AS smallest_practice_org_name,
       practice.largest_practice_group_enrlmt_id, practice.largest_practice_group_size, lorg.org_name AS largest_practice_org_name,
       coalesce(practice.is_independent_candidate, false) AS is_independent_candidate,
-      '{{snap}}' AS provider_360_snapshot, '{NPPES_SNAPSHOT}' AS nppes_snapshot
+      '{{snap}}' AS provider_360_snapshot, '{nppes_snapshot}' AS nppes_snapshot
     FROM base b
     LEFT JOIN a1 USING (npi)
     LEFT JOIN b1 USING (npi)
@@ -699,28 +720,33 @@ def _build_rollup(which: str) -> dict:
         _record(artifact=cfg["out"], snapshot_month=None, dataset_uri=f"s3://{BUCKET}/{live}", rows=0,
                 indices=[], attach_rates=None, gates=None, status="error", error=str(exc)[:2000],
                 started=started, completed=dt.datetime.now(dt.timezone.utc))
+        alert(f"[provider_360] {cfg['out']} build error: {str(exc)[:300]}")
         raise
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+                       modal.Secret.from_name("ops-alerts")],
               timeout=60 * 60 * 4, memory=49152, cpu=8.0, ephemeral_disk=524288, retries=1)
 def build_rollup_service() -> dict:
     return _build_rollup("service")
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+                       modal.Secret.from_name("ops-alerts")],
               timeout=60 * 60 * 6, memory=131072, cpu=8.0, ephemeral_disk=524288, retries=1)
 def build_rollup_drug() -> dict:  # B2 304M — the (npi,generic) groupby is the heavy one → 128 GiB
     return _build_rollup("drug")
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+                       modal.Secret.from_name("ops-alerts")],
               timeout=60 * 60 * 2, memory=32768, cpu=8.0, ephemeral_disk=524288, retries=1)
 def build_rollup_dme() -> dict:
     return _build_rollup("dme")
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+                       modal.Secret.from_name("ops-alerts")],
               timeout=60 * 60 * 5, memory=98304, cpu=8.0, ephemeral_disk=524288, retries=1)
 def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
     """Assemble provider_360: base nppes_provider LEFT JOIN all per-NPI aggregates + Tier-1 rollups."""
@@ -732,16 +758,19 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
     con = _new_con()
     out_local = os.path.join(LOCAL, "provider_360")
     live = f"{ACTIVE}{FEED}/snapshot={snapshot_month}/"
+    nppes_snap = _nppes_snapshot(snapshot_month)
     try:
         base_cols = ["npi", "entity_type_code", "entity_type", "is_active", "provider_name", "organization_name",
                      "last_name", "first_name", "middle_name", "name_prefix", "name_suffix", "credential", "sex_code",
                      "is_sole_proprietor", "is_organization_subpart", "primary_taxonomy_code", "practice_state",
-                     "practice_zip5", "practice_address_line1", "practice_city", "practice_country", "mailing_state",
+                     "practice_zip5", "practice_address_line1", "practice_city", "practice_country",
+                     "mailing_address_line1", "mailing_address_line2", "mailing_state",
                      "mailing_city", "mailing_zip5", "enumeration_date", "enumeration_year", "last_update_date",
-                     "deactivation_date", "reactivation_date", "authorized_official_last_name",
-                     "authorized_official_first_name", "authorized_official_title", "parent_organization_lbn"]
-        nb = _reg(con, "base", BASE_NPPES, base_cols, so)
-        print(f"[provider_360] base nppes_provider {nb:,}")
+                     "deactivation_date", "reactivation_date", "replacement_npi", "authorized_official_last_name",
+                     "authorized_official_first_name", "authorized_official_title", "authorized_official_phone",
+                     "parent_organization_lbn", "has_parent_org_tin"]
+        nb = _reg(con, "base", f"nppes_provider/snapshot={nppes_snap}", base_cols, so)
+        print(f"[provider_360] base nppes_provider snapshot={nppes_snap} {nb:,}")
         _reg(con, "a1", "cms_physician_provider", ["rndrng_npi", "program_year", "tot_mdcr_pymt_amt", "tot_mdcr_stdzd_amt",
              "tot_benes", "tot_srvcs", "rndrng_prvdr_type", "rndrng_prvdr_ent_cd", "drug_sprsn_ind", "med_sprsn_ind",
              "bene_avg_risk_scre", "bene_avg_age", "bene_dual_cnt", "bene_cc_ph_diabetes_v2_pct",
@@ -750,8 +779,8 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _reg(con, "b1", "cms_partd_provider", ["prscrbr_npi", "program_year", "tot_drug_cst", "tot_clms", "tot_benes",
              "tot_30day_fills", "tot_day_suply", "prscrbr_type", "opioid_tot_clms", "opioid_prscrbr_rate", "opioid_la_tot_clms"], so)
         con.execute("ALTER TABLE b1 RENAME COLUMN prscrbr_npi TO npi")
-        _reg(con, "taxonomy", f"nppes_provider_taxonomy/snapshot={NPPES_SNAPSHOT}", ["npi", "taxonomy_code", "is_primary", "license_state"], so)
-        _reg(con, "identifier", f"nppes_provider_identifier/snapshot={NPPES_SNAPSHOT}", ["npi", "identifier_type_code"], so)
+        _reg(con, "taxonomy", f"nppes_provider_taxonomy/snapshot={nppes_snap}", ["npi", "taxonomy_code", "is_primary", "license_state"], so)
+        _reg(con, "identifier", f"nppes_provider_identifier/snapshot={nppes_snap}", ["npi", "identifier_type_code"], so)
         _reg(con, "qpp_src", "cms_qpp_experience", ["npi", "program_year", "final_score", "participation_option", "reporting_option", "clinician_specialty"], so)
         _reg(con, "enrollment", "cms_provider_enrollment", ["npi", "enrlmt_id", "pecos_asct_cntl_id", "org_name"], so)
         _reg(con, "reassignment", "cms_provider_enrollment_reassignment", ["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"], so)
@@ -772,16 +801,16 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
              "distinct_manufacturers", "has_ownership_interest", "ownership_total_value_usd", "first_payment_year",
              "last_payment_year", "recipient_type"], so)
 
-        sql = _provider_360_sql().replace("{snap}", snapshot_month)
+        sql = _provider_360_sql(nppes_snap).replace("{snap}", snapshot_month)
         rows = _write_sorted(con, sql, out_local, "npi")
         print(f"[provider_360] assembled {rows:,} rows")
 
         # Gates (plan §7) — on the local stage before publish.
-        gates = _run_gates(con, out_local)
+        gates = _run_gates(con, out_local, base_rows=nb)
         attach = _attach_rates(con, out_local)
         con.close()
-        if rows != BASE_ROWS_EXPECTED:
-            raise RuntimeError(f"G1 FAIL: rows={rows:,} != base {BASE_ROWS_EXPECTED:,} (join fan-out?)")
+        if rows != nb:
+            raise RuntimeError(f"G1 FAIL: rows={rows:,} != base {nb:,} (join fan-out?)")
 
         built = _create_indexes(out_local, PROVIDER_360_BTREE, PROVIDER_360_BITMAP)
         s3 = _s3()
@@ -797,6 +826,7 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _record(artifact="provider_360", snapshot_month=snapshot_month, dataset_uri=f"s3://{BUCKET}/{live}", rows=0,
                 indices=[], attach_rates=None, gates=None, status="error", error=str(exc)[:2000],
                 started=started, completed=dt.datetime.now(dt.timezone.utc))
+        alert(f"[provider_360] provider_360 snapshot={snapshot_month} build error: {str(exc)[:300]}")
         raise
 
 
@@ -815,13 +845,13 @@ def _attach_rates(con, local_ds) -> dict:
     return dict(zip(keys, [int(x) for x in r]))
 
 
-def _run_gates(con, local_ds) -> dict:
+def _run_gates(con, local_ds, base_rows: int) -> dict:
     """Plan §7 gates + the v2 additions (G-new-1..5) on the local stage."""
     import lance
     ds = lance.dataset(local_ds)
     g = {}
     g["rows"] = ds.count_rows()
-    g["G1_rowcount_eq_base"] = (g["rows"] == BASE_ROWS_EXPECTED)
+    g["G1_rowcount_eq_base"] = (g["rows"] == base_rows)
     con.register("p", ds.scanner(columns=["npi", "is_active", "has_svc", "svc_total_medicare_paid_usd",
                  "med_a1_latest_year", "med_b1_latest_year", "smallest_practice_group_size",
                  "smallest_practice_group_enrlmt_id", "smallest_practice_org_name"]).to_reader())
@@ -839,7 +869,8 @@ def _run_gates(con, local_ds) -> dict:
     return g
 
 
-@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+@app.function(secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+                       modal.Secret.from_name("ops-alerts")],
               timeout=60 * 60 * 3, memory=65536, cpu=8.0, ephemeral_disk=524288, retries=1)
 def build_practice_group_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
     """Roll provider_360 member economics up to the buyable group (rcv ENRLMT_ID)."""
@@ -875,6 +906,7 @@ def build_practice_group_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _record(artifact="practice_group_360", snapshot_month=snapshot_month, dataset_uri=f"s3://{BUCKET}/{live}", rows=0,
                 indices=[], attach_rates=None, gates=None, status="error", error=str(exc)[:2000],
                 started=started, completed=dt.datetime.now(dt.timezone.utc))
+        alert(f"[provider_360] practice_group_360 snapshot={snapshot_month} build error: {str(exc)[:300]}")
         raise
 
 

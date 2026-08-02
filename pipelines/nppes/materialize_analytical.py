@@ -78,6 +78,10 @@ geo index pair). ``npi_deactivation_reason_code`` stays excluded (100% null — 
 The core build (``build_all``) and gate (``run_gate``) are plain module-level functions so the
 directive §9.3 local dry-run can call them in-process (uv venv + ``doppler run``) and gate
 locally BEFORE any R2 write; the Modal functions below are thin wrappers around them.
+
+Failure paging: any terminal non-success writes the ops.nppes_analytical_runs error row and
+then pages via ``core.ops_alert.alert()`` → ``OPS_ALERT_WEBHOOK`` (Modal secret ``ops-alerts``);
+no-op when the env var is unset, never masks the original error.
 """
 
 from __future__ import annotations
@@ -85,6 +89,8 @@ from __future__ import annotations
 import os
 
 import modal
+
+from core.ops_alert import alert
 
 BUCKET = "data-sink"
 FEED = "nppes_analytical"
@@ -203,7 +209,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # sort the column; bypass Lance's bounded spill sorter (OOMs on these; lance#2650).
     # In-RAM sort is <1 GiB each ≪ 32 GiB; trains run sequentially.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.ops_alert")
 
 app = modal.App("nppes-analytical", image=image)
 
@@ -979,7 +985,8 @@ def apply_state_schema() -> dict:
 
 
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("ops-alerts")],
     timeout=60 * 60 * 4,
     memory=32768,
     cpu=8.0,
@@ -1047,6 +1054,11 @@ def materialize(snapshot_month: str, publish: bool = True,
             gate=(gate_result or {}).get("gates"),
             status=status, error=error, started_at=started_at, completed_at=completed_at,
         )
+        if status != "success":
+            # Terminal-failure page: core.ops_alert.alert → OPS_ALERT_WEBHOOK (Modal secret
+            # ops-alerts). No-op when unset; alert() never raises, so the original error
+            # (re-raised below) is never masked.
+            alert(f"[nppes_analytical] snapshot={snapshot_month} build {status}: {str(error)[:300]}")
         if trigger_callback_url:
             _post_callback(trigger_callback_url, {"status": status, "feed": FEED,
                                                   "snapshot_month": snapshot_month,
