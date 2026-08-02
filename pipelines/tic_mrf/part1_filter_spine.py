@@ -138,9 +138,11 @@ def _main() -> int:
     ap.add_argument("--specialty", default="207X00000X", help="NUCC primary_taxonomy_code (207X00000X=ortho)")
     ap.add_argument("--n-groups", type=int, default=5)
     ap.add_argument("--n-employers", type=int, default=50)
+    ap.add_argument("--group-snapshot", default="2026-06",
+                    help="practice_group_360 snapshot partition; bump to the current month before any production fan-out")
     ap.add_argument("--out", default="/tmp/poc_out/filter_spine.json")
     a = ap.parse_args()
-    spine = extract(a.state, a.specialty, a.n_groups, a.n_employers)
+    spine = extract(a.state, a.specialty, a.n_groups, a.n_employers, group_snapshot=a.group_snapshot)
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w") as f:
         json.dump(spine, f, indent=2)
