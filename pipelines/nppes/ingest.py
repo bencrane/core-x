@@ -108,6 +108,10 @@ to trigger_callback_url. No {"data": ...} envelope.
     modal run    pipelines/nppes/ingest.py::verify --snapshot-month 2026-05  # read-back proof
     modal run    pipelines/nppes/ingest.py::reindex --snapshot-month 2026-05
     modal run    pipelines/nppes/ingest.py::show_ledger
+
+Failure paging: any terminal non-success writes the ops.nppes_runs error row and then pages
+via ``core.ops_alert.alert()`` -> ``OPS_ALERT_WEBHOOK`` (Modal secret ``ops-alerts``); no-op
+when the env var is unset, never masks the original error.
 """
 
 from __future__ import annotations
@@ -115,6 +119,8 @@ from __future__ import annotations
 import os
 
 import modal
+
+from core.ops_alert import alert
 
 BUCKET = "data-sink"
 FEED = "nppes"
@@ -194,7 +200,7 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install(
     # (under-sizes its pool, OOMs on high-cardinality string columns). Cheap in-memory
     # sort at 8.5M rows. See lance-format/lance#2650.
     {"LANCE_BYPASS_SPILLING": "true"}
-)
+).add_local_python_source("core.ops_alert")
 
 app = modal.App("nppes-pipelines", image=image)
 
@@ -664,7 +670,8 @@ def resolve_current_url() -> dict:
 
 
 @app.function(
-    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("ops-alerts")],
     timeout=60 * 60 * 4,    # ~1 GB download + ~10 GB CSV transform + index + publish
     memory=32768,           # ≥ directive's 16 GiB floor; heavy ~330-col feed
     cpu=8.0,
@@ -784,6 +791,11 @@ def ingest_nppes(snapshot_month: str | None = None, source_url: str | None = Non
             rows=int(rows), rejected=int(rejected), write_path=write_path,
             status=status, error=error, started_at=started_at, completed_at=completed_at,
         )
+        if status != "success":
+            # Terminal-failure page: core.ops_alert.alert -> OPS_ALERT_WEBHOOK (Modal secret
+            # ops-alerts). No-op when unset; alert() never raises, so the original error
+            # (re-raised below) is never masked.
+            alert(f"[nppes_ingest] snapshot={snapshot_month} ingest {status}: {str(error)[:300]}")
         _post_callback(trigger_callback_url, {
             "status": status, "feed": FEED, "snapshot_month": snapshot_month,
             "rows": int(rows), "rejected_rows": int(rejected),
