@@ -166,7 +166,10 @@ def _s3():
     return boto3.client("s3", endpoint_url=o["endpoint"], aws_access_key_id=o["aws_access_key_id"],
                         aws_secret_access_key=o["aws_secret_access_key"], region_name="auto",
                         config=Config(signature_version="s3v4", request_checksum_calculation="when_required",
-                                      response_checksum_validation="when_required", retries={"max_attempts": 5, "mode": "standard"}))
+                                      response_checksum_validation="when_required", retries={"max_attempts": 5, "mode": "standard"},
+                                      # publish-swap server-side copies of ~GB Lance data files exceeded the 60 s
+                                      # default read timeout on the degraded Modal->R2 path (2026-09-23 06:3xZ).
+                                      connect_timeout=30, read_timeout=int(os.environ.get("R2_BOTO_READ_TIMEOUT", "300"))))
 
 
 def _staging_prefix(p): return p.rstrip("/") + "__staging/"
