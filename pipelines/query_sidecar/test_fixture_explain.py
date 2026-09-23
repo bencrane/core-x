@@ -120,7 +120,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "rcv_bnft_enrlmt_id": "VARCHAR",
   "reasgn_bnft_enrlmt_id": "VARCHAR"
  },
- "nppes_provider/snapshot=2026-07": {
+ "nppes_provider/snapshot=2026-09": {
   "certification_date": "DATE",
   "entity_type_code": "VARCHAR",
   "is_active": "BOOLEAN",
@@ -129,7 +129,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "practice_phone": "VARCHAR",
   "practice_state": "VARCHAR"
  },
- "nppes_provider_taxonomy/snapshot=2026-07": {
+ "nppes_provider_taxonomy/snapshot=2026-09": {
   "is_primary": "BOOLEAN",
   "license_number": "VARCHAR",
   "license_state": "VARCHAR",
@@ -146,7 +146,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "specialization": "VARCHAR",
   "taxonomy_code": "VARCHAR"
  },
- "practice_group_360/snapshot=2026-07": {
+ "practice_group_360/snapshot=2026-09": {
   "active_member_count": "BIGINT",
   "avg_dual_share": "DOUBLE",
   "avg_mips_score": "DOUBLE",
@@ -166,7 +166,7 @@ FIXTURE_SCHEMAS: dict[str, dict[str, str]] = json.loads(r'''
   "total_op_payments_usd": "DOUBLE",
   "total_rx_cost_usd": "DOUBLE"
  },
- "provider_360/snapshot=2026-07": {
+ "provider_360/snapshot=2026-09": {
   "authorized_official_first_name": "VARCHAR",
   "authorized_official_last_name": "VARCHAR",
   "authorized_official_phone": "VARCHAR",
@@ -1029,7 +1029,10 @@ def driven(monkeypatch):
         # path segment (the historical flat-name behavior).
         rel = uri[len(b.LANCE_BASE):].rstrip("/") if uri.startswith(b.LANCE_BASE) \
             else uri.rstrip("/")
-        schema = FIXTURE_SCHEMAS.get(rel) or FIXTURE_SCHEMAS[rel.split("/")[-1]]
+        # then the dataset name (first segment: quarter-partitioned PECOS tables
+        # such as cms_provider_enrollment/snapshot=2026-Q3), then the last segment.
+        schema = (FIXTURE_SCHEMAS.get(rel) or FIXTURE_SCHEMAS.get(rel.split("/")[0])
+                  or FIXTURE_SCHEMAS[rel.split("/")[-1]])
         return FakeDataset(_make_table(schema))
 
     monkeypatch.setattr(lance, "dataset", _fake_dataset)
