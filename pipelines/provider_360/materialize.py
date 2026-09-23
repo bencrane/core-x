@@ -148,8 +148,15 @@ def _so() -> dict:
         f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com" if os.environ.get("R2_ACCOUNT_ID") else None)
     if not ep:
         raise RuntimeError("Set R2_ENDPOINT or R2_ACCOUNT_ID")
+    # object_store client timeouts: the default 30 s per-request body timeout aborts 8 MB
+    # Lance range reads when the Modal->R2 path degrades (observed 2026-09-23 05:22-06:07Z:
+    # "Failed to download range ... after 3 attempts ... TimedOut" -> "Task was aborted" on
+    # three consecutive builds while the same scans completed locally in 13 s). A generous
+    # per-request budget lets the retrying reader finish instead of failing the build.
     return {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
-            "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"], "endpoint": ep, "region": "auto"}
+            "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"], "endpoint": ep, "region": "auto",
+            "timeout": os.environ.get("R2_REQUEST_TIMEOUT", "300s"),
+            "connect_timeout": os.environ.get("R2_CONNECT_TIMEOUT", "30s")}
 
 
 def _s3():
