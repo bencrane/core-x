@@ -2576,8 +2576,22 @@ def _s3_client():
         config=Config(
             request_checksum_calculation="when_required",
             response_checksum_validation="when_required",
+            # 2026-09-23 (run 49): the 75.7 GiB artifact upload died on a degraded
+            # Modal->R2 path (NoSuchUpload at CompleteMultipartUpload) after every
+            # mart had built. Longer per-request budget + standard-mode retries.
+            connect_timeout=30, read_timeout=300,
+            retries={"max_attempts": 8, "mode": "standard"},
         ),
     )
+
+
+def _upload_transfer_config():
+    """Artifact upload: 128 MiB parts (~600 parts for a 75 GiB artifact, far under R2's
+    10,000-part cap) with bounded concurrency — fewer, larger requests survive a slow
+    path better than the boto3 default 8 MiB x 10 threads."""
+    from boto3.s3.transfer import TransferConfig
+    return TransferConfig(multipart_threshold=128 * 2**20, multipart_chunksize=128 * 2**20,
+                          max_concurrency=6, use_threads=True)
 
 
 # ── transient-retry layer (directive 2026-07-23 §5.4): one network blip must
@@ -2588,6 +2602,9 @@ _TRANSIENT_MARKERS = (
     "timeout", "timed out", "connection", "reset", "broken pipe", "eof",
     "temporarily", "unavailable", "throttl", "slow down", "429", "500", "502",
     "503", "504",
+    # multipart upload session lost mid-transfer (R2, run 49 2026-09-23): a fresh
+    # upload_file() opens a new session — retryable, never a build bug.
+    "nosuchupload", "multipart upload",
 )
 _SQL_ERROR_TYPES = {
     "ParserException", "BinderException", "CatalogException",
@@ -3171,7 +3188,8 @@ def build(tiers: str = "A,B,C,D", publish: bool = True, smoke: bool = False,
             s3 = _s3_client()
             prefix = f"{R2_PREFIX}/smoke" if smoke else R2_PREFIX
             r2_key = f"{prefix}/query_sidecar_{stamp}.duckdb"
-            _with_retry("upload", lambda: s3.upload_file(db_path, R2_BUCKET, r2_key))
+            _with_retry("upload", lambda: s3.upload_file(db_path, R2_BUCKET, r2_key,
+                                                         Config=_upload_transfer_config()), attempts=5)
             print(f"[publish] s3://{R2_BUCKET}/{r2_key}")
             if not smoke:
                 pointer = {"key": r2_key, "built_at": started_at.isoformat(),
