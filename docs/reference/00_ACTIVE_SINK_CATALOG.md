@@ -323,11 +323,11 @@ carry `snapshot=YYYY-MM` children). Addressed by their full nested URI, e.g.
 | `cms_physician_provider` | 13,528,933 | 85 | BTree(rndrng_npi); Bitmap(program_year); Bitmap(rndrng_prvdr_type); Bitmap(rndrng_prvdr_state_abrvtn); Bitmap(rndrng_prvdr_ent_cd) |
 | `cms_physician_provider_service` | 78,482,821 | 32 | BTree(rndrng_npi); BTree(hcpcs_cd); Bitmap(program_year); Bitmap(place_of_srvc); Bitmap(rndrng_prvdr_state_abrvtn); Bitmap(rndrng_prvdr_type) |
 | `cms_physician_service_rollup` | 1,694,622 | 15 | BTree(npi) |
-| `cms_provider_enrollment` | 2,981,788 | 15 | BTree(npi); BTree(enrlmt_id); BTree(pecos_asct_cntl_id); Bitmap(provider_type_desc); Bitmap(state_cd) |
-| `cms_provider_enrollment_npi` | 111,196 | 6 | BTree(npi); BTree(enrlmt_id) |
-| `cms_provider_enrollment_practice` | 1,080,813 | 8 | BTree(enrlmt_id); Bitmap(state_cd) |
-| `cms_provider_enrollment_reassignment` | 3,857,023 | 6 | BTree(reasgn_bnft_enrlmt_id); BTree(rcv_bnft_enrlmt_id) |
-| `cms_provider_enrollment_specialty` | 500,163 | 7 | BTree(enrlmt_id); Bitmap(provider_type_desc) |
+| `cms_provider_enrollment/snapshot=YYYY-Qn` (quarter-partitioned 2026-09-23; flat path = legacy 2026-Q1 copy) | 2,981,788 (2026-Q1) | 15 | BTree(npi); BTree(enrlmt_id); BTree(pecos_asct_cntl_id); Bitmap(provider_type_desc); Bitmap(state_cd) |
+| `cms_provider_enrollment_npi/snapshot=YYYY-Qn` | 111,196 (2026-Q1) | 6 | BTree(npi); BTree(enrlmt_id) |
+| `cms_provider_enrollment_practice/snapshot=YYYY-Qn` | 1,080,813 (2026-Q1) | 8 | BTree(enrlmt_id); Bitmap(state_cd) |
+| `cms_provider_enrollment_reassignment/snapshot=YYYY-Qn` | 3,857,023 (2026-Q1) | 6 | BTree(reasgn_bnft_enrlmt_id); BTree(rcv_bnft_enrlmt_id) |
+| `cms_provider_enrollment_specialty/snapshot=YYYY-Qn` | 500,163 (2026-Q1) | 7 | BTree(enrlmt_id); Bitmap(provider_type_desc) |
 | `cms_provider_payment_rollup` | 1,603,039 | 15 | BTree(npi); Bitmap(recipient_type); Bitmap(has_ownership_interest); Bitmap(last_payment_year) |
 | `cms_qpp_experience` | 6,154,354 | 241 | BTree(npi); Bitmap(program_year); Bitmap(practice_state_or_us_territory); Bitmap(clinician_specialty); Bitmap(participation_type) |
 | `cms_research_payments` | 5,936,454 | 256 | BTree(covered_recipient_npi); BTree(applicable_manufacturer_or_applicable_gpo_making_payment_id); BTree(date_of_payment); BTree(principal_investigator_1_npi); BTree(record_id); Bitmap(payment_year); Bitmap(covered_recipient_type); Bitmap(related_product_indicator); Bitmap(recipient_state); Bitmap(dispute_status_for_publication) |

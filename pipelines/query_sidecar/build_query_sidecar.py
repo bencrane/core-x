@@ -89,6 +89,12 @@ image = (
 app = modal.App("query-sidecar", image=image)
 
 LANCE_BASE = "s3://data-sink/active/"
+# Healthcare-tier source pins (one edit moves the whole tier). NPPES-derived partitions
+# (nppes_provider*, provider_360, practice_group_360) share HC_NPPES_SNAPSHOT (monthly);
+# the PECOS enrollment partitions (cms_provider_enrollment*) share HC_ENROLLMENT_SNAPSHOT
+# (quarterly, active/<ds>/snapshot=YYYY-Qn/ since the 2026-09-23 partition cut-over).
+HC_NPPES_SNAPSHOT = "2026-09"
+HC_ENROLLMENT_SNAPSHOT = "2026-Q3"
 R2_BUCKET = "data-sink"
 R2_PREFIX = "query-sidecar"
 SCRATCH_ROOT = "/tmp/query_sidecar"
@@ -786,29 +792,32 @@ MANIFEST: list[dict] = [
     {"ds": "gtm_fpds_entity_signal_events", "tier": "B", "sort": ["uei"]},
     # ── healthcare GTM tier (2026-08-02, operator-directed — docs/plans/
     # HEALTHCARE_GTM_SIDECAR_TIER_SCOPE.md; 4 structural marts, greedy columns).
-    # Source partitions PINNED to snapshot=2026-07 (uniform post-remediation;
-    # probe-verified 2026-08-02: nppes_provider/provider_360 = 9,671,888,
-    # nppes_provider_taxonomy = 12,101,810, practice_group_360 = 253,740,
-    # reassignment = 3,857,023). Probe corrections vs the scope doc: the
-    # 2026-07 NPPES bedrock DOES carry mailing_address_line1/2; provider_360
+    # Source partitions PINNED via HC_NPPES_SNAPSHOT / HC_ENROLLMENT_SNAPSHOT
+    # (module constants). 2026-09-23 cut-over: NPPES tier -> 2026-09
+    # (nppes_provider/provider_360 = 9,798,758, nppes_provider_taxonomy =
+    # 12,258,576, practice_group_360 = 253,740); PECOS enrollment tables are
+    # now quarter-partitioned (active/<ds>/snapshot=YYYY-Qn/) and pin 2026-Q3.
+    # Earlier pin history: 2026-07 (probe-verified 2026-08-02: 9,671,888 /
+    # 12,101,810 / 253,740 / reassignment 3,857,023). Probe corrections vs the
+    # scope doc: the NPPES bedrock DOES carry mailing_address_line1/2; provider_360
     # lacks practice_address_line2 / practice_phone / certification_date —
     # those three ride the NPPES join. All joins pure equality (npi,
     # enrlmt_id, taxonomy_code); resolution legs pre-aggregated to
     # 1/enrlmt_id BEFORE joining (fan-out control, scope §3.4) so every mart
     # keeps the EXACT row-count parity gate against its primary source.
-    {"ds": "practice_group_360/snapshot=2026-07", "tier": "D",
+    {"ds": f"practice_group_360/snapshot={HC_NPPES_SNAPSHOT}", "tier": "D",
      "dest": "hc_practice_screen",
      "sort": ["group_state", "top_specialty", "group_enrlmt_id"],
      "hc_practice_screen": True},
-    {"ds": "provider_360/snapshot=2026-07", "tier": "D",
+    {"ds": f"provider_360/snapshot={HC_NPPES_SNAPSHOT}", "tier": "D",
      "dest": "hc_provider_screen",
      "sort": ["practice_state", "primary_taxonomy_code", "npi"],
      "hc_provider_screen": True},
-    {"ds": "nppes_provider_taxonomy/snapshot=2026-07", "tier": "D",
+    {"ds": f"nppes_provider_taxonomy/snapshot={HC_NPPES_SNAPSHOT}", "tier": "D",
      "dest": "hc_provider_taxonomy",
      "sort": ["taxonomy_code", "license_state", "npi"],
      "hc_provider_taxonomy": True},
-    {"ds": "cms_provider_enrollment_reassignment", "tier": "D",
+    {"ds": f"cms_provider_enrollment_reassignment/snapshot={HC_ENROLLMENT_SNAPSHOT}", "tier": "D",
      "dest": "hc_practice_roster",
      "sort": ["group_enrlmt_id", "member_npi"],
      "hc_practice_roster": True},
@@ -2898,7 +2907,7 @@ def _build_one(con, so: dict[str, str], spec: dict,
             # healthcare tier §3.1: practice_group_360 (primary, snapshot-pinned)
             # + the PECOS practice-location riders. Streams -> local temps
             # (hygiene rule); joins pure equality on enrlmt_id.
-            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/",
+            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/snapshot={HC_ENROLLMENT_SNAPSHOT}/",
                                  storage_options=so)
             con.register("src_prac", prac.scanner(
                 columns=["enrlmt_id", "city_name", "state_cd", "zip_cd"],
@@ -2916,7 +2925,7 @@ def _build_one(con, so: dict[str, str], spec: dict,
             # healthcare tier §3.2: provider_360 projection (primary) + NPPES
             # riders + taxonomy-ref names. All legs local temps; joins pure
             # equality on npi / taxonomy_code.
-            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot=2026-07/",
+            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot={HC_NPPES_SNAPSHOT}/",
                                 storage_options=so)
             con.register("src_npp", npp.scanner(
                 columns=["npi", "practice_address_line2", "practice_phone",
@@ -2951,7 +2960,7 @@ def _build_one(con, so: dict[str, str], spec: dict,
                 batch_size=READ_BATCH_ROWS).to_reader())
             con.execute("CREATE TEMP TABLE hc_tax_ref AS SELECT * FROM src_ref")
             con.unregister("src_ref")
-            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot=2026-07/",
+            npp = lance.dataset(f"{LANCE_BASE}nppes_provider/snapshot={HC_NPPES_SNAPSHOT}/",
                                 storage_options=so)
             con.register("src_npp", npp.scanner(
                 columns=["npi", "practice_state", "entity_type_code", "is_active"],
@@ -2972,7 +2981,7 @@ def _build_one(con, so: dict[str, str], spec: dict,
             # healthcare tier §3.4: reassignment edges (primary) resolved via
             # cms_provider_enrollment pre-aggregated to 1/enrlmt_id inside the
             # SQL (fan-out control) + group practice location.
-            enr = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment/",
+            enr = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment/snapshot={HC_ENROLLMENT_SNAPSHOT}/",
                                 storage_options=so)
             con.register("src_enr", enr.scanner(
                 columns=["enrlmt_id", "npi", "first_name", "last_name",
@@ -2981,7 +2990,7 @@ def _build_one(con, so: dict[str, str], spec: dict,
                 batch_size=READ_BATCH_ROWS).to_reader())
             con.execute("CREATE TEMP TABLE hc_enr AS SELECT * FROM src_enr")
             con.unregister("src_enr")
-            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/",
+            prac = lance.dataset(f"{LANCE_BASE}cms_provider_enrollment_practice/snapshot={HC_ENROLLMENT_SNAPSHOT}/",
                                  storage_options=so)
             con.register("src_prac", prac.scanner(
                 columns=["enrlmt_id", "city_name", "zip_cd"],

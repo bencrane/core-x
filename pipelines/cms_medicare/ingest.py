@@ -41,7 +41,9 @@ DEVIATIONS from the plan (documented):
     modal run pipelines/cms_medicare/ingest.py::discover
     modal run pipelines/cms_medicare/ingest.py::ingest --dataset cms_physician_provider
     modal run pipelines/cms_medicare/ingest.py::ingest_giant --dataset cms_partd_provider_drug   # B2/A2 (128 GiB)
+    modal run pipelines/cms_medicare/ingest.py::ingest --dataset cms_provider_enrollment --snapshots 2026-Q3  # one quarter partition
     modal run pipelines/cms_medicare/ingest.py::verify  --dataset cms_physician_provider
+    modal run pipelines/cms_medicare/ingest.py::verify  --dataset cms_provider_enrollment --snapshot 2026-Q3
     modal run pipelines/cms_medicare/ingest.py::show_ledger
 """
 
@@ -77,7 +79,10 @@ _R2_SINGLE_COPY_MAX = 5 * 1024**3
 # ─────────────────────────────────────────── dataset catalog ───────────────────────────────────────────
 # archive_substr: exact-enough substring of the zip basename · member_re: matches the data CSV member
 # (CMS file tokens are stable: Prov / Prov_Svc / Geo / NPI / NPIBN / rfrr / supr / suphpr / geor / PPEF_*).
-# partition: 'year' (folder = YYYY) | 'snapshot' (folder = YYYY-Qn). giant: npi BTREE via staged path.
+# partition: 'year' (folder = YYYY; all years union into ONE flat dataset at active/<name>/) | 'snapshot'
+#   (folder = YYYY-Qn; ONE dataset PER quarter at active/<name>/snapshot=YYYY-Qn/ -- current-state extracts
+#   never union; consumers pin a partition by path; quarter-over-quarter diffs read two partitions).
+# giant: npi BTREE via staged path.
 def _m(token):  # member basename regex helper
     return token
 
@@ -174,7 +179,7 @@ DATASETS: dict[str, dict] = {
         "bitmap": ["program_year", "practice_state_or_us_territory", "clinician_specialty", "participation_type"],
         "cluster": "npi, program_year", "giant": False,
     },
-    "cms_provider_enrollment": {  # R1·Enrollment — 1/enrlmt_id, snapshot 2026-Q1
+    "cms_provider_enrollment": {  # R1·Enrollment — 1/enrlmt_id per quarter partition (2026-Q1, 2026-Q3, ...)
         "archive_substr": "Public Provider Enrollment",
         "member_re": r"PPEF_Enrollment_Extract", "partition": "snapshot",
         "npi_col": "npi",
@@ -240,7 +245,7 @@ GRAIN: dict[str, list] = {
 
 # Ledger UPSERT targets (partial-unique-index predicates, must match OPS_DDL).
 _INGEST_CONFLICT = "ON CONFLICT (dataset, source_member) WHERE phase = 'ingest'"
-_VERIFY_CONFLICT = "ON CONFLICT (dataset) WHERE phase = 'verify'"
+_VERIFY_CONFLICT = "ON CONFLICT (dataset, coalesce(source_member, '')) WHERE phase = 'verify'"
 
 # Type allow-list (regex on snake alias). Validated by the §9 width gate; failures hard-stop.
 _MONEY_RE = _re.compile(r"(_chrg|_amt|_cst)$")          # → DECIMAL(18,2)
@@ -276,7 +281,11 @@ CREATE INDEX IF NOT EXISTS cms_medicare_runs_recorded_idx ON ops.cms_medicare_ru
 -- Idempotency keys (UPSERT targets) so re-runs / Modal retries never duplicate ledger rows:
 -- one row per (dataset, member) ingest, one terminal row per dataset verify.
 CREATE UNIQUE INDEX IF NOT EXISTS cms_medicare_ingest_uq ON ops.cms_medicare_runs (dataset, source_member) WHERE phase = 'ingest';
-CREATE UNIQUE INDEX IF NOT EXISTS cms_medicare_verify_uq ON ops.cms_medicare_runs (dataset)                WHERE phase = 'verify';
+-- verify rows are keyed (dataset, source_member): year-partitioned datasets verify once per dataset
+-- (source_member NULL -> one row); snapshot-partitioned datasets verify once per snapshot partition
+-- (source_member = the snapshot label). The former (dataset)-only index is retired in place.
+DROP INDEX IF EXISTS ops.cms_medicare_verify_uq;
+CREATE UNIQUE INDEX IF NOT EXISTS cms_medicare_verify_uq2 ON ops.cms_medicare_runs (dataset, coalesce(source_member, '')) WHERE phase = 'verify';
 """
 
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
@@ -823,7 +832,7 @@ def discover_members(dataset: str = "") -> dict:
     return out
 
 
-def _ingest_core(dataset: str) -> dict:
+def _ingest_core(dataset: str, snapshots: list[str] | None = None) -> dict:
     """Land one dataset (full backfill) across all its years: discover → (pass 1) header union →
     (pass 2) per-member width-gate + project + append → sorted clustering rewrite → grain proof →
     index → publish-swap → verify gate. The ledger records per-year + terminal rows ONLY after R2 is
@@ -834,14 +843,41 @@ def _ingest_core(dataset: str) -> dict:
     not yet wired) — the backfill is a correct atomic rebuild without it. Shared by the non-giant
     (49 GiB) and giant (128 GiB) Modal wrappers — the only difference is container RAM for the in-RAM
     npi BTREE sort over a >100M-row giant."""
+    if dataset not in DATASETS:
+        raise RuntimeError(f"unknown dataset {dataset!r}; known: {list(DATASETS)}")
+    cfg = DATASETS[dataset]
+    client = _s3_client()
+    units = _discover(client, dataset)
+    if not units:
+        raise RuntimeError(f"{dataset}: no ingest units discovered")
+    if cfg["partition"] != "snapshot":
+        # year-partitioned: every year folder unions into ONE flat dataset (unchanged).
+        return _ingest_units(dataset, cfg, units, f"{ACTIVE_PREFIX}{dataset}/")
+    # snapshot-partitioned (current-state quarterly extracts): ONE Lance dataset PER snapshot
+    # label at active/<dataset>/snapshot=<label>/ -- the NPPES / provider_360 vintage convention.
+    # Quarters never union (a union would double every current-state row); consumers pin a
+    # partition by path. ``snapshots`` (optional) restricts the run to those labels.
+    labels = sorted({u["label"] for u in units})
+    wanted = [l for l in labels if not snapshots or l in snapshots]
+    if not wanted:
+        raise RuntimeError(f"{dataset}: no snapshot in {labels} matches requested {snapshots}")
+    print(f"[{dataset}] snapshot partitions: {wanted} (available {labels})")
+    out = {}
+    for label in wanted:
+        out[label] = _ingest_units(dataset, cfg, [u for u in units if u["label"] == label],
+                                   f"{ACTIVE_PREFIX}{dataset}/snapshot={label}/", verify_key=label)
+    return {"status": "success", "dataset": dataset, "partitions": out}
+
+
+def _ingest_units(dataset: str, cfg: dict, units: list, live_prefix: str, verify_key: str | None = None) -> dict:
+    """Land ``units`` (already discovered) into ``live_prefix`` as one clustered, indexed Lance
+    dataset: header-union -> per-member width-gate/project/append -> sorted rewrite -> grain proof ->
+    index -> atomic full-swap publish -> read-back verify -> ledger. ``verify_key`` is the ledger's
+    verify-row discriminator (the snapshot label for snapshot partitions; NULL for year datasets)."""
     import datetime as dt
     import shutil
 
     import lance
-
-    if dataset not in DATASETS:
-        raise RuntimeError(f"unknown dataset {dataset!r}; known: {list(DATASETS)}")
-    cfg = DATASETS[dataset]
 
     started = dt.datetime.now(dt.timezone.utc)
     shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
@@ -850,13 +886,9 @@ def _ingest_core(dataset: str) -> dict:
     so = _r2_storage_options()
     unsorted_ds = os.path.join(LOCAL_DIR, dataset + "__unsorted")
     sorted_ds = os.path.join(LOCAL_DIR, dataset)
-    live_prefix = f"{ACTIVE_PREFIX}{dataset}/"
 
     try:
-        units = _discover(client, dataset)
-        if not units:
-            raise RuntimeError(f"{dataset}: no ingest units discovered")
-        print(f"[{dataset}] {len(units)} units: {[u['label'] for u in units]}")
+        print(f"[{dataset}] {len(units)} units: {[u['label'] for u in units]} -> {live_prefix}")
 
         # PASS 1 — header union (cheap 128 KB inflate per member).
         union: list[str] = []
@@ -935,16 +967,16 @@ def _ingest_core(dataset: str) -> dict:
                         source_archive=ys["archive"], source_member=ys["member"], source_object_etag=ys["etag"],
                         decimal_overflow_nulls=ys["overflow"], rows_processed=ys["rows"], rejected_rows=ys["rej"],
                         status="success", started_at=started, completed_at=completed)
-        _record_run(conflict=_VERIFY_CONFLICT, phase="verify", dataset=dataset, candidate_key_dups=dups,
-                    decimal_overflow_nulls=total_overflow, rows_processed=rows, rejected_rows=total_rejected,
-                    status="success", started_at=started, completed_at=completed)
+        _record_run(conflict=_VERIFY_CONFLICT, phase="verify", dataset=dataset, source_member=verify_key,
+                    candidate_key_dups=dups, decimal_overflow_nulls=total_overflow, rows_processed=rows,
+                    rejected_rows=total_rejected, status="success", started_at=started, completed_at=completed)
         return {"status": "success", "dataset": dataset, "rows": rows, "units": len(units),
                 "union_cols": len(union), "indices": built, "grain_dups": dups,
                 "overflow_nulls": total_overflow, "rejected": total_rejected,
                 "published_files": published, "verify": vr, "dataset_uri": uri}
     except Exception as exc:
-        _record_run(conflict=_VERIFY_CONFLICT, phase="verify", dataset=dataset, status="error",
-                    error=str(exc)[:2000], started_at=started,
+        _record_run(conflict=_VERIFY_CONFLICT, phase="verify", dataset=dataset, source_member=verify_key,
+                    status="error", error=str(exc)[:2000], started_at=started,
                     completed_at=dt.datetime.now(dt.timezone.utc))
         raise
     finally:
@@ -955,13 +987,14 @@ def _ingest_core(dataset: str) -> dict:
     secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres")],
     timeout=60 * 60 * 8, memory=49152, cpu=8.0, ephemeral_disk=524288, retries=2,
 )
-def ingest_dataset(dataset: str) -> dict:
-    """Non-giant landing (49 GiB). Refuses giants — their >100M-row in-RAM npi BTREE sort needs the
+def ingest_dataset(dataset: str, snapshots: list[str] | None = None) -> dict:
+    """Non-giant landing (49 GiB). ``snapshots`` (snapshot-partitioned datasets only) restricts the
+    run to those labels, e.g. ["2026-Q3"]; default = every label discovered in the landing zone. Refuses giants — their >100M-row in-RAM npi BTREE sort needs the
     128 GiB ``ingest_dataset_giant`` wrapper (review finding: in-process build OOM on 48 GiB)."""
     cfg = DATASETS.get(dataset)
     if cfg and cfg.get("giant"):
         raise RuntimeError(f"{dataset} is a GIANT — run ::ingest_giant (128 GiB), not ::ingest.")
-    return _ingest_core(dataset)
+    return _ingest_core(dataset, snapshots)
 
 
 @app.function(
@@ -980,12 +1013,15 @@ def ingest_dataset_giant(dataset: str) -> dict:
 
 
 @app.function(secrets=[modal.Secret.from_name("r2-credentials")], timeout=60 * 15, memory=8192)
-def verify_dataset(dataset: str) -> dict:
+def verify_dataset(dataset: str, snapshot: str = "") -> dict:
+    """Read-back of a published dataset; ``snapshot`` selects a partition of a snapshot-partitioned
+    dataset (active/<dataset>/snapshot=<label>/)."""
     import lance
 
     cfg = DATASETS[dataset]
     so = _r2_storage_options()
-    uri = f"s3://{BUCKET}/{ACTIVE_PREFIX}{dataset}/"
+    part = f"snapshot={snapshot}/" if snapshot else ""
+    uri = f"s3://{BUCKET}/{ACTIVE_PREFIX}{dataset}/{part}"
     ds = lance.dataset(uri, storage_options=so)
     return {"dataset": dataset, "dataset_uri": uri, "rows": ds.count_rows(),
             "indices": _list_committed_indices(ds)}
@@ -1018,9 +1054,10 @@ def discover(dataset: str = "") -> None:
 
 
 @app.local_entrypoint()
-def ingest(dataset: str) -> None:
+def ingest(dataset: str, snapshots: str = "") -> None:
     import json
-    print(json.dumps(ingest_dataset.remote(dataset), indent=2, default=str))
+    sel = [x.strip() for x in snapshots.split(",") if x.strip()] or None
+    print(json.dumps(ingest_dataset.remote(dataset, sel), indent=2, default=str))
 
 
 @app.local_entrypoint()
@@ -1031,9 +1068,9 @@ def ingest_giant(dataset: str) -> None:
 
 
 @app.local_entrypoint()
-def verify(dataset: str) -> None:
+def verify(dataset: str, snapshot: str = "") -> None:
     import json
-    print(json.dumps(verify_dataset.remote(dataset), indent=2, default=str))
+    print(json.dumps(verify_dataset.remote(dataset, snapshot), indent=2, default=str))
 
 
 @app.local_entrypoint()

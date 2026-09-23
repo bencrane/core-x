@@ -68,6 +68,22 @@ def _nppes_snapshot(snapshot_month: str) -> str:
     """
     return os.environ.get("NPPES_SNAPSHOT") or snapshot_month
 
+
+def _enrollment_snapshot() -> str:
+    """PECOS enrollment quarter for a build: the LATEST ``snapshot=YYYY-Qn`` partition under
+    active/cms_provider_enrollment/ (quarterly current-state extract; partitions are the
+    cms_medicare ingest's vintage convention). ``ENROLLMENT_SNAPSHOT`` is an explicit pin
+    (e.g. rebuilding an older month against the quarter that was current then)."""
+    pin = os.environ.get("ENROLLMENT_SNAPSHOT")
+    if pin:
+        return pin
+    r = _s3().list_objects_v2(Bucket=BUCKET, Prefix=f"{ACTIVE}cms_provider_enrollment/", Delimiter="/")
+    labels = sorted(p["Prefix"].split("snapshot=")[-1].rstrip("/")
+                    for p in r.get("CommonPrefixes", []) if "snapshot=" in p["Prefix"])
+    if not labels:
+        raise RuntimeError("no active/cms_provider_enrollment/snapshot=*/ partition on R2")
+    return labels[-1]
+
 SCRATCH = "/tmp/provider_360"
 SPILL = os.path.join(SCRATCH, "spill")
 LOCAL = os.path.join(SCRATCH, "lance")
@@ -132,8 +148,15 @@ def _so() -> dict:
         f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com" if os.environ.get("R2_ACCOUNT_ID") else None)
     if not ep:
         raise RuntimeError("Set R2_ENDPOINT or R2_ACCOUNT_ID")
+    # object_store client timeouts: the default 30 s per-request body timeout aborts 8 MB
+    # Lance range reads when the Modal->R2 path degrades (observed 2026-09-23 05:22-06:07Z:
+    # "Failed to download range ... after 3 attempts ... TimedOut" -> "Task was aborted" on
+    # three consecutive builds while the same scans completed locally in 13 s). A generous
+    # per-request budget lets the retrying reader finish instead of failing the build.
     return {"aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
-            "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"], "endpoint": ep, "region": "auto"}
+            "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"], "endpoint": ep, "region": "auto",
+            "timeout": os.environ.get("R2_REQUEST_TIMEOUT", "300s"),
+            "connect_timeout": os.environ.get("R2_CONNECT_TIMEOUT", "30s")}
 
 
 def _s3():
@@ -143,7 +166,10 @@ def _s3():
     return boto3.client("s3", endpoint_url=o["endpoint"], aws_access_key_id=o["aws_access_key_id"],
                         aws_secret_access_key=o["aws_secret_access_key"], region_name="auto",
                         config=Config(signature_version="s3v4", request_checksum_calculation="when_required",
-                                      response_checksum_validation="when_required", retries={"max_attempts": 5, "mode": "standard"}))
+                                      response_checksum_validation="when_required", retries={"max_attempts": 5, "mode": "standard"},
+                                      # publish-swap server-side copies of ~GB Lance data files exceeded the 60 s
+                                      # default read timeout on the degraded Modal->R2 path (2026-09-23 06:3xZ).
+                                      connect_timeout=30, read_timeout=int(os.environ.get("R2_BOTO_READ_TIMEOUT", "300"))))
 
 
 def _staging_prefix(p): return p.rstrip("/") + "__staging/"
@@ -511,7 +537,7 @@ practice AS (
 """
 
 
-def _provider_360_sql(nppes_snapshot: str):
+def _provider_360_sql(nppes_snapshot: str, enrollment_snapshot: str):
     """Final assembly: base nppes_provider LEFT JOIN every per-NPI aggregate + Tier-1 rollups."""
     return f"""
     WITH {A1_AGG},
@@ -579,7 +605,7 @@ def _provider_360_sql(nppes_snapshot: str):
       practice.smallest_practice_group_enrlmt_id, practice.smallest_practice_group_size, sorg.org_name AS smallest_practice_org_name,
       practice.largest_practice_group_enrlmt_id, practice.largest_practice_group_size, lorg.org_name AS largest_practice_org_name,
       coalesce(practice.is_independent_candidate, false) AS is_independent_candidate,
-      '{{snap}}' AS provider_360_snapshot, '{nppes_snapshot}' AS nppes_snapshot
+      '{{snap}}' AS provider_360_snapshot, '{nppes_snapshot}' AS nppes_snapshot, '{enrollment_snapshot}' AS enrollment_snapshot
     FROM base b
     LEFT JOIN a1 USING (npi)
     LEFT JOIN b1 USING (npi)
@@ -759,6 +785,7 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
     out_local = os.path.join(LOCAL, "provider_360")
     live = f"{ACTIVE}{FEED}/snapshot={snapshot_month}/"
     nppes_snap = _nppes_snapshot(snapshot_month)
+    enr_snap = _enrollment_snapshot()
     try:
         base_cols = ["npi", "entity_type_code", "entity_type", "is_active", "provider_name", "organization_name",
                      "last_name", "first_name", "middle_name", "name_prefix", "name_suffix", "credential", "sex_code",
@@ -782,8 +809,9 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
         _reg(con, "taxonomy", f"nppes_provider_taxonomy/snapshot={nppes_snap}", ["npi", "taxonomy_code", "is_primary", "license_state"], so)
         _reg(con, "identifier", f"nppes_provider_identifier/snapshot={nppes_snap}", ["npi", "identifier_type_code"], so)
         _reg(con, "qpp_src", "cms_qpp_experience", ["npi", "program_year", "final_score", "participation_option", "reporting_option", "clinician_specialty"], so)
-        _reg(con, "enrollment", "cms_provider_enrollment", ["npi", "enrlmt_id", "pecos_asct_cntl_id", "org_name"], so)
-        _reg(con, "reassignment", "cms_provider_enrollment_reassignment", ["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"], so)
+        ne = _reg(con, "enrollment", f"cms_provider_enrollment/snapshot={enr_snap}", ["npi", "enrlmt_id", "pecos_asct_cntl_id", "org_name"], so)
+        nr = _reg(con, "reassignment", f"cms_provider_enrollment_reassignment/snapshot={enr_snap}", ["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"], so)
+        print(f"[provider_360] enrollment snapshot={enr_snap}: enrollment {ne:,} / reassignment {nr:,}")
         # Tier-1 rollups + open payments — small leaf datasets, register directly as temp tables.
         _reg(con, "svc", "cms_physician_service_rollup",
              ["npi", "svc_total_medicare_paid_usd", "svc_lines_suppressed", "svc_total_services", "svc_total_bene_lines",
@@ -801,7 +829,7 @@ def build_provider_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
              "distinct_manufacturers", "has_ownership_interest", "ownership_total_value_usd", "first_payment_year",
              "last_payment_year", "recipient_type"], so)
 
-        sql = _provider_360_sql(nppes_snap).replace("{snap}", snapshot_month)
+        sql = _provider_360_sql(nppes_snap, enr_snap).replace("{snap}", snapshot_month)
         rows = _write_sorted(con, sql, out_local, "npi")
         print(f"[provider_360] assembled {rows:,} rows")
 
@@ -883,8 +911,10 @@ def build_practice_group_360(snapshot_month: str = DEFAULT_SNAPSHOT) -> dict:
     out_local = os.path.join(LOCAL, "practice_group_360")
     live = f"{ACTIVE}practice_group_360/snapshot={snapshot_month}/"
     try:
-        _reg(con, "cms_provider_enrollment_reassignment_t", "cms_provider_enrollment_reassignment", ["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"], so)
-        _reg(con, "enrollment_t", "cms_provider_enrollment", ["npi", "enrlmt_id", "org_name", "state_cd"], so)
+        enr_snap = _enrollment_snapshot()
+        _reg(con, "cms_provider_enrollment_reassignment_t", f"cms_provider_enrollment_reassignment/snapshot={enr_snap}", ["reasgn_bnft_enrlmt_id", "rcv_bnft_enrlmt_id"], so)
+        _reg(con, "enrollment_t", f"cms_provider_enrollment/snapshot={enr_snap}", ["npi", "enrlmt_id", "org_name", "state_cd"], so)
+        print(f"[practice_group_360] enrollment snapshot={enr_snap}")
         _reg(con, "p360", f"provider_360/snapshot={snapshot_month}", ["npi", "med_a1_lifetime_mdcr_pymt", "rx_total_drug_cost_usd",
              "med_a1_panel_avg_risk_score", "med_a1_dual_share", "primary_taxonomy_code", "mips_final_score",
              "op_total_payments_usd", "is_independent_candidate", "practice_state",
