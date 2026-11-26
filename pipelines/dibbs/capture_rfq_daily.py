@@ -659,6 +659,12 @@ def capture_rfq_daily(
 
         final_status = "success"
         conn.close()
+        if counts["ok"] > 0:
+            try:
+                modal.Function.from_name("dibbs-pdf-parser", "backfill_all_days").spawn()
+                print("Spawned dibbs-pdf-parser.backfill_all_days for newly landed files.")
+            except Exception as spawn_exc:  # noqa: BLE001
+                print(f"WARN: failed to spawn dibbs-pdf-parser: {spawn_exc}")
     except Exception as exc:  # noqa: BLE001 — terminal handling below + re-raise
         error_text = str(exc)
         final_status = "error"

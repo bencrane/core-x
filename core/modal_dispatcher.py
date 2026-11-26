@@ -17,7 +17,11 @@ and a one-line Trigger task — zero new endpoints, zero new secrets.
 
 from __future__ import annotations
 
+import hmac
+import os
+
 import modal
+from fastapi import Request
 from pydantic import BaseModel
 
 app = modal.App("universal-dispatcher")
@@ -35,9 +39,45 @@ class DispatchRequest(BaseModel):
     trigger_callback_url: str
 
 
-@app.function(image=image)
-@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True, label="dispatch")
-def dispatch(req: DispatchRequest):
+def _verify_auth(request: Request) -> bool:
+    expected_key = os.environ.get("MODAL_KEY", "")
+    expected_secret = os.environ.get("MODAL_SECRET", "")
+    if not expected_key or not expected_secret:
+        return False
+
+    key = (
+        request.headers.get("modal-key")
+        or request.headers.get("x-modal-key")
+        or request.query_params.get("modal_key")
+        or request.query_params.get("key")
+        or ""
+    )
+    secret = (
+        request.headers.get("modal-secret")
+        or request.headers.get("x-modal-secret")
+        or request.query_params.get("modal_secret")
+        or request.query_params.get("secret")
+        or ""
+    )
+
+    if not key and not secret:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+            if "." in token:
+                key, secret = token.split(".", 1)
+
+    return hmac.compare_digest(key, expected_key) and hmac.compare_digest(
+        secret, expected_secret
+    )
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("dispatcher-auth")],
+)
+@modal.fastapi_endpoint(method="POST", label="dispatch")
+def dispatch(req: DispatchRequest, request: Request):
     """Spawn the named worker and return immediately.
 
     NOTE on the spawn signature: the directive writes
@@ -48,6 +88,12 @@ def dispatch(req: DispatchRequest):
     parameters plus ``trigger_callback_url``.
     """
     from fastapi.responses import JSONResponse
+
+    if not _verify_auth(request):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "invalid credentials for dispatcher authorization"},
+        )
 
     fn = modal.Function.from_name(req.app_name, req.function_name)
     call = fn.spawn(**req.kwargs, trigger_callback_url=req.trigger_callback_url)
