@@ -875,8 +875,17 @@ def run_gate(snapshot_month: str, *, local: dict | None = None,
            distinct=g9_distinct, out_of_set=g9_bad, absolute=True)
 
     # G10 — cross-dataset integrity: shared snapshot_month; child npis ⊆ provider npis
-    months = {nm: con.execute(f"SELECT DISTINCT snapshot_month FROM {al}").fetchall()
-              for nm, al in (("prov", "prov"), ("tax", "tax"), ("ident", "ident"))}
+    # When a child table is legitimately 0 rows (e.g. CMS blanking Other Provider Identifier
+    # slots in 2026-11), its row-level DISTINCT is empty; fall back to schema metadata
+    # snapshot_month so an empty child table does not false-fail one_month.
+    months = {}
+    for nm, al, ds in (("prov", "prov", prov), ("tax", "tax", tax), ("ident", "ident", ident)):
+        rows_m = con.execute(f"SELECT DISTINCT snapshot_month FROM {al}").fetchall()
+        if not rows_m and nm == "ident" and ds.count_rows() == 0:
+            meta_m = _meta_get(ds, "snapshot_month")
+            months[nm] = [(meta_m,)] if meta_m else []
+        else:
+            months[nm] = rows_m
     one_month = all(len(v) == 1 for v in months.values()) and \
         len({v[0][0] for v in months.values()}) == 1
     tax_orphan = con.execute("SELECT count(*) FROM (SELECT DISTINCT npi FROM tax) t "
