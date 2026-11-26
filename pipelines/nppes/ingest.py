@@ -811,6 +811,156 @@ def ingest_nppes(snapshot_month: str | None = None, source_url: str | None = Non
 
 
 @app.function(
+    secrets=[modal.Secret.from_name("r2-credentials"), modal.Secret.from_name("hqx-postgres"),
+             modal.Secret.from_name("ops-alerts")],
+    timeout=60 * 60 * 2,
+    memory=32768,
+    cpu=8.0,
+    ephemeral_disk=524288,
+)
+def reconstruct_nppes_from_weeklies(
+    snapshot_month: str = "2026-10",
+    base_snapshot_month: str = "2026-09",
+    weekly_r2_keys: list[str] | None = None,
+    source_member_label: str = "npidata_pfile_20050523-20261011.csv",
+) -> dict:
+    """Reconstruct a monthly full-replacement snapshot by overlaying consecutive CMS Weekly
+    Incremental V2 CSVs (staged in R2) in chronological order onto the prior month's raw
+    Lance snapshot, indexing locally, publishing to active/nppes/snapshot=<snapshot_month>/,
+    and recording to ops.nppes_runs."""
+    import datetime as dt
+    import duckdb
+    import lance
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    os.makedirs(os.path.join(SCRATCH_DIR, "duckdb_spill"), exist_ok=True)
+
+    if not weekly_r2_keys:
+        weekly_r2_keys = [
+            "landing/nppes/2026-10-weeklies/npidata_pfile_20260914-20260920.csv",
+            "landing/nppes/2026-10-weeklies/npidata_pfile_20260921-20260927.csv",
+            "landing/nppes/2026-10-weeklies/npidata_pfile_20260928-20261004.csv",
+            "landing/nppes/2026-10-weeklies/npidata_pfile_20261005-20261011.csv",
+        ]
+
+    s3 = _s3_client()
+    local_weeklies: list[str] = []
+    total_csv_bytes = 0
+    dataset_uri = _month_uri(snapshot_month)
+    base_uri = _month_uri(base_snapshot_month)
+    source_file = "NPPES_Weekly_Overlay_091426_101126_V2.zip"
+    rows = 0
+    built: list[str] = []
+    status, error = "error", None
+
+    try:
+        for idx, key in enumerate(weekly_r2_keys, start=1):
+            lp = os.path.join(SCRATCH_DIR, f"wk_{idx}.csv")
+            s3.download_file(BUCKET, key, lp)
+            sz = os.path.getsize(lp)
+            total_csv_bytes += sz
+            local_weeklies.append(lp)
+            print(f"  staged weekly {idx}: s3://{BUCKET}/{key} ({sz:,} bytes)")
+
+        base_ds = lance.dataset(base_uri, storage_options=_r2_storage_options())
+        print(f"  base dataset: {base_uri} ({base_ds.count_rows():,} rows)")
+
+        _cleanup(LOCAL_DATASET)
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("PRAGMA threads=8;")
+            con.execute("SET enable_progress_bar=false;")
+            con.execute("SET temp_directory='/tmp/nppes/duckdb_spill';")
+            con.register("base_raw", base_ds)
+
+            columns = _describe_columns(con, local_weeklies[0], "utf-8")
+            def q(c: str) -> str:
+                return '"' + c.replace('"', '""') + '"'
+
+            proj_trim = ", ".join(f"nullif(trim({q(c)}), '') AS {q(c)}" for c in columns)
+            proj_cols = ", ".join(q(c) for c in columns)
+
+            union_arms = []
+            for idx, lp in enumerate(local_weeklies, start=1):
+                 safe_lp = lp.replace("'", "''")
+                 union_arms.append(
+                     f"SELECT {idx} AS _wk, {proj_trim} FROM read_csv('{safe_lp}', {_read_opts('utf-8', store_rejects=False)})"
+                 )
+            union_sql = " UNION ALL ".join(union_arms)
+
+            con.execute(f"""
+                CREATE TEMP TABLE wk_latest AS
+                SELECT {proj_cols}
+                FROM ({union_sql})
+                QUALIFY row_number() OVER (PARTITION BY npi ORDER BY _wk DESC) = 1
+            """)
+            wk_cnt = con.execute("SELECT count(*) FROM wk_latest").fetchone()[0]
+            print(f"  deduped weekly overlay: {wk_cnt:,} distinct NPIs")
+
+            final_sql = f"""
+                SELECT {proj_cols},
+                       source_file,
+                       ? AS source_member,
+                       ? AS snapshot_month,
+                       now() AS ingested_at
+                FROM base_raw
+                WHERE npi NOT IN (SELECT npi FROM wk_latest)
+                UNION ALL
+                SELECT {proj_cols},
+                       ? AS source_file,
+                       ? AS source_member,
+                       ? AS snapshot_month,
+                       now() AS ingested_at
+                FROM wk_latest
+            """
+            reader = con.execute(
+                final_sql,
+                [source_member_label, snapshot_month, source_file, source_member_label, snapshot_month],
+            ).to_arrow_reader(READ_BATCH_ROWS)
+            lance.write_dataset(
+                reader,
+                LOCAL_DATASET,
+                schema=reader.schema,
+                mode="overwrite",
+                data_storage_version=DATA_STORAGE_VERSION,
+                max_rows_per_file=MAX_ROWS_PER_FILE,
+                max_bytes_per_file=MAX_BYTES_PER_FILE,
+            )
+        finally:
+            con.close()
+
+        rows = lance.dataset(LOCAL_DATASET).count_rows()
+        print(f"NPPES reconstructed {snapshot_month}: wrote {rows:,} rows → local stage")
+        _cleanup(*local_weeklies)
+        local_weeklies = []
+
+        built = _create_indexes(LOCAL_DATASET)
+        uploaded = _replace_r2_prefix(s3, _month_prefix(snapshot_month), LOCAL_DATASET)
+        print(f"Published {uploaded} files → {dataset_uri}")
+        status = "success"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        status = "error"
+    finally:
+        _cleanup(*local_weeklies, LOCAL_DATASET)
+        completed_at = dt.datetime.now(dt.timezone.utc)
+        _record_run(
+            snapshot_month=snapshot_month, dataset_uri=dataset_uri,
+            source_url="https://web.archive.org/web/*/https://download.cms.gov/nppes/*_Weekly_V2.zip",
+            source_file=source_file, source_member=source_member_label,
+            source_encoding="utf-8", zip_bytes=int(total_csv_bytes), csv_bytes=int(total_csv_bytes),
+            rows=int(rows), rejected=0, write_path="weekly-overlay-local-publish",
+            status=status, error=error, started_at=started_at, completed_at=completed_at,
+        )
+    if status != "success":
+        raise RuntimeError(f"nppes weekly reconstruction failed for {snapshot_month}: {error}")
+    return {"feed": FEED, "snapshot_month": snapshot_month, "rows_processed": int(rows),
+            "indices": built, "dataset_uri": dataset_uri, "source_file": source_file,
+            "source_member": source_member_label, "status": status}
+
+
+@app.function(
     secrets=[modal.Secret.from_name("r2-credentials")],
     timeout=60 * 60, memory=32768, cpu=8.0, ephemeral_disk=524288,
 )

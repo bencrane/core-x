@@ -93,7 +93,7 @@ LANCE_BASE = "s3://data-sink/active/"
 # (nppes_provider*, provider_360, practice_group_360) share HC_NPPES_SNAPSHOT (monthly);
 # the PECOS enrollment partitions (cms_provider_enrollment*) share HC_ENROLLMENT_SNAPSHOT
 # (quarterly, active/<ds>/snapshot=YYYY-Qn/ since the 2026-09-23 partition cut-over).
-HC_NPPES_SNAPSHOT = "2026-09"
+HC_NPPES_SNAPSHOT = "2026-11"
 HC_ENROLLMENT_SNAPSHOT = "2026-Q3"
 R2_BUCKET = "data-sink"
 R2_PREFIX = "query-sidecar"
